@@ -1,0 +1,12 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.App">
+	<Application.Styles>
+		<FluentTheme/>
+	</Application.Styles>
+
+	<Application.Resources>
+		<views:EnumEqConverter x:Key="EnumEq"/>
+	</Application.Resources>
+</Application>

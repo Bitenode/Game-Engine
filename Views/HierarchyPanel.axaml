@@ -1,0 +1,37 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="clr-namespace:Game_Engine.Core"
+             x:Class="Game_Engine.Views.HierarchyPanel">
+	<DockPanel>
+		<TextBlock DockPanel.Dock="Top"
+				   Text="Hierarchy" FontSize="14" Margin="8,6" />
+		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
+			<!-- NOTE: ItemsSource (not Items) in Avalonia 11 -->
+			<TreeView x:Name="Tree"
+					  SelectionMode="Single"
+					  ItemsSource="{Binding Root}">
+				<TreeView.Styles>
+					<Style Selector="TreeViewItem">
+						<Setter Property="IsExpanded" Value="True"/>
+						<Setter Property="ContextMenu">
+							<ContextMenu>
+								<MenuItem Header="Create Empty Child"  Click="OnCreateChild"/>
+								<MenuItem Header="Create Cube"         Click="OnCreateCube"/>
+								<MenuItem Header="Unparent"            Click="OnUnparent"/>
+								<MenuItem Header="Delete"              Click="OnDelete"/>
+							</ContextMenu>
+						</Setter>
+					</Style>
+				</TreeView.Styles>
+
+				<!-- Avalonia 11: TreeDataTemplate -->
+				<TreeView.DataTemplates>
+					<TreeDataTemplate DataType="core:GameObject"
+									  ItemsSource="{Binding Children}">
+						<TextBlock Text="{Binding Name}"/>
+					</TreeDataTemplate>
+				</TreeView.DataTemplates>
+			</TreeView>
+		</Border>
+	</DockPanel>
+</UserControl>

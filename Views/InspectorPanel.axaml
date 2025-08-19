@@ -1,0 +1,15 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.InspectorPanel">
+  <DockPanel>
+    <!-- Header with Lock toggle -->
+    <DockPanel DockPanel.Dock="Top" Margin="8,6">
+      <ToggleButton x:Name="LockToggle" Content="Lock" DockPanel.Dock="Right"/>
+      <TextBlock Text="Inspector" FontSize="14"/>
+    </DockPanel>
+
+    <ScrollViewer Margin="6">
+      <StackPanel x:Name="Host" Spacing="12"/>
+    </ScrollViewer>
+  </DockPanel>
+</UserControl>

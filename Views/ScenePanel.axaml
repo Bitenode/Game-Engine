@@ -1,0 +1,78 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.ScenePanel">
+
+	<DockPanel>
+
+		<!-- Top toolbar -->
+		<Border DockPanel.Dock="Top"
+				Margin="8"
+				Padding="8"
+				CornerRadius="6"
+				Background="#26282B">
+			<StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+
+				<TextBlock Text="Tool" Foreground="#DCE0E6" VerticalAlignment="Center"/>
+
+				<!-- Tool mode radios (Hand / Move / Rotate / Scale) -->
+				<RadioButton Content="Hand"
+							 GroupName="tool"
+							 Foreground="#DCE0E6"
+							 IsChecked="{Binding ElementName=Scene, Path=Tool,
+                                         Converter={StaticResource EnumEq},
+                                         ConverterParameter=Hand}" />
+				<RadioButton Content="Move"
+							 GroupName="tool"
+							 Foreground="#DCE0E6"
+							 IsChecked="{Binding ElementName=Scene, Path=Tool,
+                                         Converter={StaticResource EnumEq},
+                                         ConverterParameter=Move}" />
+				<RadioButton Content="Rotate"
+							 GroupName="tool"
+							 Foreground="#DCE0E6"
+							 IsChecked="{Binding ElementName=Scene, Path=Tool,
+                                         Converter={StaticResource EnumEq},
+                                         ConverterParameter=Rotate}" />
+				<RadioButton Content="Scale"
+							 GroupName="tool"
+							 Foreground="#DCE0E6"
+							 IsChecked="{Binding ElementName=Scene, Path=Tool,
+                                         Converter={StaticResource EnumEq},
+                                         ConverterParameter=Scale}" />
+
+				<ToggleButton Content="AA ×2"
+                ToolTip.Tip="Supersample render at 2× and downsample (smoother edges)"
+                IsChecked="{Binding ElementName=scene, Path=Supersample2x, Mode=TwoWay}" />
+
+				<Separator Margin="5,0"/>
+
+				<!-- View toggles (bind to your SceneView bool properties) -->
+				<CheckBox Content="Grid"
+						  Foreground="#DCE0E6"
+						  IsChecked="{Binding ElementName=Scene, Path=ShowGrid}" />
+				<CheckBox Content="Wire"
+						  Foreground="#DCE0E6"
+						  IsChecked="{Binding ElementName=Scene, Path=ShowWire}" />
+				<CheckBox Content="Light"
+						  Foreground="#DCE0E6"
+						  IsChecked="{Binding ElementName=Scene, Path=ShowLight}" />
+				<CheckBox Content="2D"
+						  Foreground="#DCE0E6"
+						  IsChecked="{Binding ElementName=Scene, Path=Is2D}" />
+				
+				
+			</StackPanel>
+		</Border>
+
+		<!-- Scene viewport -->
+		<Border Margin="8"
+				BorderThickness="1"
+				CornerRadius="6"
+				BorderBrush="#3A3D41"
+				ClipToBounds="True">
+			<views:SceneView x:Name="Scene" Focusable="True"/>
+		</Border>
+
+	</DockPanel>
+</UserControl>

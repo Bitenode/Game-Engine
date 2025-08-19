@@ -1,0 +1,12 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.ConsolePanel">
+  <DockPanel>
+    <TextBlock DockPanel.Dock="Top" Text="Console" FontSize="14" Margin="8,6" />
+    <Grid Margin="6" RowDefinitions="*,Auto" ColumnDefinitions="*,Auto">
+      <TextBox x:Name="Log" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"/>
+      <TextBox x:Name="Input" Grid.Row="1" Grid.Column="0" Watermark="> enter command..."/>
+      <Button Grid.Row="1" Grid.Column="1" Content="Run" Margin="6,0,0,0" />
+    </Grid>
+  </DockPanel>
+</UserControl>

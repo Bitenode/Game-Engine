@@ -1,0 +1,182 @@
+﻿using System;
+using System.Collections.Generic;
+using Avalonia.Controls;
+using Game_Engine.Docking;
+using Game_Engine.Views;
+
+namespace Game_Engine;
+
+public partial class MainWindow : Window
+{
+    private DockManager? _dock;
+
+    // Tracks how many of each tab we’ve created (for numbering)
+    private readonly Dictionary<string, int> _counts = new();
+
+    // Map panel type -> (Base title, default region, factory)
+    private Dictionary<Type, (string Base, DockRegion Region, Func<Control> Factory)> _registry = null!;
+
+    public MainWindow()
+    {
+        InitializeComponent();
+
+        _dock = new DockManager(LeftTabs, CenterTabs, RightTabs, BottomLeftTabs, BottomTabs);
+
+        // Register how to create each panel, and where it lives by default
+        _registry = new()
+        {
+            [typeof(HierarchyPanel)] = ("Hierarchy", DockRegion.Left, () => new HierarchyPanel()),
+            [typeof(ScenePanel)] = ("Scene", DockRegion.Center, () => new ScenePanel()),
+            [typeof(InspectorPanel)] = ("Inspector", DockRegion.Right, () => new InspectorPanel()),
+            [typeof(ProjectPanel)] = ("Project", DockRegion.BottomLeft, () => new ProjectPanel()),
+            [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
+        };
+
+        // Defaults
+        _counts.Clear();
+        AddInitialPanels();
+
+        // Context menus for initial tabs
+        AddTabMenus(LeftTabs);
+        AddTabMenus(CenterTabs);
+        AddTabMenus(RightTabs);
+        AddTabMenus(BottomLeftTabs);
+        AddTabMenus(BottomTabs);
+
+        // Reset Layout menu
+        if (this.FindControl<MenuItem>("ResetLayoutMenu") is { } reset)
+            reset.Click += (_, __) => ResetLayout();
+
+        // Optional: Window ▸ New … menu items (only if you added them in XAML)
+        void BindNew(string name, Type t, DockRegion r)
+        {
+            if (this.FindControl<MenuItem>(name) is { } mi)
+                mi.Click += (_, __) => AddPanel(t, r);
+        }
+        BindNew("NewSceneTab", typeof(ScenePanel), DockRegion.Center);
+        BindNew("NewInspectorTab", typeof(InspectorPanel), DockRegion.Right);
+        BindNew("NewHierarchyTab", typeof(HierarchyPanel), DockRegion.Left);
+        BindNew("NewProjectTab", typeof(ProjectPanel), DockRegion.BottomLeft);
+        BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
+    }
+
+    private void AddInitialPanels()
+    {
+        AddPanel(typeof(HierarchyPanel));
+        AddPanel(typeof(ScenePanel));
+        AddPanel(typeof(InspectorPanel));
+        AddPanel(typeof(ProjectPanel));
+        AddPanel(typeof(ConsolePanel));
+    }
+
+    private string NextTitle(string baseTitle)
+    {
+        if (!_counts.TryGetValue(baseTitle, out var n)) n = 0;
+        n++;
+        _counts[baseTitle] = n;
+        return n == 1 ? baseTitle : $"{baseTitle} {n}";
+    }
+
+    // Spawns a new panel (optionally overriding the target region).
+    private Control AddPanel(Type panelType, DockRegion? regionOverride = null)
+    {
+        var (baseTitle, defaultRegion, factory) = _registry[panelType];
+        var ctrl = factory();
+        var title = NextTitle(baseTitle);
+        var region = regionOverride ?? defaultRegion;
+        _dock!.Add(ctrl, title, region);
+
+        // Ensure the new tab also has a context menu
+        AddTabMenus(HostOf(region));
+        return ctrl;
+    }
+
+    // Map region -> its TabControl
+    private TabControl HostOf(DockRegion r) => r switch
+    {
+        DockRegion.Left => LeftTabs,
+        DockRegion.Center => CenterTabs,
+        DockRegion.Right => RightTabs,
+        DockRegion.BottomLeft => BottomLeftTabs,
+        _ => BottomTabs
+    };
+
+    // Which region is a given TabControl?
+    private DockRegion RegionOfHost(TabControl host)
+    {
+        if (host == LeftTabs) return DockRegion.Left;
+        if (host == CenterTabs) return DockRegion.Center;
+        if (host == RightTabs) return DockRegion.Right;
+        if (host == BottomLeftTabs) return DockRegion.BottomLeft;
+        return DockRegion.Bottom;
+    }
+
+    private void ResetLayout()
+    {
+        if (_dock is null) return;
+
+        LeftTabs.Items.Clear();
+        CenterTabs.Items.Clear();
+        RightTabs.Items.Clear();
+        BottomLeftTabs.Items.Clear();
+        BottomTabs.Items.Clear();
+
+        _dock = new DockManager(LeftTabs, CenterTabs, RightTabs, BottomLeftTabs, BottomTabs);
+
+        _counts.Clear();
+        AddInitialPanels();
+
+        AddTabMenus(LeftTabs);
+        AddTabMenus(CenterTabs);
+        AddTabMenus(RightTabs);
+        AddTabMenus(BottomLeftTabs);
+        AddTabMenus(BottomTabs);
+    }
+
+    private void AddTabMenus(TabControl tc)
+    {
+        foreach (var obj in tc.Items)
+        {
+            if (obj is not TabItem tab || tab.ContextMenu != null) continue;
+            if (tab.Content is not Control content || _dock is null) continue;
+
+            var t = content.GetType();
+            _registry.TryGetValue(t, out var info);
+            var hostRegion = RegionOfHost(tc);
+
+            var items = new List<object>
+            {
+                //  New tab for this panel type
+                // Only shown if we know how to create this type
+            };
+
+            if (info.Factory is not null)
+            {
+                items.Add(Make($"New {info.Base} Tab", () => AddPanel(t, hostRegion)));
+                items.Add(new Separator());
+            }
+
+            // Standard actions
+            items.Add(Make("_Close", () => _dock!.Close(content)));
+            items.Add(new Separator());
+            items.Add(Make("_Float", () => _dock!.Float(content)));
+            items.Add(new Separator());
+            items.Add(Make("Dock _Left", () => _dock!.DockTo(content, DockRegion.Left)));
+            items.Add(Make("Dock _Center", () => _dock!.DockTo(content, DockRegion.Center)));
+            items.Add(Make("Dock _Right", () => _dock!.DockTo(content, DockRegion.Right)));
+            items.Add(Make("Dock _Bottom Left", () => _dock!.DockTo(content, DockRegion.BottomLeft)));
+            items.Add(Make("Dock _Bottom", () => _dock!.DockTo(content, DockRegion.Bottom)));
+
+            // Important: Items is read-only in Avalonia 11; use ItemsSource
+            tab.ContextMenu = new ContextMenu { ItemsSource = items };
+        }
+
+        static MenuItem Make(string header, Action onClick)
+        {
+            var mi = new MenuItem { Header = header };
+            mi.Click += (_, __) => onClick();
+            return mi;
+        }
+    }
+
+}
