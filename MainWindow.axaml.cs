@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Game_Engine.Core;
 using Game_Engine.Docking;
 using Game_Engine.Views;
 
@@ -47,7 +49,7 @@ public partial class MainWindow : Window
         if (this.FindControl<MenuItem>("ResetLayoutMenu") is { } reset)
             reset.Click += (_, __) => ResetLayout();
 
-        // Optional: Window ▸ New … menu items (only if you added them in XAML)
+        // Window ▸ New … menu items
         void BindNew(string name, Type t, DockRegion r)
         {
             if (this.FindControl<MenuItem>(name) is { } mi)
@@ -177,6 +179,46 @@ public partial class MainWindow : Window
             mi.Click += (_, __) => onClick();
             return mi;
         }
+
+        // New Project
+        async void OnNewProjectClicked(object? s, RoutedEventArgs e)
+        {
+            var dlg = new OpenFolderDialog { Title = "Choose parent folder" };
+            var parent = await dlg.ShowAsync(this);
+            if (string.IsNullOrWhiteSpace(parent)) return;
+
+            // You’d gather a name from a small dialog; here’s a quick default:
+            var name = "My Game";
+            try
+            {
+                ProjectService.CreateNew(parent, name, openAfterCreate: true);
+            }
+            catch (Exception ex)
+            {
+              //  await MessageBox.Show(this, $"Failed to create project:\n{ex.Message}");
+            }
+        }
+
+        // Open Project
+        async void OnOpenProjectClicked(object? s, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title = "Open project.json",
+                AllowMultiple = false,
+                Filters = { new FileDialogFilter { Name = "Project", Extensions = { "json" } } }
+            };
+            var files = await dlg.ShowAsync(this);
+            if (files is { Length: > 0 })
+            {
+                try { ProjectService.Open(files[0]); }
+                catch (Exception ex)
+                {
+              //      await MessageBox.Show(this, $"Failed to open project:\n{ex.Message}");
+                }
+            }
+        }
+
     }
 
 }
