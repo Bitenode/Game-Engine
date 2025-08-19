@@ -39,3 +39,6 @@ build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
 
 [C:/Users/Bitenode/Desktop/Github Engine/Game-Engine/Views/ScenePanel.axaml]
 build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
+
+[C:/Users/Bitenode/Desktop/Github Engine/Game-Engine/Views/ScriptEditorWindow.axaml]
+build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml

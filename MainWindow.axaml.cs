@@ -1,7 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Game_Engine.Core;
 using Game_Engine.Docking;
 using Game_Engine.Views;
@@ -24,7 +28,7 @@ public partial class MainWindow : Window
 
         _dock = new DockManager(LeftTabs, CenterTabs, RightTabs, BottomLeftTabs, BottomTabs);
 
-        // Register how to create each panel, and where it lives by default
+        // Register panels
         _registry = new()
         {
             [typeof(HierarchyPanel)] = ("Hierarchy", DockRegion.Left, () => new HierarchyPanel()),
@@ -45,11 +49,11 @@ public partial class MainWindow : Window
         AddTabMenus(BottomLeftTabs);
         AddTabMenus(BottomTabs);
 
-        // Reset Layout menu
+        // Window ▸ Reset Layout
         if (this.FindControl<MenuItem>("ResetLayoutMenu") is { } reset)
             reset.Click += (_, __) => ResetLayout();
 
-        // Window ▸ New … menu items
+        // Window ▸ New …
         void BindNew(string name, Type t, DockRegion r)
         {
             if (this.FindControl<MenuItem>(name) is { } mi)
@@ -60,7 +64,23 @@ public partial class MainWindow : Window
         BindNew("NewHierarchyTab", typeof(HierarchyPanel), DockRegion.Left);
         BindNew("NewProjectTab", typeof(ProjectPanel), DockRegion.BottomLeft);
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
+
+        // ----- Project menu (items are named in XAML) -----
+        MI_NewProject.Click += OnNewProject;
+        MI_OpenProject.Click += OnOpenProject;
+        MI_OpenFolder.Click += OnOpenFolder;
+        MI_CloseProject.Click += (_, __) => { ProjectService.Close(); RefreshProjectUI(); };
+        MI_RevealInExplorer.Click += (_, __) => RevealInExplorer();
+
+        // Project lifecycle → refresh title/enablement
+        ProjectService.ProjectOpened += RefreshProjectUI;
+        ProjectService.ProjectClosed += RefreshProjectUI;
+        ProjectService.Changed += RefreshProjectUI;
+
+        RefreshProjectUI();
     }
+
+    // ---------- layout / tabs ----------
 
     private void AddInitialPanels()
     {
@@ -79,7 +99,6 @@ public partial class MainWindow : Window
         return n == 1 ? baseTitle : $"{baseTitle} {n}";
     }
 
-    // Spawns a new panel (optionally overriding the target region).
     private Control AddPanel(Type panelType, DockRegion? regionOverride = null)
     {
         var (baseTitle, defaultRegion, factory) = _registry[panelType];
@@ -88,12 +107,10 @@ public partial class MainWindow : Window
         var region = regionOverride ?? defaultRegion;
         _dock!.Add(ctrl, title, region);
 
-        // Ensure the new tab also has a context menu
         AddTabMenus(HostOf(region));
         return ctrl;
     }
 
-    // Map region -> its TabControl
     private TabControl HostOf(DockRegion r) => r switch
     {
         DockRegion.Left => LeftTabs,
@@ -103,7 +120,6 @@ public partial class MainWindow : Window
         _ => BottomTabs
     };
 
-    // Which region is a given TabControl?
     private DockRegion RegionOfHost(TabControl host)
     {
         if (host == LeftTabs) return DockRegion.Left;
@@ -124,7 +140,6 @@ public partial class MainWindow : Window
         BottomTabs.Items.Clear();
 
         _dock = new DockManager(LeftTabs, CenterTabs, RightTabs, BottomLeftTabs, BottomTabs);
-
         _counts.Clear();
         AddInitialPanels();
 
@@ -146,19 +161,13 @@ public partial class MainWindow : Window
             _registry.TryGetValue(t, out var info);
             var hostRegion = RegionOfHost(tc);
 
-            var items = new List<object>
-            {
-                //  New tab for this panel type
-                // Only shown if we know how to create this type
-            };
-
+            var items = new List<object>();
             if (info.Factory is not null)
             {
                 items.Add(Make($"New {info.Base} Tab", () => AddPanel(t, hostRegion)));
                 items.Add(new Separator());
             }
 
-            // Standard actions
             items.Add(Make("_Close", () => _dock!.Close(content)));
             items.Add(new Separator());
             items.Add(Make("_Float", () => _dock!.Float(content)));
@@ -169,7 +178,6 @@ public partial class MainWindow : Window
             items.Add(Make("Dock _Bottom Left", () => _dock!.DockTo(content, DockRegion.BottomLeft)));
             items.Add(Make("Dock _Bottom", () => _dock!.DockTo(content, DockRegion.Bottom)));
 
-            // Important: Items is read-only in Avalonia 11; use ItemsSource
             tab.ContextMenu = new ContextMenu { ItemsSource = items };
         }
 
@@ -179,46 +187,113 @@ public partial class MainWindow : Window
             mi.Click += (_, __) => onClick();
             return mi;
         }
-
-        // New Project
-        async void OnNewProjectClicked(object? s, RoutedEventArgs e)
-        {
-            var dlg = new OpenFolderDialog { Title = "Choose parent folder" };
-            var parent = await dlg.ShowAsync(this);
-            if (string.IsNullOrWhiteSpace(parent)) return;
-
-            // You’d gather a name from a small dialog; here’s a quick default:
-            var name = "My Game";
-            try
-            {
-                ProjectService.CreateNew(parent, name, openAfterCreate: true);
-            }
-            catch (Exception ex)
-            {
-              //  await MessageBox.Show(this, $"Failed to create project:\n{ex.Message}");
-            }
-        }
-
-        // Open Project
-        async void OnOpenProjectClicked(object? s, RoutedEventArgs e)
-        {
-            var dlg = new OpenFileDialog
-            {
-                Title = "Open project.json",
-                AllowMultiple = false,
-                Filters = { new FileDialogFilter { Name = "Project", Extensions = { "json" } } }
-            };
-            var files = await dlg.ShowAsync(this);
-            if (files is { Length: > 0 })
-            {
-                try { ProjectService.Open(files[0]); }
-                catch (Exception ex)
-                {
-              //      await MessageBox.Show(this, $"Failed to open project:\n{ex.Message}");
-                }
-            }
-        }
-
     }
 
+    // ---------- Project menu helpers ----------
+
+    private void RefreshProjectUI()
+    {
+        var has = ProjectService.Current is not null;
+
+        MI_CloseProject.IsEnabled = has;
+        MI_RevealInExplorer.IsEnabled = has;
+
+        Title = ProjectService.Current is { } p
+            ? $"{p.Name} — Game Engine"
+            : "Game Engine";
+    }
+
+    private async void OnNewProject(object? s, RoutedEventArgs e)
+    {
+        var parentDlg = new OpenFolderDialog { Title = "Choose parent folder for new project" };
+        var parent = await parentDlg.ShowAsync(this);
+        if (string.IsNullOrWhiteSpace(parent)) return;
+
+        var nameDlg = new ProjectNameDialog { Title = "New Project" };
+        var name = await nameDlg.ShowDialog<string?>(this);   // <-- ShowDialog<T>
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        try
+        {
+            ProjectService.CreateNew(parent, name, openAfterCreate: true);
+            RefreshProjectUI();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Failed to create project:\n{ex.Message}");
+        }
+    }
+
+    private async void OnOpenProject(object? s, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            AllowMultiple = false,
+            Title = "Open project.json",
+            Filters = { new FileDialogFilter { Name = "Project", Extensions = { "json" } } }
+        };
+        var files = await dlg.ShowAsync(this);
+        if (files is not { Length: > 0 }) return;
+
+        try
+        {
+            ProjectService.Open(files[0]);
+            RefreshProjectUI();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Failed to open project:\n{ex.Message}");
+        }
+    }
+
+    private async void OnOpenFolder(object? s, RoutedEventArgs e)
+    {
+        var dlg = new OpenFolderDialog { Title = "Open project folder (contains project.json)" };
+        var folder = await dlg.ShowAsync(this);
+        if (string.IsNullOrWhiteSpace(folder)) return;
+
+        try
+        {
+            ProjectService.Open(folder);
+            RefreshProjectUI();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Failed to open project:\n{ex.Message}");
+        }
+    }
+
+    private void RevealInExplorer()
+    {
+        var proj = ProjectService.Current;
+        if (proj is null) return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = proj.RootPath,
+                UseShellExecute = true
+            });
+        }
+        catch { /* ignore */ }
+    }
+
+    // super-lightweight error popup
+    private async System.Threading.Tasks.Task ShowError(string message)
+    {
+        var dlg = new Window
+        {
+            Width = 420,
+            Height = 180,
+            Title = "Error",
+            Content = new TextBlock
+            {
+                Text = message,
+                Margin = new Thickness(16),
+                TextWrapping = TextWrapping.Wrap
+            }
+        };
+        await dlg.ShowDialog(this);
+    }
 }

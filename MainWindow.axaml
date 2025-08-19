@@ -6,6 +6,18 @@
 
 		<!-- Menu -->
 		<Menu DockPanel.Dock="Top">
+			<MenuItem Header="_Project">
+				<MenuItem Header="_New Project..."   x:Name="MI_NewProject"/>
+				<MenuItem Header="_Open Project..."  x:Name="MI_OpenProject"/>
+				<MenuItem Header="Open _Folder..."   x:Name="MI_OpenFolder"/>
+				<Separator/>
+				<MenuItem Header="_Close Project"    x:Name="MI_CloseProject"/>
+				<Separator/>
+				<MenuItem Header="Reveal in _Explorer" x:Name="MI_RevealInExplorer"/>
+				<Separator/>
+				<MenuItem Header="_Recent"           x:Name="MI_RecentRoot"/>
+			</MenuItem>
+
 			<MenuItem Header="_Window">
 				<MenuItem Header="Reset Layout" x:Name="ResetLayoutMenu"/>
 				<MenuItem Header="New">
@@ -16,8 +28,8 @@
 					<MenuItem Header="New Console Tab"   x:Name="NewConsoleTab"/>
 				</MenuItem>
 			</MenuItem>
-
 		</Menu>
+
 
 		<!-- Main layout -->
 		<Grid>

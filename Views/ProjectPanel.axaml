@@ -1,14 +1,30 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Game_Engine.Views.ProjectPanel">
-  <DockPanel>
-    <TextBlock DockPanel.Dock="Top" Text="Project" FontSize="14" Margin="8,6" />
-    <Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
-      <ListBox>
-        <ListBoxItem>Assets/Materials/Default.mat</ListBoxItem>
-        <ListBoxItem>Assets/Models/Cube.fbx</ListBoxItem>
-        <ListBoxItem>Assets/Scripts/Player.cs</ListBoxItem>
-      </ListBox>
-    </Border>
-  </DockPanel>
+	<DockPanel>
+		<!-- Header / toolbar -->
+		<StackPanel DockPanel.Dock="Top" Margin="8,6" Spacing="6">
+			<!-- was: Text="{Binding ProjectTitle}" -->
+			<TextBlock x:Name="TitleText" FontSize="14" />
+			<StackPanel Orientation="Horizontal" Spacing="6">
+				<Button x:Name="BtnRefresh" Content="Refresh"/>
+				<Button x:Name="BtnAdd"     Content="+" Width="28" MinHeight="28"
+						ToolTip.Tip="Create or Import"/>
+			</StackPanel>
+		</StackPanel>
+
+		<!-- Tree of project folders/files -->
+		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
+			<TreeView x:Name="Tree"
+					  ItemsSource="{Binding Roots}">
+				<TreeView.ItemTemplate>
+					<TreeDataTemplate ItemsSource="{Binding Children}">
+						<StackPanel Orientation="Horizontal" Spacing="6">
+							<TextBlock Text="{Binding Name}"/>
+						</StackPanel>
+					</TreeDataTemplate>
+				</TreeView.ItemTemplate>
+			</TreeView>
+		</Border>
+	</DockPanel>
 </UserControl>

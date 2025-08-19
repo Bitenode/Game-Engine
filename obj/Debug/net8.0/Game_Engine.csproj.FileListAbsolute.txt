@@ -134,10 +134,10 @@ C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.AssemblyInfoInputs.cache
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.AssemblyInfo.cs
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.csproj.CoreCompileInputs.cache
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.sourcelink.json
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.csproj.CopyComplete
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.dll
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\refint\Game_Engine.dll
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.pdb
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.genruntimeconfig.cache
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\ref\Game_Engine.dll
-C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net8.0\Game_Engine.sourcelink.json

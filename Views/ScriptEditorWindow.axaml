@@ -1,0 +1,27 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Game_Engine.Views.ScriptEditorWindow"
+        Width="900" Height="700"
+        WindowStartupLocation="CenterOwner"
+        Title="Script Editor">
+	<DockPanel>
+		<StackPanel Orientation="Horizontal"
+					DockPanel.Dock="Top"
+					Margin="10"
+					Spacing="8"
+					HorizontalAlignment="Right">
+			<Button x:Name="BtnSave"   Content="Save"     MinWidth="80"/>
+			<Button x:Name="BtnSaveAs" Content="Save As…" MinWidth="90"/>
+			<Button x:Name="BtnReload" Content="Reload"   MinWidth="80"/>
+			<Button x:Name="BtnClose"  Content="Close"    MinWidth="80"/>
+		</StackPanel>
+
+		<TextBox x:Name="Editor"
+				 AcceptsReturn="True"
+				 AcceptsTab="True"
+				 HorizontalAlignment="Stretch"
+				 VerticalAlignment="Stretch"
+				 FontFamily="Consolas,Menlo,monospace"
+				 TextWrapping="NoWrap"/>
+	</DockPanel>
+</Window>
