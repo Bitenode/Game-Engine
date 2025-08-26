@@ -353,21 +353,30 @@ public class NewBehaviour : Behavior
 
     private async void OnTreePointerMoved(object? s, PointerEventArgs e)
     {
-        // Use current pointer point to check mouse button state
         if (e.GetCurrentPoint(Tree).Properties.IsLeftButtonPressed && _pressNode != null)
         {
             var p = e.GetPosition(Tree);
             var dx = p.X - _pressPt.X;
             var dy = p.Y - _pressPt.Y;
-            if ((dx * dx + dy * dy) > 9) // ~3px threshold
+            if ((dx * dx + dy * dy) > 9) // ~3px
             {
+                var path = _pressNode.FullPath;
                 var data = new DataObject();
-                data.Set("project-node-path", _pressNode.FullPath);
-                await DragDrop.DoDragDrop(e, data, DragDropEffects.Move);
+
+                // keep your internal key (used for tree-to-tree moves)
+                data.Set("project-node-path", path);
+
+                // ALSO provide standard FileNames when it’s a file
+                if (File.Exists(path))
+                    data.Set(DataFormats.FileNames, new[] { path });
+
+                // IMPORTANT: allow both Copy and Move so external targets (Inspector) can accept it
+                await DragDrop.DoDragDrop(e, data, DragDropEffects.Copy | DragDropEffects.Move);
                 _pressNode = null;
             }
         }
     }
+
 
     private void OnTreeDragOver(object? s, DragEventArgs e)
     {

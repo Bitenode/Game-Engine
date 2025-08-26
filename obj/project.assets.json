@@ -1306,7 +1306,8 @@
       "Avalonia >= 11.*",
       "Avalonia.Desktop >= 11.*",
       "Avalonia.Fonts.Inter >= 11.*",
-      "Avalonia.Themes.Fluent >= 11.*"
+      "Avalonia.Themes.Fluent >= 11.*",
+      "SkiaSharp >= 2.88.9"
     ]
   },
   "packageFolders": {
@@ -1369,6 +1370,10 @@
           "Avalonia.Themes.Fluent": {
             "target": "Package",
             "version": "[11.*, )"
+          },
+          "SkiaSharp": {
+            "target": "Package",
+            "version": "[2.88.9, )"
           }
         },
         "imports": [

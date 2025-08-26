@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Reflection;
 using System.Collections.Generic;
@@ -13,6 +13,14 @@ using System.Globalization;
 using Game_Engine.Core;
 using CoreTransform = Game_Engine.Core.Transform;
 using CoreVector3 = Game_Engine.Core.Vector3;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using Avalonia.VisualTree;
+using System.Runtime.InteropServices;
+using System.IO;
+using Avalonia.Platform.Storage;
 
 namespace Game_Engine.Views;
 
@@ -53,6 +61,8 @@ public partial class InspectorPanel : UserControl
 {
     private GameObject? _target;   // what THIS inspector is showing
     private bool _isLocked;        // lock state for THIS inspector
+    private Window? OwnerWindow => this.GetVisualRoot() as Window;
+
 
     // ---------- Undo snapshots (begin/commit) ----------
     readonly Dictionary<(object target, PropertyInfo prop), object?> _editStart = new();
@@ -64,6 +74,64 @@ public partial class InspectorPanel : UserControl
             return new CoreVector3(vv.X, vv.Y, vv.Z);
         return v; // structs, enums, numbers, strings, Mesh refs
     }
+
+    // Try to create your engine texture from a file path using a few common patterns.
+    // If nothing matches, we return null; the Inspector will still show a preview.
+    private static Game_Engine.Core.Texture2D? TryCreateEngineTextureFromPath(string path, Bitmap? bmp)
+    {
+        var t = typeof(Game_Engine.Core.Texture2D);
+
+        // 1) static FromFile(string)
+        var m = t.GetMethod("FromFile", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            binder: null, types: new[] { typeof(string) }, modifiers: null);
+        if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
+
+        // 2) static Load(string)
+        m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                        binder: null, types: new[] { typeof(string) }, modifiers: null);
+        if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
+
+        // 3) ctor(string)
+        var ctorPath = t.GetConstructor(new[] { typeof(string) });
+        if (ctorPath != null) return (Game_Engine.Core.Texture2D?)ctorPath.Invoke(new object?[] { path });
+
+        // 4) static FromBytes(byte[])
+        if (bmp != null)
+        {
+            using var ms = new MemoryStream();
+            bmp.Save(ms); // PNG-encoded bytes
+            var bytes = ms.ToArray();
+
+            m = t.GetMethod("FromBytes", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
+            if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
+
+            // 5) static Load(byte[])
+            m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
+            if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
+        }
+
+        // No compatible API found
+        return null;
+    }
+
+    // Load preview (Avalonia Bitmap) and try to build an engine Texture2D via the helper above.
+    // No Bitmap.Lock() anywhere — purely path/stream based.
+    private static (Game_Engine.Core.Texture2D? tex, IImage? preview) TryLoadTexture2D(string path)
+    {
+        try
+        {
+            var bmp = new Bitmap(path);  // preview for the UI
+            var tex = TryCreateEngineTextureFromPath(path, bmp);
+            return (tex, bmp);
+        }
+        catch
+        {
+            return (null, null);
+        }
+    }
+
 
     static bool ValueEquals(Type t, object? a, object? b)
     {
@@ -249,7 +317,7 @@ public partial class InspectorPanel : UserControl
             UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
         });
         return tb;
-    }
+    } 
 
     // A Vector3 editor that records a single undo step against property 'p' on owner 'owner'
     Control Vector3EditorWithUndo(object owner, PropertyInfo p)
@@ -339,6 +407,233 @@ public partial class InspectorPanel : UserControl
             Child = outer
         };
     }
+
+
+
+    Control MaterialEditor(object owner, PropertyInfo prop)
+    {
+        var mat = (Material?)prop.GetValue(owner);
+        if (mat is null) { mat = new Material(); prop.SetValue(owner, mat); }
+
+        // UI-only previews we keep alive here (not stored on MaterialTexture).
+        // This prevents the renderer from ever seeing/locking them via reflection.
+        var previews = new Dictionary<MaterialTexture, IImage>();
+
+        var box = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8) };
+        var root = new StackPanel { Spacing = 8 };
+        box.Child = root;
+
+        // We build rows into this panel
+        var slotsPanel = new StackPanel { Spacing = 4 };
+
+        // ---------------- Header ----------------
+        var hdr = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        hdr.Children.Add(new TextBlock { Text = "Material", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center });
+
+        var btnImport = new Button { Content = "Import…" };
+        btnImport.Click += async (_, __) =>
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import textures",
+                AllowMultiple = true,
+                Filters =
+            {
+                new FileDialogFilter { Name = "Images", Extensions = { "png","jpg","jpeg","bmp" } },
+                new FileDialogFilter { Name = "All files", Extensions = { "*" } }
+            }
+            };
+            var files = await dlg.ShowAsync(OwnerWindow);
+            if (files is { Length: > 0 }) AddFiles(files);
+        };
+        hdr.Children.Add(btnImport);
+
+        var btnClear = new Button { Content = "Clear" };
+        btnClear.Click += (_, __) =>
+        {
+            // dispose previews we created for the UI
+            foreach (var img in previews.Values)
+                (img as IDisposable)?.Dispose();
+            previews.Clear();
+
+            mat.Textures.Clear();
+            SceneService.NotifyChanged();
+            Rebuild();
+        };
+        hdr.Children.Add(btnClear);
+
+        root.Children.Add(hdr);
+
+        // ---------------- Drop area ----------------
+        var drop = new Border
+        {
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6),
+            Background = Brushes.Transparent,
+            Child = new TextBlock { Text = "Drop textures here (png/jpg/bmp)…", Opacity = .7 }
+        };
+        DragDrop.SetAllowDrop(drop, true);
+
+        drop.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+        {
+            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            {
+                e.DragEffects = DragDropEffects.Copy;
+                e.Handled = true;
+            }
+        });
+
+        drop.AddHandler(DragDrop.DropEvent, async (s, e) =>
+        {
+            var paths = new List<string>();
+
+            // External drags (paths as strings)
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var names = e.Data.GetFileNames();
+                if (names != null) paths.AddRange(names);
+            }
+
+            // Internal drags (Project panel) – IStorageItem(s)
+            if (e.Data.Contains(DataFormats.Files) && e.Data.Get(DataFormats.Files) is IEnumerable<IStorageItem> items)
+            {
+                foreach (var it in items)
+                {
+                    if (it is IStorageFile f)
+                    {
+                        var local = f.TryGetLocalPath();
+                        if (!string.IsNullOrWhiteSpace(local))
+                        {
+                            paths.Add(local!);
+                        }
+                        else
+                        {
+                            // copy to temp so we have a stable local path
+                            var tmpDir = ProjectService.Current?.TempPath ?? Path.GetTempPath();
+                            Directory.CreateDirectory(tmpDir);
+                            var dst = Path.Combine(tmpDir, f.Name);
+                            await using var src = await f.OpenReadAsync();
+                            await using var outFs = File.Create(dst);
+                            await src.CopyToAsync(outFs);
+                            paths.Add(dst);
+                        }
+                    }
+                }
+            }
+
+            if (paths.Count > 0)
+            {
+                AddFiles(paths.Where(File.Exists));
+                e.Handled = true;
+            }
+        });
+
+        root.Children.Add(drop);
+
+        // slots list
+        root.Children.Add(slotsPanel);
+
+        // -------- Row builder
+        Control SlotRow(MaterialTexture slot)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+
+            if (previews.TryGetValue(slot, out var img))
+                row.Children.Add(new Image { Source = img, Width = 32, Height = 32, Stretch = Stretch.UniformToFill });
+            else
+                row.Children.Add(new Border { Width = 32, Height = 32, Background = Brushes.Gray, Opacity = .25, CornerRadius = new CornerRadius(4) });
+
+            row.Children.Add(new TextBlock { Text = slot.Name ?? "(texture)", VerticalAlignment = VerticalAlignment.Center });
+
+            var up = new Button { Content = "↑" };
+            up.Click += (_, __) =>
+            {
+                int i = mat.Textures.IndexOf(slot);
+                if (i > 0)
+                {
+                    (mat.Textures[i - 1], mat.Textures[i]) = (mat.Textures[i], mat.Textures[i - 1]);
+                    SceneService.NotifyChanged();
+                    Rebuild();
+                }
+            };
+            row.Children.Add(up);
+
+            var down = new Button { Content = "↓" };
+            down.Click += (_, __) =>
+            {
+                int i = mat.Textures.IndexOf(slot);
+                if (i >= 0 && i < mat.Textures.Count - 1)
+                {
+                    (mat.Textures[i + 1], mat.Textures[i]) = (mat.Textures[i], mat.Textures[i + 1]);
+                    SceneService.NotifyChanged();
+                    Rebuild();
+                }
+            };
+            row.Children.Add(down);
+
+            var remove = new Button { Content = "Remove" };
+            remove.Click += (_, __) =>
+            {
+                // dispose UI preview for this slot
+                if (previews.TryGetValue(slot, out var p))
+                {
+                    (p as IDisposable)?.Dispose();
+                    previews.Remove(slot);
+                }
+
+                mat.Textures.Remove(slot);
+                SceneService.NotifyChanged();
+                Rebuild();
+            };
+            row.Children.Add(remove);
+
+            return row;
+        }
+
+        void Rebuild()
+        {
+            slotsPanel.Children.Clear();
+            foreach (var s in mat.Textures)
+                slotsPanel.Children.Add(SlotRow(s));
+        }
+
+        void AddFiles(IEnumerable<string> files)
+        {
+            foreach (var f in files)
+            {
+                var ext = Path.GetExtension(f).ToLowerInvariant();
+                if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp")) continue;
+
+                // Build the engine texture if possible (reflection helpers you already have)
+                var (tex, previewBmp) = TryLoadTexture2D(f);
+
+                var slot = new MaterialTexture
+                {
+                    Name = Path.GetFileName(f),
+                    Texture = tex,      // engine-side; SceneView will prefer this
+                                        // NOTE: we intentionally DO NOT set any IImage property on the slot
+                                        // (no Preview/Image/Bitmap here) — keeps renderer from touching it.
+                };
+
+                mat.Textures.Add(slot);
+
+                // keep the UI preview alive here only
+                if (previewBmp is not null)
+                    previews[slot] = previewBmp;
+            }
+
+            SceneService.NotifyChanged();
+            Rebuild();
+        }
+
+        Rebuild();
+        return box;
+    }
+
+
+
+
 
     Control PropertyEditor(object target, PropertyInfo p)
     {
@@ -458,10 +753,15 @@ public partial class InspectorPanel : UserControl
             return tb;
         }
 
+        if (t == typeof(Material))
+            return MaterialEditor(target, p);
+
         // ---- fallback: read-only type name -----------------------------------
         return new TextBlock { Text = t.Name, Opacity = 0.6 };
     }
 }
+
+
 
 // Helper: place Controls in Grid cells (Avalonia 11: constrain to Control)
 static class GridPos

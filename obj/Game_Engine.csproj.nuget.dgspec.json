@@ -60,6 +60,10 @@
             "Avalonia.Themes.Fluent": {
               "target": "Package",
               "version": "[11.*, )"
+            },
+            "SkiaSharp": {
+              "target": "Package",
+              "version": "[2.88.9, )"
             }
           },
           "imports": [

@@ -11,7 +11,8 @@
           "Avalonia": "11.3.4",
           "Avalonia.Desktop": "11.3.4",
           "Avalonia.Fonts.Inter": "11.3.4",
-          "Avalonia.Themes.Fluent": "11.3.4"
+          "Avalonia.Themes.Fluent": "11.3.4",
+          "SkiaSharp": "2.88.9"
         },
         "runtime": {
           "Game_Engine.dll": {}
