@@ -17,6 +17,7 @@
 							<ContextMenu>
 								<MenuItem Header="Create Empty Child"  Click="OnCreateChild"/>
 								<MenuItem Header="Create Cube"         Click="OnCreateCube"/>
+								<MenuItem Header="Import Model"         Click="OnImportModel"/>
 								<MenuItem Header="Unparent"            Click="OnUnparent"/>
 								<MenuItem Header="Delete"              Click="OnDelete"/>
 							</ContextMenu>

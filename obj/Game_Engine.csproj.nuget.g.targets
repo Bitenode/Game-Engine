@@ -5,5 +5,6 @@
     <Import Project="$(NuGetPackageRoot)harfbuzzsharp.nativeassets.webassembly\8.3.1.1\buildTransitive\netstandard1.0\HarfBuzzSharp.NativeAssets.WebAssembly.targets" Condition="Exists('$(NuGetPackageRoot)harfbuzzsharp.nativeassets.webassembly\8.3.1.1\buildTransitive\netstandard1.0\HarfBuzzSharp.NativeAssets.WebAssembly.targets')" />
     <Import Project="$(NuGetPackageRoot)avalonia.buildservices\0.0.31\buildTransitive\Avalonia.BuildServices.targets" Condition="Exists('$(NuGetPackageRoot)avalonia.buildservices\0.0.31\buildTransitive\Avalonia.BuildServices.targets')" />
     <Import Project="$(NuGetPackageRoot)avalonia\11.3.4\buildTransitive\Avalonia.targets" Condition="Exists('$(NuGetPackageRoot)avalonia\11.3.4\buildTransitive\Avalonia.targets')" />
+    <Import Project="$(NuGetPackageRoot)assimpnet\4.1.0\build\AssimpNet.targets" Condition="Exists('$(NuGetPackageRoot)assimpnet\4.1.0\build\AssimpNet.targets')" />
   </ImportGroup>
 </Project>

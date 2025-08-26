@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
+using Game_Engine.Core.Importers;
 
 namespace Game_Engine.Views;
 
@@ -115,8 +116,39 @@ public partial class HierarchyPanel : UserControl
         Game_Engine.Core.SceneService.NotifyChanged();
     }
 
-    
 
+    private async void OnImportModel(object? sender, RoutedEventArgs e)
+    {
+        var win = this.GetVisualRoot() as Window;
+        var dlg = new OpenFileDialog
+        {
+            Title = "Import model",
+            AllowMultiple = false,
+            Filters =
+        {
+            new FileDialogFilter { Name="Models", Extensions = { "fbx","obj","gltf","glb","dae" } },
+            new FileDialogFilter { Name="All files", Extensions = { "*" } }
+        }
+        };
+        var files = await dlg.ShowAsync(win);
+        if (files is null || files.Length == 0) return;
+
+        try
+        {
+            var go = ModelImporter.ImportModel(files[0]);
+            // Put it under the currently right-clicked target if there is one, else at root.
+            if (_contextTarget is null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
+
+            // handy defaults
+            SelectionService.Set(go);
+            SceneService.NotifyChanged();
+            Game_Engine.Core.Log.Success($"Imported model: {files[0]}");
+        }
+        catch (Exception ex)
+        {
+            Game_Engine.Core.Log.Error(ex, "Model import failed");
+        }
+    }
 
 
 

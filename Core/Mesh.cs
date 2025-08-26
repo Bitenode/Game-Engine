@@ -11,6 +11,7 @@ public sealed class Mesh
     // --- Public data ---------------------------------------------------------
     public SN.Vector3[] Vertices { get; }
     public SN.Vector3[]? Normals { get; set; }
+    public System.Numerics.Vector2[]? UVs { get; set; }
     public int[] LineIndices { get; }   // pairs (a,b)
     public int[] TriIndices { get; }   // triples (a,b,c)
 
