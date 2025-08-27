@@ -11,6 +11,15 @@
 				<MenuItem Header="_Open Project..."  x:Name="MI_OpenProject"/>
 				<MenuItem Header="Open _Folder..."   x:Name="MI_OpenFolder"/>
 				<Separator/>
+				<MenuItem Header="_Save Scene"
+						  x:Name="MI_SaveScene"
+						  Click="OnMenuSaveScene_Click" />
+
+				<MenuItem Header="_Load Scene"
+						  x:Name="MI_LoadScene"
+						  Click="OnMenuLoadScene_Click" />
+
+				<Separator/>
 				<MenuItem Header="_Close Project"    x:Name="MI_CloseProject"/>
 				<Separator/>
 				<MenuItem Header="Reveal in _Explorer" x:Name="MI_RevealInExplorer"/>

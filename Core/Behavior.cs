@@ -3,10 +3,10 @@
 /// Base class for attachable scripts/components.
 public abstract class Behavior : ObservableObject
 {
-    bool _enabled = true;
-    public bool Enabled { get => _enabled; set { if (Set(ref _enabled, value)) SceneService.NotifyChanged(); } }
+    [Persist] bool _enabled = true;
+    [Persist] public bool Enabled { get => _enabled; set { if (Set(ref _enabled, value)) SceneService.NotifyChanged(); } }
 
-    public GameObject? gameObject { get; internal set; }
+    [Persist] public GameObject? gameObject { get; internal set; }
 
     public virtual void OnEnable() { }
     public virtual void OnDisable() { }

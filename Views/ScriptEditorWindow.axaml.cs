@@ -16,7 +16,7 @@ public partial class ScriptEditorWindow : Window
         _path = path;
         InitializeComponent();
 
-        Title = $"Script Editor — {Path.GetFileName(_path)}";
+        Title = $"Script Editor v1 — {Path.GetFileName(_path)}";
 
         // Wire UI
         BtnSave.Click += OnSave;

@@ -33,12 +33,9 @@ namespace Game_Engine.Core
         /// <summary>Signal listeners that something in the scene changed.</summary>
         public static void NotifyChanged() => Changed?.Invoke();
 
-        /// <summary>Alias used throughout the UI/render code.</summary>
-        public static void Touch() => Changed?.Invoke();
-
         public static event Action? Changed;
 
-        // Optional convenience helpers (all notify)
+        // convenience helpers (all notify)
         public static void Add(GameObject go)
         {
             _root.Add(go);
@@ -52,11 +49,37 @@ namespace Game_Engine.Core
             return removed;
         }
 
+        public static void ReplaceAll(IEnumerable<GameObject> items)
+        {
+            _root.CollectionChanged -= OnRootChanged;
+            _root.Clear();
+            foreach (var go in items) _root.Add(go);
+            _root.CollectionChanged += OnRootChanged;
+            Changed?.Invoke();
+        }
+
         public static void Clear()
         {
             _root.Clear();
             Changed?.Invoke();
         }
+
+        /// <summary>Save current root to a JSON scene file.</summary>
+        public static void SaveToFile(string path)
+        {
+            SceneSerialization.SaveScene(path, Root);
+        }
+
+        /// <summary>Load a JSON scene file and replace the current root.</summary>
+        public static void LoadFromFile(string path)
+        {
+            var loaded = SceneSerialization.LoadScene(path);
+            SceneService.ReplaceAll(loaded);
+            //AttachRoot(new ObservableCollection<GameObject>(list));
+            NotifyChanged();
+        }
+
+
 
         private static void OnRootChanged(object? sender, NotifyCollectionChangedEventArgs e)
             => Changed?.Invoke();

@@ -6,6 +6,9 @@ using SN = System.Numerics;
 using Assimp;
 using Game_Engine.Core;
 
+using CoreVec3 = Game_Engine.Core.Vector3;
+using Avalonia.Media;
+
 namespace Game_Engine.Core.Importers
 {
     public static class ModelImporter
@@ -15,6 +18,21 @@ namespace Game_Engine.Core.Importers
         /// Meshes are triangulated; normals are generated if missing; UV0 is imported when available.
         /// First diffuse/baseColor texture is hooked into Material.
         /// </summary>
+        // Color (0–255) -> Vector3 (0–1)  **double-based**
+        static CoreVec3 ColorToVec3(Color c)
+            => new CoreVec3(c.R / 255.0, c.G / 255.0, c.B / 255.0);
+
+        // Vector3 (0–1) -> Color (0–255)  **double-based**
+        static Color Vec3ToColor(CoreVec3 v)
+        {
+            static double Clamp01(double f) => f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+
+            byte r = (byte)(Clamp01(v.X) * 255.0);
+            byte g = (byte)(Clamp01(v.Y) * 255.0);
+            byte b = (byte)(Clamp01(v.Z) * 255.0);
+
+            return Color.FromRgb(r, g, b);
+        }
         public static GameObject ImportModel(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
@@ -89,12 +107,12 @@ namespace Game_Engine.Core.Importers
         // Prefer Diffuse, then PBR BaseColor (if the enum exists), then any available slot.
         static bool TryGetFirstTextureSlot(Assimp.Material mat, out TextureSlot slot)
         {
-            // 1) Classic diffuse
+            // Classic diffuse
             if (mat.GetMaterialTextureCount(TextureType.Diffuse) > 0 &&
                 mat.GetMaterialTexture(TextureType.Diffuse, 0, out slot))
                 return true;
 
-            // 2) PBR base color (only in newer AssimpNet builds)
+            // PBR base color (only in newer AssimpNet builds)
             if (Enum.TryParse("BaseColor", out TextureType baseColorType))
             {
                 if (mat.GetMaterialTextureCount(baseColorType) > 0 &&
@@ -102,7 +120,7 @@ namespace Game_Engine.Core.Importers
                     return true;
             }
 
-            // 3) Fall back to whatever is first (Unknown / Emissive / etc.)
+            // Fall back to whatever is first (Unknown / Emissive / etc.)
             foreach (TextureType t in Enum.GetValues(typeof(TextureType)))
             {
                 if (mat.GetMaterialTextureCount(t) > 0 &&
@@ -117,7 +135,7 @@ namespace Game_Engine.Core.Importers
 
         static Texture2D? TryLoadTexture(TextureSlot slot, Scene sc, string dir)
         {
-            // 1) Embedded texture (FilePath like "*0", "*1", …)
+            // Embedded texture (FilePath like "*0", "*1", …)
             if (!string.IsNullOrEmpty(slot.FilePath) && slot.FilePath.StartsWith("*"))
             {
                 int idx;
@@ -139,7 +157,7 @@ namespace Game_Engine.Core.Importers
                 }
             }
 
-            // 2) External file path (relative to model)
+            // External file path (relative to model)
             if (!string.IsNullOrEmpty(slot.FilePath))
             {
                 var p = slot.FilePath.Replace('\\', '/');

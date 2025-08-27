@@ -263,6 +263,48 @@ public partial class MainWindow : Window
         }
     }
 
+    
+    private async void OnMenuSaveScene_Click(object? sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Filters = new List<FileDialogFilter>
+        {
+            new FileDialogFilter { Name = "Scene", Extensions = { "scene" } }
+        },
+            DefaultExtension = "scene"
+        };
+
+        var path = await dlg.ShowAsync(this);
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            SceneService.SaveToFile(path);
+            Log.Info($"Scene saved: {path}");
+        }
+    }
+
+    
+    private async void OnMenuLoadScene_Click(object? sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            AllowMultiple = false,
+            Filters = new List<FileDialogFilter>
+        {
+            new FileDialogFilter { Name = "Scene", Extensions = { "scene" } }
+        }
+        };
+
+        var result = await dlg.ShowAsync(this);
+        var path = result?.FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            SceneService.LoadFromFile(path);
+            Log.Info($"Scene loaded: {path}");
+        }
+    }
+
+
     private void RevealInExplorer()
     {
         var proj = ProjectService.Current;

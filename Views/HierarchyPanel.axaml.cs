@@ -136,7 +136,7 @@ public partial class HierarchyPanel : UserControl
         try
         {
             var go = ModelImporter.ImportModel(files[0]);
-            // Put it under the currently right-clicked target if there is one, else at root.
+            // under the currently right-clicked target if there is one, else at root.
             if (_contextTarget is null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
 
             // handy defaults

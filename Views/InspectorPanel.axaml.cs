@@ -81,21 +81,21 @@ public partial class InspectorPanel : UserControl
     {
         var t = typeof(Game_Engine.Core.Texture2D);
 
-        // 1) static FromFile(string)
+        //  static FromFile(string)
         var m = t.GetMethod("FromFile", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                             binder: null, types: new[] { typeof(string) }, modifiers: null);
         if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
 
-        // 2) static Load(string)
+        //  static Load(string)
         m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                         binder: null, types: new[] { typeof(string) }, modifiers: null);
         if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
 
-        // 3) ctor(string)
+        //  ctor(string)
         var ctorPath = t.GetConstructor(new[] { typeof(string) });
         if (ctorPath != null) return (Game_Engine.Core.Texture2D?)ctorPath.Invoke(new object?[] { path });
 
-        // 4) static FromBytes(byte[])
+        //  static FromBytes(byte[])
         if (bmp != null)
         {
             using var ms = new MemoryStream();
@@ -106,7 +106,7 @@ public partial class InspectorPanel : UserControl
                             binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
             if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
 
-            // 5) static Load(byte[])
+            //  static Load(byte[])
             m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                             binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
             if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
