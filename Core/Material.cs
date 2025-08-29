@@ -57,7 +57,6 @@ namespace Game_Engine.Core
         [JsonIgnore] public Texture2D? Texture { get; set; }
         [JsonIgnore] public IImage? Preview { get; set; }
 
-        // this is what we persist
         [Persist] public string? SourcePath { get; set; }
     }
 

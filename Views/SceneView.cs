@@ -258,6 +258,112 @@ public class SceneView : Control
         return Color.FromArgb(a, r, g, b);
     }
 
+    // --- Lighting & sky helpers -----------------------------------------------
+
+    // forward (-Z) from a Transform (matches your yaw/pitch/roll order)
+    static SN.Vector3 ForwardFrom(Core.Transform t)
+    {
+        var r = SN.Matrix4x4.CreateFromYawPitchRoll(
+            Deg2Rad(t.Rotation.Y), Deg2Rad(t.Rotation.X), Deg2Rad(t.Rotation.Z));
+        var f = SN.Vector3.TransformNormal(new SN.Vector3(0, 0, -1), r);
+        return SN.Vector3.Normalize(f);
+    }
+    // forward (+X) from a Transform (matches your camera's yaw/pitch math)
+ /*   static SN.Vector3 ForwardFrom(Core.Transform t)
+    {
+        var r = SN.Matrix4x4.CreateFromYawPitchRoll(
+            Deg2Rad(t.Rotation.Y), Deg2Rad(t.Rotation.X), Deg2Rad(t.Rotation.Z));
+        var f = SN.Vector3.TransformNormal(SN.Vector3.UnitX, r); // +X at identity
+        return SN.Vector3.Normalize(f);
+    }*/
+
+    // enumerate enabled behaviors of type T across the whole scene
+    static IEnumerable<T> FindBehaviors<T>() where T : Behavior
+    {
+        static IEnumerable<GameObject> Traverse(GameObject n)
+        {
+            yield return n;
+            foreach (var c in n.Children)
+                foreach (var s in Traverse(c)) yield return s;
+        }
+
+        foreach (var root in SceneService.Root)
+            foreach (var go in Traverse(root))
+                foreach (var b in go.Behaviors)
+                    if (b.Enabled && b is T t) yield return t;
+    }
+
+    // BGRA row lerp (for sky gradient)
+    static uint LerpBGRA(uint a, uint b, float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        int ab = (int)(a & 0xFF), ag = (int)((a >> 8) & 0xFF), ar = (int)((a >> 16) & 0xFF), aa = (int)((a >> 24) & 0xFF);
+        int bb = (int)(b & 0xFF), bg = (int)((b >> 8) & 0xFF), br = (int)((b >> 16) & 0xFF), ba = (int)((b >> 24) & 0xFF);
+        int rb = (int)(ab + (bb - ab) * t);
+        int rg = (int)(ag + (bg - ag) * t);
+        int rr = (int)(ar + (br - ar) * t);
+        int ra = (int)(aa + (ba - aa) * t);
+        return (uint)(rb | (rg << 8) | (rr << 16) | (ra << 24));
+    }
+    static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+
+    void FillSkyWorldUp(uint[] color, float[] zbuf, int W, int H,
+                    in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+                    Color topCol, Color botCol,
+                    SN.Vector3? sunDirWorld = null)
+    {
+        uint top = PackBGRA(topCol);
+        uint bot = PackBGRA(botCol);
+
+        var vp = view * proj;
+        SN.Matrix4x4.Invert(vp, out var invVP);
+
+        var worldUp = SN.Vector3.UnitY;
+
+        SN.Vector3 sun = SN.Vector3.Zero;
+        bool useSun = false;
+        if (sunDirWorld.HasValue)
+        {
+            sun = SN.Vector3.Normalize(sunDirWorld.Value);
+            useSun = sun.LengthSquared() > 0.5f;
+        }
+
+        for (int y = 0; y < H; y++)
+        {
+            int row = y * W;
+            float ny = 1f - ((y + 0.5f) / H) * 2f; // [-1..+1]
+
+            for (int x = 0; x < W; x++)
+            {
+                float nx = ((x + 0.5f) / W) * 2f - 1f; // [-1..+1]
+
+                var n4 = SN.Vector4.Transform(new SN.Vector4(nx, ny, 0f, 1f), invVP);
+                var f4 = SN.Vector4.Transform(new SN.Vector4(nx, ny, 1f, 1f), invVP);
+                var n3 = new SN.Vector3(n4.X, n4.Y, n4.Z) / n4.W;
+                var f3 = new SN.Vector3(f4.X, f4.Y, f4.Z) / f4.W;
+                var dir = SN.Vector3.Normalize(f3 - n3); // world-space view ray
+
+                float t = Clamp01(0.5f + 0.5f * SN.Vector3.Dot(dir, worldUp));
+
+                // sun highlight (still clamp with Clamp01)
+                 float sunGlow = useSun ? MathF.Pow(MathF.Max(0f, SN.Vector3.Dot(dir, sun)), 64f) : 0f;
+                 t = Clamp01(t + sunGlow * 0.08f);
+
+                color[row + x] = LerpBGRA(bot, top, t); // bottom→top
+                zbuf[row + x] = 1.1f;                   // clear Z
+            }
+        }
+    }
+
+    // --- CPU shadow map (directional) -------------------------------------------
+    struct ShadowMap
+    {
+        public SN.Matrix4x4 VP;   // light view-projection
+        public float[] Depth;     // size = W*H, 0..1 depth
+        public int W, H;
+        public float Bias;        // depth bias (in NDC space)
+    }
+
 
     #endregion
 
@@ -816,10 +922,35 @@ public class SceneView : Control
         while (stack.Count > 0) w = w * WorldFromTransform(stack.Pop().Transform);
         return w;
     }
+
+    (SN.Vector3 min, SN.Vector3 max) ComputeSceneAABB()
+    {
+        bool any = false;
+        SN.Vector3 min = default, max = default;
+
+        void Acc(in SN.Vector3 p)
+        {
+            if (!any) { min = max = p; any = true; }
+            else
+            {
+                min = new SN.Vector3(MathF.Min(min.X, p.X), MathF.Min(min.Y, p.Y), MathF.Min(min.Z, p.Z));
+                max = new SN.Vector3(MathF.Max(max.X, p.X), MathF.Max(max.Y, p.Y), MathF.Max(max.Z, p.Z));
+            }
+        }
+
+        foreach (var root in SceneService.Root)
+        {
+            var (rmin, rmax) = ComputeWorldAABB(root);
+            Acc(rmin); Acc(rmax);
+        }
+        if (!any) { min = new SN.Vector3(-1, -1, -1); max = new SN.Vector3(1, 1, 1); }
+        return (min, max);
+    }
+
     #endregion
 
     #region Render pipeline
-  
+
 
     public override void Render(DrawingContext ctx)
     {
@@ -836,14 +967,89 @@ public class SceneView : Control
         var color = new uint[RW * RH];
         var zbuf = new float[RW * RH];
 
-        uint bg = PackBGRA(Color.Parse("#1f1f1f"));
-        for (int i = 0; i < zbuf.Length; i++)
+        // Skybox (world-up gradient) — stable with camera motion
+        var sky = FindBehaviors<Game_Engine.Core.Skybox>().FirstOrDefault();
+        var skyTop = sky?.Top ?? Color.Parse("#1f1f1f");
+        var skyBot = sky?.Bottom ?? Color.Parse("#1f1f1f");
+
+        // we need view/proj before filling
+        var (view, proj) = GetViewProj(new Size(RW, RH));
+
+        //  sun highlight aligned with a directional light:
+         var dirLight = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault(l => l.Type == LightType.Directional);
+         SN.Vector3? sunDir = null;
+         if (dirLight?.gameObject is { } dgo) {
+             var Wl = AccumulateWorld(dgo);
+             var z = new SN.Vector3(Wl.M13, Wl.M23, Wl.M33);
+             if (z.LengthSquared() < 1e-8f) z = SN.Vector3.UnitZ;
+             sunDir = -SN.Vector3.Normalize(z);
+         } else sunDir = null;
+
+        FillSkyWorldUp(color, zbuf, RW, RH, view, proj, skyTop, skyBot, sunDir);
+
+
+        // Lighting: first Light behavior + skybox ambient
+        var light = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault();
+
+        // defaults
+        SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
+        float DiffuseK = ShowLight ? 0.25f : 1.0f;
+        float Ambient = ShowLight ? (sky?.Ambient ?? 0.0f) : 0.0f;
+
+        bool lightIsPoint = false;
+        SN.Vector3 lightPosW = SN.Vector3.Zero;
+        float lightRange = 10f;
+
+        if (light is not null)
         {
-            zbuf[i] = 1.1f;
-            color[i] = bg;
+            float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
+            DiffuseK *= MathF.Max(0.01f, light.Intensity * lum);
+
+            var lw = light.gameObject is null ? SN.Matrix4x4.Identity : AccumulateWorld(light.gameObject);
+            lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, lw);
+
+            if (light.Type == Game_Engine.Core.LightType.Directional && light.gameObject is { } lt)
+                L = -ForwardFrom(lt.Transform);
+            else if (light.Type == Game_Engine.Core.LightType.Point)
+            {
+                lightIsPoint = true;
+                lightRange = Math.Max(0.001f, light.Range);
+            }
         }
 
-        var (view, proj) = GetViewProj(new Size(RW, RH)); // aspect is the same
+        // --- Build a tiny shadow map for directional lights --------------------------
+        ShadowMap? shadow = null;
+        if (ShowLight && light is { Type: Game_Engine.Core.LightType.Directional } && !lightIsPoint)
+        {
+            // light "camera"
+            var (smin, smax) = ComputeSceneAABB();
+            var center = (smin + smax) * 0.5f;
+            var diag = (smax - smin).Length();
+            float ortho = Math.Max(8f, diag * 0.6f);
+            float dist = Math.Max(8f, diag * 0.75f);
+            var eye = center - L * dist;
+
+            var lightView = SN.Matrix4x4.CreateLookAt(eye, center, SN.Vector3.UnitY);
+            var lightProj = SN.Matrix4x4.CreateOrthographic(ortho, ortho, 0.1f, dist + diag + 8f);
+
+            const int SW = 256, SH = 256;
+            var sdepth = new float[SW * SH];
+            for (int i = 0; i < sdepth.Length; i++) sdepth[i] = 1.1f;
+
+            foreach (var root in SceneService.Root)
+                DrawNodeDepth(root, lightView, lightProj, SN.Matrix4x4.Identity, sdepth, SW, SH);
+
+            shadow = new ShadowMap
+            {
+                VP = lightView * lightProj,
+                Depth = sdepth,
+                W = SW,
+                H = SH,
+                Bias = 0.0015f // tweak with scene scale if needed
+            };
+        }
+
+
 
         // 🔎 Log once after selection/material/scene changes (see ctor handlers)
         if (_logNextRender)
@@ -853,6 +1059,7 @@ public class SceneView : Control
 
             if (ShowWire)
                 System.Diagnostics.Debug.WriteLine("[SceneView] ShowWire is enabled — solid (textured) pass is skipped by design.");
+                
         }
 
         // Depth-tested grid + solid pass at high res
@@ -862,8 +1069,13 @@ public class SceneView : Control
         if (!ShowWire)
         {
             foreach (var root in SceneService.Root)
-                DrawNodeSolidZ(root, view, proj, SN.Matrix4x4.Identity, color, zbuf, RW, RH);
+                DrawNodeSolidZ(root, view, proj, SN.Matrix4x4.Identity,
+                               color, zbuf, RW, RH,
+                               L, DiffuseK, Ambient,
+                               lightIsPoint, lightPosW, lightRange,
+                               shadow);
         }
+
 
         // Downsample (if needed) and blit
         var wb = new WriteableBitmap(new PixelSize(W, H), new Avalonia.Vector(96, 96),
@@ -990,7 +1202,10 @@ public class SceneView : Control
 
 
     void DrawNodeSolidZ(GameObject go, in Matrix4x4 view, in Matrix4x4 proj,
-                    in Matrix4x4 parentWorld, uint[] color, float[] zbuf, int W, int H)
+                    in Matrix4x4 parentWorld, uint[] color, float[] zbuf, int W, int H,
+                    SN.Vector3 L, float DiffuseK, float Ambient,
+                    bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
+                    ShadowMap? shadow)
     {
         var world = parentWorld * WorldFromTransform(go.Transform);
 
@@ -1002,16 +1217,20 @@ public class SceneView : Control
             var mesh = EnsureProceduralLod(go, mf.Mesh, world, view, proj, new Size(W, H));
 
             var matProp = mr.GetType().GetProperty("Material",
-     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             var mat = matProp?.GetValue(mr) as Game_Engine.Core.Material;
 
-            RasterizeMeshSolidZ(mesh, world, view, proj, color, zbuf, W, H, mr.Color, mat);
-
+            RasterizeMeshSolidZ(mesh, world, view, proj, color, zbuf, W, H,
+                mr.Color, mat, L, DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadow, mr.ReceiveShadows);
         }
 
         foreach (var child in go.Children)
-            DrawNodeSolidZ(child, view, proj, world, color, zbuf, W, H);
+            DrawNodeSolidZ(child, view, proj, world, color, zbuf, W, H,
+                           L, DiffuseK, Ambient, lightIsPoint, lightPosW, lightRange, shadow);
     }
+
 
 
     Mesh EnsureProceduralLod(GameObject go, Mesh mesh,
@@ -1111,6 +1330,8 @@ public class SceneView : Control
             ctx.DrawLine(pen, s2, s0);
         }
     }
+
+
     #endregion
 
     #region Software rasterizer (solid pass)
@@ -1119,7 +1340,10 @@ public class SceneView : Control
     in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
     uint[] color, float[] zbuf, int W, int H,
     Color baseCol,
-    Game_Engine.Core.Material? mat = null)
+    Game_Engine.Core.Material? mat,
+    SN.Vector3 L, float DiffuseK, float Ambient,
+    bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
+    ShadowMap? shadow, bool receiveShadows)
     {
         if (mesh?.Vertices == null || mesh.TriIndices == null) return;
 
@@ -1127,17 +1351,11 @@ public class SceneView : Control
         var I = mesh.TriIndices;
         var N0 = mesh.Normals; // may be null
 
-        // Matrices
         var WV = world * view;
         var WVP = WV * proj;
 
         SN.Matrix4x4.Invert(world, out var invWorld);
         var normalM = SN.Matrix4x4.Transpose(invWorld);
-
-        // Lighting
-        SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
-        float DiffuseK = ShowLight ? 0.25f : 1.0f;
-        float Ambient = ShowLight ? 0.90f : 0.0f;
 
         float winding = world.GetDeterminant() >= 0 ? 1f : -1f;
 
@@ -1146,20 +1364,20 @@ public class SceneView : Control
 
         const float INSIDE_EPS = 1e-6f;
 
-        // Try to locate UVs
+        // UV introspection
         static SN.Vector2[]? TryGetMeshUVs(Mesh m)
         {
             var cand = new[] { "UVs", "UV", "TexCoords", "TexCoord", "UV0", "UV1" };
             var t = m.GetType();
-            foreach (var name in cand)
+            foreach (var n in cand)
             {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (p != null && p.PropertyType == typeof(SN.Vector2[]))
                     return (SN.Vector2[]?)p.GetValue(m);
             }
-            foreach (var name in cand)
+            foreach (var n in cand)
             {
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (f != null && f.FieldType == typeof(SN.Vector2[]))
                     return (SN.Vector2[]?)f.GetValue(m);
             }
@@ -1177,7 +1395,7 @@ public class SceneView : Control
 
         static Color ShadeColor(Color c, float shade)
         {
-            if (shade < 0f) shade = 0f; else if (shade > 1f) shade = 1f;
+            shade = Math.Clamp(shade, 0f, 1f);
             byte r = (byte)Math.Clamp((int)(c.R * shade), 0, 255);
             byte g = (byte)Math.Clamp((int)(c.G * shade), 0, 255);
             byte b = (byte)Math.Clamp((int)(c.B * shade), 0, 255);
@@ -1188,10 +1406,10 @@ public class SceneView : Control
         {
             if (t.Width <= 0 || t.Height <= 0) return 0xFF000000;
             u -= MathF.Floor(u); v -= MathF.Floor(v);
-            v = 1f - v; // flip V for top-left images
+            v = 1f - v;
             int x = Math.Clamp((int)MathF.Round(u * (t.Width - 1)), 0, t.Width - 1);
             int y = Math.Clamp((int)MathF.Round(v * (t.Height - 1)), 0, t.Height - 1);
-            int i = (y * t.Width + x) * 4; // RGBA source
+            int i = (y * t.Width + x) * 4; // RGBA
             byte r = t.Rgba[i + 0], g = t.Rgba[i + 1], b = t.Rgba[i + 2], a = t.Rgba[i + 3];
             uint rp = (uint)(r * a / 255), gp = (uint)(g * a / 255), bp = (uint)(b * a / 255);
             return (uint)(bp | (gp << 8) | (rp << 16) | ((uint)a << 24));
@@ -1220,7 +1438,7 @@ public class SceneView : Control
         var UV = TryGetMeshUVs(mesh);
         var tex = mat?.Textures?.FirstOrDefault(t => t?.Texture != null)?.Texture;
 
-        // Precompute object-space AABB for fallback projection
+        // Object-space AABB for trivial UV projection fallback
         SN.Vector3 bbMin = new(float.MaxValue), bbMax = new(float.MinValue);
         for (int v = 0; v < V.Length; v++)
         {
@@ -1229,9 +1447,9 @@ public class SceneView : Control
             bbMax = new SN.Vector3(MathF.Max(bbMax.X, p.X), MathF.Max(bbMax.Y, p.Y), MathF.Max(bbMax.Z, p.Z));
         }
         var bbSize = bbMax - bbMin;
-        bbSize.X = bbSize.X == 0 ? 1 : bbSize.X;
-        bbSize.Y = bbSize.Y == 0 ? 1 : bbSize.Y;
-        bbSize.Z = bbSize.Z == 0 ? 1 : bbSize.Z;
+        bbSize = new SN.Vector3(bbSize.X == 0 ? 1 : bbSize.X,
+                                bbSize.Y == 0 ? 1 : bbSize.Y,
+                                bbSize.Z == 0 ? 1 : bbSize.Z);
 
         for (int iTri = 0; iTri < I.Length; iTri += 3)
         {
@@ -1260,9 +1478,9 @@ public class SceneView : Control
             var cv = SN.Vector3.Transform(c, WV);
 
             var nView = SN.Vector3.Cross(bv - av, cv - av);
-            if (winding * nView.Z >= 0f) continue; // back-face
+            if (winding * nView.Z >= 0f) continue; // backface
 
-            // World-space vertex normals (Phong) or flat fallback
+            // normals in world space
             SN.Vector3 nA, nB, nC;
             if (N0 != null && N0.Length == V.Length)
             {
@@ -1283,45 +1501,36 @@ public class SceneView : Control
                 nA = nB = nC = nWorldFlat;
             }
 
-            // Per-vertex UVs
+            // UVs
             SN.Vector2 ua = default, ub = default, uc = default;
             bool haveUV = (tex != null && UV != null && UV.Length == V.Length);
-            if (haveUV)
-            {
-                ua = UV![ia]; ub = UV![ib]; uc = UV![ic];
-            }
+            if (haveUV) { ua = UV![ia]; ub = UV![ib]; uc = UV![ic]; }
             else if (tex != null)
             {
-                // Fallback: simple box-projection per triangle using object-space AABB
-                // Project onto the major axis of the face normal (in world space)
-                var aw = a; var bw = b; var cw = c; // object space
                 var nFlat = SN.Vector3.Normalize(SN.Vector3.Cross(b - a, c - a));
                 nFlat = new SN.Vector3(MathF.Abs(nFlat.X), MathF.Abs(nFlat.Y), MathF.Abs(nFlat.Z));
-                if (nFlat.X >= nFlat.Y && nFlat.X >= nFlat.Z)
+                if (nFlat.X >= nFlat.Y && nFlat.X >= nFlat.Z)      // YZ
                 {
-                    // X-major -> use YZ plane
-                    ua = new SN.Vector2((aw.Z - bbMin.Z) / bbSize.Z, (aw.Y - bbMin.Y) / bbSize.Y);
-                    ub = new SN.Vector2((bw.Z - bbMin.Z) / bbSize.Z, (bw.Y - bbMin.Y) / bbSize.Y);
-                    uc = new SN.Vector2((cw.Z - bbMin.Z) / bbSize.Z, (cw.Y - bbMin.Y) / bbSize.Y);
+                    ua = new((a.Z - bbMin.Z) / bbSize.Z, (a.Y - bbMin.Y) / bbSize.Y);
+                    ub = new((b.Z - bbMin.Z) / bbSize.Z, (b.Y - bbMin.Y) / bbSize.Y);
+                    uc = new((c.Z - bbMin.Z) / bbSize.Z, (c.Y - bbMin.Y) / bbSize.Y);
                 }
-                else if (nFlat.Y >= nFlat.X && nFlat.Y >= nFlat.Z)
+                else if (nFlat.Y >= nFlat.X && nFlat.Y >= nFlat.Z) // XZ
                 {
-                    // Y-major -> use XZ plane
-                    ua = new SN.Vector2((aw.X - bbMin.X) / bbSize.X, (aw.Z - bbMin.Z) / bbSize.Z);
-                    ub = new SN.Vector2((bw.X - bbMin.X) / bbSize.X, (bw.Z - bbMin.Z) / bbSize.Z);
-                    uc = new SN.Vector2((cw.X - bbMin.X) / bbSize.X, (cw.Z - bbMin.Z) / bbSize.Z);
+                    ua = new((a.X - bbMin.X) / bbSize.X, (a.Z - bbMin.Z) / bbSize.Z);
+                    ub = new((b.X - bbMin.X) / bbSize.X, (b.Z - bbMin.Z) / bbSize.Z);
+                    uc = new((c.X - bbMin.X) / bbSize.X, (c.Z - bbMin.Z) / bbSize.Z);
                 }
-                else
+                else                                               // XY
                 {
-                    // Z-major -> use XY plane
-                    ua = new SN.Vector2((aw.X - bbMin.X) / bbSize.X, (aw.Y - bbMin.Y) / bbSize.Y);
-                    ub = new SN.Vector2((bw.X - bbMin.X) / bbSize.X, (bw.Y - bbMin.Y) / bbSize.Y);
-                    uc = new SN.Vector2((cw.X - bbMin.X) / bbSize.X, (cw.Y - bbMin.Y) / bbSize.Y);
+                    ua = new((a.X - bbMin.X) / bbSize.X, (a.Y - bbMin.Y) / bbSize.Y);
+                    ub = new((b.X - bbMin.X) / bbSize.X, (b.Y - bbMin.Y) / bbSize.Y);
+                    uc = new((c.X - bbMin.X) / bbSize.X, (c.Y - bbMin.Y) / bbSize.Y);
                 }
                 haveUV = true;
             }
 
-            // Perspective-correct setup
+            // perspective-correct setup
             float aInvW = 1f / Ac.W, bInvW = 1f / Bc.W, cInvW = 1f / Cc.W;
             float aZw = An.Z * aInvW, bZw = Bn.Z * bInvW, cZw = Cn.Z * cInvW;
 
@@ -1348,14 +1557,8 @@ public class SceneView : Control
                     float w1 = Edge(p, Cs, As);
                     float w2 = Edge(p, As, Bs);
 
-                    if (area > 0f)
-                    {
-                        if (w0 < -INSIDE_EPS || w1 < -INSIDE_EPS || w2 < -INSIDE_EPS) continue;
-                    }
-                    else
-                    {
-                        if (w0 > INSIDE_EPS || w1 > INSIDE_EPS || w2 > INSIDE_EPS) continue;
-                    }
+                    if (area > 0f) { if (w0 < -INSIDE_EPS || w1 < -INSIDE_EPS || w2 < -INSIDE_EPS) continue; }
+                    else { if (w0 > INSIDE_EPS || w1 > INSIDE_EPS || w2 > INSIDE_EPS) continue; }
 
                     w0 *= invArea; w1 *= invArea; w2 *= invArea;
 
@@ -1363,18 +1566,79 @@ public class SceneView : Control
                     if (invW <= 0) continue;
 
                     float z = (w0 * aZw + w1 * bZw + w2 * cZw) / invW;
-
                     int idx = y * W + x;
                     if (z >= zbuf[idx]) continue;
 
-                    // Interpolate world normal and shade
+                    // interpolate world normal
                     SN.Vector3 nInterp =
                         (nA * (w0 * aInvW) +
                          nB * (w1 * bInvW) +
                          nC * (w2 * cInvW)) / invW;
                     nInterp = SN.Vector3.Normalize(nInterp);
-                    float ndotl = MathF.Max(0f, SN.Vector3.Dot(nInterp, L));
-                    float shade = MathF.Min(1f, Ambient + DiffuseK * ndotl);
+
+                    // per-pixel lighting direction & distance
+                    float ndotl, shade;
+                    SN.Vector3 Ldir = L;
+
+                    // world position (needed for point light + shadows)
+                    var Aw = SN.Vector3.Transform(a, world);
+                    var Bw = SN.Vector3.Transform(b, world);
+                    var Cw = SN.Vector3.Transform(c, world);
+                    var Pw = (Aw * (w0 * aInvW) + Bw * (w1 * bInvW) + Cw * (w2 * cInvW)) / invW;
+
+                    if (!lightIsPoint)
+                    {
+                        ndotl = MathF.Max(0f, SN.Vector3.Dot(nInterp, L));
+                        shade = MathF.Min(1f, Ambient + DiffuseK * ndotl);
+                    }
+                    else
+                    {
+                        var Vw = lightPosW - Pw;
+                        float d2 = SN.Vector3.Dot(Vw, Vw);
+                        float d = MathF.Sqrt(d2);
+                        Ldir = d > 1e-6f ? Vw / d : SN.Vector3.UnitY;
+
+                        float atten = MathF.Max(0f, 1f - d / lightRange);
+                        ndotl = MathF.Max(0f, SN.Vector3.Dot(nInterp, Ldir));
+                        shade = MathF.Min(1f, Ambient + DiffuseK * atten * ndotl);
+                    }
+
+                    // --- shadow test (directional only) --------------------------------
+                    if (shadow.HasValue && receiveShadows && !lightIsPoint)
+                    {
+                        var sm = shadow.Value;
+                        var lc = SN.Vector4.Transform(new SN.Vector4(Pw, 1), sm.VP);
+                        if (lc.W > 0f)
+                        {
+                            var ndc = lc / lc.W;
+                            float u = ndc.X * 0.5f + 0.5f;
+                            float v = 1f - (ndc.Y * 0.5f + 0.5f);
+                            float zcmp = ndc.Z; // 0..1
+
+                            // quick PCF 2x2
+                            int sx = Math.Clamp((int)(u * sm.W), 0, sm.W - 1);
+                            int sy = Math.Clamp((int)(v * sm.H), 0, sm.H - 1);
+                            int sx1 = Math.Min(sx + 1, sm.W - 1);
+                            int sy1 = Math.Min(sy + 1, sm.H - 1);
+
+                            float depthBias = MathF.Max(sm.Bias,
+                                0.0005f + 0.002f * (1f - MathF.Max(0f, SN.Vector3.Dot(nInterp, Ldir))));
+
+                            float s0 = zcmp - sm.Depth[sy * sm.W + sx] > depthBias ? 1f : 0f;
+                            float s1 = zcmp - sm.Depth[sy * sm.W + sx1] > depthBias ? 1f : 0f;
+                            float s2 = zcmp - sm.Depth[sy1 * sm.W + sx] > depthBias ? 1f : 0f;
+                            float s3 = zcmp - sm.Depth[sy1 * sm.W + sx1] > depthBias ? 1f : 0f;
+
+                            float shadowAmt = (s0 + s1 + s2 + s3) * 0.25f;
+
+
+                            
+
+                            // modulate only the diffuse term (keep ambient)
+                            float diffuse = MathF.Max(0f, shade - Ambient);
+                            shade = Ambient + diffuse * (1f - 0.85f * shadowAmt); // 0.85 = shadow strength
+                        }
+                    }
 
                     uint outPixel;
                     if (tex != null && haveUV)
@@ -1396,8 +1660,113 @@ public class SceneView : Control
     }
 
 
+    void DrawNodeDepth(GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+                   in SN.Matrix4x4 parentWorld, float[] depth, int W, int H)
+    {
+        var world = parentWorld * WorldFromTransform(go.Transform);
 
-    
+        var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault(x => x.Enabled);
+        var mr = go.Behaviors.OfType<MeshRenderer>().FirstOrDefault(x => x.Enabled);
+
+        if (mf?.Mesh != null && mr != null && mr.CastShadows)
+            RasterizeDepth(mf.Mesh, world, view, proj, depth, W, H);
+
+        foreach (var ch in go.Children)
+            DrawNodeDepth(ch, view, proj, world, depth, W, H);
+    }
+
+    void RasterizeDepth(Mesh mesh,
+                        in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+                        float[] zbuf, int W, int H)
+    {
+        if (mesh.Vertices == null || mesh.TriIndices == null) return;
+
+        var V = mesh.Vertices;
+        var I = mesh.TriIndices;
+
+        var WV = world * view;
+        var WVP = WV * proj;
+
+        float winding = world.GetDeterminant() >= 0 ? 1f : -1f;
+
+        static SN.Vector2 ToScreen(SN.Vector4 ndc, int W, int H)
+            => new SN.Vector2((ndc.X * 0.5f + 0.5f) * W, (1 - (ndc.Y * 0.5f + 0.5f)) * H);
+
+        const float INSIDE_EPS = 1e-6f;
+
+        for (int i = 0; i < I.Length; i += 3)
+        {
+            int ia = I[i], ib = I[i + 1], ic = I[i + 2];
+            var a = V[ia]; var b = V[ib]; var c = V[ic];
+
+            var Ac = SN.Vector4.Transform(new SN.Vector4(a, 1), WVP);
+            var Bc = SN.Vector4.Transform(new SN.Vector4(b, 1), WVP);
+            var Cc = SN.Vector4.Transform(new SN.Vector4(c, 1), WVP);
+            if (Ac.W <= 0 || Bc.W <= 0 || Cc.W <= 0) continue;
+
+            var An = Ac / Ac.W; var Bn = Bc / Bc.W; var Cn = Cc / Cc.W;
+
+            static int OutMask(SN.Vector4 n) =>
+                (n.X < -1 ? 1 : 0) | (n.X > 1 ? 2 : 0) |
+                (n.Y < -1 ? 4 : 0) | (n.Y > 1 ? 8 : 0) |
+                (n.Z < 0 ? 16 : 0) | (n.Z > 1 ? 32 : 0);
+            if ((OutMask(An) & OutMask(Bn) & OutMask(Cn)) != 0) continue;
+
+            // Back-face cull in light view
+            var av = SN.Vector3.Transform(a, WV);
+            var bv = SN.Vector3.Transform(b, WV);
+            var cv = SN.Vector3.Transform(c, WV);
+            var nView = SN.Vector3.Cross(bv - av, cv - av);
+            if (winding * nView.Z >= 0f) continue;
+
+            var As = ToScreen(An, W, H);
+            var Bs = ToScreen(Bn, W, H);
+            var Cs = ToScreen(Cn, W, H);
+
+            float aInvW = 1f / Ac.W, bInvW = 1f / Bc.W, cInvW = 1f / Cc.W;
+            float aZw = An.Z * aInvW, bZw = Bn.Z * bInvW, cZw = Cn.Z * cInvW;
+
+            int minX = (int)MathF.Floor(MathF.Min(As.X, MathF.Min(Bs.X, Cs.X)));
+            int maxX = (int)MathF.Ceiling(MathF.Max(As.X, MathF.Max(Bs.X, Cs.X)));
+            int minY = (int)MathF.Floor(MathF.Min(As.Y, MathF.Min(Bs.Y, Cs.Y)));
+            int maxY = (int)MathF.Ceiling(MathF.Max(As.Y, MathF.Max(Bs.Y, Cs.Y)));
+            if (maxX < 0 || maxY < 0 || minX >= W || minY >= H) continue;
+            minX = Math.Clamp(minX, 0, W - 1); maxX = Math.Clamp(maxX, 0, W - 1);
+            minY = Math.Clamp(minY, 0, H - 1); maxY = Math.Clamp(maxY, 0, H - 1);
+
+            static float Edge(SN.Vector2 p, SN.Vector2 a2, SN.Vector2 b2)
+                => (p.X - a2.X) * (b2.Y - a2.Y) - (p.Y - a2.Y) * (b2.X - a2.X);
+
+            float area = Edge(Cs, As, Bs); if (area == 0) continue;
+            float invArea = 1f / area;
+
+            for (int y = minY; y <= maxY; y++)
+                for (int x = minX; x <= maxX; x++)
+                {
+                    var p = new SN.Vector2(x + 0.5f, y + 0.5f);
+                    float w0 = Edge(p, Bs, Cs);
+                    float w1 = Edge(p, Cs, As);
+                    float w2 = Edge(p, As, Bs);
+
+                    if (area > 0f) { if (w0 < -INSIDE_EPS || w1 < -INSIDE_EPS || w2 < -INSIDE_EPS) continue; }
+                    else { if (w0 > INSIDE_EPS || w1 > INSIDE_EPS || w2 > INSIDE_EPS) continue; }
+
+                    w0 *= invArea; w1 *= invArea; w2 *= invArea;
+
+                    float invW = w0 * aInvW + w1 * bInvW + w2 * cInvW;
+                    if (invW <= 0) continue;
+
+                    float z = (w0 * aZw + w1 * bZw + w2 * cZw) / invW; // 0..1 after perspective
+
+                    int idx = y * W + x;
+                    if (z < zbuf[idx]) zbuf[idx] = z; // store nearest depth
+                }
+        }
+    }
+
+
+
+
 
 
     #endregion
