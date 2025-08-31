@@ -14,6 +14,7 @@ using Avalonia.Platform;
 using System.Reflection;
 using System.Numerics;
 using System.Diagnostics;
+using Avalonia.Threading;
 
 namespace Game_Engine.Views;
 
@@ -25,6 +26,16 @@ public class SceneView : Control
     float _pitch = -20f * MathF.PI / 180f;
     float _distance = 8f;
     SN.Vector3 _target = SN.Vector3.Zero;
+
+    // --- Free-fly state ---
+    readonly HashSet<Key> _keysDown = new();
+    DispatcherTimer _flyTimer;
+    readonly Stopwatch _flyWatch = new();
+
+    // tune to taste
+    float _flyBaseSpeed = 5f;   // units/sec at distance≈1
+    float _flyBoostMul = 4f;   // Shift multiplier
+    float _flySlowMul = 0.25f; // Ctrl multiplier
 
     Point _last;
     bool _orbiting, _panning;
@@ -218,7 +229,7 @@ public class SceneView : Control
         InvalidateVisual();
     }
 
-    
+
 
     static uint PackFromRGBA(byte r, byte g, byte b, byte a)
     {
@@ -269,13 +280,13 @@ public class SceneView : Control
         return SN.Vector3.Normalize(f);
     }
     // forward (+X) from a Transform (matches your camera's yaw/pitch math)
- /*   static SN.Vector3 ForwardFrom(Core.Transform t)
-    {
-        var r = SN.Matrix4x4.CreateFromYawPitchRoll(
-            Deg2Rad(t.Rotation.Y), Deg2Rad(t.Rotation.X), Deg2Rad(t.Rotation.Z));
-        var f = SN.Vector3.TransformNormal(SN.Vector3.UnitX, r); // +X at identity
-        return SN.Vector3.Normalize(f);
-    }*/
+    /*   static SN.Vector3 ForwardFrom(Core.Transform t)
+       {
+           var r = SN.Matrix4x4.CreateFromYawPitchRoll(
+               Deg2Rad(t.Rotation.Y), Deg2Rad(t.Rotation.X), Deg2Rad(t.Rotation.Z));
+           var f = SN.Vector3.TransformNormal(SN.Vector3.UnitX, r); // +X at identity
+           return SN.Vector3.Normalize(f);
+       }*/
 
     // enumerate enabled behaviors of type T across the whole scene
     static IEnumerable<T> FindBehaviors<T>() where T : Behavior
@@ -346,8 +357,8 @@ public class SceneView : Control
                 float t = Clamp01(0.5f + 0.5f * SN.Vector3.Dot(dir, worldUp));
 
                 // sun highlight (still clamp with Clamp01)
-                 float sunGlow = useSun ? MathF.Pow(MathF.Max(0f, SN.Vector3.Dot(dir, sun)), 64f) : 0f;
-                 t = Clamp01(t + sunGlow * 0.08f);
+                float sunGlow = useSun ? MathF.Pow(MathF.Max(0f, SN.Vector3.Dot(dir, sun)), 64f) : 0f;
+                t = Clamp01(t + sunGlow * 0.08f);
 
                 color[row + x] = LerpBGRA(bot, top, t); // bottom→top
                 zbuf[row + x] = 1.1f;                   // clear Z
@@ -362,6 +373,83 @@ public class SceneView : Control
         public float[] Depth;     // size = W*H, 0..1 depth
         public int W, H;
         public float Bias;        // depth bias (in NDC space)
+    }
+
+    bool HandleFlyKeyDown(Key k)
+    {
+        // movement + modifiers we care about
+        if (k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E
+              or Key.LeftShift or Key.RightShift
+              or Key.LeftCtrl or Key.RightCtrl)
+        {
+            if (_keysDown.Add(k))
+            {
+                if (!_flyTimer.IsEnabled)
+                {
+                    _flyWatch.Restart();
+                    _flyTimer.Start();
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool HandleFlyKeyUp(Key k)
+    {
+        if (_keysDown.Remove(k))
+        {
+            // stop when nothing is held
+            if (_keysDown.Count == 0 && _flyTimer.IsEnabled)
+                _flyTimer.Stop();
+            return true;
+        }
+        return false;
+    }
+
+    void StepFly()
+    {
+        // don’t fight gizmo drags
+        if (_isDragging) return;
+
+        double dt = _flyWatch.Elapsed.TotalSeconds;
+        _flyWatch.Restart();
+        if (dt <= 0) return;
+
+        // camera basis from yaw/pitch (same as GetViewProj)
+        var dir = new SN.Vector3(
+            MathF.Cos(_pitch) * MathF.Cos(_yaw),
+            MathF.Sin(_pitch),
+            MathF.Cos(_pitch) * MathF.Sin(_yaw));
+
+        var up = SN.Vector3.UnitY;
+        var right = SN.Vector3.Normalize(SN.Vector3.Cross(dir, up));
+
+        SN.Vector3 move = SN.Vector3.Zero;
+
+        if (_keysDown.Contains(Key.W)) move += dir;
+        if (_keysDown.Contains(Key.S)) move -= dir;
+        if (_keysDown.Contains(Key.A)) move -= right;
+        if (_keysDown.Contains(Key.D)) move += right;
+        if (_keysDown.Contains(Key.E)) move += up;
+        if (_keysDown.Contains(Key.Q)) move -= up;
+
+        if (move.LengthSquared() < 1e-8f) return;
+        move = SN.Vector3.Normalize(move);
+
+        // speed scales a bit with zoom distance (feels nice when far/near)
+        float distScale = Math.Clamp(_distance * 0.35f, 0.5f, 20f);
+
+        float mul = 1f;
+        if (_keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift)) mul *= _flyBoostMul;
+        if (_keysDown.Contains(Key.LeftCtrl) || _keysDown.Contains(Key.RightCtrl)) mul *= _flySlowMul;
+
+        float speed = _flyBaseSpeed * distScale * (float)dt * mul;
+
+        // move the camera’s look-target; the eye tracks it via GetViewProj
+        _target += move * speed;
+
+        InvalidateVisual();
     }
 
 
@@ -398,6 +486,9 @@ public class SceneView : Control
         AddHandler(PointerReleasedEvent, OnPointerReleased, RoutingStrategies.Tunnel);
         AddHandler(PointerMovedEvent, OnPointerMoved, RoutingStrategies.Tunnel);
         AddHandler(PointerWheelChangedEvent, OnWheel, RoutingStrategies.Tunnel);
+
+        _flyTimer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+        _flyTimer.Tick += (_, __) => StepFly();
     }
     #endregion
 
@@ -417,6 +508,18 @@ public class SceneView : Control
             else if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
             { Game_Engine.Core.UndoService.Redo(); e.Handled = true; }
         }
+        if (HandleFlyKeyDown(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (HandleFlyKeyUp(e.Key))
+            e.Handled = true;
     }
 
 
@@ -809,7 +912,7 @@ public class SceneView : Control
         ctx.DrawLine(new Pen(new SolidColorBrush(c), th), s0, s1);
     }
 
-   
+
     #endregion
 
     #region Gizmo drawing & hit test
@@ -976,14 +1079,16 @@ public class SceneView : Control
         var (view, proj) = GetViewProj(new Size(RW, RH));
 
         //  sun highlight aligned with a directional light:
-         var dirLight = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault(l => l.Type == LightType.Directional);
-         SN.Vector3? sunDir = null;
-         if (dirLight?.gameObject is { } dgo) {
-             var Wl = AccumulateWorld(dgo);
-             var z = new SN.Vector3(Wl.M13, Wl.M23, Wl.M33);
-             if (z.LengthSquared() < 1e-8f) z = SN.Vector3.UnitZ;
-             sunDir = -SN.Vector3.Normalize(z);
-         } else sunDir = null;
+        var dirLight = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault(l => l.Type == LightType.Directional);
+        SN.Vector3? sunDir = null;
+        if (dirLight?.gameObject is { } dgo)
+        {
+            var Wl = AccumulateWorld(dgo);
+            var z = new SN.Vector3(Wl.M13, Wl.M23, Wl.M33);
+            if (z.LengthSquared() < 1e-8f) z = SN.Vector3.UnitZ;
+            sunDir = -SN.Vector3.Normalize(z);
+        }
+        else sunDir = null;
 
         FillSkyWorldUp(color, zbuf, RW, RH, view, proj, skyTop, skyBot, sunDir);
 
@@ -1059,12 +1164,13 @@ public class SceneView : Control
 
             if (ShowWire)
                 System.Diagnostics.Debug.WriteLine("[SceneView] ShowWire is enabled — solid (textured) pass is skipped by design.");
-                
+
         }
 
         // Depth-tested grid + solid pass at high res
         if (ShowGrid)
-            DrawGridZ(view, proj, color, zbuf, RW, RH, halfLines: 20, step: 1f);
+            //DrawGridZ(view, proj, color, zbuf, RW, RH, halfLines: 20, step: 1f);
+            OverlayInfiniteGrid(view, proj, color, zbuf, RW, RH, step: 1f, majorEvery: 5);
 
         if (!ShowWire)
         {
@@ -1077,7 +1183,7 @@ public class SceneView : Control
         }
 
 
-        // Downsample (if needed) and blit
+        // Downsample  and blit
         var wb = new WriteableBitmap(new PixelSize(W, H), new Avalonia.Vector(96, 96),
                                      PixelFormat.Bgra8888, AlphaFormat.Premul);
 
@@ -1632,7 +1738,7 @@ public class SceneView : Control
                             float shadowAmt = (s0 + s1 + s2 + s3) * 0.25f;
 
 
-                            
+
 
                             // modulate only the diffuse term (keep ambient)
                             float diffuse = MathF.Max(0f, shade - Ambient);
@@ -1772,7 +1878,85 @@ public class SceneView : Control
     #endregion
 
     #region Depth-tested grid
-    void DrawGridZ(in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+    void OverlayInfiniteGrid(in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+                         uint[] color, float[] zbuf, int W, int H,
+                         float step = 1f, int majorEvery = 5)
+    {
+        // colors
+        uint minor = PackBGRA(Color.FromRgb(0x30, 0x30, 0x30));
+        uint major = PackBGRA(Color.FromRgb(0x48, 0x48, 0x48));
+        uint axis = PackBGRA(Color.FromRgb(0x60, 0x60, 0x60));
+
+        var vp = view * proj;
+        SN.Matrix4x4.Invert(vp, out var invVP);
+
+        // camera world position (for distance fade)
+        SN.Matrix4x4.Invert(view, out var invView);
+        var cam = SN.Vector3.Transform(SN.Vector3.Zero, invView);
+
+        for (int y = 0; y < H; y++)
+        {
+            int row = y * W;
+            float ny = 1f - ((y + 0.5f) / H) * 2f;         // [-1..+1]
+
+            for (int x = 0; x < W; x++)
+            {
+                float nx = ((x + 0.5f) / W) * 2f - 1f;     // [-1..+1]
+
+                // ray in WORLD space
+                var n4 = SN.Vector4.Transform(new SN.Vector4(nx, ny, 0f, 1f), invVP);
+                var f4 = SN.Vector4.Transform(new SN.Vector4(nx, ny, 1f, 1f), invVP);
+                var n3 = new SN.Vector3(n4.X, n4.Y, n4.Z) / n4.W;
+                var f3 = new SN.Vector3(f4.X, f4.Y, f4.Z) / f4.W;
+                var dir = SN.Vector3.Normalize(f3 - n3);
+
+                // intersect y=0 ground plane in front of the near point
+                const float EPS = 1e-6f;
+                if (MathF.Abs(dir.Y) < EPS) continue;
+                float t = -n3.Y / dir.Y;
+                if (t <= 0f) continue;
+
+                var p = n3 + dir * t; // world hit
+
+                // project for proper z
+                var clip = SN.Vector4.Transform(new SN.Vector4(p, 1f), vp);
+                if (clip.W <= 0f) continue;
+                float z = (clip.Z / clip.W);
+                int idx = row + x;
+                if (z >= zbuf[idx]) continue; // something nearer already there
+
+                // grid shading (thin lines that fade with distance)
+                float gx = p.X / step, gz = p.Z / step;
+                float wx = MathF.Abs(gx - MathF.Round(gx));
+                float wz = MathF.Abs(gz - MathF.Round(gz));
+                float distToLine = MathF.Min(wx, wz);        // 0 at line, ~0.5 mid-cell
+
+                // line width in "cell" units (slightly widens up close)
+                float w = 0.015f + 0.0025f * MathF.Min(40f, t);
+                float alpha = Math.Clamp((w - distToLine) / w, 0f, 1f);
+
+                // distance fade so it doesn’t clutter the horizon
+                float d = SN.Vector3.Distance(cam, p);
+                float fade = 1f / (1f + 0.12f * d);
+                alpha *= fade;
+
+                if (alpha <= 0f) continue;
+
+                // choose color: axis (x/z == 0), major every N, else minor
+                int ix = (int)MathF.Round(gx);
+                int iz = (int)MathF.Round(gz);
+                bool onAxis = (ix == 0) || (iz == 0);
+                bool onMajor = (ix % majorEvery == 0) || (iz % majorEvery == 0);
+                uint col = onAxis ? axis : (onMajor ? major : minor);
+
+                // blend over sky; write z so meshes in front occlude it
+                color[idx] = LerpBGRA(color[idx], col, alpha);
+                zbuf[idx] = z;
+            }
+        }
+    }
+    //old code 
+    /*void DrawGridZ(in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
                    uint[] color, float[] zbuf, int W, int H,
                    int halfLines, float step)
     {
@@ -1832,7 +2016,7 @@ public class SceneView : Control
                 if (z < zbuf[idx]) { zbuf[idx] = z; color[idx] = packed; }
             }
         }
-    }
+    }*/
 
     static void Downsample2x(uint[] src, int srcW, int srcH, uint[] dst, int dstW, int dstH)
     {
@@ -1863,7 +2047,7 @@ public class SceneView : Control
         }
     }
 
-    
+
 
     // Approx local bounding radius (for any mesh)
     static float ApproxLocalRadius(Mesh m)
