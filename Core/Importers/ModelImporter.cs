@@ -41,13 +41,20 @@ namespace Game_Engine.Core.Importers
             var ctx = new AssimpContext();
 
             // Triangulate, join verts, smooth normals, improve cache locality, etc.
-            var pp = PostProcessSteps.Triangulate
+            /*var pp = PostProcessSteps.Triangulate
                    | PostProcessSteps.JoinIdenticalVertices
                    | PostProcessSteps.GenerateSmoothNormals
                    | PostProcessSteps.ImproveCacheLocality
                    | PostProcessSteps.RemoveRedundantMaterials
                    | PostProcessSteps.FixInFacingNormals
-                   | PostProcessSteps.FlipWindingOrder;   // FBX convention often wants this with our rasterizer
+                   | PostProcessSteps.FlipWindingOrder   // FBX convention often wants this with our rasterizer
+                   | PostProcessSteps.FlipUVs; // Flip UVs to correct orientation*/
+
+            var pp = PostProcessSteps.Triangulate
+                   | PostProcessSteps.JoinIdenticalVertices
+                   | PostProcessSteps.GenerateSmoothNormals
+                   | PostProcessSteps.ImproveCacheLocality
+                   | PostProcessSteps.RemoveRedundantMaterials;
 
             // UV orientation: our sampler flips V already (top-left images), so we do NOT FlipUVs here.
 
@@ -58,8 +65,17 @@ namespace Game_Engine.Core.Importers
             // Build materials first (index -> engine Material)
             var materials = BuildMaterials(scene, Path.GetDirectoryName(path)!);
 
-            // Convert nodes recursively
-            var root = ConvertNode(scene, scene.RootNode, materials);
+            // Normalize scale
+            float maxScale = 0f;
+            foreach (var m in scene.Meshes)
+            {
+                var (radius, _) = ApproxRadialAndHeight(m);
+                maxScale = Math.Max(maxScale, radius);
+            }
+            float scaleFactor = maxScale > 0 ? 1f / maxScale : 1f;
+
+            // Convert nodes recursively with scale factor
+            var root = ConvertNode(scene, scene.RootNode, materials, scaleFactor);
 
             root.Name = Path.GetFileNameWithoutExtension(path);
             return root;
@@ -203,16 +219,23 @@ namespace Game_Engine.Core.Importers
         }
 
 
-        static GameObject ConvertNode(Scene sc, Node node, Dictionary<int, Material> materials)
+        static GameObject ConvertNode(Scene sc, Node node, Dictionary<int, Material> materials, float scaleFactor)
         {
             var go = new GameObject(node.Name);
             ApplyTransform(node.Transform, go.Transform);
+
+            // Apply scale normalization to each component
+           /* go.Transform.Scale = new Vector3(
+                go.Transform.Scale.X * scaleFactor,
+                go.Transform.Scale.Y * scaleFactor,
+                go.Transform.Scale.Z * scaleFactor
+            );*/
 
             // Mesh instances on this node
             foreach (var idx in node.MeshIndices)
             {
                 var aim = sc.Meshes[idx];
-                var (mesh, hasNormals) = ConvertMesh(aim);
+                var (mesh, hasNormals) = ConvertMesh(aim, scaleFactor);
 
                 var mf = new MeshFilter { Mesh = mesh };
                 var mr = new MeshRenderer();
@@ -227,25 +250,59 @@ namespace Game_Engine.Core.Importers
                 // If no normals in file, we already generated smooth normals above.
                 if (!hasNormals) mesh.RecalculateNormalsSmooth();
 
+                // --- set double-sided from the Assimp material when available ---
+                bool twoSided = false;
+                if (aim.MaterialIndex >= 0 && aim.MaterialIndex < sc.MaterialCount)
+                {
+                    var aiMat = sc.Materials[aim.MaterialIndex];
+                    var t = aiMat.GetType();
+
+                    // Newer AssimpNet: bool TwoSided
+                    var pTwo = t.GetProperty("TwoSided");
+                    if (pTwo != null)
+                        twoSided = Convert.ToBoolean(pTwo.GetValue(aiMat));
+                    else
+                    {
+                        // Some builds: IsTwoSided
+                        var pIs = t.GetProperty("IsTwoSided");
+                        if (pIs != null)
+                            twoSided = Convert.ToBoolean(pIs.GetValue(aiMat));
+                        else
+                        {
+                            // Older builds: HasTwoSided (usually only present when true)
+                            var pHas = t.GetProperty("HasTwoSided");
+                            if (pHas != null)
+                                twoSided = Convert.ToBoolean(pHas.GetValue(aiMat));
+                        }
+                    }
+                }
+
+                mr.DoubleSided = twoSided;
+
+                // Force double-sided for FBX objects to prevent slicing of thin walls
+                //mr.DoubleSided = true;
+
+                
+
                 go.AddBehavior(mf);
                 go.AddBehavior(mr);
             }
 
             // Children
             foreach (var child in node.Children)
-                go.AddChild(ConvertNode(sc, child, materials));
+                go.AddChild(ConvertNode(sc, child, materials, scaleFactor));
 
             return go;
         }
 
-        static (Mesh mesh, bool hadNormals) ConvertMesh(Assimp.Mesh m)
+        static (Mesh mesh, bool hadNormals) ConvertMesh(Assimp.Mesh m, float scale = 1f)
         {
             // Vertices
             var v = new SN.Vector3[m.VertexCount];
             for (int i = 0; i < v.Length; i++)
             {
                 var p = m.Vertices[i];
-                v[i] = new SN.Vector3(p.X, p.Y, p.Z);
+                v[i] = new SN.Vector3(p.X * scale, p.Y * scale, p.Z * scale);
             }
 
             // Indices (triangulated already)
@@ -320,6 +377,20 @@ namespace Game_Engine.Core.Importers
 
             const double Rad2Deg = 180.0 / Math.PI;
             rx *= Rad2Deg; ry *= Rad2Deg; rz *= Rad2Deg;
+        }
+
+        // Helper method to approximate radius and height (assumed from SceneView.cs)
+        static (float radius, float height) ApproxRadialAndHeight(Assimp.Mesh m)
+        {
+            float minY = float.PositiveInfinity, maxY = float.NegativeInfinity, r = 0f;
+            foreach (var p in m.Vertices)
+            {
+                if (p.Y < minY) minY = p.Y;
+                if (p.Y > maxY) maxY = p.Y;
+                float rr = (float)Math.Sqrt(p.X * p.X + p.Z * p.Z);
+                if (rr > r) r = rr;
+            }
+            return (r, maxY - minY);
         }
     }
 }

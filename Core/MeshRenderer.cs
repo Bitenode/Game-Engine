@@ -10,6 +10,8 @@ namespace Game_Engine.Core
         [Persist] public bool CastShadows { get; set; } = true;
         [Persist] public bool ReceiveShadows { get; set; } = true;
         [Persist] public bool DoubleSided { get; set; } = false;
+        [Persist] public bool InvertFrontFace { get; set; } = false;
+
         [Persist] public Material? Material { get; set; } = new Material();
 
 

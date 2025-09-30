@@ -17,5 +17,7 @@ namespace Game_Engine.Core
 
         // For future tinting  renderer treats this as a luminance now
         [Persist] public Color Color { get; set; } = Colors.White;
+
+        
     }
 }

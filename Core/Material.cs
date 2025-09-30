@@ -67,8 +67,11 @@ namespace Game_Engine.Core
         // serialized as "#AARRGGBB" by SceneSerialization
         [Persist] public Color Tint { get; set; } = Colors.White;
 
-        // optional knobs
+        //  knobs WIP
         [Persist] public float Metallic { get; set; }
         [Persist] public float Smoothness { get; set; }
+
+        public enum BlendMode { Opaque, Alpha }
+        public BlendMode Blend = BlendMode.Opaque;
     }
 }
