@@ -18,7 +18,7 @@ using Avalonia.Threading;
 
 namespace Game_Engine.Views;
 
-// Lightweight orbit/pan/zoom scene view rendered with Avalonia (software).
+
 public class SceneView : Control
 {
     #region Camera & selection
@@ -159,6 +159,7 @@ public class SceneView : Control
         return Color.FromArgb(c.A, r, g, b);
     }
 
+
     static SN.Matrix4x4 WorldFromTransform(Core.Transform t)
     {
         var s = SN.Matrix4x4.CreateScale((float)t.Scale.X, (float)t.Scale.Y, (float)t.Scale.Z);
@@ -182,24 +183,30 @@ public class SceneView : Control
                 max = new SN.Vector3(MathF.Max(max.X, p.X), MathF.Max(max.Y, p.Y), MathF.Max(max.Z, p.Z));
             }
         }
+
         void Walk(GameObject go, SN.Matrix4x4 parentW)
         {
             var W = parentW * WorldFromTransform(go.Transform);
-            // If there's a mesh, include all its transformed vertices
-            var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault();
-            if (mf?.Mesh?.Vertices is { Length: > 0 } vtx)
+
+            // Renderers can have more than one MeshFilter on the same GO
+            foreach (var mf in go.Behaviors.OfType<MeshFilter>())
             {
-                for (int i = 0; i < vtx.Length; i++)
-                    Expand(SN.Vector3.Transform(vtx[i], W));
+                var vtx = mf.Mesh?.Vertices;
+                if (mf.Enabled && vtx is { Length: > 0 })
+                {
+                    for (int i = 0; i < vtx.Length; i++)
+                        Expand(SN.Vector3.Transform(vtx[i], W));
+                }
             }
-            else
-            {
-                // No mesh? At least include the object's origin so framing works.
+
+            // If there was no mesh at all, at least include the origin
+            if (!go.Behaviors.OfType<MeshFilter>().Any())
                 Expand(SN.Vector3.Transform(SN.Vector3.Zero, W));
-            }
+
             foreach (var ch in go.Children)
                 Walk(ch, W);
         }
+
         Walk(root, SN.Matrix4x4.Identity);
         return (min, max);
     }
@@ -249,6 +256,28 @@ public class SceneView : Control
         byte a = rgba[idx + 3];
         return Color.FromArgb(a, r, g, b);
     }
+
+    // "over" alpha-blended on top of "under"
+    static Color AlphaOver(Color under, Color over)
+    {
+        byte r = (byte)((under.R * (255 - over.A) + over.R * over.A) / 255);
+        byte g = (byte)((under.G * (255 - over.A) + over.G * over.A) / 255);
+        byte b = (byte)((under.B * (255 - over.A) + over.B * over.A) / 255);
+        return Color.FromRgb(r, g, b);
+    }
+
+    // For cubes: classify a triangle by its (object-space) face normal.
+    // Returns: 0=+X,1=−X,2=+Y,3=−Y,4=+Z,5=−Z, or −1 if unknown.
+    static int CubeFaceIdFromObjectNormals(in SN.Vector3 na, in SN.Vector3 nb, in SN.Vector3 nc)
+    {
+        var n = na + nb + nc;
+        if (n.LengthSquared() < 1e-8f) return -1;
+        var an = new SN.Vector3(MathF.Abs(n.X), MathF.Abs(n.Y), MathF.Abs(n.Z));
+        if (an.X >= an.Y && an.X >= an.Z) return n.X >= 0 ? 0 : 1;
+        if (an.Y >= an.X && an.Y >= an.Z) return n.Y >= 0 ? 2 : 3;
+        return n.Z >= 0 ? 4 : 5;
+    }
+
 
     // --- Lighting & sky helpers -----------------------------------------------
     // forward (-Z) from a Transform (matches your yaw/pitch/roll order)
@@ -340,7 +369,7 @@ public class SceneView : Control
 
     bool HandleFlyKeyDown(Key k)
     {
-        // movement + modifiers we care about
+        // movement + modifiers
         if (k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E
               or Key.LeftShift or Key.RightShift
               or Key.LeftCtrl or Key.RightCtrl)
@@ -950,10 +979,10 @@ public class SceneView : Control
         var skyTop = sky?.Top ?? Color.Parse("#1f1f1f");
         var skyBot = sky?.Bottom ?? Color.Parse("#1f1f1f");
 
-        // View/Proj for the render resolution
+        // View/Proj at render res
         var (view, proj) = GetViewProj(new Size(RW, RH));
 
-        // Optional sun highlight from a directional light
+        // sun dir (just for sky highlight)
         var dirLight = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault(l => l.Type == LightType.Directional);
         SN.Vector3? sunDir = null;
         if (dirLight?.gameObject is { } dgo)
@@ -964,23 +993,18 @@ public class SceneView : Control
             sunDir = -SN.Vector3.Normalize(z);
         }
 
-        // Fill sky & clear z
+        // Clear sky + z
         FillSkyWorldUp(color, zbuf, RW, RH, view, proj, skyTop, skyBot, sunDir);
 
-        // Lighting defaults (computed once for the whole frame)
+        // Lighting defaults (frame-level)
         var light = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault();
         SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
-
-        // When the Light toggle is OFF we really want UNLIT: no diffuse, no ambient.
         float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
         float DiffuseK = ShowLight ? 1f : 0f;
-
 
         bool lightIsPoint = false;
         SN.Vector3 lightPosW = SN.Vector3.Zero;
         float lightRange = 10f;
-
-
 
         if (light is not null)
         {
@@ -998,7 +1022,7 @@ public class SceneView : Control
             }
         }
 
-        // Build a tiny shadow map for directional light
+        // Small directional shadow map
         ShadowMap? shadow = null;
         if (ShowLight && light is { Type: Game_Engine.Core.LightType.Directional } && !lightIsPoint)
         {
@@ -1019,43 +1043,41 @@ public class SceneView : Control
             foreach (var root in SceneService.Root)
                 DrawNodeDepth(root, lightView, lightProj, SN.Matrix4x4.Identity, sdepth, SW, SH);
 
-            shadow = new ShadowMap
-            {
-                VP = lightView * lightProj,
-                Depth = sdepth,
-                W = SW,
-                H = SH,
-                Bias = 0.0025f
-            };
+            shadow = new ShadowMap { VP = lightView * lightProj, Depth = sdepth, W = SW, H = SH, Bias = 0.0025f };
         }
 
-        // Log once after selection/material changes
+        // One-time debug dump after changes
         if (_logNextRender)
         {
             _logNextRender = false;
             DumpSelectedMaterialDebug();
             if (ShowWire)
-                System.Diagnostics.Debug.WriteLine("[SceneView] ShowWire is enabled — solid (textured) pass is skipped by design.");
+                Debug.WriteLine("[SceneView] ShowWire is enabled — solid pass is skipped.");
         }
 
-        // Grid (depth-tested) at render res
+        // Depth-tested grid
         if (ShowGrid)
             OverlayInfiniteGrid(view, proj, color, zbuf, RW, RH, step: 1f, majorEvery: 5);
 
-        // Solid pass (only when not in global wire mode) — single consistent path
+        // Solid opaque pass
         if (!ShowWire)
         {
             foreach (var root in SceneService.Root)
-                DrawNodeSolidZ(
-                    root, view, proj, SN.Matrix4x4.Identity,
-                    color, zbuf, RW, RH,
-                    L, DiffuseK, Ambient,
-                    lightIsPoint, lightPosW, lightRange,
-                    shadow);
+                DrawNodeSolidZ(root, view, proj, SN.Matrix4x4.Identity,
+                               color, zbuf, RW, RH,
+                               L, DiffuseK, Ambient,
+                               lightIsPoint, lightPosW, lightRange,
+                               shadow);
+            // Transparent back-to-front pass
+            foreach (var root in SceneService.Root)
+                DrawNodeSolidZ_QueueTransparent(root, view, proj, SN.Matrix4x4.Identity,
+                                                color, zbuf, RW, RH,
+                                                L, DiffuseK, Ambient,
+                                                lightIsPoint, lightPosW, lightRange,
+                                                shadow);
         }
 
-
-        // Downsample & blit
+        // Blit
         var wb = new WriteableBitmap(new PixelSize(W, H), new Avalonia.Vector(96, 96),
                                      PixelFormat.Bgra8888, AlphaFormat.Premul);
 
@@ -1086,14 +1108,16 @@ public class SceneView : Control
             }
         ctx.DrawImage(wb, new Rect(0, 0, W, H));
 
-        // Wireframe overlay (unchanged) at native res
+        // Wire overlay
         var vp = view * proj;
         foreach (var root in SceneService.Root)
             DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
 
-        // Translate gizmo
+        // Gizmo
         DrawTranslateGizmo(ctx, view, proj, size);
     }
+
+
 
 
     void DumpSelectedMaterialDebug()
@@ -1106,60 +1130,99 @@ public class SceneView : Control
                 Debug.WriteLine("[SceneView] No selection.");
                 return;
             }
-            var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault(x => x.Enabled);
-            var mr = go.Behaviors.OfType<MeshRenderer>().FirstOrDefault(x => x.Enabled);
-            if (mr == null)
+
+            // All enabled filters/renderers on this GO
+            var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
+            var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
+            int pairs = Math.Min(filters.Count, renderers.Count);
+
+            Debug.WriteLine($"[SceneView] '{go.Name}' meshPairs={pairs} (filters={filters.Count}, renderers={renderers.Count})");
+            if (pairs == 0)
             {
-                Debug.WriteLine($"[SceneView] '{go.Name}' has no enabled MeshRenderer.");
+                Debug.WriteLine("[SceneView] No enabled MeshFilter+MeshRenderer pairs.");
                 return;
             }
-            // Try to read a 'Material' property from the renderer (public or non-public)
-            var matProp = mr.GetType().GetProperty("Material",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mat = matProp?.GetValue(mr) as Game_Engine.Core.Material;
-            if (mat == null)
+
+            // --- helpers ----------------------------------------------------------
+            static System.Numerics.Vector2[]? TryGetUVs(Mesh m)
             {
-                Debug.WriteLine($"[SceneView] '{go.Name}' MeshRenderer has no Material.");
-                return;
-            }
-            int texCount = mat.Textures?.Count ?? 0;
-            var first = mat.Textures?.FirstOrDefault();
-            var tex = first?.Texture;
-            string texInfo = tex != null ? $"{tex.Width}x{tex.Height}" : "null";
-            Debug.WriteLine($"[SceneView] Material: textures={texCount}, firstHasTexture={(tex != null)}, firstName='{first?.Name ?? "(none)"}', size={texInfo}");
-            // UV presence on the current mesh
-            int verts = mf?.Mesh?.Vertices?.Length ?? -1;
-            System.Numerics.Vector2[]? uvs = null;
-            if (mf?.Mesh != null)
-            {
-                // Look for Vector2[] UVs by common names (public or non-public)
-                var cand = new[] { "UVs", "UV", "TexCoords", "TexCoord", "UV0", "UV1" };
-                var t = mf.Mesh.GetType();
-                foreach (var n in cand)
+                var t = m.GetType();
+                string[] candidates = { "UVs", "UV", "TexCoords", "TexCoord", "UV0", "UV1" };
+                foreach (var n in candidates)
                 {
                     var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                     if (p != null && p.PropertyType == typeof(System.Numerics.Vector2[]))
-                    {
-                        uvs = (System.Numerics.Vector2[]?)p.GetValue(mf.Mesh);
-                        break;
-                    }
+                        return (System.Numerics.Vector2[]?)p.GetValue(m);
+
+                    var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (f != null && f.FieldType == typeof(System.Numerics.Vector2[]))
+                        return (System.Numerics.Vector2[]?)f.GetValue(m);
                 }
-                if (uvs == null)
+                return null;
+            }
+
+            static string GetTexUsage(object slot)
+            {
+                var prop = slot.GetType().GetProperty("Usage", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var v = prop?.GetValue(slot);
+                return v?.ToString() ?? "Albedo";
+            }
+
+            static int GetFaceMask(object slot)
+            {
+                var prop = slot.GetType().GetProperty("FaceMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop == null) return -1;
+                var v = prop.GetValue(slot);
+                if (v is int i) return i;
+                if (v != null && v.GetType().IsEnum) return Convert.ToInt32(v);
+                return -1;
+            }
+
+            // ----------------------------------------------------------------------
+
+            for (int i = 0; i < pairs; i++)
+            {
+                var mf = filters[i];
+                var mr = renderers[i];
+
+                var mesh = mf.Mesh;
+                var verts = mesh?.Vertices?.Length ?? 0;
+                var tris = (mesh?.TriIndices?.Length ?? 0) / 3;
+                var uvs = mesh != null ? TryGetUVs(mesh) : null;
+
+                Debug.WriteLine($"[SceneView]  Pair[{i}]  wire={mr.Wireframe}, castShadows={mr.CastShadows}, recvShadows={mr.ReceiveShadows}, color={mr.Color}");
+                Debug.WriteLine($"[SceneView]    Mesh    : verts={verts}, tris={tris}, hasUVs={(uvs != null)}, uvLen={(uvs?.Length ?? 0)}");
+
+                // Material (via reflection to work with non-public property)
+                var matProp = mr.GetType().GetProperty("Material",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var mat = matProp?.GetValue(mr) as Game_Engine.Core.Material;
+
+                if (mat == null)
                 {
-                    foreach (var n in cand)
+                    Debug.WriteLine($"[SceneView]    Material: <null>");
+                    continue;
+                }
+
+                int texCount = mat.Textures?.Count ?? 0;
+                Debug.WriteLine($"[SceneView]    Material: textures={texCount}");
+
+                if (texCount > 0 && mat.Textures != null)
+                {
+                    for (int ti = 0; ti < mat.Textures.Count; ti++)
                     {
-                        var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                        if (f != null && f.FieldType == typeof(System.Numerics.Vector2[]))
-                        {
-                            uvs = (System.Numerics.Vector2[]?)f.GetValue(mf.Mesh);
-                            break;
-                        }
+                        var slot = mat.Textures[ti];
+                        var tex = slot.Texture;
+                        string size = tex != null ? $"{tex.Width}x{tex.Height}" : "null";
+                        string usage = GetTexUsage(slot);
+                        int mask = GetFaceMask(slot);
+                        string maskStr = mask == -1 ? "all" : $"0x{mask:X}";
+                        string name = slot.Name ?? "(unnamed)";
+
+                        Debug.WriteLine($"[SceneView]      [{ti}] name='{name}', usage={usage}, faceMask={maskStr}, tex={size}");
                     }
                 }
             }
-            Debug.WriteLine($"[SceneView] Mesh: verts={verts}, hasUVs={(uvs != null)}, uvLen={(uvs?.Length ?? 0)}");
-            
-            Debug.WriteLine("[SceneView] Note: solid rasterizer is color-only; textures won’t show until we pass Material + sample UVs.");
         }
         catch (Exception ex)
         {
@@ -1174,27 +1237,257 @@ public class SceneView : Control
                     ShadowMap? shadow)
     {
         var world = parentWorld * WorldFromTransform(go.Transform);
-        var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault(x => x.Enabled);
-        var mr = go.Behaviors.OfType<MeshRenderer>().FirstOrDefault(x => x.Enabled);
-        if (mf?.Mesh != null && mr != null && !mr.Wireframe)
+
+        // Pair filters & renderers by index (importer puts them in lockstep)
+        var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
+        var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
+        int n = Math.Min(filters.Count, renderers.Count);
+
+        for (int i = 0; i < n; i++)
         {
-            var mesh = EnsureProceduralLod(go, mf.Mesh, world, view, proj, new Size(W, H));
+            var mf = filters[i];
+            var mr = renderers[i];
+            if (mr.Wireframe) continue;
+            if (mf.Mesh is null) continue;
+
+            // OPAQUE ONLY in this pass
+            if (IsRendererTransparent(mr)) continue;
+
+            
+            var mesh = EnsureProceduralLod(mf, world, view, proj, new Size(W, H));
+
+            // Pull material from this renderer (public or non-public)
             var matProp = mr.GetType().GetProperty("Material",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             var mat = matProp?.GetValue(mr) as Game_Engine.Core.Material;
+
             RasterizeMeshSolidZ(mesh, world, view, proj, color, zbuf, W, H,
                 mr.Color, mat, L, DiffuseK, Ambient,
                 lightIsPoint, lightPosW, lightRange,
-                shadow, mr.ReceiveShadows, mr.DoubleSided, mr.InvertFrontFace);
+                shadow, mr.ReceiveShadows, mr.DoubleSided, mr.InvertFrontFace,
+                transparentPass: false);
         }
+
         foreach (var child in go.Children)
             DrawNodeSolidZ(child, view, proj, world, color, zbuf, W, H,
                            L, DiffuseK, Ambient, lightIsPoint, lightPosW, lightRange, shadow);
     }
 
-    Mesh EnsureProceduralLod(GameObject go, Mesh mesh,
+    // Heuristic: decide if this renderer should be drawn in the transparent pass
+    static bool IsRendererTransparent(MeshRenderer mr)
+    {
+        // 1) Renderer tint alpha
+        if (mr.Color.A < 255) return true;
+
+        // 2) Grab the material (public or non-public)
+        var matProp = mr.GetType().GetProperty("Material",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        var mat = matProp?.GetValue(mr);
+        if (mat == null) return false;
+
+        var mt = mat.GetType();
+
+        // 3) Material flags/knobs
+        if (TryGetBool(mt, mat, "Transparent", out var isTrans) && isTrans)
+            return true;
+
+        if (TryGetDouble(mt, mat, "Opacity", out var opacity) && opacity < 0.999)
+            return true;
+
+        if (TryGetString(mt, mat, "Blend", out var blend) && BlendImpliesTransparency(blend))
+            return true;
+
+        if (TryGetString(mt, mat, "BlendMode", out var blendMode) && BlendImpliesTransparency(blendMode))
+            return true;
+
+        // 4) Texture usages
+        var texListProp = mt.GetProperty("Textures", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (texListProp?.GetValue(mat) is System.Collections.IEnumerable slots)
+        {
+            foreach (var slot in slots)
+            {
+                // Usage (string or enum)
+                string usage = GetUsage(slot);
+
+                // Explicit transparency usages
+                if (usage == "opacity" || usage == "transparent" || usage.Contains("alpha") || usage.Contains("transp"))
+                    return true;
+
+                // If this is an albedo/base/diffuse texture and it actually has alpha < 255,
+                // render in the transparent pass (classic “cutout”/PNG-with-alpha case).
+                if (usage.Contains("albedo") || usage.Contains("basecolor") || usage.Contains("base") || usage.Contains("diff"))
+                {
+                    var tex = GetTexture(slot);
+                    if (tex != null && TextureHasAnyAlpha(tex))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+
+        // ---------- local helpers -----------------------------------------------
+
+        static bool TryGetBool(Type t, object o, string name, out bool v)
+        {
+            var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p != null && p.PropertyType == typeof(bool))
+            {
+                v = (bool)p.GetValue(o)!;
+                return true;
+            }
+            v = false; return false;
+        }
+
+        static bool TryGetDouble(Type t, object o, string name, out double v)
+        {
+            var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p != null)
+            {
+                var raw = p.GetValue(o);
+                v = raw is float f ? f : raw is double d ? d : 1.0;
+                return true;
+            }
+            v = 1.0; return false;
+        }
+
+        static bool TryGetString(Type t, object o, string name, out string s)
+        {
+            var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p != null)
+            {
+                s = p.GetValue(o)?.ToString() ?? "";
+                return true;
+            }
+            s = ""; return false;
+        }
+
+        static bool BlendImpliesTransparency(string s)
+        {
+            s = (s ?? "").ToLowerInvariant();
+            return s.Contains("alpha") || s.Contains("transp") || s.Contains("add") || s.Contains("screen");
+        }
+
+        static string GetUsage(object slot)
+        {
+            var up = slot.GetType().GetProperty("Usage", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var u = up?.GetValue(slot);
+            return (u?.ToString() ?? "albedo").ToLowerInvariant();
+        }
+
+        static object? GetTexture(object slot)
+        {
+            return slot.GetType().GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                       ?.GetValue(slot);
+        }
+
+        static bool TextureHasAnyAlpha(object tex)
+        {
+            // Game_Engine.Core.Texture2D with byte[] Rgba and dimensions
+            var tt = tex.GetType();
+
+            // Some pipelines expose a direct boolean — use it if present
+            var pHasAlpha = tt.GetProperty("HasAlpha", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (pHasAlpha != null && pHasAlpha.PropertyType == typeof(bool))
+                return (bool)pHasAlpha.GetValue(tex)!;
+
+            var rgba = tt.GetProperty("Rgba", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(tex) as byte[];
+            var wObj = tt.GetProperty("Width", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(tex);
+            var hObj = tt.GetProperty("Height", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(tex);
+
+            if (rgba == null || rgba.Length < 4 || wObj == null || hObj == null)
+                return false;
+
+            int pixels = rgba.Length / 4;
+            if (pixels <= 0) return false;
+
+            // Probe up to ~1024 pixels to keep it cheap
+            int step = Math.Max(1, pixels / 1024);
+            for (int i = 0; i < pixels; i += step)
+            {
+                int a = rgba[i * 4 + 3];
+                if (a < 250) // allow minor compression noise
+                    return true;
+            }
+            return false;
+        }
+    }
+
+
+
+
+
+
+    void DrawNodeSolidZ_QueueTransparent(GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+                                     in SN.Matrix4x4 parentWorld, uint[] color, float[] zbuf, int W, int H,
+                                     SN.Vector3 L, float DiffuseK, float Ambient,
+                                     bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
+                                     ShadowMap? shadow)
+    {
+        // Copy 'in' params so the local function can capture them safely
+        SN.Matrix4x4 v = view;
+        SN.Matrix4x4 p = proj;
+
+        var items = new List<(float ndcZ, SN.Matrix4x4 world, MeshFilter mf, MeshRenderer mr, Game_Engine.Core.Material? mat)>();
+
+        void Gather(GameObject node, in SN.Matrix4x4 parentW)
+        {
+            var world = parentW * WorldFromTransform(node.Transform);
+
+            var filters = node.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
+            var renderers = node.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
+            int n = Math.Min(filters.Count, renderers.Count);
+
+            for (int i = 0; i < n; i++)
+            {
+                var mf = filters[i];
+                var mr = renderers[i];
+                if (mr.Wireframe || mf.Mesh is null) continue;
+                if (!IsRendererTransparent(mr)) continue;
+
+                
+                var _ = EnsureProceduralLod(mf, world, v, p, new Size(W, H));
+
+                // Depth key (use object origin), computed with local copies v/p
+                var clip = SN.Vector4.Transform(new SN.Vector4(SN.Vector3.Transform(SN.Vector3.Zero, world), 1f), v * p);
+                if (clip.W <= 0f) continue;
+                float ndcZ = clip.Z / clip.W;
+
+                var matProp = mr.GetType().GetProperty("Material",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var mat = matProp?.GetValue(mr) as Game_Engine.Core.Material;
+
+                items.Add((ndcZ, world, mf, mr, mat));
+            }
+
+            foreach (var c in node.Children)
+                Gather(c, world);
+        }
+
+        Gather(go, parentWorld);
+
+        // Back-to-front
+        items.Sort((a, b) => b.ndcZ.CompareTo(a.ndcZ));
+
+        foreach (var it in items)
+        {
+            var mesh = it.mf.Mesh!;
+            RasterizeMeshSolidZ(mesh, it.world, v, p,
+                color, zbuf, W, H,
+                it.mr.Color, it.mat, L, DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadow, it.mr.ReceiveShadows, it.mr.DoubleSided, it.mr.InvertFrontFace,
+                transparentPass: true);
+        }
+    }
+
+
+
+
+    Mesh EnsureProceduralLod(MeshFilter mf,
                          in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz)
     {
+        var mesh = mf.Mesh!;
         switch (mesh.Kind)
         {
             case MeshKind.Sphere:
@@ -1204,14 +1497,13 @@ public class SceneView : Control
                     var (needLon, needLat) = Mesh.SuggestSphereTesselation(rPx);
                     if (needLon > mesh.TessA || needLat > mesh.TessB)
                     {
-                        // regenerate with the same local radius
                         var upgraded = Mesh.CreateUvSphere(needLon, needLat, rLocal);
-                        // swap into the filter so wireframe etc. stays in sync
-                        go.Behaviors.OfType<MeshFilter>().First().Mesh = upgraded;
+                        mf.Mesh = upgraded;
                         return upgraded;
                     }
                     break;
                 }
+
             case MeshKind.Cylinder:
                 {
                     var (rLocal, hLocal) = ApproxRadialAndHeight(mesh);
@@ -1220,11 +1512,12 @@ public class SceneView : Control
                     if (needSides > mesh.TessA)
                     {
                         var upgraded = Mesh.CreateCylinder(needSides, rLocal, hLocal, caps: true);
-                        go.Behaviors.OfType<MeshFilter>().First().Mesh = upgraded;
+                        mf.Mesh = upgraded;
                         return upgraded;
                     }
                     break;
                 }
+
             case MeshKind.Cone:
                 {
                     var (rLocal, hLocal) = ApproxRadialAndHeight(mesh);
@@ -1233,7 +1526,7 @@ public class SceneView : Control
                     if (needSides > mesh.TessA)
                     {
                         var upgraded = Mesh.CreateCone(needSides, rLocal, hLocal, cap: true);
-                        go.Behaviors.OfType<MeshFilter>().First().Mesh = upgraded;
+                        mf.Mesh = upgraded;
                         return upgraded;
                     }
                     break;
@@ -1242,17 +1535,28 @@ public class SceneView : Control
         return mesh;
     }
 
+
     void DrawNodeWire(DrawingContext ctx, in SN.Matrix4x4 vp, Size sz,
-                      GameObject go, in SN.Matrix4x4 parentWorld, bool globalWire)
+                  GameObject go, in SN.Matrix4x4 parentWorld, bool globalWire)
     {
         var world = parentWorld * WorldFromTransform(go.Transform);
-        var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault(x => x.Enabled);
-        var mr = go.Behaviors.OfType<MeshRenderer>().FirstOrDefault(x => x.Enabled);
-        if (mf?.Mesh != null && mr != null && (globalWire || mr.Wireframe))
-            DrawMeshWire(ctx, mf.Mesh, world, vp, sz, mr.Color, (float)mr.LineWidth);
+
+        var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
+        var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
+        int n = Math.Min(filters.Count, renderers.Count);
+
+        for (int i = 0; i < n; i++)
+        {
+            var mf = filters[i];
+            var mr = renderers[i];
+            if (mf.Mesh != null && (globalWire || mr.Wireframe))
+                DrawMeshWire(ctx, mf.Mesh, world, vp, sz, mr.Color, (float)mr.LineWidth);
+        }
+
         foreach (var child in go.Children)
             DrawNodeWire(ctx, vp, sz, child, world, globalWire);
     }
+
 
     void DrawMeshWire(DrawingContext ctx, Mesh mesh, in SN.Matrix4x4 world,
                       in SN.Matrix4x4 vp, Size sz, Color color, float lineWidth)
@@ -1376,18 +1680,27 @@ public class SceneView : Control
         return (c.X - a.X) * (b.Y - a.Y) - (c.Y - a.Y) * (b.X - a.X);
     }
 
-    
+
     private static Color SampleTexture(Texture2D tex, float u, float v)
     {
-        // Wrap
-        u = (u % 1f + 1f) % 1f;
-        v = (v % 1f + 1f) % 1f;
+        if (tex.Width <= 0 || tex.Height <= 0)
+            return Color.FromArgb(255, 255, 255, 255);
 
-        // Flip V because textures are top-left origin
+        // Flip V (top-left origin) and clamp to texel centers
         v = 1f - v;
 
-        float px = u * (tex.Width - 1);
-        float py = v * (tex.Height - 1);
+        float maxX = tex.Width - 1;
+        float maxY = tex.Height - 1;
+
+        // Keep samples inside [0.5/max, 1-0.5/max] to avoid wrapping into transparent borders
+        float epsU = (tex.Width > 1) ? (0.5f / maxX) : 0f;
+        float epsV = (tex.Height > 1) ? (0.5f / maxY) : 0f;
+
+        u = Math.Clamp(u, epsU, 1f - epsU);
+        v = Math.Clamp(v, epsV, 1f - epsV);
+
+        float px = u * maxX;
+        float py = v * maxY;
 
         int x0 = (int)MathF.Floor(px);
         int y0 = (int)MathF.Floor(py);
@@ -1397,18 +1710,79 @@ public class SceneView : Control
         float tx = px - x0;
         float ty = py - y0;
 
+        // Read pixels
         int i00 = (y0 * tex.Width + x0) * 4;
         int i01 = (y0 * tex.Width + x1) * 4;
         int i10 = (y1 * tex.Width + x0) * 4;
         int i11 = (y1 * tex.Width + x1) * 4;
 
-        byte r = (byte)((1 - ty) * ((1 - tx) * tex.Rgba[i00] + tx * tex.Rgba[i01]) + ty * ((1 - tx) * tex.Rgba[i10] + tx * tex.Rgba[i11]));
-        byte g = (byte)((1 - ty) * ((1 - tx) * tex.Rgba[i00 + 1] + tx * tex.Rgba[i01 + 1]) + ty * ((1 - tx) * tex.Rgba[i10 + 1] + tx * tex.Rgba[i11 + 1]));
-        byte b = (byte)((1 - ty) * ((1 - tx) * tex.Rgba[i00 + 2] + tx * tex.Rgba[i01 + 2]) + ty * ((1 - tx) * tex.Rgba[i10 + 2] + tx * tex.Rgba[i11 + 2]));
-        byte a = (byte)((1 - ty) * ((1 - tx) * tex.Rgba[i00 + 3] + tx * tex.Rgba[i01 + 3]) + ty * ((1 - tx) * tex.Rgba[i10 + 3] + tx * tex.Rgba[i11 + 3]));
+        // Convert to premultiplied floats [0..1]
+        static void Premul(byte[] d, int i, out float r, out float g, out float b, out float a)
+        {
+            a = d[i + 3] / 255f;
+            float R = d[i + 0] / 255f;
+            float G = d[i + 1] / 255f;
+            float B = d[i + 2] / 255f;
+            r = R * a; g = G * a; b = B * a;
+        }
 
+        Premul(tex.Rgba, i00, out var r00, out var g00, out var b00, out var a00);
+        Premul(tex.Rgba, i01, out var r01, out var g01, out var b01, out var a01);
+        Premul(tex.Rgba, i10, out var r10, out var g10, out var b10, out var a10);
+        Premul(tex.Rgba, i11, out var r11, out var g11, out var b11, out var a11);
+
+        // Bilinear in premultiplied space
+        float r0 = r00 * (1 - tx) + r01 * tx;
+        float g0 = g00 * (1 - tx) + g01 * tx;
+        float b0 = b00 * (1 - tx) + b01 * tx;
+        float a0 = a00 * (1 - tx) + a01 * tx;
+
+        float r1 = r10 * (1 - tx) + r11 * tx;
+        float g1 = g10 * (1 - tx) + g11 * tx;
+        float b1 = b10 * (1 - tx) + b11 * tx;
+        float a1 = a10 * (1 - tx) + a11 * tx;
+
+        float r = r0 * (1 - ty) + r1 * ty;
+        float g = g0 * (1 - ty) + g1 * ty;
+        float b = b0 * (1 - ty) + b1 * ty;
+        float a = a0 * (1 - ty) + a1 * ty;
+
+        // Unpremultiply (safe)
+        if (a > 1e-6f) { r /= a; g /= a; b /= a; } else { r = g = b = 0f; }
+
+        return Color.FromArgb(
+            (byte)Math.Clamp((int)(a * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(r * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(g * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(b * 255f + 0.5f), 0, 255));
+    }
+
+
+    // Unpack BGRA uint -> Color
+    static Color UnpackBGRA(uint p)
+    {
+        byte b = (byte)(p & 0xFF);
+        byte g = (byte)((p >> 8) & 0xFF);
+        byte r = (byte)((p >> 16) & 0xFF);
+        byte a = (byte)((p >> 24) & 0xFF);
         return Color.FromArgb(a, r, g, b);
     }
+
+    // Classic "over" on top of an existing BGRA pixel (dst has A=255 in our buffer)
+    static uint BlendOver(uint dstBGRA, Color src, float a /*0..1*/)
+    {
+        if (a <= 0f) return dstBGRA;
+        if (a >= 1f) return PackBGRA(src);
+
+        var dst = UnpackBGRA(dstBGRA);
+        byte r = (byte)(src.R * a + dst.R * (1f - a));
+        byte g = (byte)(src.G * a + dst.G * (1f - a));
+        byte b = (byte)(src.B * a + dst.B * (1f - a));
+        return PackBGRA(Color.FromRgb(r, g, b)); // keep A=255 in our buffer
+    }
+
+
+
 
 
     void RasterizeMeshSolidZ(
@@ -1419,52 +1793,251 @@ public class SceneView : Control
     SN.Vector3 L, float DiffuseK, float Ambient,
     bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
     ShadowMap? shadow, bool receiveShadows, bool doubleSided,
-    bool invertFrontFace)
+    bool invertFrontFace,
+    bool transparentPass)
     {
-        // Consistent order with the rest of the renderer:
-        // positions are transformed by (world * view) then * proj
+        // --- tiny helpers ---------------------------------------------------------
+        static Color AddColor(Color a, Color b) => Color.FromRgb(
+            (byte)Math.Min(255, a.R + b.R),
+            (byte)Math.Min(255, a.G + b.G),
+            (byte)Math.Min(255, a.B + b.B));
+        static float Luma(Color c) => (0.2126f * c.R + 0.7152f * c.G + 0.0722f * c.B) / 255f;
+        static Color AlphaOver(Color under, Color over)
+        {
+            float a = over.A / 255f;
+            return Color.FromRgb(
+                (byte)(over.R * a + under.R * (1f - a)),
+                (byte)(over.G * a + under.G * (1f - a)),
+                (byte)(over.B * a + under.B * (1f - a)));
+        }
+        static int MajorAxisMaskFromNormal(SN.Vector3 n)
+        {
+            if (n.LengthSquared() < 1e-12f) return -1;
+            n = SN.Vector3.Normalize(n);
+            var a = new SN.Vector3(MathF.Abs(n.X), MathF.Abs(n.Y), MathF.Abs(n.Z));
+            if (a.X >= a.Y && a.X >= a.Z) return n.X >= 0 ? 1 : 2;  // +X / -X
+            if (a.Y >= a.X && a.Y >= a.Z) return n.Y >= 0 ? 4 : 8;  // +Y / -Y
+            return n.Z >= 0 ? 16 : 32;                               // +Z / -Z
+        }
+
+
+        // usage/face helpers (reflective)
+        static string GetUsageName(MaterialTexture slot)
+            => slot.GetType().GetProperty("Usage")?.GetValue(slot)?.ToString() ?? "Albedo";
+
+        // infer mask from name when FaceMask isn’t set
+        static int InferMaskFromName(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return -1;
+            string s = name.ToLowerInvariant();
+            int m = 0;
+            if (s.Contains("right") || s.Contains("+x") || s.Contains("px")) m |= 1;
+            if (s.Contains("left") || s.Contains("-x") || s.Contains("nx")) m |= 2;
+            if (s.Contains("top") || s.Contains("up") || s.Contains("+y") || s.Contains("py")) m |= 4;
+            if (s.Contains("bottom") || s.Contains("down") || s.Contains("-y") || s.Contains("ny")) m |= 8;
+            // Our renderer uses forward = -Z; call that "front"
+            if (s.Contains("back") || s.Contains("+z") || s.Contains("pz")) m |= 16;
+            if (s.Contains("front") || s.Contains("-z") || s.Contains("nz")) m |= 32;
+            return m == 0 ? -1 : m;
+        }
+        static int GetFaceMask(object slot)
+        {
+            var prop = slot.GetType().GetProperty("FaceMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (prop == null) return -1;
+            var v = prop.GetValue(slot);
+            if (v is int i) return i;
+            if (v != null && v.GetType().IsEnum) return Convert.ToInt32(v);
+            return -1;
+        }
+
+        static int FaceMaskFromTriAndAabb(
+            in SN.Vector3 pa, in SN.Vector3 pb, in SN.Vector3 pc,
+            in SN.Vector3 bbMin, in SN.Vector3 bbMax)
+        {
+            //  Which axis is this triangle mostly facing?
+            var n = SN.Vector3.Cross(pb - pa, pc - pa);
+            var an = new SN.Vector3(MathF.Abs(n.X), MathF.Abs(n.Y), MathF.Abs(n.Z));
+
+            //  Use the triangle centroid to decide sign (top vs bottom, etc)
+            float cx = (pa.X + pb.X + pc.X) / 3f;
+            float cy = (pa.Y + pb.Y + pc.Y) / 3f;
+            float cz = (pa.Z + pb.Z + pc.Z) / 3f;
+            float mx = (bbMin.X + bbMax.X) * 0.5f;
+            float my = (bbMin.Y + bbMax.Y) * 0.5f;
+            float mz = (bbMin.Z + bbMax.Z) * 0.5f;
+
+            if (an.X >= an.Y && an.X >= an.Z) return (cx >= mx) ? 1 : 2;  // +X / -X
+            if (an.Y >= an.X && an.Y >= an.Z) return (cy >= my) ? 4 : 8;  // +Y / -Y
+            /*Z*/
+            return (cz >= mz) ? 16 : 32; // +Z / -Z
+        }
+
+
+
+        // per-slot UV xform
+        static float GetF(object o, string name, float def)
+        {
+            var p = o.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p == null) return def;
+            var v = p.GetValue(o);
+            return v is float f ? f : v is double d ? (float)d : def;
+        }
+        static bool GetB(object o, string name, bool def)
+        {
+            var p = o.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p == null) return def;
+            var v = p.GetValue(o);
+            return v is bool b ? b : def;
+        }
+        static void ApplyUVXform(object slot, ref float u, ref float v)
+        {
+            float su = GetF(slot, "ScaleU", 1f), sv = GetF(slot, "ScaleV", 1f);
+            float ou = GetF(slot, "OffsetU", 0f), ov = GetF(slot, "OffsetV", 0f);
+            float rot = GetF(slot, "RotateUV", 0f) * (MathF.PI / 180f);
+            float uu = (u - 0.5f) * su, vv = (v - 0.5f) * sv;
+            if (MathF.Abs(rot) > 1e-6f)
+            {
+                float cs = MathF.Cos(rot), sn = MathF.Sin(rot);
+                (uu, vv) = (uu * cs - vv * sn, uu * sn + vv * cs);
+            }
+            u = uu + 0.5f + ou; v = vv + 0.5f + ov;
+        }
+
+        // texture sampler (premul & clamped)
+        static Color SamplePMClamped(Texture2D tex, float u, float v)
+        {
+            if (tex.Width <= 0 || tex.Height <= 0) return Color.FromArgb(255, 255, 255, 255);
+            v = 1f - v; // flip V
+            float maxX = tex.Width - 1, maxY = tex.Height - 1;
+            float epsU = tex.Width > 1 ? (0.5f / maxX) : 0f, epsV = tex.Height > 1 ? (0.5f / maxY) : 0f;
+            u = Math.Clamp(u, epsU, 1f - epsU); v = Math.Clamp(v, epsV, 1f - epsV);
+            float px = u * maxX, py = v * maxY;
+            int x0 = (int)MathF.Floor(px), y0 = (int)MathF.Floor(py);
+            int x1 = Math.Min(x0 + 1, tex.Width - 1), y1 = Math.Min(y0 + 1, tex.Height - 1);
+            float tx = px - x0, ty = py - y0;
+            static void Premul(byte[] d, int i, out float r, out float g, out float b, out float a)
+            { a = d[i + 3] / 255f; float R = d[i + 0] / 255f, G = d[i + 1] / 255f, B = d[i + 2] / 255f; r = R * a; g = G * a; b = B * a; }
+            int i00 = (y0 * tex.Width + x0) * 4, i01 = (y0 * tex.Width + x1) * 4, i10 = (y1 * tex.Width + x0) * 4, i11 = (y1 * tex.Width + x1) * 4;
+            Premul(tex.Rgba, i00, out var r00, out var g00, out var b00, out var a00);
+            Premul(tex.Rgba, i01, out var r01, out var g01, out var b01, out var a01);
+            Premul(tex.Rgba, i10, out var r10, out var g10, out var b10, out var a10);
+            Premul(tex.Rgba, i11, out var r11, out var g11, out var b11, out var a11);
+            float r0 = r00 * (1 - tx) + r01 * tx, g0 = g00 * (1 - tx) + g01 * tx, b0 = b00 * (1 - tx) + b01 * tx, a0 = a00 * (1 - tx) + a01 * tx;
+            float r1 = r10 * (1 - tx) + r11 * tx, g1 = g10 * (1 - tx) + g11 * tx, b1 = b10 * (1 - tx) + b11 * tx, a1 = a10 * (1 - tx) + a11 * tx;
+            float r = r0 * (1 - ty) + r1 * ty, g = g0 * (1 - ty) + g1 * ty, b = b0 * (1 - ty) + b1 * ty, a = a0 * (1 - ty) + a1 * ty;
+            if (a > 1e-6f) { r /= a; g /= a; b /= a; } else { r = g = b = 0f; }
+            return Color.FromArgb(
+                (byte)Math.Clamp((int)(a * 255f + 0.5f), 0, 255),
+                (byte)Math.Clamp((int)(r * 255f + 0.5f), 0, 255),
+                (byte)Math.Clamp((int)(g * 255f + 0.5f), 0, 255),
+                (byte)Math.Clamp((int)(b * 255f + 0.5f), 0, 255));
+        }
+        // -------------------------------------------------------------------------
+
+        var Vtx = m.Vertices;
+        var Idx = m.TriIndices;
+        var Nor = m.Normals;
+
+        // Get UVs via reflection-cache helper if available
+        var UVMesh = GetMeshUVs(m);
+
+        // Object-space AABB (for planar fallback UVs)
+        SN.Vector3 bbMin = new(float.MaxValue), bbMax = new(float.MinValue);
+        for (int v = 0; v < Vtx.Length; v++)
+        {
+            var p = Vtx[v];
+            bbMin = new SN.Vector3(MathF.Min(bbMin.X, p.X), MathF.Min(bbMin.Y, p.Y), MathF.Min(bbMin.Z, p.Z));
+            bbMax = new SN.Vector3(MathF.Max(bbMax.X, p.X), MathF.Max(bbMax.Y, p.Y), MathF.Max(bbMax.Z, p.Z));
+        }
+        var bbSize = bbMax - bbMin;
+        bbSize = new SN.Vector3(bbSize.X == 0 ? 1f : bbSize.X,
+                                bbSize.Y == 0 ? 1f : bbSize.Y,
+                                bbSize.Z == 0 ? 1f : bbSize.Z);
+
+        bool hasAnyTexture = mat?.Textures?.Any(t => t?.Texture != null) == true;
+
         SN.Matrix4x4 mv = world * view;
         SN.Matrix4x4 mvp = mv * proj;
 
-        // Near/far (keep near in sync with clipper)
         const float near = 0.1f;
-
-        // Inverse-transpose of mv => normals in VIEW space (we light in view space)
         SN.Matrix4x4.Invert(mv, out var invMv);
         SN.Matrix4x4 normalMatrix = SN.Matrix4x4.Transpose(invMv);
 
-        // Light in view space (for directional); point light uses lightPosV
         SN.Vector3 lightDirV = lightIsPoint ? SN.Vector3.Zero : SN.Vector3.Normalize(SN.Vector3.TransformNormal(L, view));
         SN.Vector3 lightPosV = lightIsPoint ? SN.Vector3.Transform(lightPosW, view) : SN.Vector3.Zero;
 
         const float INSIDE_EPS = 1e-3f;
 
-        for (int i = 0; i < m.TriIndices.Length; i += 3)
+        float matOpacity = 1f;
+        if (mat != null)
         {
-            int ia = m.TriIndices[i];
-            int ib = m.TriIndices[i + 1];
-            int ic = m.TriIndices[i + 2];
+            var p = mat.GetType().GetProperty("Opacity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p != null)
+            {
+                var v = p.GetValue(mat);
+                if (v is float f) matOpacity = Math.Clamp(f, 0f, 1f);
+                else if (v is double d) matOpacity = (float)Math.Clamp(d, 0.0, 1.0);
+            }
+        }
+        float tintA = tint.A / 255f;
 
-            // Clip-space (for raster), View-space (for facing & lighting), World-space (for shadows)
-            SN.Vector4 A = SN.Vector4.Transform(new SN.Vector4(m.Vertices[ia], 1f), mvp);
-            SN.Vector4 B = SN.Vector4.Transform(new SN.Vector4(m.Vertices[ib], 1f), mvp);
-            SN.Vector4 C = SN.Vector4.Transform(new SN.Vector4(m.Vertices[ic], 1f), mvp);
+        for (int i = 0; i < Idx.Length; i += 3)
+        {
+            int ia = Idx[i], ib = Idx[i + 1], ic = Idx[i + 2];
 
-            SN.Vector3 Va = SN.Vector3.Transform(m.Vertices[ia], mv);
-            SN.Vector3 Vb = SN.Vector3.Transform(m.Vertices[ib], mv);
-            SN.Vector3 Vc = SN.Vector3.Transform(m.Vertices[ic], mv);
+            // OBJECT-space positions for this tri
+            var Pa = Vtx[ia]; var Pb = Vtx[ib]; var Pc = Vtx[ic];
 
-            SN.Vector3 Wa = SN.Vector3.Transform(m.Vertices[ia], world);
-            SN.Vector3 Wb = SN.Vector3.Transform(m.Vertices[ib], world);
-            SN.Vector3 Wc = SN.Vector3.Transform(m.Vertices[ic], world);
+            // Choose UVs (mesh or planar fallback)
+            SN.Vector2 Ua, Ub, Uc;
+            if (UVMesh != null && UVMesh.Length == Vtx.Length)
+            {
+                Ua = UVMesh[ia]; Ub = UVMesh[ib]; Uc = UVMesh[ic];
+            }
+            else if (hasAnyTexture)
+            {
+                var nObj = SN.Vector3.Normalize(SN.Vector3.Cross(Pb - Pa, Pc - Pa));
+                var a = new SN.Vector3(MathF.Abs(nObj.X), MathF.Abs(nObj.Y), MathF.Abs(nObj.Z));
+                if (a.X >= a.Y && a.X >= a.Z) // project to YZ
+                {
+                    Ua = new((Pa.Z - bbMin.Z) / bbSize.Z, (Pa.Y - bbMin.Y) / bbSize.Y);
+                    Ub = new((Pb.Z - bbMin.Z) / bbSize.Z, (Pb.Y - bbMin.Y) / bbSize.Y);
+                    Uc = new((Pc.Z - bbMin.Z) / bbSize.Z, (Pc.Y - bbMin.Y) / bbSize.Y);
+                }
+                else if (a.Y >= a.X && a.Y >= a.Z) // project to XZ
+                {
+                    Ua = new((Pa.X - bbMin.X) / bbSize.X, (Pa.Z - bbMin.Z) / bbSize.Z);
+                    Ub = new((Pb.X - bbMin.X) / bbSize.X, (Pb.Z - bbMin.Z) / bbSize.Z);
+                    Uc = new((Pc.X - bbMin.X) / bbSize.X, (Pc.Z - bbMin.Z) / bbSize.Z);
+                }
+                else // XY
+                {
+                    Ua = new((Pa.X - bbMin.X) / bbSize.X, (Pa.Y - bbMin.Y) / bbSize.Y);
+                    Ub = new((Pb.X - bbMin.X) / bbSize.X, (Pb.Y - bbMin.Y) / bbSize.Y);
+                    Uc = new((Pc.X - bbMin.X) / bbSize.X, (Pc.Y - bbMin.Y) / bbSize.Y);
+                }
+            }
+            else
+            {
+                Ua = Ub = Uc = new SN.Vector2(0.5f, 0.5f);
+            }
 
-            SN.Vector3 Na = m.Normals != null ? SN.Vector3.TransformNormal(m.Normals[ia], normalMatrix) : SN.Vector3.UnitY;
-            SN.Vector3 Nb = m.Normals != null ? SN.Vector3.TransformNormal(m.Normals[ib], normalMatrix) : SN.Vector3.UnitY;
-            SN.Vector3 Nc = m.Normals != null ? SN.Vector3.TransformNormal(m.Normals[ic], normalMatrix) : SN.Vector3.UnitY;
+            // Transform to clip/view/world
+            var A = SN.Vector4.Transform(new SN.Vector4(Pa, 1f), mvp);
+            var B = SN.Vector4.Transform(new SN.Vector4(Pb, 1f), mvp);
+            var C = SN.Vector4.Transform(new SN.Vector4(Pc, 1f), mvp);
 
-            SN.Vector2 Ua = m.UVs != null ? m.UVs[ia] : SN.Vector2.Zero;
-            SN.Vector2 Ub = m.UVs != null ? m.UVs[ib] : SN.Vector2.Zero;
-            SN.Vector2 Uc = m.UVs != null ? m.UVs[ic] : SN.Vector2.Zero;
+            var Va = SN.Vector3.Transform(Pa, mv);
+            var Vb = SN.Vector3.Transform(Pb, mv);
+            var Vc = SN.Vector3.Transform(Pc, mv);
+
+            var Wa = SN.Vector3.Transform(Pa, world);
+            var Wb = SN.Vector3.Transform(Pb, world);
+            var Wc = SN.Vector3.Transform(Pc, world);
+
+            var Na = Nor != null ? SN.Vector3.TransformNormal(Nor[ia], normalMatrix) : SN.Vector3.UnitY;
+            var Nb = Nor != null ? SN.Vector3.TransformNormal(Nor[ib], normalMatrix) : SN.Vector3.UnitY;
+            var Nc = Nor != null ? SN.Vector3.TransformNormal(Nor[ic], normalMatrix) : SN.Vector3.UnitY;
 
             var cv0 = new ClipVertex { ClipPos = A, ViewPos = Va, WorldPos = Wa, ViewNormal = Na, UV = Ua };
             var cv1 = new ClipVertex { ClipPos = B, ViewPos = Vb, WorldPos = Wb, ViewNormal = Nb, UV = Ub };
@@ -1475,23 +2048,17 @@ public class SceneView : Control
 
             for (int kt = 0; kt < clipped.Count - 2; kt++)
             {
-                cv0 = clipped[0];
-                cv1 = clipped[kt + 1];
-                cv2 = clipped[kt + 2];
-
+                cv0 = clipped[0]; cv1 = clipped[kt + 1]; cv2 = clipped[kt + 2];
                 A = cv0.ClipPos; Va = cv0.ViewPos; Wa = cv0.WorldPos; Na = cv0.ViewNormal; Ua = cv0.UV;
                 B = cv1.ClipPos; Vb = cv1.ViewPos; Wb = cv1.WorldPos; Nb = cv1.ViewNormal; Ub = cv1.UV;
                 C = cv2.ClipPos; Vc = cv2.ViewPos; Wc = cv2.WorldPos; Nc = cv2.ViewNormal; Uc = cv2.UV;
 
-                // View-space facing (stable; matches depth pass)
                 var nView = SN.Vector3.Cross(Vb - Va, Vc - Va);
                 float facing = nView.Z * (world.GetDeterminant() >= 0 ? 1f : -1f);
                 if (invertFrontFace) facing = -facing;
                 bool backfacing = (facing >= 0f);
                 if (!doubleSided && backfacing) continue;
 
-
-                // Screen positions
                 float aInvW = 1f / A.W; float Axs = (A.X * aInvW + 1f) * 0.5f * W; float Ays = (1f - A.Y * aInvW) * 0.5f * H; float aZw = A.Z * aInvW;
                 float bInvW = 1f / B.W; float Bxs = (B.X * bInvW + 1f) * 0.5f * W; float Bys = (1f - B.Y * bInvW) * 0.5f * H; float bZw = B.Z * bInvW;
                 float cInvW = 1f / C.W; float Cxs = (C.X * cInvW + 1f) * 0.5f * W; float Cys = (1f - C.Y * cInvW) * 0.5f * H; float cZw = C.Z * cInvW;
@@ -1509,8 +2076,10 @@ public class SceneView : Control
                 int minY = (int)MathF.Max(0, MathF.Min(Ays, MathF.Min(Bys, Cys)));
                 int maxY = (int)MathF.Min(H - 1, MathF.Ceiling(MathF.Max(Ays, MathF.Max(Bys, Cys))));
 
+                // face id in OBJECT space, not world 
+                int triFaceMask = FaceMaskFromTriAndAabb(Pa, Pb, Pc, bbMin, bbMax);
+
                 for (int y = minY; y <= maxY; y++)
-                {
                     for (int x = minX; x <= maxX; x++)
                     {
                         var p = new SN.Vector2(x + 0.5f, y + 0.5f);
@@ -1519,15 +2088,8 @@ public class SceneView : Control
                         float w1 = Edge(p, Cs, As);
                         float w2 = Edge(p, As, Bs);
 
-                        // Inside test consistent with signed area
-                        if (area > 0f)
-                        {
-                            if (w0 < -INSIDE_EPS || w1 < -INSIDE_EPS || w2 < -INSIDE_EPS) continue;
-                        }
-                        else
-                        {
-                            if (w0 > INSIDE_EPS || w1 > INSIDE_EPS || w2 > INSIDE_EPS) continue;
-                        }
+                        if (area > 0f) { if (w0 < -INSIDE_EPS || w1 < -INSIDE_EPS || w2 < -INSIDE_EPS) continue; }
+                        else { if (w0 > INSIDE_EPS || w1 > INSIDE_EPS || w2 > INSIDE_EPS) continue; }
 
                         w0 *= invArea; w1 *= invArea; w2 *= invArea;
 
@@ -1536,35 +2098,30 @@ public class SceneView : Control
 
                         float z = w0 * aZw + w1 * bZw + w2 * cZw;
                         int idx = y * W + x;
-                        if (z >= zbuf[idx]) continue;
 
-                        zbuf[idx] = z;
+                        float zTest = transparentPass ? (z - 1e-5f) : z;
+                        if (zTest >= zbuf[idx]) continue;
+                        if (!transparentPass) zbuf[idx] = z;
 
-                        // Interpolate view/world pos & normal (in view space), flip for backfaces in two-sided mode
-                        SN.Vector3 viewPos = (w0 * Va * aInvW + w1 * Vb * bInvW + w2 * Vc * cInvW) / invW;
-                        SN.Vector3 worldPos = (w0 * Wa * aInvW + w1 * Wb * bInvW + w2 * Wc * cInvW) / invW;
+                        var viewPos = (w0 * Va * aInvW + w1 * Vb * bInvW + w2 * Vc * cInvW) / invW;
+                        var worldPos = (w0 * Wa * aInvW + w1 * Wb * bInvW + w2 * Wc * cInvW) / invW;
 
-                        SN.Vector3 normal = SN.Vector3.Normalize((w0 * Na * aInvW + w1 * Nb * bInvW + w2 * Nc * cInvW) / invW);
+                        var normal = SN.Vector3.Normalize((w0 * Na * aInvW + w1 * Nb * bInvW + w2 * Nc * cInvW) / invW);
                         if (backfacing) normal = -normal;
 
-                        // Lighting (view space)
-                        float ndl;
-                        float atten = 1f;
+                        // Lighting
+                        float ndl, atten = 1f;
                         if (lightIsPoint)
                         {
-                            SN.Vector3 toLight = lightPosV - viewPos;
+                            var toLight = lightPosV - viewPos;
                             float dist = toLight.Length();
                             ndl = Math.Max(0f, SN.Vector3.Dot(normal, toLight / (dist + 1e-6f)));
                             if (lightRange > 0f) atten = 1f / (1f + (dist / lightRange) * (dist / lightRange));
                         }
-                        else
-                        {
-                            ndl = Math.Max(0f, SN.Vector3.Dot(normal, lightDirV));
-                        }
-
+                        else ndl = Math.Max(0f, SN.Vector3.Dot(normal, lightDirV));
                         float intensity = Ambient + DiffuseK * ndl * atten;
 
-                        // Shadowing (world space -> shadow VP)
+                        // Shadow
                         if (shadow.HasValue && receiveShadows)
                         {
                             var sm = shadow.Value;
@@ -1572,67 +2129,172 @@ public class SceneView : Control
                             if (clipShadow.W > 0f)
                             {
                                 var ndc = clipShadow / clipShadow.W;
-                                float u = ndc.X * 0.5f + 0.5f;
-                                float v = 1f - (ndc.Y * 0.5f + 0.5f);
-                                float sz = ndc.Z;
-
-                                int sx = Math.Clamp((int)(u * sm.W), 0, sm.W - 1);
-                                int sy = Math.Clamp((int)(v * sm.H), 0, sm.H - 1);
-                                int sx1 = Math.Min(sx + 1, sm.W - 1);
-                                int sy1 = Math.Min(sy + 1, sm.H - 1);
-
-                                // Small slope-scaled bias to reduce acne
-                                float depthBias = MathF.Max(sm.Bias, 0.0005f + 0.002f * (1f - MathF.Max(0f, SN.Vector3.Dot(normal, lightDirV))));
-
-                                float s0 = (sz > sm.Depth[sy * sm.W + sx] + depthBias) ? 1f : 0f;
-                                float s1 = (sz > sm.Depth[sy * sm.W + sx1] + depthBias) ? 1f : 0f;
-                                float s2 = (sz > sm.Depth[sy1 * sm.W + sx] + depthBias) ? 1f : 0f;
-                                float s3 = (sz > sm.Depth[sy1 * sm.W + sx1] + depthBias) ? 1f : 0f;
-
-                                float shadowAmt = (s0 + s1 + s2 + s3) * 0.25f;
-                                intensity *= (1f - 0.5f * shadowAmt);
+                                float uS = ndc.X * 0.5f + 0.5f, vS = 1f - (ndc.Y * 0.5f + 0.5f), sz = ndc.Z;
+                                int sx = Math.Clamp((int)(uS * sm.W), 0, sm.W - 1);
+                                int sy = Math.Clamp((int)(vS * sm.H), 0, sm.H - 1);
+                                int sx1 = Math.Min(sx + 1, sm.W - 1), sy1 = Math.Min(sy + 1, sm.H - 1);
+                                float ndlBias = lightIsPoint ? 1f : MathF.Max(0f, SN.Vector3.Dot(normal, lightDirV));
+                                float bias = MathF.Max(sm.Bias, 0.0005f + 0.002f * (1f - ndlBias));
+                                float s0 = (sz > sm.Depth[sy * sm.W + sx] + bias) ? 1f : 0f;
+                                float s1 = (sz > sm.Depth[sy * sm.W + sx1] + bias) ? 1f : 0f;
+                                float s2 = (sz > sm.Depth[sy1 * sm.W + sx] + bias) ? 1f : 0f;
+                                float s3 = (sz > sm.Depth[sy1 * sm.W + sx1] + bias) ? 1f : 0f;
+                                float sh = (s0 + s1 + s2 + s3) * 0.25f;
+                                intensity *= (1f - 0.5f * sh);
                             }
                         }
 
-                        // Tint * light; if tint is black, use white so textures remain visible
-                        Color safeTint = (tint.R == 0 && tint.G == 0 && tint.B == 0) ? Color.FromRgb(255, 255, 255) : tint;
-                        Color pix = ShadeColor(safeTint, intensity);
+                        // UVs
+                        float u = (w0 * Ua.X * aInvW + w1 * Ub.X * bInvW + w2 * Uc.X * cInvW) / invW;
+                        float v = (w0 * Ua.Y * aInvW + w1 * Ub.Y * bInvW + w2 * Uc.Y * cInvW) / invW;
 
-                        // Texture sample (supports unknown UV field names via GetMeshUVs fallback)
-                        var uvarr = m.UVs ?? GetMeshUVs(m);
-                        var tex0 = (mat != null && mat.Textures != null && mat.Textures.Count > 0) ? mat.Textures[0].Texture : null;
-                        if (tex0 != null && uvarr != null)
+                        // Accumulators
+                        Color albedo = Color.FromRgb(255, 255, 255);
+                        Color detailMul = Color.FromRgb(255, 255, 255);
+                        Color emissive = Color.FromRgb(0, 0, 0);
+                        float aoMul = 1f, specMap = 0f, roughFromMap = -1f, metalFromMap = -1f;
+                        float albedoAlpha = 0f, opacityMapMul = 1f;
+                        bool hadAlbedoRGB = false, sawAlbedoSlot = false, hasOpacitySlot = false;
+
+                        if (mat?.Textures != null && mat.Textures.Count > 0)
                         {
-                            float u = (w0 * Ua.X * aInvW + w1 * Ub.X * bInvW + w2 * Uc.X * cInvW) / invW;
-                            float v = (w0 * Ua.Y * aInvW + w1 * Ub.Y * bInvW + w2 * Uc.Y * cInvW) / invW;
-                            Color texCol = SampleTexture(tex0, u, v);
-                            pix = MulColor(pix, texCol);
+                            foreach (var slot in mat.Textures)
+                            {
+                                var tex = slot.Texture;
+                                if (tex == null) continue;
+
+                                int mask = GetFaceMask(slot);
+                                if (mask != -1 && triFaceMask != -1 && (mask & triFaceMask) == 0) continue;
+
+                                string usage = GetUsageName(slot).ToLowerInvariant();
+
+                                float uu = u, vv = v; ApplyUVXform(slot, ref uu, ref vv);
+                                bool noFlipV = GetB(slot, "NoFlipV", false);
+
+                                if (usage.Contains("emiss"))
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    emissive = AddColor(emissive, s);
+                                }
+                                else if (usage.Contains("occl") || usage == "ao")
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    aoMul *= Math.Clamp(Luma(s), 0f, 1f);
+                                }
+                                else if (usage.Contains("detail"))
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    detailMul = MulColor(detailMul, s);
+                                }
+                                else if (usage.Contains("spec"))
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    specMap = Math.Clamp(Luma(s), 0f, 1f);
+                                }
+                                else if (usage.Contains("rough"))
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    roughFromMap = Math.Clamp(Luma(s), 0f, 1f);
+                                }
+                                else if (usage.Contains("metal"))
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    metalFromMap = Math.Clamp(Luma(s), 0f, 1f);
+                                }
+                                else if (usage.Contains("opacity") || usage.Contains("alpha") || usage.Contains("transp"))
+                                {
+                                    hasOpacitySlot = true;
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    float op = (s.A < 254) ? (s.A / 255f) : Math.Clamp(Luma(s), 0f, 1f);
+                                    opacityMapMul *= op;
+                                    if (!hadAlbedoRGB && !sawAlbedoSlot)
+                                    {
+                                        albedo = MulColor(albedo, Color.FromRgb(s.R, s.G, s.B));
+                                        hadAlbedoRGB = true;
+                                    }
+                                }
+                                else if (usage.Contains("normal"))
+                                {
+                                    // (no TBN yet)
+                                }
+                                else
+                                {
+                                    var s = SamplePMClamped(tex, uu, noFlipV ? (1f - vv) : vv);
+                                    albedo = AlphaOver(albedo, s);
+                                    hadAlbedoRGB = true; sawAlbedoSlot = true;
+                                    float aA = s.A / 255f;
+                                    albedoAlpha = albedoAlpha + (1f - albedoAlpha) * aA;
+                                }
+                            }
                         }
 
-                        color[idx] = PackBGRA(pix);
+                        float metallic = metalFromMap >= 0 ? metalFromMap : Math.Clamp(mat?.Metallic ?? 0f, 0f, 1f);
+                        float smooth = roughFromMap >= 0 ? (1f - roughFromMap) : Math.Clamp(mat?.Smoothness ?? 0.5f, 0f, 1f);
+                        float specStr = Math.Clamp(specMap, 0f, 1f);
+                        float shininess = 8f + smooth * smooth * 248f;
+
+                        Color safeTint = (tint.R | tint.G | tint.B) == 0 ? Color.FromRgb(255, 255, 255) : tint;
+                        Color lit = ShadeColor(safeTint, intensity * aoMul);
+                        Color baseCol = MulColor(MulColor(albedo, detailMul), lit);
+
+                        Color specAdd = Color.FromRgb(0, 0, 0);
+                        if (DiffuseK > 0f)
+                        {
+                            var Vdir = SN.Vector3.Normalize(-viewPos);
+                            SN.Vector3 halfVec = lightIsPoint
+                                ? SN.Vector3.Normalize(SN.Vector3.Normalize(lightPosV - viewPos) + Vdir)
+                                : SN.Vector3.Normalize(lightDirV + Vdir);
+                            float ndh = MathF.Max(0f, SN.Vector3.Dot(normal, halfVec));
+                            float spec = MathF.Pow(ndh, shininess) * specStr * (0.25f + 0.75f * metallic);
+                            byte sr = (byte)Math.Clamp(spec * 255f, 0f, 255f);
+                            specAdd = Color.FromRgb(sr, sr, sr);
+                        }
+
+                        Color pix = AddColor(AddColor(baseCol, specAdd), emissive);
+
+                        if (transparentPass)
+                        {
+                            float baseAlpha = hasOpacitySlot ? 1f : (sawAlbedoSlot ? albedoAlpha : 1f);
+                            float aEff = Math.Clamp(baseAlpha * opacityMapMul * matOpacity * tintA, 0f, 1f);
+                            if (aEff <= 0.0001f) continue;
+                            const float OPAQUEISH = 0.60f;
+                            if (aEff >= OPAQUEISH) zbuf[idx] = z;
+                            color[idx] = BlendOver(color[idx], pix, aEff);
+                        }
+                        else
+                        {
+                            color[idx] = PackBGRA(pix);
+                        }
                     }
-                }
             }
         }
     }
 
 
-    
+
+
 
     void DrawNodeDepth(GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
                    in SN.Matrix4x4 parentWorld, float[] depth, int W, int H)
     {
         var world = parentWorld * WorldFromTransform(go.Transform);
-        var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault(x => x.Enabled);
-        var mr = go.Behaviors.OfType<MeshRenderer>().FirstOrDefault(x => x.Enabled);
-        if (mf?.Mesh != null && mr != null && mr.CastShadows)
+
+        var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
+        var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
+        int n = Math.Min(filters.Count, renderers.Count);
+
+        for (int i = 0; i < n; i++)
         {
-            RasterizeDepth(mf.Mesh, world, view, proj, depth, W, H,
-                doubleSided: true);
+            var mf = filters[i];
+            var mr = renderers[i];
+            if (mf.Mesh != null && mr.CastShadows)
+                RasterizeDepth(mf.Mesh, world, view, proj, depth, W, H, doubleSided: true);
         }
+
         foreach (var ch in go.Children)
             DrawNodeDepth(ch, view, proj, world, depth, W, H);
     }
+
 
     void RasterizeDepth(Mesh mesh,
                     in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,

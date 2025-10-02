@@ -415,15 +415,12 @@ public partial class InspectorPanel : UserControl
         var mat = (Material?)prop.GetValue(owner);
         if (mat is null) { mat = new Material(); prop.SetValue(owner, mat); }
 
-        // UI-only previews we keep alive here (not stored on MaterialTexture).
-        // This prevents the renderer from ever seeing/locking them via reflection.
         var previews = new Dictionary<MaterialTexture, IImage>();
 
         var box = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8) };
         var root = new StackPanel { Spacing = 8 };
         box.Child = root;
 
-        // We build rows into this panel
         var slotsPanel = new StackPanel { Spacing = 4 };
 
         // ---------------- Header ----------------
@@ -451,7 +448,6 @@ public partial class InspectorPanel : UserControl
         var btnClear = new Button { Content = "Clear" };
         btnClear.Click += (_, __) =>
         {
-            // dispose previews we created for the UI
             foreach (var img in previews.Values)
                 (img as IDisposable)?.Dispose();
             previews.Clear();
@@ -488,14 +484,12 @@ public partial class InspectorPanel : UserControl
         {
             var paths = new List<string>();
 
-            // External drags (paths as strings)
             if (e.Data.Contains(DataFormats.FileNames))
             {
                 var names = e.Data.GetFileNames();
                 if (names != null) paths.AddRange(names);
             }
 
-            // Internal drags (Project panel) – IStorageItem(s)
             if (e.Data.Contains(DataFormats.Files) && e.Data.Get(DataFormats.Files) is IEnumerable<IStorageItem> items)
             {
                 foreach (var it in items)
@@ -509,7 +503,6 @@ public partial class InspectorPanel : UserControl
                         }
                         else
                         {
-                            // copy to temp so we have a stable local path
                             var tmpDir = ProjectService.Current?.TempPath ?? Path.GetTempPath();
                             Directory.CreateDirectory(tmpDir);
                             var dst = Path.Combine(tmpDir, f.Name);
@@ -534,7 +527,29 @@ public partial class InspectorPanel : UserControl
         // slots list
         root.Children.Add(slotsPanel);
 
-        // -------- Row builder
+        // ---------------- helpers for face mask UI ----------------
+        const int FaceRight = 1;   // +X
+        const int FaceLeft = 2;   // -X
+        const int FaceTop = 4;   // +Y
+        const int FaceBottom = 8;   // -Y
+        const int FaceBack = 16;  // +Z
+        const int FaceFront = 32;  // -Z
+        const int FaceAll = FaceRight | FaceLeft | FaceTop | FaceBottom | FaceBack | FaceFront;
+
+        static int GuessFaceMaskFromName(string nameNoExtLower)
+        {
+            if (nameNoExtLower.EndsWith("_px") || nameNoExtLower.Contains("right")) return FaceRight;
+            if (nameNoExtLower.EndsWith("_nx") || nameNoExtLower.Contains("left")) return FaceLeft;
+            if (nameNoExtLower.EndsWith("_py") || nameNoExtLower.Contains("top") || nameNoExtLower.Contains("up"))
+                return FaceTop;
+            if (nameNoExtLower.EndsWith("_ny") || nameNoExtLower.Contains("bottom") || nameNoExtLower.Contains("down"))
+                return FaceBottom;
+            if (nameNoExtLower.EndsWith("_pz") || nameNoExtLower.Contains("back")) return FaceBack;
+            if (nameNoExtLower.EndsWith("_nz") || nameNoExtLower.Contains("front")) return FaceFront;
+            return -1; // all
+        }
+
+        // -------- Row builder -------------------------------------------------------
         Control SlotRow(MaterialTexture slot)
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
@@ -546,6 +561,123 @@ public partial class InspectorPanel : UserControl
 
             row.Children.Add(new TextBlock { Text = slot.Name ?? "(texture)", VerticalAlignment = VerticalAlignment.Center });
 
+            // Usage
+            var usageBox = new ComboBox
+            {
+                Width = 120,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                ItemsSource = Enum.GetValues(typeof(MaterialTexture.TexUsage))
+                                 .Cast<MaterialTexture.TexUsage>()
+                                 .ToArray(),
+                SelectedItem = slot.Usage
+            };
+            ToolTip.SetTip(usageBox, "How this texture should be used (Albedo, AO, Normal, Specular, …)");
+            usageBox.SelectionChanged += (_, __) =>
+            {
+                if (usageBox.SelectedItem is MaterialTexture.TexUsage u && u != slot.Usage)
+                {
+                    slot.Usage = u;
+                    SceneService.NotifyChanged();
+                    Rebuild();
+                }
+            };
+            row.Children.Add(usageBox);
+
+            // Faces (per-face mask UI)
+            var facesWrap = new WrapPanel { ItemSpacing = 4, VerticalAlignment = VerticalAlignment.Center };
+            row.Children.Add(new TextBlock { Text = "Faces:", VerticalAlignment = VerticalAlignment.Center, Opacity = .7 });
+            row.Children.Add(facesWrap);
+
+            var cbAll = new CheckBox { Content = "All" };
+            var cbR = new CheckBox { Content = "Right" };
+            var cbL = new CheckBox { Content = "Left" };
+            var cbT = new CheckBox { Content = "Top" };
+            var cbB = new CheckBox { Content = "Bottom" };
+            var cbBack = new CheckBox { Content = "Back" };
+            var cbFront = new CheckBox { Content = "Front" };
+            facesWrap.Children.Add(cbAll);
+            facesWrap.Children.Add(cbR);
+            facesWrap.Children.Add(cbL);
+            facesWrap.Children.Add(cbT);
+            facesWrap.Children.Add(cbB);
+            facesWrap.Children.Add(cbBack);
+            facesWrap.Children.Add(cbFront);
+
+            bool updating = false;
+
+            void RefreshFaceChecks()
+            {
+                updating = true;
+                int m = (int)slot.FaceMask;
+                bool all = (m < 0) || ((m & FaceAll) == FaceAll);
+                cbAll.IsChecked = all;
+                cbR.IsChecked = all || ((m & FaceRight) != 0);
+                cbL.IsChecked = all || ((m & FaceLeft) != 0);
+                cbT.IsChecked = all || ((m & FaceTop) != 0);
+                cbB.IsChecked = all || ((m & FaceBottom) != 0);
+                cbBack.IsChecked = all || ((m & FaceBack) != 0);
+                cbFront.IsChecked = all || ((m & FaceFront) != 0);
+
+                bool lockOthers = all;
+                cbR.IsEnabled = cbL.IsEnabled = cbT.IsEnabled = cbB.IsEnabled = cbBack.IsEnabled = cbFront.IsEnabled = !lockOthers;
+                updating = false;
+            }
+
+            void WriteMaskFromChecks()
+            {
+                if (updating) return;
+
+                if (cbAll.IsChecked == true)
+                {
+                    slot.FaceMask = (MaterialTexture.CubeFaceMask)(-1);
+                }
+                else
+                {
+                    int m = 0;
+                    if (cbR.IsChecked == true) m |= FaceRight;
+                    if (cbL.IsChecked == true) m |= FaceLeft;
+                    if (cbT.IsChecked == true) m |= FaceTop;
+                    if (cbB.IsChecked == true) m |= FaceBottom;
+                    if (cbBack.IsChecked == true) m |= FaceBack;
+                    if (cbFront.IsChecked == true) m |= FaceFront;
+
+                    // normalize: all faces -> -1; otherwise keep explicit mask (incl. 0)
+                    slot.FaceMask = (MaterialTexture.CubeFaceMask)((m == FaceAll) ? -1 : m);
+                }
+                SceneService.NotifyChanged();
+                Rebuild();
+
+                RefreshFaceChecks();
+            }
+
+            // All handlers — IMPORTANT: don’t refresh before writing mask
+            cbAll.Checked += (_, __) =>
+            {
+                if (updating) return;
+                slot.FaceMask = (MaterialTexture.CubeFaceMask)(-1);
+                SceneService.NotifyChanged();
+                Rebuild();
+                RefreshFaceChecks();
+            };
+            cbAll.Unchecked += (_, __) =>
+            {
+                if (updating) return;
+                // Start with "none" so user can pick faces; enables the six boxes.
+                slot.FaceMask = (MaterialTexture.CubeFaceMask)0;
+                SceneService.NotifyChanged();
+                Rebuild();
+                RefreshFaceChecks();
+            };
+
+            foreach (var cb in new[] { cbR, cbL, cbT, cbB, cbBack, cbFront })
+            {
+                cb.Checked += (_, __) => WriteMaskFromChecks();
+                cb.Unchecked += (_, __) => WriteMaskFromChecks();
+            }
+
+            RefreshFaceChecks();
+
+            // Reorder / Remove
             var up = new Button { Content = "↑" };
             up.Click += (_, __) =>
             {
@@ -575,13 +707,11 @@ public partial class InspectorPanel : UserControl
             var remove = new Button { Content = "Remove" };
             remove.Click += (_, __) =>
             {
-                // dispose UI preview for this slot
                 if (previews.TryGetValue(slot, out var p))
                 {
                     (p as IDisposable)?.Dispose();
                     previews.Remove(slot);
                 }
-
                 mat.Textures.Remove(slot);
                 SceneService.NotifyChanged();
                 Rebuild();
@@ -605,31 +735,49 @@ public partial class InspectorPanel : UserControl
                 var ext = Path.GetExtension(f).ToLowerInvariant();
                 if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp")) continue;
 
-                // Build the engine texture if possible (reflection helpers you already have)
                 var (tex, previewBmp) = TryLoadTexture2D(f);
+                var name = Path.GetFileName(f);
+                var nameNoExtLower = Path.GetFileNameWithoutExtension(f).ToLowerInvariant();
 
                 var slot = new MaterialTexture
                 {
-                    Name = Path.GetFileName(f),
-                    Texture = tex,      // engine-side; SceneView will prefer this
-                                        // NOTE: we intentionally DO NOT set any IImage property on the slot
-                                        // (no Preview/Image/Bitmap here) — keeps renderer from touching it.
+                    Name = name,
+                    Texture = tex,
+                    Usage = GuessUsageFromName(Path.GetFileNameWithoutExtension(f)),
+                    FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower) // auto-guess
                 };
 
                 mat.Textures.Add(slot);
-
-                // keep the UI preview alive here only
-                if (previewBmp is not null)
-                    previews[slot] = previewBmp;
+                if (previewBmp is not null) previews[slot] = previewBmp;
             }
 
             SceneService.NotifyChanged();
             Rebuild();
         }
 
+        static MaterialTexture.TexUsage GuessUsageFromName(string nameRaw)
+        {
+            var n = nameRaw.ToLowerInvariant();
+
+            if (n.Contains("ao") || n.Contains("_ao") || n.Contains("ambientocclusion")) return MaterialTexture.TexUsage.AmbientOcclusion;
+            if (n.Contains("nrm") || n.Contains("_n") || n.Contains("normal")) return MaterialTexture.TexUsage.Normal;
+            if (n.Contains("spec") || n.Contains("_s") || n.Contains("gloss")) return MaterialTexture.TexUsage.Specular;
+            if (n.Contains("rough") || n.Contains("rgh")) return MaterialTexture.TexUsage.Roughness;
+            if (n.Contains("metal") || n.Contains("mtl")) return MaterialTexture.TexUsage.Metallic;
+            if (n.Contains("emit") || n.Contains("emiss")) return MaterialTexture.TexUsage.Emissive;
+            if (n.Contains("detail") || n.Contains("dirt") || n.Contains("grunge")) return MaterialTexture.TexUsage.Detail;
+
+            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("base") || n.Contains("diff") || n.EndsWith("_c"))
+                return MaterialTexture.TexUsage.Albedo;
+
+            return MaterialTexture.TexUsage.Albedo;
+        }
+
         Rebuild();
         return box;
     }
+
+
 
 
 

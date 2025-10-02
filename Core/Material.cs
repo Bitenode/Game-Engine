@@ -52,13 +52,44 @@ namespace Game_Engine.Core
     public sealed class MaterialTexture
     {
         [Persist] public string? Name { get; set; }
-
-        // keep texture pixels out of the scene file
         [JsonIgnore] public Texture2D? Texture { get; set; }
         [JsonIgnore] public IImage? Preview { get; set; }
-
         [Persist] public string? SourcePath { get; set; }
+
+        public enum TexUsage
+        {
+            Albedo,
+            Normal,
+            Metallic,
+            Roughness,
+            Specular,
+            Emissive,
+            AmbientOcclusion,
+            Detail,
+            Opacity   
+        }
+
+        [Persist] public TexUsage Usage { get; set; } = TexUsage.Albedo;
+
+        // (per-side on primitives)
+
+        
+        public enum CubeFaceMask
+        {
+            None = 0,
+            Right = 1,   // +X
+            Left = 2,   // -X
+            Top = 4,   // +Y
+            Bottom = 8,   // -Y
+            Back = 16,  // +Z
+            Front = 32,  // -Z
+            All = Right | Left | Top | Bottom | Back | Front
+        }
+
+        [Persist] public CubeFaceMask FaceMask { get; set; } = CubeFaceMask.All;
+        
     }
+
 
     public sealed class Material
     {

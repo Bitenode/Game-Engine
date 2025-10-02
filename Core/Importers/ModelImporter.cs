@@ -18,21 +18,7 @@ namespace Game_Engine.Core.Importers
         /// Meshes are triangulated; normals are generated if missing; UV0 is imported when available.
         /// First diffuse/baseColor texture is hooked into Material.
         /// </summary>
-        // Color (0–255) -> Vector3 (0–1)  **double-based**
-        static CoreVec3 ColorToVec3(Color c)
-            => new CoreVec3(c.R / 255.0, c.G / 255.0, c.B / 255.0);
-
-        // Vector3 (0–1) -> Color (0–255)  **double-based**
-        static Color Vec3ToColor(CoreVec3 v)
-        {
-            static double Clamp01(double f) => f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-
-            byte r = (byte)(Clamp01(v.X) * 255.0);
-            byte g = (byte)(Clamp01(v.Y) * 255.0);
-            byte b = (byte)(Clamp01(v.Z) * 255.0);
-
-            return Color.FromRgb(r, g, b);
-        }
+        
         public static GameObject ImportModel(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
@@ -41,14 +27,6 @@ namespace Game_Engine.Core.Importers
             var ctx = new AssimpContext();
 
             // Triangulate, join verts, smooth normals, improve cache locality, etc.
-            /*var pp = PostProcessSteps.Triangulate
-                   | PostProcessSteps.JoinIdenticalVertices
-                   | PostProcessSteps.GenerateSmoothNormals
-                   | PostProcessSteps.ImproveCacheLocality
-                   | PostProcessSteps.RemoveRedundantMaterials
-                   | PostProcessSteps.FixInFacingNormals
-                   | PostProcessSteps.FlipWindingOrder   // FBX convention often wants this with our rasterizer
-                   | PostProcessSteps.FlipUVs; // Flip UVs to correct orientation*/
 
             var pp = PostProcessSteps.Triangulate
                    | PostProcessSteps.JoinIdenticalVertices
@@ -100,17 +78,39 @@ namespace Game_Engine.Core.Importers
                         (byte)Math.Clamp((int)(c.B * 255f), 0, 255));
                 }
 
-                // Grab first reasonable texture slot
-                if (TryGetFirstTextureSlot(aimat, out var slot))
+                // Collect textures from common PBR/classic slots.
+                // We’ll also do a final pass over *all* slots to catch odd exporters.
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // Classic
+                AddAllTexturesOfType(aimat, TextureType.Diffuse, m, sc, dir, MaterialTexture.TexUsage.Albedo, seen);
+                AddAllTexturesOfType(aimat, TextureType.Emissive, m, sc, dir, MaterialTexture.TexUsage.Emissive, seen);
+                AddAllTexturesOfType(aimat, TextureType.Normals, m, sc, dir, MaterialTexture.TexUsage.Normal, seen);
+                AddAllTexturesOfType(aimat, TextureType.Lightmap, m, sc, dir, MaterialTexture.TexUsage.AmbientOcclusion, seen); // many tools put AO here
+
+                // Some exporters use alternative enum values (Assimp build dependent).
+                if (Enum.TryParse("BaseColor", out TextureType baseColorT))
+                    AddAllTexturesOfType(aimat, baseColorT, m, sc, dir, MaterialTexture.TexUsage.Albedo, seen);
+                if (Enum.TryParse("NormalCamera", out TextureType normalCamT))
+                    AddAllTexturesOfType(aimat, normalCamT, m, sc, dir, MaterialTexture.TexUsage.Normal, seen);
+                if (Enum.TryParse("Metalness", out TextureType metalT))
+                    AddAllTexturesOfType(aimat, metalT, m, sc, dir, MaterialTexture.TexUsage.Metallic, seen);
+                if (Enum.TryParse("DiffuseRoughness", out TextureType roughT))
+                    AddAllTexturesOfType(aimat, roughT, m, sc, dir, MaterialTexture.TexUsage.Roughness, seen);
+                if (Enum.TryParse("Roughness", out TextureType roughT2))
+                    AddAllTexturesOfType(aimat, roughT2, m, sc, dir, MaterialTexture.TexUsage.Roughness, seen);
+                if (Enum.TryParse("AmbientOcclusion", out TextureType aoT))
+                    AddAllTexturesOfType(aimat, aoT, m, sc, dir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
+
+                // Fallback sweep: scan *all* types, guess usage from the type/name, and add anything we missed.
+                foreach (TextureType t in Enum.GetValues(typeof(TextureType)))
                 {
-                    var tex = TryLoadTexture(slot, sc, dir);
-                    if (tex != null)
+                    int cnt = aimat.GetMaterialTextureCount(t);
+                    for (int k = 0; k < cnt; k++)
                     {
-                        m.Textures.Add(new MaterialTexture
-                        {
-                            Name = Path.GetFileName(slot.FilePath),
-                            Texture = tex
-                        });
+                        if (!aimat.GetMaterialTexture(t, k, out var slot)) continue;
+                        var guess = GuessUsageFromTypeOrName(t, slot.FilePath);
+                        AddTextureFromSlot(m, slot, sc, dir, guess, seen);
                     }
                 }
 
@@ -120,34 +120,67 @@ namespace Game_Engine.Core.Importers
             return dict;
         }
 
-        // Prefer Diffuse, then PBR BaseColor (if the enum exists), then any available slot.
-        static bool TryGetFirstTextureSlot(Assimp.Material mat, out TextureSlot slot)
+
+        static void AddAllTexturesOfType(Assimp.Material aimat, TextureType type,
+                                 Material m, Scene sc, string dir,
+                                 MaterialTexture.TexUsage usage,
+                                 HashSet<string> seen)
         {
-            // Classic diffuse
-            if (mat.GetMaterialTextureCount(TextureType.Diffuse) > 0 &&
-                mat.GetMaterialTexture(TextureType.Diffuse, 0, out slot))
-                return true;
-
-            // PBR base color (only in newer AssimpNet builds)
-            if (Enum.TryParse("BaseColor", out TextureType baseColorType))
+            int n = aimat.GetMaterialTextureCount(type);
+            for (int i = 0; i < n; i++)
             {
-                if (mat.GetMaterialTextureCount(baseColorType) > 0 &&
-                    mat.GetMaterialTexture(baseColorType, 0, out slot))
-                    return true;
+                if (aimat.GetMaterialTexture(type, i, out var slot))
+                    AddTextureFromSlot(m, slot, sc, dir, usage, seen);
             }
-
-            // Fall back to whatever is first (Unknown / Emissive / etc.)
-            foreach (TextureType t in Enum.GetValues(typeof(TextureType)))
-            {
-                if (mat.GetMaterialTextureCount(t) > 0 &&
-                    mat.GetMaterialTexture(t, 0, out slot))
-                    return true;
-            }
-
-            slot = default;
-            return false;
         }
 
+        static void AddTextureFromSlot(Material m, TextureSlot slot, Scene sc, string dir,
+                                       MaterialTexture.TexUsage usage, HashSet<string> seen)
+        {
+            // Normalize a dedupe key (embedded textures have "*N")
+            string key = slot.FilePath ?? string.Empty;
+            if (!seen.Add(key)) return;
+
+            var tex = TryLoadTexture(slot, sc, dir);
+            if (tex == null) return;
+
+            m.Textures.Add(new MaterialTexture
+            {
+                Name = Path.GetFileName(slot.FilePath),
+                Texture = tex,
+                Usage = usage,
+                FaceMask = (MaterialTexture.CubeFaceMask)(-1),                     // models: use everywhere by default
+                SourcePath = slot.FilePath
+            });
+        }
+
+        // Try to choose a good usage from an Assimp type and/or the filename
+        static MaterialTexture.TexUsage GuessUsageFromTypeOrName(TextureType t, string? path)
+        {
+            // Map by type first
+            switch (t)
+            {
+                case TextureType.Diffuse: return MaterialTexture.TexUsage.Albedo;
+                case TextureType.Emissive: return MaterialTexture.TexUsage.Emissive;
+                case TextureType.Normals: return MaterialTexture.TexUsage.Normal;
+                case TextureType.Lightmap: return MaterialTexture.TexUsage.AmbientOcclusion;
+            }
+
+            // Some builds ship extra enums we handled above via TryParse (BaseColor, Metalness, Roughness, AmbientOcclusion, NormalCamera)
+            // If we get here, fall back to filename heuristics:
+            var n = (path ?? "").ToLowerInvariant();
+
+            // common tokens
+            if (n.Contains("normal") || n.Contains("_n") || n.Contains("_N") || n.Contains("-nrm")) return MaterialTexture.TexUsage.Normal;
+            if (n.Contains("rough") || n.Contains("_r")) return MaterialTexture.TexUsage.Roughness;
+            if (n.Contains("metal") || n.Contains("metallic") || n.Contains("_M") || n.Contains("_m"))  return MaterialTexture.TexUsage.Metallic;
+            if (n.Contains("ao") || n.Contains("occl") || n.Contains("AO") || n.Contains("ambientocclusion")) return MaterialTexture.TexUsage.AmbientOcclusion;
+            if (n.Contains("emit") || n.Contains("emiss")) return MaterialTexture.TexUsage.Emissive;
+            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("diffuse") || n.Contains("_c")) return MaterialTexture.TexUsage.Albedo;
+
+            // safest default
+            return MaterialTexture.TexUsage.Albedo;
+        }
 
         static Texture2D? TryLoadTexture(TextureSlot slot, Scene sc, string dir)
         {
@@ -379,7 +412,7 @@ namespace Game_Engine.Core.Importers
             rx *= Rad2Deg; ry *= Rad2Deg; rz *= Rad2Deg;
         }
 
-        // Helper method to approximate radius and height (assumed from SceneView.cs)
+        // Helper method to approximate radius and height
         static (float radius, float height) ApproxRadialAndHeight(Assimp.Mesh m)
         {
             float minY = float.PositiveInfinity, maxY = float.NegativeInfinity, r = 0f;
