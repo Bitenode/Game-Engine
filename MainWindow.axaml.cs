@@ -36,6 +36,7 @@ public partial class MainWindow : Window
             [typeof(InspectorPanel)] = ("Inspector", DockRegion.Right, () => new InspectorPanel()),
             [typeof(ProjectPanel)] = ("Project", DockRegion.BottomLeft, () => new ProjectPanel()),
             [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
+            [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
         };
 
         // Defaults
@@ -64,6 +65,7 @@ public partial class MainWindow : Window
         BindNew("NewHierarchyTab", typeof(HierarchyPanel), DockRegion.Left);
         BindNew("NewProjectTab", typeof(ProjectPanel), DockRegion.BottomLeft);
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
+        BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
 
         // ----- Project menu (items are named in XAML) -----
         MI_NewProject.Click += OnNewProject;
@@ -89,6 +91,7 @@ public partial class MainWindow : Window
         AddPanel(typeof(InspectorPanel));
         AddPanel(typeof(ProjectPanel));
         AddPanel(typeof(ConsolePanel));
+        AddPanel(typeof(GamePanel));
     }
 
     private string NextTitle(string baseTitle)

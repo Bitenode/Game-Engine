@@ -31,6 +31,7 @@
 				<MenuItem Header="Reset Layout" x:Name="ResetLayoutMenu"/>
 				<MenuItem Header="New">
 					<MenuItem Header="New Scene Tab"     x:Name="NewSceneTab"/>
+					<MenuItem Header="New Game Tab"      x:Name="NewGameTab"/>
 					<MenuItem Header="New Inspector Tab" x:Name="NewInspectorTab"/>
 					<MenuItem Header="New Hierarchy Tab" x:Name="NewHierarchyTab"/>
 					<MenuItem Header="New Project Tab"   x:Name="NewProjectTab"/>

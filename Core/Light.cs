@@ -3,7 +3,7 @@
 namespace Game_Engine.Core
 {
     public enum LightType { Directional, Point }
-
+    
     public sealed class Light : Behavior
     {
         // Directional uses the GameObject's Transform forward for direction
@@ -18,6 +18,6 @@ namespace Game_Engine.Core
         // For future tinting  renderer treats this as a luminance now
         [Persist] public Color Color { get; set; } = Colors.White;
 
-        
+
     }
 }

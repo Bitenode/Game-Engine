@@ -1,0 +1,94 @@
+<UserControl
+    x:Class="Game_Engine.Views.GamePanel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:views="clr-namespace:Game_Engine.Views"
+    x:Name="Root">
+
+	<!-- Styles go here -->
+	<UserControl.Styles>
+
+		<!-- Base tool button look -->
+		<Style Selector="ToggleButton.tool">
+			<Setter Property="MinWidth"        Value="36"/>
+			<Setter Property="MinHeight"       Value="28"/>
+			<Setter Property="Padding"         Value="8,4"/>
+			<Setter Property="CornerRadius"    Value="6"/>
+			<Setter Property="FontSize"        Value="14"/>
+			<Setter Property="Focusable"       Value="False"/>
+			<Setter Property="Background"      Value="#2B2F33"/>
+			<Setter Property="BorderBrush"     Value="#2B2F33"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground"      Value="#E6EAF0"/>
+		</Style>
+
+		<!-- Always-visible icon colors -->
+		<Style Selector="ToggleButton#PlayBtn">
+			<Setter Property="Foreground" Value="#33C759"/>
+		</Style>
+		<Style Selector="ToggleButton#PauseBtn">
+			<Setter Property="Foreground" Value="#3BA3F2"/>
+		</Style>
+		<Style Selector="ToggleButton#StopBtn">
+			<Setter Property="Foreground" Value="#FF5A5F"/>
+		</Style>
+
+		<!-- Colored outline only when selected -->
+		<Style Selector="ToggleButton#PlayBtn:checked">
+			<Setter Property="BorderBrush"     Value="#33C759"/>
+			<Setter Property="BorderThickness" Value="2"/>
+		</Style>
+		<Style Selector="ToggleButton#PauseBtn:checked">
+			<Setter Property="BorderBrush"     Value="#3BA3F2"/>
+			<Setter Property="BorderThickness" Value="2"/>
+		</Style>
+		<Style Selector="ToggleButton#StopBtn:checked">
+			<Setter Property="BorderBrush"     Value="#FF5A5F"/>
+			<Setter Property="BorderThickness" Value="2"/>
+		</Style>
+
+		<!-- Hover/press/disabled -->
+		<Style Selector="ToggleButton.tool:pointerover">
+			<Setter Property="Background" Value="#33383D"/>
+		</Style>
+		<Style Selector="ToggleButton.tool:pressed">
+			<Setter Property="Background" Value="#3B4147"/>
+		</Style>
+		<Style Selector="ToggleButton.tool:disabled">
+			<Setter Property="Opacity" Value="0.45"/>
+		</Style>
+
+	</UserControl.Styles>
+
+	<!-- Single content element -->
+	<DockPanel>
+		<!-- Toolbar -->
+		<Border DockPanel.Dock="Top" Margin="8" Padding="8" CornerRadius="6" Background="#26282B">
+			<StackPanel Orientation="Horizontal" Spacing="8">
+				<!-- Bind one-way to State; code-behind sets State on click -->
+				<ToggleButton x:Name="PlayBtn"  Classes="tool" ToolTip.Tip="Play"
+							  IsChecked="{Binding ElementName=Root, Path=State,
+                                          Converter={StaticResource EnumEq},
+                                          ConverterParameter=Playing}"
+							  Click="OnPlayClicked">▶</ToggleButton>
+
+				<ToggleButton x:Name="PauseBtn" Classes="tool" ToolTip.Tip="Pause"
+							  IsChecked="{Binding ElementName=Root, Path=State,
+                                          Converter={StaticResource EnumEq},
+                                          ConverterParameter=Paused}"
+							  Click="OnPauseClicked">⏸</ToggleButton>
+
+				<ToggleButton x:Name="StopBtn"  Classes="tool" ToolTip.Tip="Stop"
+							  IsChecked="{Binding ElementName=Root, Path=State,
+                                          Converter={StaticResource EnumEq},
+                                          ConverterParameter=Stopped}"
+							  Click="OnStopClicked">■</ToggleButton>
+			</StackPanel>
+		</Border>
+
+		<!-- Viewport -->
+		<Border Margin="8" BorderThickness="1" CornerRadius="6" BorderBrush="#3A3D41" ClipToBounds="True">
+			<views:GameView x:Name="Game" Focusable="True"/>
+		</Border>
+	</DockPanel>
+</UserControl>

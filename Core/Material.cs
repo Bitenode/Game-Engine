@@ -98,7 +98,7 @@ namespace Game_Engine.Core
         // serialized as "#AARRGGBB" by SceneSerialization
         [Persist] public Color Tint { get; set; } = Colors.White;
 
-        //  knobs WIP
+        //  knobs
         [Persist] public float Metallic { get; set; }
         [Persist] public float Smoothness { get; set; }
 
