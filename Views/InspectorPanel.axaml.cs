@@ -21,6 +21,7 @@ using Avalonia.VisualTree;
 using System.Runtime.InteropServices;
 using System.IO;
 using Avalonia.Platform.Storage;
+using System.Runtime.CompilerServices;
 
 namespace Game_Engine.Views;
 
@@ -199,13 +200,6 @@ public partial class InspectorPanel : UserControl
         BuildUI(_target);
     }
 
-    private void OnGlobalSelectionChanged(GameObject? go)
-    {
-        if (_isLocked) return; // ignore changes while locked
-        _target = go;
-        BuildUI(_target);
-    }
-
     // ----------------- UI build -----------------
     void BuildUI(GameObject? go)
     {
@@ -275,6 +269,26 @@ public partial class InspectorPanel : UserControl
         catch (ReflectionTypeLoadException ex) { return ex.Types!.Where(t => t is not null)!; }
         catch { return Array.Empty<Type>(); }
     }
+
+    // UI-only preview cache for Texture2D properties
+    // key: owner object -> (prop -> IImage)
+    static readonly ConditionalWeakTable<object, Dictionary<PropertyInfo, IImage>> _texPreviewCache = new();
+
+    static IImage? GetCachedPreview(object owner, PropertyInfo prop)
+        => _texPreviewCache.TryGetValue(owner, out var map) && map.TryGetValue(prop, out var img) ? img : null;
+
+    static void SetCachedPreview(object owner, PropertyInfo prop, IImage img)
+    {
+        var map = _texPreviewCache.GetOrCreateValue(owner);
+        map[prop] = img;
+    }
+
+    static void ClearCachedPreview(object owner, PropertyInfo prop)
+    {
+        if (_texPreviewCache.TryGetValue(owner, out var map) && map.Remove(prop, out var img))
+            (img as IDisposable)?.Dispose();
+    }
+
 
     Control SectionHeader(string text) => new TextBlock
     {
@@ -779,7 +793,110 @@ public partial class InspectorPanel : UserControl
 
 
 
+    Control Texture2DEditor(object owner, PropertyInfo prop)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
 
+        var preview = new Image { Stretch = Stretch.UniformToFill };
+        var previewHost = new Border
+        {
+            Width = 48,
+            Height = 48,
+            CornerRadius = new CornerRadius(4),
+            Background = Brushes.Transparent,
+            Child = preview
+        };
+
+        // Initial preview (cache first, then best-effort reflection)
+        preview.Source = GetCachedPreview(owner, prop)
+                         ?? (prop.GetValue(owner) is { } existing ? TryPreviewFromTextureObject(existing) : null);
+
+        var choose = new Button { Content = "Choose…" };
+        choose.Click += async (_, __) =>
+        {
+            var dlg = new OpenFileDialog
+            {
+                AllowMultiple = false,
+                Filters = { new FileDialogFilter { Name = "Images", Extensions = { "png", "jpg", "jpeg", "bmp" } } }
+            };
+            var files = await dlg.ShowAsync(OwnerWindow);
+            var path = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(path)) return;
+
+            var (engineTex, bmp) = TryLoadTexture2D(path);
+            if (engineTex is null && bmp is null)
+            {
+                Game_Engine.Core.Log.Warning($"Could not load texture from: {path}");
+                return;
+            }
+
+            BeginPropertyEdit(owner, prop);
+            prop.SetValue(owner, engineTex);
+
+            //  Update UI and cache *before* anything that might rebuild the inspector
+            if (bmp is not null)
+            {
+                preview.Source = bmp;
+                SetCachedPreview(owner, prop, bmp);
+            }
+
+            //  cache is already set
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(owner, prop);
+        };
+
+        var clear = new Button { Content = "Clear" };
+        clear.Click += (_, __) =>
+        {
+            BeginPropertyEdit(owner, prop);
+            prop.SetValue(owner, null);
+
+            // Clear UI + cache first
+            ClearCachedPreview(owner, prop);
+            preview.Source = null;
+
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(owner, prop);
+        };
+
+        row.Children.Add(previewHost);
+        row.Children.Add(choose);
+        row.Children.Add(clear);
+        return row;
+    }
+
+
+
+
+    // --- try to extract a preview from an existing engine Texture2D -------------
+    static IImage? TryPreviewFromTextureObject(object texObj)
+    {
+        try
+        {
+            var t = texObj.GetType();
+
+            // Common string path property names
+            foreach (var name in new[] { "Path", "FilePath", "SourcePath" })
+            {
+                if (t.GetProperty(name) is { } p && p.GetValue(texObj) is string s && !string.IsNullOrWhiteSpace(s) && File.Exists(s))
+                    return new Avalonia.Media.Imaging.Bitmap(s);
+            }
+
+            // Method that returns a readable stream
+            if (t.GetMethod("OpenRead", Type.EmptyTypes) is { } m && m.Invoke(texObj, null) is Stream s1)
+                using (s1) return new Avalonia.Media.Imaging.Bitmap(s1);
+
+            // Methods that return bytes
+            foreach (var name in new[] { "GetBytes", "ToBytes" })
+            {
+                if (t.GetMethod(name, Type.EmptyTypes) is { } m2 && m2.Invoke(texObj, null) is byte[] bytes && bytes.Length > 0)
+                    using (var ms = new MemoryStream(bytes)) return new Avalonia.Media.Imaging.Bitmap(ms);
+            }
+        }
+        catch { /* best-effort */ }
+
+        return null;
+    }
 
 
 
@@ -900,6 +1017,9 @@ public partial class InspectorPanel : UserControl
             tb.LostFocus += (_, __) => CommitPropertyEdit(target, p);
             return tb;
         }
+        // ---- textures ----------------------------------------------------------
+        if (typeof(Game_Engine.Core.Texture2D).IsAssignableFrom(t))
+            return Texture2DEditor(target, p);
 
         if (t == typeof(Material))
             return MaterialEditor(target, p);

@@ -224,12 +224,6 @@ public class SceneView : Control
         InvalidateVisual();
     }
 
-    static uint PackFromRGBA(byte r, byte g, byte b, byte a)
-    {
-        var c = Color.FromArgb(a, r, g, b);
-        return (uint)(c.B | (c.G << 8) | (c.R << 16) | (c.A << 24));
-    }
-
     static Color MulColor(Color a, Color b)
     {
         byte r = (byte)((a.R * b.R) / 255);
@@ -237,47 +231,6 @@ public class SceneView : Control
         byte b2 = (byte)((a.B * b.B) / 255);
         return Color.FromArgb(255, r, g, b2);
     }
-
-    static Color SampleNearest(Game_Engine.Core.Texture2D t, float u, float v)
-    {
-        if (t.Width <= 0 || t.Height <= 0) return Color.FromArgb(255, 255, 255, 255);
-        // Wrap UVs (repeat)
-        u -= MathF.Floor(u);
-        v -= MathF.Floor(v);
-        // Flip V to match top-left origin textures (common for PNG/JPG)
-        v = 1f - v;
-        int x = Math.Clamp((int)MathF.Round(u * (t.Width - 1)), 0, t.Width - 1);
-        int y = Math.Clamp((int)MathF.Round(v * (t.Height - 1)), 0, t.Height - 1);
-        int idx = (y * t.Width + x) * 4;
-        var rgba = t.Rgba;
-        byte r = rgba[idx + 0];
-        byte g = rgba[idx + 1];
-        byte b = rgba[idx + 2];
-        byte a = rgba[idx + 3];
-        return Color.FromArgb(a, r, g, b);
-    }
-
-    // "over" alpha-blended on top of "under"
-    static Color AlphaOver(Color under, Color over)
-    {
-        byte r = (byte)((under.R * (255 - over.A) + over.R * over.A) / 255);
-        byte g = (byte)((under.G * (255 - over.A) + over.G * over.A) / 255);
-        byte b = (byte)((under.B * (255 - over.A) + over.B * over.A) / 255);
-        return Color.FromRgb(r, g, b);
-    }
-
-    // For cubes: classify a triangle by its (object-space) face normal.
-    // Returns: 0=+X,1=−X,2=+Y,3=−Y,4=+Z,5=−Z, or −1 if unknown.
-    static int CubeFaceIdFromObjectNormals(in SN.Vector3 na, in SN.Vector3 nb, in SN.Vector3 nc)
-    {
-        var n = na + nb + nc;
-        if (n.LengthSquared() < 1e-8f) return -1;
-        var an = new SN.Vector3(MathF.Abs(n.X), MathF.Abs(n.Y), MathF.Abs(n.Z));
-        if (an.X >= an.Y && an.X >= an.Z) return n.X >= 0 ? 0 : 1;
-        if (an.Y >= an.X && an.Y >= an.Z) return n.Y >= 0 ? 2 : 3;
-        return n.Z >= 0 ? 4 : 5;
-    }
-
 
     // --- Lighting & sky helpers -----------------------------------------------
     // forward (-Z) from a Transform (matches your yaw/pitch/roll order)
@@ -318,16 +271,167 @@ public class SceneView : Control
 
     static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
 
-    void FillSkyWorldUp(uint[] color, float[] zbuf, int W, int H,
-                    in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-                    Color topCol, Color botCol,
-                    SN.Vector3? sunDirWorld = null)
+    static Color SampleLatlongBilinear(Game_Engine.Core.Texture2D tex, SN.Vector3 dirW)
     {
+        var d = SN.Vector3.Normalize(dirW);
+        // yaw: [-pi..pi], pitch: [-pi/2..pi/2]
+        float yaw = MathF.Atan2(d.X, d.Z);                 // -Z forward ≈ u=0.5
+        float pitch = MathF.Asin(Math.Clamp(d.Y, -1f, 1f));
+
+        // to [0..1]
+        float u = 0.5f + yaw / (2f * MathF.PI);
+        if (u < 0f) u += 1f; else if (u >= 1f) u -= 1f;     // wrap X
+        float v = 0.5f - pitch / MathF.PI;                  // clamp Y later
+
+        int w = Math.Max(1, tex.Width);
+        int h = Math.Max(1, tex.Height);
+
+        float x = u * (w - 1);
+        float y = Math.Clamp(v * (h - 1), 0f, h - 1);
+
+        int x0 = (int)MathF.Floor(x);
+        int x1 = (x0 + 1) % w;
+        int y0 = (int)MathF.Floor(y);
+        int y1 = Math.Min(y0 + 1, h - 1);
+
+        float tx = x - x0, ty = y - y0;
+
+        static void Read(byte[] d, int i, out float r, out float g, out float b, out float a)
+        { r = d[i + 0] / 255f; g = d[i + 1] / 255f; b = d[i + 2] / 255f; a = d[i + 3] / 255f; }
+
+        int i00 = (y0 * w + x0) * 4, i01 = (y0 * w + x1) * 4;
+        int i10 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+
+        Read(tex.Rgba, i00, out var r00, out var g00, out var b00, out var a00);
+        Read(tex.Rgba, i01, out var r01, out var g01, out var b01, out var a01);
+        Read(tex.Rgba, i10, out var r10, out var g10, out var b10, out var a10);
+        Read(tex.Rgba, i11, out var r11, out var g11, out var b11, out var a11);
+
+        float r0 = r00 * (1 - tx) + r01 * tx;
+        float g0 = g00 * (1 - tx) + g01 * tx;
+        float b0 = b00 * (1 - tx) + b01 * tx;
+        float a0 = a00 * (1 - tx) + a01 * tx;
+
+        float r1 = r10 * (1 - tx) + r11 * tx;
+        float g1 = g10 * (1 - tx) + g11 * tx;
+        float b1 = b10 * (1 - tx) + b11 * tx;
+        float a1 = a10 * (1 - tx) + a11 * tx;
+
+        float a = a0 * (1 - ty) + a1 * ty;
+        float r = (r0 * (1 - ty) + r1 * ty);
+        float g = (g0 * (1 - ty) + g1 * ty);
+        float b = (b0 * (1 - ty) + b1 * ty);
+
+        // if the atlas has alpha, composite on black (most skyboxes are opaque anyway)
+        if (a > 0f) { r *= a; g *= a; b *= a; }
+
+        return Color.FromArgb(255,
+            (byte)Math.Clamp((int)(r * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(g * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(b * 255f + 0.5f), 0, 255));
+    }
+
+    static int FloorMod(int x, int m) => (x % m + m) % m;
+
+    // Bilinear sample with REPEAT addressing (premultiplied-safe).
+    static Avalonia.Media.Color SamplePMRepeat(Game_Engine.Core.Texture2D tex, float u, float v)
+    {
+        if (tex.Width <= 0 || tex.Height <= 0)
+            return Avalonia.Media.Color.FromArgb(255, 255, 255, 255);
+
+        // Wrap into [0,1)
+        u = u - MathF.Floor(u);
+        v = v - MathF.Floor(v);
+
+        // Pixel space, -0.5 so that u==0 samples centered on texel 0 and can lerp to the last texel across the seam.
+        float px = u * tex.Width - 0.5f;
+        float py = v * tex.Height - 0.5f;
+
+        int x0 = FloorMod((int)MathF.Floor(px), tex.Width);
+        int y0 = FloorMod((int)MathF.Floor(py), tex.Height);
+        int x1 = (x0 + 1) % tex.Width;
+        int y1 = (y0 + 1) % tex.Height;
+
+        float tx = px - MathF.Floor(px);
+        float ty = py - MathF.Floor(py);
+
+        static void Premul(byte[] d, int i, out float r, out float g, out float b, out float a)
+        {
+            a = d[i + 3] / 255f;
+            float R = d[i + 0] / 255f, G = d[i + 1] / 255f, B = d[i + 2] / 255f;
+            r = R * a; g = G * a; b = B * a;
+        }
+
+        int i00 = (y0 * tex.Width + x0) * 4;
+        int i01 = (y0 * tex.Width + x1) * 4;
+        int i10 = (y1 * tex.Width + x0) * 4;
+        int i11 = (y1 * tex.Width + x1) * 4;
+
+        Premul(tex.Rgba, i00, out var r00, out var g00, out var b00, out var a00);
+        Premul(tex.Rgba, i01, out var r01, out var g01, out var b01, out var a01);
+        Premul(tex.Rgba, i10, out var r10, out var g10, out var b10, out var a10);
+        Premul(tex.Rgba, i11, out var r11, out var g11, out var b11, out var a11);
+
+        float r0 = r00 * (1 - tx) + r01 * tx;
+        float g0 = g00 * (1 - tx) + g01 * tx;
+        float b0 = b00 * (1 - tx) + b01 * tx;
+        float a0 = a00 * (1 - tx) + a01 * tx;
+
+        float r1 = r10 * (1 - tx) + r11 * tx;
+        float g1 = g10 * (1 - tx) + g11 * tx;
+        float b1 = b10 * (1 - tx) + b11 * tx;
+        float a1 = a10 * (1 - tx) + a11 * tx;
+
+        float r = r0 * (1 - ty) + r1 * ty;
+        float g = g0 * (1 - ty) + g1 * ty;
+        float b = b0 * (1 - ty) + b1 * ty;
+        float a = a0 * (1 - ty) + a1 * ty;
+
+        if (a > 1e-6f) { r /= a; g /= a; b /= a; } else { r = g = b = 0f; }
+
+        return Avalonia.Media.Color.FromArgb(
+            (byte)Math.Clamp((int)(a * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(r * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(g * 255f + 0.5f), 0, 255),
+            (byte)Math.Clamp((int)(b * 255f + 0.5f), 0, 255));
+    }
+
+
+
+    void FillSkyWorldUp(
+    uint[] color, float[] zbuf, int W, int H,
+    in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+    Color topCol, Color botCol,
+    SN.Vector3? sunDirWorld = null,
+    Game_Engine.Core.Texture2D? skyTex = null,
+    float skyTexBlend = 0f,
+    float skyYawDegrees = 0f,          //  rotate sky horizontally
+    float seamFeather = 0f,            //  0..~0.02 recommended
+    bool keyOutNearBlack = false,      //  turn black JPG corners into alpha
+    float keyLuma = 0.03f              //  luma threshold for keying (0..1)
+)
+    {
+        static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+        static float Smooth01(float t) => t <= 0 ? 0 : (t >= 1 ? 1 : t * t * (3 - 2 * t));
+        static Color LerpColor(Color a, Color b, float t)
+        {
+            t = Clamp01(t);
+            byte r = (byte)(a.R + (b.R - a.R) * t);
+            byte g = (byte)(a.G + (b.G - a.G) * t);
+            byte b2 = (byte)(a.B + (b.B - a.B) * t);
+            byte a2 = (byte)(a.A + (b.A - a.A) * t);
+            return Color.FromArgb(a2, r, g, b2);
+        }
+
         uint top = PackBGRA(topCol);
         uint bot = PackBGRA(botCol);
+
         var vp = view * proj;
         SN.Matrix4x4.Invert(vp, out var invVP);
+
         var worldUp = SN.Vector3.UnitY;
+
+        // optional sun highlight
         SN.Vector3 sun = SN.Vector3.Zero;
         bool useSun = false;
         if (sunDirWorld.HasValue)
@@ -335,28 +439,103 @@ public class SceneView : Control
             sun = SN.Vector3.Normalize(sunDirWorld.Value);
             useSun = sun.LengthSquared() > 0.5f;
         }
+
+        bool useTex = skyTex != null && skyTexBlend > 0.0001f;
+
+        float yawRad = skyYawDegrees * (MathF.PI / 180f);
+        var yawM = SN.Matrix4x4.CreateFromAxisAngle(worldUp, yawRad);
+
+        // small pole clamp to avoid ringing at top/bottom rows
+        float poleEps = (useTex && skyTex!.Height > 1) ? (0.5f / skyTex.Height) : 0f;
+        // a sensible default feather if caller passes 0
+        if (useTex && seamFeather <= 0f) seamFeather = MathF.Max(1f / (skyTex!.Width * 2f), 0.0015f);
+
         for (int y = 0; y < H; y++)
         {
             int row = y * W;
-            float ny = 1f - ((y + 0.5f) / H) * 2f; // [-1..+1]
+            float ny = 1f - ((y + 0.5f) / H) * 2f;   // [-1..+1]
+
             for (int x = 0; x < W; x++)
             {
                 float nx = ((x + 0.5f) / W) * 2f - 1f; // [-1..+1]
-                // ray in WORLD space
+
+                // World-space view ray
                 var n4 = SN.Vector4.Transform(new SN.Vector4(nx, ny, 0f, 1f), invVP);
                 var f4 = SN.Vector4.Transform(new SN.Vector4(nx, ny, 1f, 1f), invVP);
                 var n3 = new SN.Vector3(n4.X, n4.Y, n4.Z) / n4.W;
                 var f3 = new SN.Vector3(f4.X, f4.Y, f4.Z) / f4.W;
-                var dir = SN.Vector3.Normalize(f3 - n3); // world-space view ray
+                var dir = SN.Vector3.Normalize(f3 - n3);
+
+                // rotate sky horizontally (moves the seam)
+                if (yawRad != 0f)
+                    dir = SN.Vector3.Transform(dir, yawM);
+
+                // Gradient by "up" with optional sun highlight
                 float t = Clamp01(0.5f + 0.5f * SN.Vector3.Dot(dir, worldUp));
-                // sun highlight (still clamp with Clamp01)
-                float sunGlow = useSun ? MathF.Pow(MathF.Max(0f, SN.Vector3.Dot(dir, sun)), 64f) : 0f;
-                t = Clamp01(t + sunGlow * 0.08f);
-                color[row + x] = LerpBGRA(bot, top, t); // bottom→top
+                if (useSun)
+                {
+                    float sunGlow = MathF.Pow(MathF.Max(0f, SN.Vector3.Dot(dir, sun)), 64f);
+                    t = Clamp01(t + sunGlow * 0.08f);
+                }
+                uint pix = LerpBGRA(bot, top, t);
+
+                // Sky texture overlay (equirect/lat-long)
+                if (useTex)
+                {
+                    // forward = -Z
+                    float u = 0.5f + MathF.Atan2(dir.X, -dir.Z) / (2f * MathF.PI);
+                    // wrap to [0,1)
+                    u = u - MathF.Floor(u);
+                    float v = 0.5f - MathF.Asin(Math.Clamp(dir.Y, -1f, 1f)) / MathF.PI;
+                    v = Math.Clamp(v, poleEps, 1f - poleEps);
+
+                    // sample with optional seam feathering
+                    Color samp;
+                    if (seamFeather > 0f)
+                    {
+                        float d = MathF.Min(u, 1f - u); // distance to either edge
+                        if (d < seamFeather)
+                        {
+                            float k = Smooth01(d / seamFeather);          // 0 at edge → 1 away from edge
+                            float uOther = (u < 0.5f) ? (u + 1f) : (u - 1f); // opposite side of seam
+                            var a = SamplePMRepeat(skyTex!, u, v);
+                            var b = SamplePMRepeat(skyTex!, uOther, v);
+                            samp = LerpColor(b, a, k); // cross-fade across wrap
+                        }
+                        else
+                        {
+                            samp = SamplePMRepeat(skyTex!, u, v);
+                        }
+                    }
+                    else
+                    {
+                        samp = SamplePMRepeat(skyTex!, u, v);
+                    }
+
+                    // optional “key out near black” for non-alpha JPGs
+                    if (keyOutNearBlack)
+                    {
+                        float luma = (0.2126f * samp.R + 0.7152f * samp.G + 0.0722f * samp.B) / 255f;
+                        if (luma <= keyLuma) samp = Color.FromArgb(0, samp.R, samp.G, samp.B);
+                    }
+
+                    // Use the sample's alpha to modulate blend weight
+                    float w = skyTexBlend * (samp.A / 255f);
+                    // ignore 'samp.A' for color channels (we already baked it into w)
+                    var sampRGB = Color.FromRgb(samp.R, samp.G, samp.B);
+                    pix = LerpBGRA(pix, PackBGRA(sampRGB), w);
+
+                }
+
+                color[row + x] = pix;
                 zbuf[row + x] = 1.1f; // clear Z
             }
         }
     }
+
+
+
+
 
     // --- CPU shadow map (directional) -------------------------------------------
     struct ShadowMap
@@ -432,7 +611,121 @@ public class SceneView : Control
         _target += move * speed;
         InvalidateVisual();
     }
+
+
+
     #endregion
+
+    #region Engine Texture helpers (shared with Inspector)
+    static Game_Engine.Core.Texture2D? TryCreateEngineTextureFromPath(string path)
+    {
+        var t = typeof(Game_Engine.Core.Texture2D);
+
+        // static FromFile(string)
+        var m = t.GetMethod("FromFile", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            binder: null, types: new[] { typeof(string) }, modifiers: null);
+        if (m is not null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
+
+        // static Load(string)
+        m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                        binder: null, types: new[] { typeof(string) }, modifiers: null);
+        if (m is not null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
+
+        // ctor(string)
+        var ctor = t.GetConstructor(new[] { typeof(string) });
+        if (ctor is not null) return (Game_Engine.Core.Texture2D?)ctor.Invoke(new object?[] { path });
+
+        return null;
+    }
+
+    static Game_Engine.Core.Texture2D? TryCreateEngineTextureFromBytes(byte[] bytes)
+    {
+        var t = typeof(Game_Engine.Core.Texture2D);
+
+        // static FromBytes(byte[]) or Load(byte[])
+        var m = t.GetMethod("FromBytes", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            binder: null, types: new[] { typeof(byte[]) }, modifiers: null)
+             ?? t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
+
+        return m is null ? null : (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
+    }
+
+    /// <summary>
+    /// Accepts path/stream/byte[]/bitmap/engine objects and returns a real Texture2D if possible.
+    /// </summary>
+    static Game_Engine.Core.Texture2D? EnsureEngineTexture2D(object? texObj)
+    {
+        if (texObj is null) return null;
+        if (texObj is Game_Engine.Core.Texture2D t2d) return t2d;
+
+        var t = texObj.GetType();
+
+        //Path-like properties
+        foreach (var n in new[] { "Path", "FilePath", "SourcePath" })
+        {
+            var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p?.GetValue(texObj) is string s && !string.IsNullOrWhiteSpace(s) && System.IO.File.Exists(s))
+            {
+                var tex = TryCreateEngineTextureFromPath(s);
+                if (tex != null) return tex;
+
+                try
+                {
+                    var bytes = System.IO.File.ReadAllBytes(s);
+                    tex = TryCreateEngineTextureFromBytes(bytes);
+                    if (tex != null) return tex;
+                }
+                catch { }
+            }
+        }
+
+        // OpenRead(): Stream
+        if (t.GetMethod("OpenRead", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null)
+                is { } open &&
+            open.Invoke(texObj, null) is System.IO.Stream stream)
+        {
+            try
+            {
+                using (stream)
+                using (var ms = new System.IO.MemoryStream())
+                {
+                    stream.CopyTo(ms);
+                    var tex = TryCreateEngineTextureFromBytes(ms.ToArray());
+                    if (tex != null) return tex;
+                }
+            }
+            catch { }
+        }
+
+        // GetBytes()/ToBytes(): byte[]
+        foreach (var n in new[] { "GetBytes", "ToBytes" })
+        {
+            var m = t.GetMethod(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+            if (m?.Invoke(texObj, null) is byte[] bytes && bytes.Length > 0)
+            {
+                var tex = TryCreateEngineTextureFromBytes(bytes);
+                if (tex != null) return tex;
+            }
+        }
+
+        // Avalonia Bitmap → bytes
+        if (texObj is Avalonia.Media.Imaging.Bitmap bmp)
+        {
+            using var ms = new System.IO.MemoryStream();
+            try
+            {
+                bmp.Save(ms); // PNG
+                var tex = TryCreateEngineTextureFromBytes(ms.ToArray());
+                if (tex != null) return tex;
+            }
+            catch { }
+        }
+
+        return null;
+    }
+    #endregion
+
 
     #region Ctor & event hookup
     public SceneView()
@@ -979,6 +1272,34 @@ public class SceneView : Control
         var skyTop = sky?.Top ?? Color.Parse("#1f1f1f");
         var skyBot = sky?.Bottom ?? Color.Parse("#1f1f1f");
 
+        // pull sky texture & blend (tolerant: path/stream/bytes/Bitmap)
+        Game_Engine.Core.Texture2D? skyTex = null;
+        float skyBlend = 0f;
+
+        if (sky != null)
+        {
+            var st = sky.GetType();
+
+            var pTex = st.GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var raw = pTex?.GetValue(sky);
+            var coerced = raw as Game_Engine.Core.Texture2D ?? EnsureEngineTexture2D(raw);
+            if (coerced != null)
+            {
+                skyTex = coerced;
+                if (!ReferenceEquals(raw, coerced) && pTex?.CanWrite == true)
+                    pTex.SetValue(sky, coerced); // persist the real Texture2D back onto the Skybox
+            }
+
+            var pBlend = st.GetProperty("TextureBlend", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (pBlend != null)
+            {
+                var bv = pBlend.GetValue(sky);
+                if (bv is float f) skyBlend = Math.Clamp(f, 0f, 1f);
+                else if (bv is double d) skyBlend = (float)Math.Clamp(d, 0.0, 1.0);
+            }
+        }
+
+
         // View/Proj at render res
         var (view, proj) = GetViewProj(new Size(RW, RH));
 
@@ -993,8 +1314,22 @@ public class SceneView : Control
             sunDir = -SN.Vector3.Normalize(z);
         }
 
-        // Clear sky + z
-        FillSkyWorldUp(color, zbuf, RW, RH, view, proj, skyTop, skyBot, sunDir);
+        
+        // Defaults if the Skybox doesn’t set them
+        float skyYaw = sky?.Yaw ?? 0f;          // degrees
+        float seamFeather = sky?.SeamFeather ?? 0.01f;
+        bool keyOut = sky?.KeyOutNearBlack ?? true;
+        float keyLuma = sky?.KeyLuma ?? 0.08f;
+
+        // Clear sky + z  
+        FillSkyWorldUp(
+            color, zbuf, RW, RH, view, proj,
+            skyTop, skyBot,
+            sunDir,
+            skyTex, skyBlend,
+            skyYaw, seamFeather, keyOut, keyLuma
+        );
+
 
         // Lighting defaults (frame-level)
         var light = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault();
@@ -1273,13 +1608,13 @@ public class SceneView : Control
                            L, DiffuseK, Ambient, lightIsPoint, lightPosW, lightRange, shadow);
     }
 
-    // Heuristic: decide if this renderer should be drawn in the transparent pass
+    // decide if this renderer should be drawn in the transparent pass
     static bool IsRendererTransparent(MeshRenderer mr)
     {
-        // 1) Renderer tint alpha
+        // Renderer tint alpha
         if (mr.Color.A < 255) return true;
 
-        // 2) Grab the material (public or non-public)
+        // Grab the material (public or non-public)
         var matProp = mr.GetType().GetProperty("Material",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         var mat = matProp?.GetValue(mr);
@@ -1287,7 +1622,7 @@ public class SceneView : Control
 
         var mt = mat.GetType();
 
-        // 3) Material flags/knobs
+        // Material flags/knobs
         if (TryGetBool(mt, mat, "Transparent", out var isTrans) && isTrans)
             return true;
 
@@ -1300,7 +1635,7 @@ public class SceneView : Control
         if (TryGetString(mt, mat, "BlendMode", out var blendMode) && BlendImpliesTransparency(blendMode))
             return true;
 
-        // 4) Texture usages
+        //Texture usages
         var texListProp = mt.GetProperty("Textures", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         if (texListProp?.GetValue(mat) is System.Collections.IEnumerable slots)
         {
@@ -1310,15 +1645,16 @@ public class SceneView : Control
                 string usage = GetUsage(slot);
 
                 // Explicit transparency usages
-                if (usage == "opacity" || usage == "transparent" || usage.Contains("alpha") || usage.Contains("transp"))
+                if (usage == "opacity" || usage == "transparent" ||
+                    usage.Contains("alpha") || usage.Contains("transp"))
                     return true;
 
-                // If this is an albedo/base/diffuse texture and it actually has alpha < 255,
-                // render in the transparent pass (classic “cutout”/PNG-with-alpha case).
-                if (usage.Contains("albedo") || usage.Contains("basecolor") || usage.Contains("base") || usage.Contains("diff"))
+                // If albedo-like and actually has alpha, treat as transparent
+                if (usage.Contains("albedo") || usage.Contains("basecolor") ||
+                    usage.Contains("base") || usage.Contains("diff"))
                 {
-                    var tex = GetTexture(slot);
-                    if (tex != null && TextureHasAnyAlpha(tex))
+                    var texObj = GetTextureObject(slot); // tolerant fetch
+                    if (texObj != null && TextureHasAnyAlpha(texObj))
                         return true;
                 }
             }
@@ -1365,7 +1701,8 @@ public class SceneView : Control
         static bool BlendImpliesTransparency(string s)
         {
             s = (s ?? "").ToLowerInvariant();
-            return s.Contains("alpha") || s.Contains("transp") || s.Contains("add") || s.Contains("screen");
+            return s.Contains("alpha") || s.Contains("transp") ||
+                   s.Contains("add") || s.Contains("screen");
         }
 
         static string GetUsage(object slot)
@@ -1375,43 +1712,38 @@ public class SceneView : Control
             return (u?.ToString() ?? "albedo").ToLowerInvariant();
         }
 
-        static object? GetTexture(object slot)
+        static object? GetTextureObject(object slot)
         {
-            return slot.GetType().GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                       ?.GetValue(slot);
+            var p = slot.GetType().GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var raw = p?.GetValue(slot);
+            //  non-engine objects to a real Texture2D if needed & write back
+            var tex = raw as Game_Engine.Core.Texture2D ?? EnsureEngineTexture2D(raw);
+            if (tex != null && tex != raw && p is { CanWrite: true }) p!.SetValue(slot, tex);
+            return tex;
         }
 
-        static bool TextureHasAnyAlpha(object tex)
+        static bool TextureHasAnyAlpha(object texLike)
         {
-            // Game_Engine.Core.Texture2D with byte[] Rgba and dimensions
-            var tt = tex.GetType();
+            // Make sure we have a real engine texture
+            var tex = texLike as Game_Engine.Core.Texture2D ?? EnsureEngineTexture2D(texLike);
+            if (tex is null) return false;
 
-            // Some pipelines expose a direct boolean — use it if present
-            var pHasAlpha = tt.GetProperty("HasAlpha", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (pHasAlpha != null && pHasAlpha.PropertyType == typeof(bool))
-                return (bool)pHasAlpha.GetValue(tex)!;
-
-            var rgba = tt.GetProperty("Rgba", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(tex) as byte[];
-            var wObj = tt.GetProperty("Width", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(tex);
-            var hObj = tt.GetProperty("Height", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(tex);
-
-            if (rgba == null || rgba.Length < 4 || wObj == null || hObj == null)
-                return false;
-
+            // Fast probe
+            var rgba = tex.Rgba;
+            if (rgba == null || rgba.Length < 4) return false;
             int pixels = rgba.Length / 4;
             if (pixels <= 0) return false;
 
-            // Probe up to ~1024 pixels to keep it cheap
             int step = Math.Max(1, pixels / 1024);
             for (int i = 0; i < pixels; i += step)
             {
                 int a = rgba[i * 4 + 3];
-                if (a < 250) // allow minor compression noise
-                    return true;
+                if (a < 250) return true; // allow minor noise
             }
             return false;
         }
     }
+
 
 
 
@@ -2160,8 +2492,17 @@ public class SceneView : Control
                         {
                             foreach (var slot in mat.Textures)
                             {
-                                var tex = slot.Texture;
+                                // tolerant fetch (works for path/stream/byte[]/bitmap/engine)
+                                var slotType = slot.GetType();
+                                var pTex = slotType.GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                var rawObj = pTex?.GetValue(slot);
+
+                                var tex = rawObj as Game_Engine.Core.Texture2D ?? EnsureEngineTexture2D(rawObj);
                                 if (tex == null) continue;
+
+                                // If we created a proper engine texture, persist it back on the slot
+                                if (tex != rawObj && pTex is { CanWrite: true })
+                                    pTex.SetValue(slot, tex);
 
                                 int mask = GetFaceMask(slot);
                                 if (mask != -1 && triFaceMask != -1 && (mask & triFaceMask) == 0) continue;
