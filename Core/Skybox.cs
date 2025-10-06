@@ -13,9 +13,9 @@ namespace Game_Engine.Core
         [Persist] public Texture2D? Texture { get; set; } = null; // optional sky texture
         [Persist] public float TextureBlend { get; set; } = 1.0f; // 0..1, over the gradient
 
-        public float Yaw { get; set; } = 0f;            // degrees
-        public float SeamFeather { get; set; } = 0.01f; // 0..~0.02
-        public bool KeyOutNearBlack { get; set; } = false;
-        public float KeyLuma { get; set; } = 0.08f;     // 0..1
+        [Persist] public float Yaw { get; set; } = 0f;            // degrees
+        [Persist] public float SeamFeather { get; set; } = 0.01f; // 0..~0.02
+        [Persist] public bool KeyOutNearBlack { get; set; } = false;
+        [Persist] public float KeyLuma { get; set; } = 0.08f;     // 0..1
     }
 }

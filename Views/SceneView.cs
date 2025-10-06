@@ -27,6 +27,9 @@ public class SceneView : Control
     float _distance = 8f;
     SN.Vector3 _target = SN.Vector3.Zero;
 
+    bool _lookThroughCamera = false;   // toggle via UI or hotkey
+    Game_Engine.Core.Camera? _lastPreviewCam;
+
     // --- Free-fly state ---
     readonly HashSet<Key> _keysDown = new();
     DispatcherTimer _flyTimer;
@@ -47,6 +50,200 @@ public class SceneView : Control
     // Reuse uv-sphere meshes by (lon,lat) so we don't allocate every frame.
     readonly Dictionary<(int lon, int lat), Mesh> _uvSphereCache = new();
 
+    private (SN.Matrix4x4 View, SN.Matrix4x4 Proj, Game_Engine.Core.Camera? Cam, bool UsingComponent)
+    GetActiveViewProj(Size size)
+    {
+        Game_Engine.Core.Camera? cam = null;
+
+        if (_lookThroughCamera)
+        {
+            cam = _lastPreviewCam;
+
+            // If none remembered, prefer selected camera, else main
+            cam ??= SelectionService.Current?
+                        .Behaviors.OfType<Game_Engine.Core.Camera>()
+                        .FirstOrDefault(b => b.Enabled);
+
+            cam ??= FindBehaviors<Game_Engine.Core.Camera>()
+                        .FirstOrDefault(c => c.Enabled && c.IsMain);
+        }
+
+        if (cam != null)
+        {
+            _lastPreviewCam = cam;
+            return (cam.GetViewMatrix(), cam.GetProjectionMatrix(size), cam, true);
+        }
+
+        // Editor orbit camera
+        var (v, p) = GetViewProj(size);
+        _lastPreviewCam = null;
+        return (v, p, null, false);
+    }
+
+
+
+    void DrawCameraFrustums(
+    DrawingContext ctx,
+    SN.Matrix4x4 view, SN.Matrix4x4 proj,
+    Size sz, Game_Engine.Core.Camera? activeCam)
+    {
+        var vpScene = view * proj;
+
+        foreach (var cam in FindBehaviors<Game_Engine.Core.Camera>())
+        {
+            if (!cam.Enabled) continue;
+            if (cam == activeCam) continue; // don't draw the one we’re looking through
+
+            // Build that camera’s inverse VP to recover frustum corners in world space
+            var camView = cam.GetViewMatrix();
+            var camProj = cam.GetProjectionMatrix(sz);             // <-- size overload
+            if (!SN.Matrix4x4.Invert(camView * camProj, out var invVP))
+                continue; // degenerate camera
+
+            // NDC cube corners (DX-style: z in [0..1])
+            var ndc = new SN.Vector4[]
+            {
+            new(-1,-1,0,1), new( 1,-1,0,1), new( 1, 1,0,1), new(-1, 1,0,1), // near
+            new(-1,-1,1,1), new( 1,-1,1,1), new( 1, 1,1,1), new(-1, 1,1,1)  // far
+            };
+
+            // Transform to world space
+            var cW = new SN.Vector3[8];
+            for (int i = 0; i < 8; i++)
+            {
+                var w = SN.Vector4.Transform(ndc[i], invVP);
+                float iw = Math.Abs(w.W) < 1e-6f ? 1f : 1f / w.W;
+                cW[i] = new SN.Vector3(w.X * iw, w.Y * iw, w.Z * iw);
+            }
+
+            // Frustum edges
+            ReadOnlySpan<int[]> edges = new[]
+            {
+            new[]{0,1}, new[]{1,2}, new[]{2,3}, new[]{3,0}, // near
+            new[]{4,5}, new[]{5,6}, new[]{6,7}, new[]{7,4}, // far
+            new[]{0,4}, new[]{1,5}, new[]{2,6}, new[]{3,7}  // links
+        };
+
+            var col = cam.IsMain ? Colors.Gold : Colors.Orange;
+            foreach (var e in edges)
+                DrawLine3D(ctx, vpScene, sz, cW[e[0]], cW[e[1]], col, 1.5);
+
+            // Camera position + tiny forward arrow
+            if (cam.gameObject is { } go)
+            {
+                var W = AccumulateWorld(go);
+                var camPos = SN.Vector3.Transform(SN.Vector3.Zero, W);
+                float s = 0.18f;
+
+                // basis axes (for a mini gizmo)
+                DrawLine3D(ctx, vpScene, sz, camPos, camPos + s * SN.Vector3.UnitX, Colors.Red, 2);
+                DrawLine3D(ctx, vpScene, sz, camPos, camPos + s * SN.Vector3.UnitY, Colors.Lime, 2);
+                DrawLine3D(ctx, vpScene, sz, camPos, camPos + s * SN.Vector3.UnitZ, Colors.DeepSkyBlue, 2);
+
+                // forward (matches our -Z forward convention)
+                var fwd = ForwardFrom(go.Transform);
+                DrawLine3D(ctx, vpScene, sz, camPos, camPos + s * 1.3f * fwd, col, 2);
+            }
+        }
+    }
+
+    static float Clamp01Finite(float v, float def)
+    {
+        if (float.IsNaN(v) || float.IsInfinity(v)) return def;
+        if (v < 0f) return 0f;
+        if (v > 1f) return 1f;
+        return v;
+    }
+
+    static (int x, int y, int w, int h) ViewportPx(Game_Engine.Core.Camera cam, int fbW, int fbH)
+    {
+        // Normalize & sanitize
+        float nx = Clamp01Finite(cam.ViewportX, 0f);
+        float ny = Clamp01Finite(cam.ViewportY, 0f);
+        float nw = Clamp01Finite(cam.ViewportW, 1f);
+        float nh = Clamp01Finite(cam.ViewportH, 1f);
+
+        // Keep inside [0..1] rect
+        if (nx + nw > 1f) nw = 1f - nx;
+        if (ny + nh > 1f) nh = 1f - ny;
+
+        // Convert to pixels
+        int w = Math.Max(1, (int)Math.Round(nw * fbW));
+        int h = Math.Max(1, (int)Math.Round(nh * fbH));
+        int x = (int)Math.Round(nx * fbW);
+        int y = (int)Math.Round(ny * fbH);
+
+        // Clamp origin after we know w/h
+        x = Math.Clamp(x, 0, Math.Max(0, fbW - w));
+        y = Math.Clamp(y, 0, Math.Max(0, fbH - h));
+
+        return (x, y, w, h);
+    }
+
+
+    // Clear a sub-buffer according to Camera.Clear/Background (Skybox uses your FillSkyWorldUp)
+    void ClearForCamera(Game_Engine.Core.Camera cam,
+                        uint[] color, float[] zbuf, int W, int H,
+                        SN.Matrix4x4 view, SN.Matrix4x4 proj,
+                        Color skyTop, Color skyBot,
+                        Game_Engine.Core.Texture2D? skyTex, float skyBlend,
+                        float skyYaw, float seamFeather, bool keyOut, float keyLuma)
+    {
+        for (int i = 0; i < zbuf.Length; i++) zbuf[i] = 1.1f;
+
+        switch (cam.Clear)
+        {
+            case ClearFlags.SolidColor:
+                uint bg = PackBGRA(cam.Background);
+                for (int i = 0; i < color.Length; i++) color[i] = bg;
+                break;
+
+            case ClearFlags.Skybox:
+                FillSkyWorldUp(color, zbuf, W, H, view, proj,
+                               skyTop, skyBot, null,
+                               skyTex, skyBlend, skyYaw, seamFeather, keyOut, keyLuma);
+                break;
+
+            case ClearFlags.DepthOnly:
+                // leave color as-is; depth already cleared
+                break;
+
+            case ClearFlags.Nothing:
+                // do nothing
+                break;
+        }
+    }
+
+    // Copy a small RGBA buffer into the big framebuffer at (dx,dy)
+    static void Blit(uint[] src, int sw, int sh, uint[] dst, int dw, int dh, int dx, int dy)
+    {
+        for (int y = 0; y < sh; y++)
+            Array.Copy(src, y * sw, dst, (dy + y) * dw + dx, sw);
+    }
+
+
+    Game_Engine.Core.Camera? FindBestCameraForPreview()
+    {
+        // Prefer selected object's Camera
+        if (_selected != null)
+        {
+            var selCam = _selected.Behaviors.OfType<Game_Engine.Core.Camera>()
+                             .FirstOrDefault(c => c.Enabled);
+            if (selCam != null) return selCam;
+        }
+
+        // Then a marked “main” camera
+        var main = FindBehaviors<Game_Engine.Core.Camera>()
+                   .FirstOrDefault(c => c.Enabled && c.IsMain);
+        if (main != null) return main;
+
+        // Else any enabled camera
+        return FindBehaviors<Game_Engine.Core.Camera>().FirstOrDefault(c => c.Enabled);
+    }
+
+
+
+
     #endregion
 
     #region Tooling (Move/Rotate/Scale)
@@ -54,6 +251,7 @@ public class SceneView : Control
 
     public static readonly StyledProperty<ToolMode> ToolProperty =
         AvaloniaProperty.Register<SceneView, ToolMode>(nameof(Tool), ToolMode.Hand);
+
 
     public ToolMode Tool
     {
@@ -107,6 +305,14 @@ public class SceneView : Control
     AvaloniaProperty.Register<SceneView, bool>(nameof(GizmoLocal), true);
     public bool GizmoLocal { get => GetValue(GizmoLocalProperty); set => SetValue(GizmoLocalProperty, value); }
 
+    public static readonly StyledProperty<bool> ShowCamerasProperty =
+    AvaloniaProperty.Register<SceneView, bool>(nameof(ShowCameras), true);
+
+    public bool ShowCameras
+    {
+        get => GetValue(ShowCamerasProperty);
+        set => SetValue(ShowCamerasProperty, value);
+    }
 
     // Snap
     public bool SnapEnabled { get; set; } = false;
@@ -120,6 +326,8 @@ public class SceneView : Control
         ShowLightProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
         Is2DProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
         Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
+        ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
+
     }
     #endregion
 
@@ -408,7 +616,8 @@ public class SceneView : Control
     float skyYawDegrees = 0f,          //  rotate sky horizontally
     float seamFeather = 0f,            //  0..~0.02 recommended
     bool keyOutNearBlack = false,      //  turn black JPG corners into alpha
-    float keyLuma = 0.03f              //  luma threshold for keying (0..1)
+    float keyLuma = 0.03f,             //  luma threshold for keying (0..1)
+    float zWriteNdc = 1.0f             //  where to write sky in [0..1] (use far plane)
 )
     {
         static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
@@ -528,7 +737,7 @@ public class SceneView : Control
                 }
 
                 color[row + x] = pix;
-                zbuf[row + x] = 1.1f; // clear Z
+                zbuf[row + x] = Math.Clamp(zWriteNdc, 0f, 1f); // clear Z
             }
         }
     }
@@ -611,6 +820,8 @@ public class SceneView : Control
         _target += move * speed;
         InvalidateVisual();
     }
+
+
 
 
 
@@ -779,6 +990,27 @@ public class SceneView : Control
             e.Handled = true;
             return;
         }
+        if (e.Key == Key.C)
+        {
+            if (!_lookThroughCamera)
+            {
+                // Enter look-through: prefer selected camera, then main, then any
+                _lastPreviewCam = FindBestCameraForPreview();
+                _lookThroughCamera = _lastPreviewCam != null;
+            }
+            else
+            {
+                // Exit look-through back to editor camera
+                _lookThroughCamera = false;
+                _lastPreviewCam = null;
+            }
+
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
+
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
@@ -1256,23 +1488,67 @@ public class SceneView : Control
     #region Render pipeline
     public override void Render(DrawingContext ctx)
     {
+        // ---- local helpers (scoped to this method) --------------------------------
+        
+
+        void ClearForCamera(Game_Engine.Core.Camera cam,
+                            uint[] color, float[] zbuf, int W, int H,
+                            in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+                            Color skyTop, Color skyBot, SN.Vector3? sunDir,
+                            Game_Engine.Core.Texture2D? skyTex, float skyBlend,
+                            float skyYaw, float seamFeather, bool keyOut, float keyLuma)
+        {
+            for (int i = 0; i < zbuf.Length; i++) zbuf[i] = 1.1f;
+
+            switch (cam.Clear)
+            {
+                case ClearFlags.SolidColor:
+                    {
+                        uint bg = PackBGRA(cam.Background);
+                        for (int i = 0; i < color.Length; i++) color[i] = bg;
+                        break;
+                    }
+                case ClearFlags.Skybox:
+                    {
+                        FillSkyWorldUp(color, zbuf, W, H, view, proj,
+                           skyTop, skyBot, sunDir,
+                           skyTex, skyBlend, skyYaw, seamFeather, keyOut, keyLuma,
+                           zWriteNdc: 1f - 1e-6f);
+                                    break;
+                    }
+                case ClearFlags.DepthOnly:
+                    // leave color as-is, depth already cleared above
+                    break;
+
+                case ClearFlags.Nothing:
+                    // do nothing
+                    break;
+            }
+        }
+
+        static void Blit(uint[] src, int sw, int sh, uint[] dst, int dw, int dh, int dx, int dy)
+        {
+            for (int y = 0; y < sh; y++)
+                Array.Copy(src, y * sw, dst, (dy + y) * dw + dx, sw);
+        }
+        // ---------------------------------------------------------------------------
+
         base.Render(ctx);
+
         var size = Bounds.Size;
         int W = Math.Max(1, (int)size.Width);
         int H = Math.Max(1, (int)size.Height);
         int SS = Supersample2x ? 2 : 1;
-        int RW = W * SS; // render width
-        int RH = H * SS; // render height
+        int RW = W * SS, RH = H * SS;
 
         var color = new uint[RW * RH];
         var zbuf = new float[RW * RH];
 
-        // Sky colors
+        // --- Skybox (scene settings) ----------------------------------------------
         var sky = FindBehaviors<Game_Engine.Core.Skybox>().FirstOrDefault();
         var skyTop = sky?.Top ?? Color.Parse("#1f1f1f");
         var skyBot = sky?.Bottom ?? Color.Parse("#1f1f1f");
 
-        // pull sky texture & blend (tolerant: path/stream/bytes/Bitmap)
         Game_Engine.Core.Texture2D? skyTex = null;
         float skyBlend = 0f;
 
@@ -1287,23 +1563,26 @@ public class SceneView : Control
             {
                 skyTex = coerced;
                 if (!ReferenceEquals(raw, coerced) && pTex?.CanWrite == true)
-                    pTex.SetValue(sky, coerced); // persist the real Texture2D back onto the Skybox
+                    pTex.SetValue(sky, coerced);
             }
 
             var pBlend = st.GetProperty("TextureBlend", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (pBlend != null)
             {
                 var bv = pBlend.GetValue(sky);
-                if (bv is float f) skyBlend = Math.Clamp(f, 0f, 1f);
-                else if (bv is double d) skyBlend = (float)Math.Clamp(d, 0.0, 1.0);
+                skyBlend = bv is float f ? Math.Clamp(f, 0f, 1f)
+                         : bv is double d ? (float)Math.Clamp(d, 0.0, 1.0)
+                         : 0f;
             }
         }
 
+        // --- Active view/proj (camera component or editor orbit) -------------------
+        var active = GetActiveViewProj(new Size(RW, RH));
+        var view = active.View;
+        var proj = active.Proj;
+        var usingCam = active.UsingComponent && active.Cam is not null;
 
-        // View/Proj at render res
-        var (view, proj) = GetViewProj(new Size(RW, RH));
-
-        // sun dir (just for sky highlight)
+        // Sun highlight from directional light (for sky)
         var dirLight = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault(l => l.Type == LightType.Directional);
         SN.Vector3? sunDir = null;
         if (dirLight?.gameObject is { } dgo)
@@ -1314,24 +1593,21 @@ public class SceneView : Control
             sunDir = -SN.Vector3.Normalize(z);
         }
 
-        
-        // Defaults if the Skybox doesn’t set them
-        float skyYaw = sky?.Yaw ?? 0f;          // degrees
+        // Skybox knobs
+        float skyYaw = sky?.Yaw ?? 0f;
         float seamFeather = sky?.SeamFeather ?? 0.01f;
         bool keyOut = sky?.KeyOutNearBlack ?? true;
         float keyLuma = sky?.KeyLuma ?? 0.08f;
 
-        // Clear sky + z  
-        FillSkyWorldUp(
-            color, zbuf, RW, RH, view, proj,
-            skyTop, skyBot,
-            sunDir,
-            skyTex, skyBlend,
-            skyYaw, seamFeather, keyOut, keyLuma
-        );
+        // If not looking through a Camera component, clear full screen with sky now.
+        // If using a Camera, we still fill the full background with sky first so area
+        // outside the camera viewport looks nice.
+        FillSkyWorldUp(color, zbuf, RW, RH, view, proj,
+               skyTop, skyBot, sunDir, skyTex, skyBlend,
+               skyYaw, seamFeather, keyOut, keyLuma,
+               zWriteNdc: 1f - 1e-6f);   // write at far plane
 
-
-        // Lighting defaults (frame-level)
+        // --- Lighting --------------------------------------------------------------
         var light = FindBehaviors<Game_Engine.Core.Light>().FirstOrDefault();
         SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
         float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
@@ -1345,6 +1621,7 @@ public class SceneView : Control
         {
             float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
             DiffuseK *= MathF.Max(0.01f, light.Intensity * lum);
+
             var lw = light.gameObject is null ? SN.Matrix4x4.Identity : AccumulateWorld(light.gameObject);
             lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, lw);
 
@@ -1357,7 +1634,7 @@ public class SceneView : Control
             }
         }
 
-        // Small directional shadow map
+        // --- Tiny shadow map for directional light --------------------------------
         ShadowMap? shadow = null;
         if (ShowLight && light is { Type: Game_Engine.Core.LightType.Directional } && !lightIsPoint)
         {
@@ -1381,7 +1658,6 @@ public class SceneView : Control
             shadow = new ShadowMap { VP = lightView * lightProj, Depth = sdepth, W = SW, H = SH, Bias = 0.0025f };
         }
 
-        // One-time debug dump after changes
         if (_logNextRender)
         {
             _logNextRender = false;
@@ -1390,29 +1666,81 @@ public class SceneView : Control
                 Debug.WriteLine("[SceneView] ShowWire is enabled — solid pass is skipped.");
         }
 
-        // Depth-tested grid
-        if (ShowGrid)
-            OverlayInfiniteGrid(view, proj, color, zbuf, RW, RH, step: 1f, majorEvery: 5);
+        if (ShowCameras)
+            DrawCameraFrustums(ctx, view, proj, size, active.Cam);
 
-        // Solid opaque pass
-        if (!ShowWire)
+        // --- Render path -----------------------------------------------------------
+        if (!usingCam)
         {
-            foreach (var root in SceneService.Root)
-                DrawNodeSolidZ(root, view, proj, SN.Matrix4x4.Identity,
-                               color, zbuf, RW, RH,
-                               L, DiffuseK, Ambient,
-                               lightIsPoint, lightPosW, lightRange,
-                               shadow);
-            // Transparent back-to-front pass
-            foreach (var root in SceneService.Root)
-                DrawNodeSolidZ_QueueTransparent(root, view, proj, SN.Matrix4x4.Identity,
-                                                color, zbuf, RW, RH,
-                                                L, DiffuseK, Ambient,
-                                                lightIsPoint, lightPosW, lightRange,
-                                                shadow);
+            // Editor orbit camera renders the whole surface
+            if (ShowGrid)
+                OverlayInfiniteGrid(view, proj, color, zbuf, RW, RH, step: 1f, majorEvery: 5);
+
+            if (!ShowWire)
+            {
+                foreach (var root in SceneService.Root)
+                    DrawNodeSolidZ(root, view, proj, SN.Matrix4x4.Identity,
+                                   color, zbuf, RW, RH,
+                                   L, DiffuseK, Ambient,
+                                   lightIsPoint, lightPosW, lightRange, shadow);
+
+                foreach (var root in SceneService.Root)
+                    DrawNodeSolidZ_QueueTransparent(root, view, proj, SN.Matrix4x4.Identity,
+                                                    color, zbuf, RW, RH,
+                                                    L, DiffuseK, Ambient,
+                                                    lightIsPoint, lightPosW, lightRange, shadow);
+            }
+        }
+        else
+        {
+            // Render the selected camera into its normalized viewport
+            var cam = active.Cam!;
+
+            // Compute viewport rect in **render** resolution
+            var (vx, vy, vw, vh) = ViewportPx(cam, RW, RH);
+
+            // Sub-buffers sized to the viewport
+            var vColor = new uint[vw * vh];
+            var vZ = new float[vw * vh];
+
+            // View/Proj must use the viewport's aspect to be correct
+            var vView = cam.GetViewMatrix();
+            var vProj = cam.GetProjectionMatrix(new Avalonia.Size(vw, vh));
+
+            // Apply camera clear/background inside the viewport
+            ClearForCamera(cam, vColor, vZ, vw, vh,
+                           vView, vProj,
+                           skyTop, skyBot, sunDir,
+                           skyTex, skyBlend,
+                           skyYaw, seamFeather, keyOut, keyLuma);
+
+            if (ShowGrid)
+                OverlayInfiniteGrid(vView, vProj, vColor, vZ, vw, vh, step: 1f, majorEvery: 5);
+
+            if (!ShowWire)
+            {
+                foreach (var root in SceneService.Root)
+                    DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
+                                   vColor, vZ, vw, vh,
+                                   L, DiffuseK, Ambient,
+                                   lightIsPoint, lightPosW, lightRange, shadow);
+
+                foreach (var root in SceneService.Root)
+                    DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
+                                                    vColor, vZ, vw, vh,
+                                                    L, DiffuseK, Ambient,
+                                                    lightIsPoint, lightPosW, lightRange, shadow);
+            }
+
+            // Composite the camera's viewport into the full software framebuffer
+            Blit(vColor, vw, vh, color, RW, RH, vx, vy);
+
+            // For overlays (wire/gizmo) use the same camera matrices
+            view = vView;
+            proj = vProj;
         }
 
-        // Blit
+        // --- Copy to WriteableBitmap ----------------------------------------------
         var wb = new WriteableBitmap(new PixelSize(W, H), new Avalonia.Vector(96, 96),
                                      PixelFormat.Bgra8888, AlphaFormat.Premul);
 
@@ -1420,37 +1748,35 @@ public class SceneView : Control
             unsafe
             {
                 byte* dst = (byte*)fb.Address;
-                int stride = fb.RowBytes;
+                int rowB = fb.RowBytes;
 
                 if (SS == 2)
                 {
                     var lo = new uint[W * H];
                     Downsample2x(color, RW, RH, lo, W, H);
                     fixed (uint* src = lo)
-                    {
                         for (int y = 0; y < H; y++)
-                            Buffer.MemoryCopy(src + y * W, dst + y * stride, stride, W * 4);
-                    }
+                            Buffer.MemoryCopy(src + y * W, dst + y * rowB, rowB, W * 4);
                 }
                 else
                 {
                     fixed (uint* src = color)
-                    {
                         for (int y = 0; y < H; y++)
-                            Buffer.MemoryCopy(src + y * RW, dst + y * stride, stride, W * 4);
-                    }
+                            Buffer.MemoryCopy(src + y * RW, dst + y * rowB, rowB, W * 4);
                 }
             }
+
         ctx.DrawImage(wb, new Rect(0, 0, W, H));
 
-        // Wire overlay
+        // --- Optional wire overlay & gizmo (use 'view/proj' chosen above) ----------
         var vp = view * proj;
         foreach (var root in SceneService.Root)
             DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
 
-        // Gizmo
         DrawTranslateGizmo(ctx, view, proj, size);
     }
+
+
 
 
 
@@ -2010,83 +2336,6 @@ public class SceneView : Control
     private static float Edge(SN.Vector2 a, SN.Vector2 b, SN.Vector2 c)
     {
         return (c.X - a.X) * (b.Y - a.Y) - (c.Y - a.Y) * (b.X - a.X);
-    }
-
-
-    private static Color SampleTexture(Texture2D tex, float u, float v)
-    {
-        if (tex.Width <= 0 || tex.Height <= 0)
-            return Color.FromArgb(255, 255, 255, 255);
-
-        // Flip V (top-left origin) and clamp to texel centers
-        v = 1f - v;
-
-        float maxX = tex.Width - 1;
-        float maxY = tex.Height - 1;
-
-        // Keep samples inside [0.5/max, 1-0.5/max] to avoid wrapping into transparent borders
-        float epsU = (tex.Width > 1) ? (0.5f / maxX) : 0f;
-        float epsV = (tex.Height > 1) ? (0.5f / maxY) : 0f;
-
-        u = Math.Clamp(u, epsU, 1f - epsU);
-        v = Math.Clamp(v, epsV, 1f - epsV);
-
-        float px = u * maxX;
-        float py = v * maxY;
-
-        int x0 = (int)MathF.Floor(px);
-        int y0 = (int)MathF.Floor(py);
-        int x1 = Math.Min(x0 + 1, tex.Width - 1);
-        int y1 = Math.Min(y0 + 1, tex.Height - 1);
-
-        float tx = px - x0;
-        float ty = py - y0;
-
-        // Read pixels
-        int i00 = (y0 * tex.Width + x0) * 4;
-        int i01 = (y0 * tex.Width + x1) * 4;
-        int i10 = (y1 * tex.Width + x0) * 4;
-        int i11 = (y1 * tex.Width + x1) * 4;
-
-        // Convert to premultiplied floats [0..1]
-        static void Premul(byte[] d, int i, out float r, out float g, out float b, out float a)
-        {
-            a = d[i + 3] / 255f;
-            float R = d[i + 0] / 255f;
-            float G = d[i + 1] / 255f;
-            float B = d[i + 2] / 255f;
-            r = R * a; g = G * a; b = B * a;
-        }
-
-        Premul(tex.Rgba, i00, out var r00, out var g00, out var b00, out var a00);
-        Premul(tex.Rgba, i01, out var r01, out var g01, out var b01, out var a01);
-        Premul(tex.Rgba, i10, out var r10, out var g10, out var b10, out var a10);
-        Premul(tex.Rgba, i11, out var r11, out var g11, out var b11, out var a11);
-
-        // Bilinear in premultiplied space
-        float r0 = r00 * (1 - tx) + r01 * tx;
-        float g0 = g00 * (1 - tx) + g01 * tx;
-        float b0 = b00 * (1 - tx) + b01 * tx;
-        float a0 = a00 * (1 - tx) + a01 * tx;
-
-        float r1 = r10 * (1 - tx) + r11 * tx;
-        float g1 = g10 * (1 - tx) + g11 * tx;
-        float b1 = b10 * (1 - tx) + b11 * tx;
-        float a1 = a10 * (1 - tx) + a11 * tx;
-
-        float r = r0 * (1 - ty) + r1 * ty;
-        float g = g0 * (1 - ty) + g1 * ty;
-        float b = b0 * (1 - ty) + b1 * ty;
-        float a = a0 * (1 - ty) + a1 * ty;
-
-        // Unpremultiply (safe)
-        if (a > 1e-6f) { r /= a; g /= a; b /= a; } else { r = g = b = 0f; }
-
-        return Color.FromArgb(
-            (byte)Math.Clamp((int)(a * 255f + 0.5f), 0, 255),
-            (byte)Math.Clamp((int)(r * 255f + 0.5f), 0, 255),
-            (byte)Math.Clamp((int)(g * 255f + 0.5f), 0, 255),
-            (byte)Math.Clamp((int)(b * 255f + 0.5f), 0, 255));
     }
 
 

@@ -34,6 +34,8 @@ public abstract class Behavior : ObservableObject
     ///  write lifecycle events (Awake/Start/Enable/Disable/Destroy) to the console.
     [Persist] public bool LogLifecycle { get; set; } = false;
 
+    public Transform Transform => gameObject?.Transform ?? new Transform();
+
     public bool IsActiveAndEnabled => Enabled;
     public event Action<Behavior, bool>? EnabledChanged;
 

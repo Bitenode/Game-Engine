@@ -331,7 +331,7 @@ public partial class InspectorPanel : UserControl
             UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
         });
         return tb;
-    } 
+    }
 
     // A Vector3 editor that records a single undo step against property 'p' on owner 'owner'
     Control Vector3EditorWithUndo(object owner, PropertyInfo p)
