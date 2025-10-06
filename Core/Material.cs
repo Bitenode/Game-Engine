@@ -19,7 +19,7 @@ namespace Game_Engine.Core
         public static Texture2D FromFile(string path)
         {
             using var bmp = SKBitmap.Decode(path);
-            if (bmp is null) throw new System.Exception($"Failed to decode image: {path}");
+            if (bmp is null) throw new Exception($"Failed to decode image: {path}");
 
             var rgba = new byte[bmp.Width * bmp.Height * 4];
             int i = 0;
@@ -35,7 +35,7 @@ namespace Game_Engine.Core
         public static Texture2D FromBytes(byte[] encoded)
         {
             using var bmp = SKBitmap.Decode(encoded);
-            if (bmp is null) throw new System.Exception("Failed to decode image bytes.");
+            if (bmp is null) throw new Exception("Failed to decode image bytes.");
 
             var rgba = new byte[bmp.Width * bmp.Height * 4];
             int i = 0;
@@ -66,14 +66,14 @@ namespace Game_Engine.Core
             Emissive,
             AmbientOcclusion,
             Detail,
-            Opacity   
+            Opacity
         }
 
         [Persist] public TexUsage Usage { get; set; } = TexUsage.Albedo;
 
         // (per-side on primitives)
 
-        
+
         public enum CubeFaceMask
         {
             None = 0,
@@ -87,7 +87,7 @@ namespace Game_Engine.Core
         }
 
         [Persist] public CubeFaceMask FaceMask { get; set; } = CubeFaceMask.All;
-        
+
     }
 
 

@@ -1,4 +1,4 @@
-﻿namespace Game_Engine.Core;
+﻿namespace Game_Engine.Core.Component;
 
 public sealed class Transform : Behavior
 {
@@ -6,7 +6,7 @@ public sealed class Transform : Behavior
     Vector3 _rotation = new Vector3();
     Vector3 _scale = new Vector3(1, 1, 1);
 
-    
+
 
     [Persist] public Vector3 Position { get => _position; set { if (Set(ref _position, value)) Hook(_position); } }
     [Persist] public Vector3 Rotation { get => _rotation; set { if (Set(ref _rotation, value)) Hook(_rotation); } }

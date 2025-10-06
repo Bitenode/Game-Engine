@@ -1,6 +1,6 @@
 ﻿using Avalonia.Media;
 
-namespace Game_Engine.Core
+namespace Game_Engine.Core.Component
 {
     public sealed class MeshRenderer : Behavior
     {

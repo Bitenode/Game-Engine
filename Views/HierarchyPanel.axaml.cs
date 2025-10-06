@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
+using Game_Engine.Core.Component;
 using Game_Engine.Core.Importers;
 
 namespace Game_Engine.Views;

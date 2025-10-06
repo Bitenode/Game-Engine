@@ -1,7 +1,7 @@
 ﻿using SN = System.Numerics;
 using Avalonia.Media;
 
-namespace Game_Engine.Core
+namespace Game_Engine.Core.Component
 {
     public enum Projection { Perspective, Orthographic }
     public enum ClearFlags { Skybox, SolidColor, DepthOnly, Nothing }
@@ -33,7 +33,7 @@ namespace Game_Engine.Core
         public SN.Matrix4x4 GetViewMatrix()
         {
             static float Deg2Rad(double d) => (float)(Math.PI / 180.0 * d);
-            var go = this.gameObject;
+            var go = gameObject;
             if (go is null) return SN.Matrix4x4.Identity;
             var tr = go.Transform;
 
@@ -60,7 +60,7 @@ namespace Game_Engine.Core
 
         public SN.Matrix4x4 GetProjectionMatrix(Avalonia.Size viewport)
         {
-            var aspect = (viewport.Width <= 0 || viewport.Height <= 0)
+            var aspect = viewport.Width <= 0 || viewport.Height <= 0
                 ? 1f : (float)(viewport.Width / viewport.Height);
             return GetProjectionMatrix(aspect);
         }

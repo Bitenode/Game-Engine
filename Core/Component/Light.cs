@@ -1,9 +1,9 @@
 ﻿using Avalonia.Media;
 
-namespace Game_Engine.Core
+namespace Game_Engine.Core.Component
 {
     public enum LightType { Directional, Point }
-    
+
     public sealed class Light : Behavior
     {
         // Directional uses the GameObject's Transform forward for direction

@@ -1,6 +1,6 @@
 ﻿using Avalonia.Media;
 
-namespace Game_Engine.Core
+namespace Game_Engine.Core.Component
 {
     //  vertical gradient sky + ambient 
     public sealed class Skybox : Behavior
@@ -9,7 +9,7 @@ namespace Game_Engine.Core
         [Persist] public Color Bottom { get; set; } = Color.Parse("#0a0a0a");
         [Persist] public float Ambient { get; set; } = 0.90f;
 
-        
+
         [Persist] public Texture2D? Texture { get; set; } = null; // optional sky texture
         [Persist] public float TextureBlend { get; set; } = 1.0f; // 0..1, over the gradient
 

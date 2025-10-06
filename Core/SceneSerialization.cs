@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
 using SN = System.Numerics;
-using Game_Engine.Core;
+using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core
 {
@@ -69,7 +69,7 @@ namespace Game_Engine.Core
                 LocalRotationEuler = go.Transform.Rotation,
                 LocalScale = go.Transform.Scale
             },
-            Behaviors = go.Behaviors.Where(b => b is not Transform).Select(BehaviorToDTO).ToList(),
+            Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
             Children = go.Children.Select(ToDTO).ToList()
         };
 
@@ -138,7 +138,7 @@ namespace Game_Engine.Core
             var type = Type.GetType(dto.Type, throwOnError: false);
             if (type == null) return;
             if (!typeof(Behavior).IsAssignableFrom(type)) return;
-            if (typeof(Transform).IsAssignableFrom(type)) return; // GO already has Transform
+            if (typeof(Component.Transform).IsAssignableFrom(type)) return; // GO already has Transform
 
             Behavior? instance = null;
             try { instance = Activator.CreateInstance(type) as Behavior; } catch { }
@@ -174,7 +174,7 @@ namespace Game_Engine.Core
             // Block engine refs
             if (typeof(GameObject).IsAssignableFrom(t)
              || typeof(Behavior).IsAssignableFrom(t)
-             || typeof(Transform).IsAssignableFrom(t))
+             || typeof(Component.Transform).IsAssignableFrom(t))
                 return Skip.Value;
 
             // Simple types

@@ -11,7 +11,7 @@ using Avalonia.Media;
 using Avalonia.Data.Converters;
 using System.Globalization;
 using Game_Engine.Core;
-using CoreTransform = Game_Engine.Core.Transform;
+using CoreTransform = Game_Engine.Core.Component.Transform;
 using CoreVector3 = Game_Engine.Core.Vector3;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -78,23 +78,23 @@ public partial class InspectorPanel : UserControl
 
     // Try to create your engine texture from a file path using a few common patterns.
     // If nothing matches, we return null; the Inspector will still show a preview.
-    private static Game_Engine.Core.Texture2D? TryCreateEngineTextureFromPath(string path, Bitmap? bmp)
+    private static Texture2D? TryCreateEngineTextureFromPath(string path, Bitmap? bmp)
     {
-        var t = typeof(Game_Engine.Core.Texture2D);
+        var t = typeof(Texture2D);
 
         //  static FromFile(string)
         var m = t.GetMethod("FromFile", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                             binder: null, types: new[] { typeof(string) }, modifiers: null);
-        if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
+        if (m != null) return (Texture2D?)m.Invoke(null, new object?[] { path });
 
         //  static Load(string)
         m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                         binder: null, types: new[] { typeof(string) }, modifiers: null);
-        if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { path });
+        if (m != null) return (Texture2D?)m.Invoke(null, new object?[] { path });
 
         //  ctor(string)
         var ctorPath = t.GetConstructor(new[] { typeof(string) });
-        if (ctorPath != null) return (Game_Engine.Core.Texture2D?)ctorPath.Invoke(new object?[] { path });
+        if (ctorPath != null) return (Texture2D?)ctorPath.Invoke(new object?[] { path });
 
         //  static FromBytes(byte[])
         if (bmp != null)
@@ -105,12 +105,12 @@ public partial class InspectorPanel : UserControl
 
             m = t.GetMethod("FromBytes", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                             binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
-            if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
+            if (m != null) return (Texture2D?)m.Invoke(null, new object?[] { bytes });
 
             //  static Load(byte[])
             m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
                             binder: null, types: new[] { typeof(byte[]) }, modifiers: null);
-            if (m != null) return (Game_Engine.Core.Texture2D?)m.Invoke(null, new object?[] { bytes });
+            if (m != null) return (Texture2D?)m.Invoke(null, new object?[] { bytes });
         }
 
         // No compatible API found
@@ -119,7 +119,7 @@ public partial class InspectorPanel : UserControl
 
     // Load preview (Avalonia Bitmap) and try to build an engine Texture2D via the helper above.
     // No Bitmap.Lock() anywhere — purely path/stream based.
-    private static (Game_Engine.Core.Texture2D? tex, IImage? preview) TryLoadTexture2D(string path)
+    private static (Texture2D? tex, IImage? preview) TryLoadTexture2D(string path)
     {
         try
         {
@@ -231,7 +231,7 @@ public partial class InspectorPanel : UserControl
         var allTypes = AppDomain.CurrentDomain.GetAssemblies()
             .SelectMany(LoadableTypes)
             .Where(t => t is not null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
-            .Where(t => t != typeof(Core.Transform))
+            .Where(t => t != typeof(CoreTransform))
             .OrderBy(t => t!.Name)
             .ToList()!;
 
@@ -299,7 +299,7 @@ public partial class InspectorPanel : UserControl
 
     Control EditorForTransform(CoreTransform t)
     {
-        var grid = new Grid
+        var grid = new Avalonia.Controls.Grid
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,*"),
             RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
@@ -1018,7 +1018,7 @@ public partial class InspectorPanel : UserControl
             return tb;
         }
         // ---- textures ----------------------------------------------------------
-        if (typeof(Game_Engine.Core.Texture2D).IsAssignableFrom(t))
+        if (typeof(Texture2D).IsAssignableFrom(t))
             return Texture2DEditor(target, p);
 
         if (t == typeof(Material))
@@ -1037,10 +1037,10 @@ static class GridPos
     public static T Place<T>(this T c, int col, int row, int columnSpan = 1, int rowSpan = 1)
         where T : Control
     {
-        Grid.SetColumn(c, col);
-        Grid.SetRow(c, row);
-        if (columnSpan > 1) Grid.SetColumnSpan(c, columnSpan);
-        if (rowSpan > 1) Grid.SetRowSpan(c, rowSpan);
+        Avalonia.Controls.Grid.SetColumn(c, col);
+        Avalonia.Controls.Grid.SetRow(c, row);
+        if (columnSpan > 1) Avalonia.Controls.Grid.SetColumnSpan(c, columnSpan);
+        if (rowSpan > 1) Avalonia.Controls.Grid.SetRowSpan(c, rowSpan);
         return c;
     }
 }

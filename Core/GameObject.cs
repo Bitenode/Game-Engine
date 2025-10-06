@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core;
 

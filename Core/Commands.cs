@@ -1,4 +1,6 @@
-﻿namespace Game_Engine.Core
+﻿using Game_Engine.Core.Component;
+
+namespace Game_Engine.Core
 {
     public sealed class SetTransformPositionCmd : ICmd
     {

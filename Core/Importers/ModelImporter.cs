@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using SN = System.Numerics;
 using Assimp;
-using Game_Engine.Core;
+using Game_Engine.Core.Component;
 
 using CoreVec3 = Game_Engine.Core.Vector3;
 using Avalonia.Media;
@@ -376,7 +376,7 @@ namespace Game_Engine.Core.Importers
             return (mesh, hadNormals);
         }
 
-        static void ApplyTransform(Matrix4x4 ai, Transform t)
+        static void ApplyTransform(Matrix4x4 ai, Component.Transform t)
         {
             // Assimp Matrix4x4 -> TRS
             // Decompose gives: scaling, rotation, translation
