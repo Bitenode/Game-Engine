@@ -429,6 +429,25 @@ public partial class InspectorPanel : UserControl
         var mat = (Material?)prop.GetValue(owner);
         if (mat is null) { mat = new Material(); prop.SetValue(owner, mat); }
 
+        // --- helper (only used to store a nicer path; does NOT change loading) ---
+        string MakeProjectRelative(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            try
+            {
+                var abs = Path.GetFullPath(path);
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        return Path.GetRelativePath(root, abs);
+                }
+                return abs; // fallback: absolute is fine
+            }
+            catch { return path; }
+        }
+
         var previews = new Dictionary<MaterialTexture, IImage>();
 
         var box = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8) };
@@ -517,6 +536,7 @@ public partial class InspectorPanel : UserControl
                         }
                         else
                         {
+                            // keep your previous behavior (temp copy); we only RECORD the path for save
                             var tmpDir = ProjectService.Current?.TempPath ?? Path.GetTempPath();
                             Directory.CreateDirectory(tmpDir);
                             var dst = Path.Combine(tmpDir, f.Name);
@@ -544,9 +564,9 @@ public partial class InspectorPanel : UserControl
         // ---------------- helpers for face mask UI ----------------
         const int FaceRight = 1;   // +X
         const int FaceLeft = 2;   // -X
-        const int FaceTop = 4;   // +Y
-        const int FaceBottom = 8;   // -Y
-        const int FaceBack = 16;  // +Z
+        const int FaceTop = 4;     // +Y
+        const int FaceBottom = 8;  // -Y
+        const int FaceBack = 16;   // +Z
         const int FaceFront = 32;  // -Z
         const int FaceAll = FaceRight | FaceLeft | FaceTop | FaceBottom | FaceBack | FaceFront;
 
@@ -573,7 +593,10 @@ public partial class InspectorPanel : UserControl
             else
                 row.Children.Add(new Border { Width = 32, Height = 32, Background = Brushes.Gray, Opacity = .25, CornerRadius = new CornerRadius(4) });
 
-            row.Children.Add(new TextBlock { Text = slot.Name ?? "(texture)", VerticalAlignment = VerticalAlignment.Center });
+            // filename with tooltip containing the stored path
+            var nameBlock = new TextBlock { Text = slot.Name ?? "(texture)", VerticalAlignment = VerticalAlignment.Center };
+            ToolTip.SetTip(nameBlock, string.IsNullOrWhiteSpace(slot.SourcePath) ? "(no path set)" : slot.SourcePath);
+            row.Children.Add(nameBlock);
 
             // Usage
             var usageBox = new ComboBox
@@ -758,8 +781,11 @@ public partial class InspectorPanel : UserControl
                     Name = name,
                     Texture = tex,
                     Usage = GuessUsageFromName(Path.GetFileNameWithoutExtension(f)),
-                    FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower) // auto-guess
+                    FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower)
                 };
+
+                // ✅ only addition: store a (project-relative when possible) path for serialization
+                slot.SourcePath = MakeProjectRelative(f);
 
                 mat.Textures.Add(slot);
                 if (previewBmp is not null) previews[slot] = previewBmp;
@@ -793,10 +819,73 @@ public partial class InspectorPanel : UserControl
 
 
 
+
+
+
     Control Texture2DEditor(object owner, PropertyInfo prop)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
 
+        // ---------- helpers ----------
+        string MakeProjectRelative(string fullPath)
+        {
+            if (string.IsNullOrWhiteSpace(fullPath)) return null;
+            try
+            {
+                var abs = Path.GetFullPath(fullPath);
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        return Path.GetRelativePath(root, abs);
+                }
+                return abs; // fallback
+            }
+            catch { return fullPath; }
+        }
+
+        string EnsureInProject(string fullPath)
+        {
+            
+            try
+            {
+                var proj = ProjectService.Current;
+                if (proj == null) return fullPath;
+                var abs = Path.GetFullPath(fullPath);
+                var root = Path.GetFullPath(proj.RootPath);
+                if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return abs;
+
+                var assetsRoot = string.IsNullOrWhiteSpace(proj.AssetsPath) ? proj.RootPath : proj.AssetsPath;
+                var importDir = Path.Combine(assetsRoot, "Imported");
+                Directory.CreateDirectory(importDir);
+
+                var dst = Path.Combine(importDir, Path.GetFileName(fullPath));
+                if (File.Exists(dst))
+                {
+                    var name = Path.GetFileNameWithoutExtension(dst);
+                    var ext = Path.GetExtension(dst);
+                    int i = 1;
+                    while (File.Exists(dst = Path.Combine(importDir, $"{name}_{i}{ext}"))) i++;
+                }
+                File.Copy(fullPath, dst, false);
+                return dst;
+            }
+            catch { return fullPath; }
+        }
+
+        // sibling string property convention: Texture -> TexturePath
+        void TrySetSiblingPath(object target, PropertyInfo texProp, string projectRelPath)
+        {
+            var pathProp = target.GetType().GetProperty(texProp.Name + "Path",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (pathProp != null && pathProp.CanWrite && pathProp.PropertyType == typeof(string))
+            {
+                pathProp.SetValue(target, projectRelPath);
+            }
+        }
+
+        // ---------- UI ----------
         var preview = new Image { Stretch = Stretch.UniformToFill };
         var previewHost = new Border
         {
@@ -820,27 +909,35 @@ public partial class InspectorPanel : UserControl
                 Filters = { new FileDialogFilter { Name = "Images", Extensions = { "png", "jpg", "jpeg", "bmp" } } }
             };
             var files = await dlg.ShowAsync(OwnerWindow);
-            var path = files?.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(path)) return;
+            var rawPath = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(rawPath)) return;
 
-            var (engineTex, bmp) = TryLoadTexture2D(path);
-            if (engineTex is null && bmp is null)
+            // Bring the file under the project so path is stable
+            var inProj = EnsureInProject(rawPath);
+            var (engineTex, bmp) = TryLoadTexture2D(inProj);
+            if (engineTex == null && bmp == null)
             {
-                Game_Engine.Core.Log.Warning($"Could not load texture from: {path}");
+                Game_Engine.Core.Log.Warning($"Could not load texture from: {rawPath}");
                 return;
             }
 
+            var rel = MakeProjectRelative(inProj);
+
             BeginPropertyEdit(owner, prop);
+
+            // set the texture object
             prop.SetValue(owner, engineTex);
 
-            //  Update UI and cache *before* anything that might rebuild the inspector
-            if (bmp is not null)
+            // set the sibling "TexturePath" property if present
+            TrySetSiblingPath(owner, prop, rel);
+
+            // update preview + cache
+            if (bmp != null)
             {
                 preview.Source = bmp;
                 SetCachedPreview(owner, prop, bmp);
             }
 
-            //  cache is already set
             SceneService.NotifyChanged();
             CommitPropertyEdit(owner, prop);
         };
@@ -849,7 +946,12 @@ public partial class InspectorPanel : UserControl
         clear.Click += (_, __) =>
         {
             BeginPropertyEdit(owner, prop);
+
+            // clear texture
             prop.SetValue(owner, null);
+
+            // clear sibling path if present
+            TrySetSiblingPath(owner, prop, null);
 
             // Clear UI + cache first
             ClearCachedPreview(owner, prop);
@@ -868,7 +970,7 @@ public partial class InspectorPanel : UserControl
 
 
 
-    // --- try to extract a preview from an existing engine Texture2D -------------
+    // ---  extract a preview from engine Texture2D -------------
     static IImage? TryPreviewFromTextureObject(object texObj)
     {
         try
