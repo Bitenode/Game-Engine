@@ -498,8 +498,8 @@ public class SceneView : Control
         if (n.LengthSquared() < 1e-8f) n = SN.Vector3.Cross(_dragAxisW, SN.Vector3.UnitX);
         _dragPlaneN = SN.Vector3.Normalize(n);
         // anchor point snapped onto the plane
-        Core.Projection.BuildPickRay(mouse, view, proj, sz, out var ro, out var rd);
-        if (Core.Projection.RayIntersectPlane(ro, rd, _dragPlaneN, _dragAnchorW, out var hit))
+        Picking.BuildPickRay(mouse, view, proj, sz, out var ro, out var rd);
+        if (Picking.RayIntersectPlane(ro, rd, _dragPlaneN, _dragAnchorW, out var hit))
             _dragAnchorW = hit;
         InvalidateVisual();
     }
@@ -507,8 +507,8 @@ public class SceneView : Control
     void UpdateAxisDrag(Point mouse, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz, bool axisOnly = false)
     {
         if (!_isDragging || _selected is null || _dragAxis == Axis.None) return;
-        Core.Projection.BuildPickRay(mouse, view, proj, sz, out var ro, out var rd);
-        if (!Core.Projection.RayIntersectPlane(ro, rd, _dragPlaneN, _dragAnchorW, out var hitW)) return;
+        Picking.BuildPickRay(mouse, view, proj, sz, out var ro, out var rd);
+        if (!Picking.RayIntersectPlane(ro, rd, _dragPlaneN, _dragAnchorW, out var hitW)) return;
         float delta = SN.Vector3.Dot(hitW - _dragAnchorW, _dragAxisW);
         if (SnapEnabled && SnapStep > 1e-6f)
             delta = MathF.Round(delta / SnapStep) * SnapStep;
@@ -685,8 +685,6 @@ public class SceneView : Control
     #region Render pipeline
     public override void Render(DrawingContext ctx)
     {
-        
-
         base.Render(ctx);
 
         var size = Bounds.Size;
@@ -705,7 +703,6 @@ public class SceneView : Control
 
         Texture2D? skyTex = null;
         float skyBlend = 0f;
-
         if (sky != null)
         {
             var st = sky.GetType();
@@ -730,40 +727,39 @@ public class SceneView : Control
             }
         }
 
-        // --- Active view/proj (camera component or editor orbit) -------------------
+        // --- Active view/proj ------------------------------------------------------
         var active = GetActiveViewProj(new Size(RW, RH));
         var view = active.View;
         var proj = active.Proj;
         var usingCam = active.UsingComponent && active.Cam is not null;
 
-        // Sun highlight from directional light (for sky)
-        var dirLight = SceneQuery.FindBehaviors<Light>().FirstOrDefault(l => l.Type == LightType.Directional);
-        SN.Vector3? sunDir = null;
-        if (dirLight?.gameObject is { } dgo)
-        {
-            var Wl = SceneGraphUtil.AccumulateWorld(dgo);
-            var z = new SN.Vector3(Wl.M13, Wl.M23, Wl.M33);
-            if (z.LengthSquared() < 1e-8f) z = SN.Vector3.UnitZ;
-            sunDir = -SN.Vector3.Normalize(z);
-        }
-
-        // Skybox knobs
+        // --- Skybox knobs (NO dependency on Light) --------------------------------
         float skyYaw = sky?.Yaw ?? 0f;
         float seamFeather = sky?.SeamFeather ?? 0.01f;
         bool keyOut = sky?.KeyOutNearBlack ?? true;
         float keyLuma = sky?.KeyLuma ?? 0.08f;
 
-        // If not looking through a Camera component, clear full screen with sky now.
-        // If using a Camera, we still fill the full background with sky first so area
-        // outside the camera viewport looks nice.
-        Sky.FillWorldUp(color, zbuf, RW, RH, view, proj,
-               skyTop, skyBot, sunDir, skyTex, skyBlend,
-               skyYaw, seamFeather, keyOut, keyLuma,
-               zWriteNdc: 1f - 1e-6f);   // write at far plane
+        // Independent “sun” highlight purely from sky yaw (or set to null to disable hotspot)
+        SN.Vector3? sunDir = null;
+        {
+            var baseSun = SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
+            var rotY = SN.Matrix4x4.CreateFromAxisAngle(SN.Vector3.UnitY, skyYaw);
+            sunDir = SN.Vector3.Normalize(SN.Vector3.Transform(baseSun, rotY));
+            // If you prefer no hotspot: sunDir = null;
+        }
 
-        // --- Lighting --------------------------------------------------------------
+        // Clear background with the sky (unaffected by scene lights)
+        Sky.FillWorldUp(color, zbuf, RW, RH, view, proj,
+            skyTop, skyBot, sunDir, skyTex, skyBlend,
+            skyYaw, seamFeather, keyOut, keyLuma,
+            zWriteNdc: 1f - 1e-6f);
+
+        // --- Lighting (single active light; no shadows) ---------------------------
         var light = SceneQuery.FindBehaviors<Light>().FirstOrDefault();
+
+        // WORLD-space travel direction for directional lights (rays move along this).
         SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
+
         float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
         float DiffuseK = ShowLight ? 1f : 0f;
 
@@ -776,41 +772,22 @@ public class SceneView : Control
             float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
             DiffuseK *= MathF.Max(0.01f, light.Intensity * lum);
 
-            var lw = light.gameObject is null ? SN.Matrix4x4.Identity : SceneGraphUtil.AccumulateWorld(light.gameObject);
-            lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, lw);
-
             if (light.Type == LightType.Directional && light.gameObject is { } lt)
+            {
+                // Light rays travel along -forward in WORLD space
                 L = -ForwardFrom(lt.Transform);
-            else if (light.Type == LightType.Point)
+            }
+            else if (light.Type == LightType.Point && light.gameObject is { } go)
             {
                 lightIsPoint = true;
+                var lw = SceneGraphUtil.AccumulateWorld(go);
+                lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, lw);
                 lightRange = Math.Max(0.001f, light.Range);
             }
         }
 
-        // --- Tiny shadow map for directional light --------------------------------
+        // --- NO shadow map ---------------------------------------------------------
         ShadowMap? shadow = null;
-        if (ShowLight && light is { Type: LightType.Directional } && !lightIsPoint)
-        {
-            var (smin, smax) = SceneGraphUtil.ComputeSceneAABB();
-            var center = (smin + smax) * 0.5f;
-            var diag = (smax - smin).Length();
-            float ortho = Math.Max(8f, diag * 0.6f);
-            float dist = Math.Max(8f, diag * 0.75f);
-
-            var eye = center - L * dist;
-            var lightView = SN.Matrix4x4.CreateLookAt(eye, center, SN.Vector3.UnitY);
-            var lightProj = SN.Matrix4x4.CreateOrthographic(ortho, ortho, 0.1f, dist + diag + 8f);
-
-            const int SW = 256, SH = 256;
-            var sdepth = new float[SW * SH];
-            for (int i = 0; i < sdepth.Length; i++) sdepth[i] = 1.1f;
-
-            foreach (var root in SceneService.Root)
-                SceneRenderer.DrawNodeDepth(root, lightView, lightProj, SN.Matrix4x4.Identity, sdepth, SW, SH);
-
-            shadow = new ShadowMap { VP = lightView * lightProj, Depth = sdepth, W = SW, H = SH, Bias = 0.0025f };
-        }
 
         if (_logNextRender)
         {
@@ -826,7 +803,6 @@ public class SceneView : Control
         // --- Render path -----------------------------------------------------------
         if (!usingCam)
         {
-            // Editor orbit camera renders the whole surface
             if (ShowGrid)
                 Core.Grid.OverlayInfiniteGrid(view, proj, color, zbuf, RW, RH, step: 1f, majorEvery: 5);
 
@@ -834,39 +810,33 @@ public class SceneView : Control
             {
                 foreach (var root in SceneService.Root)
                     SceneRenderer.DrawNodeSolidZ(root, view, proj, SN.Matrix4x4.Identity,
-                                   color, zbuf, RW, RH,
-                                   L, DiffuseK, Ambient,
-                                   lightIsPoint, lightPosW, lightRange, shadow);
+                        color, zbuf, RW, RH,
+                        L, DiffuseK, Ambient,
+                        lightIsPoint, lightPosW, lightRange, shadow);
 
                 foreach (var root in SceneService.Root)
                     SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, view, proj, SN.Matrix4x4.Identity,
-                                                    color, zbuf, RW, RH,
-                                                    L, DiffuseK, Ambient,
-                                                    lightIsPoint, lightPosW, lightRange, shadow);
+                        color, zbuf, RW, RH,
+                        L, DiffuseK, Ambient,
+                        lightIsPoint, lightPosW, lightRange, shadow);
             }
         }
         else
         {
-            // Render the selected camera into its normalized viewport
             var cam = active.Cam!;
+            var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, RW, RH);
 
-            // Compute viewport rect in **render** resolution
-            var (vx, vy, vw, vh) = ViewportUtil.ViewportPx(cam, RW, RH);
-
-            // Sub-buffers sized to the viewport
             var vColor = new uint[vw * vh];
             var vZ = new float[vw * vh];
 
-            // View/Proj must use the viewport's aspect to be correct
             var vView = cam.GetViewMatrix();
             var vProj = cam.GetProjectionMatrix(new Avalonia.Size(vw, vh));
 
-            // Apply camera clear/background inside the viewport
             CameraClear.ClearForCamera(cam, vColor, vZ, vw, vh,
-                           vView, vProj,
-                           skyTop, skyBot, sunDir,
-                           skyTex, skyBlend,
-                           skyYaw, seamFeather, keyOut, keyLuma);
+                vView, vProj,
+                skyTop, skyBot, sunDir,
+                skyTex, skyBlend,
+                skyYaw, seamFeather, keyOut, keyLuma);
 
             if (ShowGrid)
                 Core.Grid.OverlayInfiniteGrid(vView, vProj, vColor, vZ, vw, vh, step: 1f, majorEvery: 5);
@@ -875,23 +845,19 @@ public class SceneView : Control
             {
                 foreach (var root in SceneService.Root)
                     SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
-                                   vColor, vZ, vw, vh,
-                                   L, DiffuseK, Ambient,
-                                   lightIsPoint, lightPosW, lightRange, shadow);
+                        vColor, vZ, vw, vh,
+                        L, DiffuseK, Ambient,
+                        lightIsPoint, lightPosW, lightRange, shadow);
 
                 foreach (var root in SceneService.Root)
                     SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
-                                                    vColor, vZ, vw, vh,
-                                                    L, DiffuseK, Ambient,
-                                                    lightIsPoint, lightPosW, lightRange, shadow);
+                        vColor, vZ, vw, vh,
+                        L, DiffuseK, Ambient,
+                        lightIsPoint, lightPosW, lightRange, shadow);
             }
 
-            // Composite the camera's viewport into the full software framebuffer
             ImageUtil.Blit(vColor, vw, vh, color, RW, RH, vx, vy);
-
-            // For overlays (wire/gizmo) use the same camera matrices
-            view = vView;
-            proj = vProj;
+            view = vView; proj = vProj;
         }
 
         // --- Copy to WriteableBitmap ----------------------------------------------
@@ -922,13 +888,13 @@ public class SceneView : Control
 
         ctx.DrawImage(wb, new Rect(0, 0, W, H));
 
-        // --- Optional wire overlay & gizmo (use 'view/proj' chosen above) ----------
         var vp = view * proj;
         foreach (var root in SceneService.Root)
             DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
 
         DrawTranslateGizmo(ctx, view, proj, size);
     }
+
 
 
     void DumpSelectedMaterialDebug()

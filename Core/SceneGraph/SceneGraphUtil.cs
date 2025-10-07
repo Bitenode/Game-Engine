@@ -91,4 +91,33 @@ public static class SceneGraphUtil
         if (!any) { min = new SN.Vector3(-1, -1, -1); max = new SN.Vector3(1, 1, 1); }
         return (min, max);
     }
+
+    public static float Clamp01Finite(float v, float def)
+    {
+        if (float.IsNaN(v) || float.IsInfinity(v)) return def;
+        if (v < 0f) return 0f;
+        if (v > 1f) return 1f;
+        return v;
+    }
+
+    /// Convert normalized camera viewport to pixels inside a framebuffer (dw x dh).
+    public static (int x, int y, int w, int h) ViewportPx(Camera cam, int fbW, int fbH)
+    {
+        float nx = Clamp01Finite(cam.ViewportX, 0f);
+        float ny = Clamp01Finite(cam.ViewportY, 0f);
+        float nw = Clamp01Finite(cam.ViewportW, 1f);
+        float nh = Clamp01Finite(cam.ViewportH, 1f);
+
+        if (nx + nw > 1f) nw = 1f - nx;
+        if (ny + nh > 1f) nh = 1f - ny;
+
+        int w = Math.Max(1, (int)Math.Round(nw * fbW));
+        int h = Math.Max(1, (int)Math.Round(nh * fbH));
+        int x = (int)Math.Round(nx * fbW);
+        int y = (int)Math.Round(ny * fbH);
+
+        x = Math.Clamp(x, 0, Math.Max(0, fbW - w));
+        y = Math.Clamp(y, 0, Math.Max(0, fbH - h));
+        return (x, y, w, h);
+    }
 }

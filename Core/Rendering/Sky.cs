@@ -42,7 +42,7 @@ public static class Sky
 
         var worldUp = SN.Vector3.UnitY;
 
-        // optional sun highlight
+        // sun highlight
         SN.Vector3 sun = SN.Vector3.Zero;
         bool useSun = false;
         if (sunDirWorld.HasValue)
@@ -85,7 +85,7 @@ public static class Sky
                 }
                 uint pix = ColorUtil.LerpBGRA(bot, top, t);
 
-                // optional lat-long texture overlay
+                // lat-long texture overlay
                 if (useTex)
                 {
                     float u = 0.5f + MathF.Atan2(dir.X, -dir.Z) / (2f * MathF.PI);

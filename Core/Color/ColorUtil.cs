@@ -59,4 +59,20 @@ public static class ColorUtil
         byte b = (byte)(src.B * a + dst.B * (1f - a));
         return PackBGRA(Color.FromRgb(r, g, b)); // keep A=255 in our buffers
     }
+
+    public static Color AddColor(Color a, Color b) => Color.FromRgb(
+            (byte)Math.Min(255, a.R + b.R),
+            (byte)Math.Min(255, a.G + b.G),
+            (byte)Math.Min(255, a.B + b.B));
+
+    public static float Luma(Color c) => (0.2126f * c.R + 0.7152f * c.G + 0.0722f * c.B) / 255f;
+
+    public static Color AlphaOver(Color under, Color over)
+    {
+        float a = over.A / 255f;
+        return Color.FromRgb(
+            (byte)(over.R * a + under.R * (1f - a)),
+            (byte)(over.G * a + under.G * (1f - a)),
+            (byte)(over.B * a + under.B * (1f - a)));
+    }
 }
