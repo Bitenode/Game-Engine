@@ -41,6 +41,49 @@ namespace Game_Engine.Views
             }
         }
 
+        public static void DrawMeshWire(
+            DrawingContext ctx,
+            SN.Matrix4x4 vp,
+            Size sz,
+            Game_Engine.Core.Mesh mesh,
+            SN.Matrix4x4 world,
+            Color color,
+            float thickness = 1f)
+        {
+            if (mesh == null || mesh.Vertices == null || mesh.Vertices.Length == 0 ||
+                mesh.TriIndices == null || mesh.TriIndices.Length == 0) return;
+
+            var pen = new Pen(new SolidColorBrush(color), thickness <= 0 ? 1 : thickness);
+
+            // transform all positions once
+            var vtx = mesh.Vertices;
+            var wpos = new Point[vtx.Length];
+            var vis = new bool[vtx.Length];
+
+            for (int i = 0; i < vtx.Length; i++)
+            {
+                var p = SN.Vector3.Transform(vtx[i], world);
+                if (Game_Engine.Core.Projection.ProjectToScreenVP(p, vp, sz, out var sp))
+                {
+                    vis[i] = true;
+                    wpos[i] = sp;
+                }
+            }
+
+            // draw triangle edges (skip if any endpoint didn’t project)
+            var idx = mesh.TriIndices;
+            for (int t = 0; t < idx.Length; t += 3)
+            {
+                int a = idx[t], b = idx[t + 1], c = idx[t + 2];
+                if (a < 0 || b < 0 || c < 0 || a >= vtx.Length || b >= vtx.Length || c >= vtx.Length) continue;
+                if (!(vis[a] && vis[b] && vis[c])) continue;
+
+                ctx.DrawLine(pen, wpos[a], wpos[b]);
+                ctx.DrawLine(pen, wpos[b], wpos[c]);
+                ctx.DrawLine(pen, wpos[c], wpos[a]);
+            }
+        }
+
         public static void DrawCapsule(
             DrawingContext ctx,
             SN.Matrix4x4 world, SN.Matrix4x4 vp, Size sz,

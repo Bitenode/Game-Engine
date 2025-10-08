@@ -899,49 +899,61 @@ public class SceneView : Control
         {
             foreach (var col in go.Behaviors.OfType<Game_Engine.Core.Component.Collider>())
             {
-                var color = col is Game_Engine.Core.Component.CapsuleCollider cap && cap.IsTrigger
-                            ? Colors.OrangeRed : (col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue);
+                var mainColor = col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue;
 
-                var W = TransformUtil.WorldFromTransform(go.Transform);
-
+                // Capsule: true capsule wire
                 if (col is Game_Engine.Core.Component.CapsuleCollider capCol)
                 {
-                    // reproduce the same local math as in CapsuleCollider.GetLocalCapsule()
-                    SN.Vector3 a, b; float r;
+                    var W = TransformUtil.WorldFromTransform(go.Transform);
+
+                    // replicate CapsuleCollider.GetLocalCapsule math
+                    var c = new SN.Vector3((float)capCol.Center.X, (float)capCol.Center.Y, (float)capCol.Center.Z);
+                    var rr = Math.Max(0.0001f, capCol.Radius);
+                    var hh = Math.Max(2f * rr, capCol.Height);
+                    var halfCyl = 0.5f * (hh - 2f * rr);
+
+                    SN.Vector3 axis;
+                    switch (capCol.Direction)
                     {
-                        var c = new SN.Vector3((float)capCol.Center.X, (float)capCol.Center.Y, (float)capCol.Center.Z);
-                        var rr = Math.Max(0.0001f, capCol.Radius);
-                        var hh = Math.Max(2f * rr, capCol.Height);
-                        var halfCyl = 0.5f * (hh - 2f * rr);
-
-                        SN.Vector3 axis;
-                        switch (capCol.Direction)
-                        {
-                            case Game_Engine.Core.Component.CapsuleCollider.Axis.X: axis = new SN.Vector3(1, 0, 0); break;
-                            case Game_Engine.Core.Component.CapsuleCollider.Axis.Z: axis = new SN.Vector3(0, 0, 1); break;
-                            default: axis = new SN.Vector3(0, 1, 0); break;
-                        }
-
-                        a = c + axis * halfCyl; // top (local)
-                        b = c - axis * halfCyl; // bottom (local)
-                        r = rr;
-
-                        ColliderGizmos.DrawCapsule(ctx, W, viewProj, sz, a, b, axis, r,
-                            capCol.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue, 1f, 32);
+                        case Game_Engine.Core.Component.CapsuleCollider.Axis.X: axis = new SN.Vector3(1, 0, 0); break;
+                        case Game_Engine.Core.Component.CapsuleCollider.Axis.Z: axis = new SN.Vector3(0, 0, 1); break;
+                        default: axis = new SN.Vector3(0, 1, 0); break;
                     }
+
+                    var a = c + axis * halfCyl; // local top center
+                    var b = c - axis * halfCyl; // local bottom center
+
+                    ColliderGizmos.DrawCapsule(ctx, W, viewProj, sz, a, b, axis, rr, mainColor, 1f, 32);
+                    continue;
                 }
-                else
+
+                // exact mesh wire (each target), plus faint union AABB
+                if (col is Game_Engine.Core.Component.MeshCollider mc)
                 {
-                    // fallback for Box/Mesh/etc. (AABB)
+                    foreach (var (mesh, Wm) in mc.EnumerateTargetMeshesWorld())
+                        ColliderGizmos.DrawMeshWire(ctx, viewProj, sz, mesh, Wm, mainColor, 1f);
+
+                    // faint union AABB for quick visual bounds
+                    var aabb = mc.GetWorldAABB();
+                    var faint = mc.IsTrigger
+                        ? Color.FromArgb(64, Colors.OrangeRed.R, Colors.OrangeRed.G, Colors.OrangeRed.B)
+                        : Color.FromArgb(64, Colors.DeepSkyBlue.R, Colors.DeepSkyBlue.G, Colors.DeepSkyBlue.B);
+                    ColliderGizmos.DrawAABB(ctx, viewProj, sz, aabb, faint, 1f);
+                    continue;
+                }
+
+                // Fallback (BoxCollider, future shapes): draw world AABB
+                {
                     var aabb = col.GetWorldAABB();
-                    ColliderGizmos.DrawAABB(ctx, viewProj, sz, aabb,
-                        col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue, 1f);
+                    ColliderGizmos.DrawAABB(ctx, viewProj, sz, aabb, mainColor, 1f);
                 }
             }
 
+            // children
             foreach (var child in go.Children)
                 DrawCollidersRecursive(ctx, viewProj, sz, child);
         }
+
 
 
         DrawTranslateGizmo(ctx, view, proj, size);

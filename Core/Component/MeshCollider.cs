@@ -47,6 +47,48 @@ namespace Game_Engine.Core.Component
         }
 
         // ---- core logic ----
+
+        public IEnumerable<(Mesh mesh, SN.Matrix4x4 world)> EnumerateTargetMeshesWorld()
+        {
+            // manual override takes precedence
+            if (Mesh != null && Mesh.Vertices != null && Mesh.Vertices.Length > 0)
+            {
+                var W = TransformUtil.WorldFromTransform(gameObject.Transform);
+                yield return (Mesh, W);
+                yield break;
+            }
+
+            EnsureTargetsResolved();
+
+            if (_targets.Count == 0)
+            {
+                // fallback to this GO's MeshFilter
+                var here = gameObject.Behaviors.OfType<MeshFilter>().FirstOrDefault(b => b.Enabled && b.Mesh != null);
+                if (here != null)
+                {
+                    var W = BindToTargetTransform
+                        ? TransformUtil.WorldFromTransform(here.gameObject.Transform)
+                        : TransformUtil.WorldFromTransform(gameObject.Transform);
+                    yield return (here.Mesh, W);
+                }
+                yield break;
+            }
+
+            // each target mesh, using its own transform if requested
+            for (int i = 0; i < _targets.Count; i++)
+            {
+                var mf = _targets[i];
+                if (mf == null || mf.Mesh == null || mf.Mesh.Vertices == null || mf.Mesh.Vertices.Length == 0)
+                    continue;
+
+                var W = BindToTargetTransform && mf.gameObject != null
+                    ? TransformUtil.WorldFromTransform(mf.gameObject.Transform)
+                    : TransformUtil.WorldFromTransform(gameObject.Transform);
+
+                yield return (mf.Mesh, W);
+            }
+        }
+
         public override AABB GetWorldAABB()
         {
             // 0) Manual override mesh = single AABB
