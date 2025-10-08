@@ -895,17 +895,54 @@ public class SceneView : Control
         foreach (var go in Core.SceneService.Root)
             DrawCollidersRecursive(ctx, vp, size, go);
 
-        void DrawCollidersRecursive(DrawingContext ctx, in SN.Matrix4x4 vp, Size sz, GameObject go)
+        void DrawCollidersRecursive(DrawingContext ctx, in SN.Matrix4x4 viewProj, Size sz, GameObject go)
         {
             foreach (var col in go.Behaviors.OfType<Game_Engine.Core.Component.Collider>())
             {
-                var aabb = col.GetWorldAABB();
-                var colColor = col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue;
-                ColliderGizmos.DrawAABB(ctx, vp, sz, aabb, colColor, 1f);
+                var color = col is Game_Engine.Core.Component.CapsuleCollider cap && cap.IsTrigger
+                            ? Colors.OrangeRed : (col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue);
+
+                var W = TransformUtil.WorldFromTransform(go.Transform);
+
+                if (col is Game_Engine.Core.Component.CapsuleCollider capCol)
+                {
+                    // reproduce the same local math as in CapsuleCollider.GetLocalCapsule()
+                    SN.Vector3 a, b; float r;
+                    {
+                        var c = new SN.Vector3((float)capCol.Center.X, (float)capCol.Center.Y, (float)capCol.Center.Z);
+                        var rr = Math.Max(0.0001f, capCol.Radius);
+                        var hh = Math.Max(2f * rr, capCol.Height);
+                        var halfCyl = 0.5f * (hh - 2f * rr);
+
+                        SN.Vector3 axis;
+                        switch (capCol.Direction)
+                        {
+                            case Game_Engine.Core.Component.CapsuleCollider.Axis.X: axis = new SN.Vector3(1, 0, 0); break;
+                            case Game_Engine.Core.Component.CapsuleCollider.Axis.Z: axis = new SN.Vector3(0, 0, 1); break;
+                            default: axis = new SN.Vector3(0, 1, 0); break;
+                        }
+
+                        a = c + axis * halfCyl; // top (local)
+                        b = c - axis * halfCyl; // bottom (local)
+                        r = rr;
+
+                        ColliderGizmos.DrawCapsule(ctx, W, viewProj, sz, a, b, axis, r,
+                            capCol.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue, 1f, 32);
+                    }
+                }
+                else
+                {
+                    // fallback for Box/Mesh/etc. (AABB)
+                    var aabb = col.GetWorldAABB();
+                    ColliderGizmos.DrawAABB(ctx, viewProj, sz, aabb,
+                        col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue, 1f);
+                }
             }
+
             foreach (var child in go.Children)
-                DrawCollidersRecursive(ctx, vp, sz, child);
+                DrawCollidersRecursive(ctx, viewProj, sz, child);
         }
+
 
         DrawTranslateGizmo(ctx, view, proj, size);
     }

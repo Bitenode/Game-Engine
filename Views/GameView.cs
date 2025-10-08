@@ -10,6 +10,7 @@ using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using System.Diagnostics;
 
 namespace Game_Engine.Views
 {
@@ -29,7 +30,13 @@ namespace Game_Engine.Views
         readonly DispatcherTimer _updateTimer = new DispatcherTimer();     // ~60Hz
         readonly DispatcherTimer _fixedTimer = new DispatcherTimer();      // 50Hz (20ms)
 
+        readonly Stopwatch _updateWatch = new();
+        readonly Stopwatch _fixedWatch = new();
+
         bool _awakened, _started;
+
+        // ---------- Play-mode snapshot -----------------------------------------
+        string? _playSnapshotPath; // temp .scene file path     // <<< NEW
 
         public GameView()
         {
@@ -48,27 +55,64 @@ namespace Game_Engine.Views
             StateProperty.Changed.AddClassHandler<GameView>((s, e) => s.OnStateChanged());
         }
 
+
         void OnStateChanged()
         {
             switch (State)
             {
                 case GamePanel.GameState.Playing:
+                    // Take snapshot BEFORE any Awake/Start can mutate the scene 
+                    EnsurePlaySnapshot();
                     EnsureAwakeStart();
+                    Game_Engine.Core.Time.Reset();
+                    _updateWatch.Restart();
+                    _fixedWatch.Restart();
                     _fixedTimer.Start();
                     _updateTimer.Start();
                     break;
 
                 case GamePanel.GameState.Paused:
-                case GamePanel.GameState.Stopped:
                     _fixedTimer.Stop();
                     _updateTimer.Stop();
                     break;
-            }
 
+                case GamePanel.GameState.Stopped:
+                    _fixedTimer.Stop();
+                    _updateTimer.Stop();
+                    _updateWatch.Reset();
+                    _fixedWatch.Reset();
+                    // Call OnDestroy for the currently-running play instance     // <<< NEW
+                    CallOnDestroyAll();
+
+                    // Restore the scene back to the snapshot                     // <<< NEW
+                    RestorePlaySnapshot();
+
+                    // Reset lifecycle so next Play does a clean Awake/Start      // <<< NEW
+                    _awakened = _started = false;
+                    break;
+            }
             // Force a repaint so the view blanks out when Paused/Stopped
             InvalidateVisual();
         }
 
+        // ---------- Snapshot helpers -------------------------------------------
+        void EnsurePlaySnapshot()                                            // <<< NEW
+        {
+            if (_playSnapshotPath != null) return; // already captured
+            var tmp = Path.Combine(Path.GetTempPath(),
+                $"GE_PlaySnapshot_{Guid.NewGuid():N}.scene");
+            SceneService.SaveToFile(tmp);
+            _playSnapshotPath = tmp;
+        }
+
+        void RestorePlaySnapshot()                                           // <<< NEW
+        {
+            if (_playSnapshotPath == null) return;
+            // Replace scene with the snapshot
+            SceneService.LoadFromFile(_playSnapshotPath);
+            try { File.Delete(_playSnapshotPath); } catch { /* ignore */ }
+            _playSnapshotPath = null;
+        }
 
         // ----- Lifecycle drivers -----
 
@@ -81,14 +125,25 @@ namespace Game_Engine.Views
         void TickUpdate()
         {
             if (State != GamePanel.GameState.Playing) return;
+
+            // real frame dt
+            var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
+            _updateWatch.Restart();
+            Game_Engine.Core.Time.BeginUpdate(dt);
+
             ForEachBehavior(b => b.__Update());
-            // late update comes after Update in the same “frame”
             ForEachBehavior(b => b.__LateUpdate());
         }
 
         void TickFixedUpdate()
         {
             if (State != GamePanel.GameState.Playing) return;
+
+            // real fixed dt (falls back to timer interval on first tick)
+            double dt = _fixedWatch.IsRunning ? _fixedWatch.Elapsed.TotalSeconds : _fixedTimer.Interval.TotalSeconds;
+            _fixedWatch.Restart();
+            Game_Engine.Core.Time.BeginFixedUpdate(dt);
+
             ForEachBehavior(b => b.__FixedUpdate());
         }
 

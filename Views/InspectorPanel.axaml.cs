@@ -22,6 +22,8 @@ using System.Runtime.InteropServices;
 using System.IO;
 using Avalonia.Platform.Storage;
 using System.Runtime.CompilerServices;
+using Game_Engine.Core.Component;
+using static Assimp.Metadata;
 
 namespace Game_Engine.Views;
 
@@ -393,14 +395,24 @@ public partial class InspectorPanel : UserControl
         header.Children.Add(remove);
         outer.Children.Add(header);
 
+        if (b is MeshCollider mc)
+            outer.Children.Add(MeshColliderTargetRow(owner, mc));
+
         // --- properties area (disabled when b.Enabled == false) ---
         var propsPanel = new StackPanel { Spacing = 8 };
         propsPanel.Bind(IsEnabledProperty,
             new Binding(nameof(Behavior.Enabled)) { Source = b, Mode = BindingMode.OneWay });
 
         var props = b.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
-            .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
+            .Where(p => p.CanRead && p.GetIndexParameters().Length == 0)
             .Where(p => p.Name is not nameof(Behavior.Enabled) && p.Name is not nameof(Behavior.gameObject))
+            // hide MeshCollider internals; we render them in MeshColliderTargetRow(...)
+            .Where(p => !(b is MeshCollider) ||
+                        (p.Name != nameof(MeshCollider.TargetFilters) &&
+                         p.Name != nameof(MeshCollider.TargetPaths) &&
+                         p.Name != nameof(MeshCollider.BindToTargetTransform) &&
+                         p.Name != nameof(MeshCollider.Mesh)))
+            .Where(p => p.CanWrite) // avoid private-set or readonly things in generic editor
             .ToList();
 
         foreach (var p in props)
@@ -422,6 +434,37 @@ public partial class InspectorPanel : UserControl
         };
     }
 
+    // Build a stable "Root/Child/SubChild" path for a GO
+    static string BuildPath(GameObject go)
+    {
+        if (go == null) return string.Empty;
+        var stack = new Stack<string>();
+        var n = go;
+        while (n != null) { stack.Push(n.Name ?? "GameObject"); n = n.Parent; }
+        return string.Join("/", stack.ToArray());
+    }
+
+    readonly struct MFEntry
+    {
+        public readonly string Path;
+        public readonly MeshFilter MF;
+        public MFEntry(string path, MeshFilter mf) { Path = path; MF = mf; }
+        public override string ToString() => Path;
+    }
+
+    // Enumerate every MeshFilter in the scene with its hierarchy path
+    static IEnumerable<MFEntry> EnumerateMeshFilters()
+    {
+        var stack = new Stack<GameObject>();
+        foreach (var r in SceneService.Root) stack.Push(r);
+        while (stack.Count > 0)
+        {
+            var n = stack.Pop();
+            foreach (var mf in n.Behaviors.OfType<MeshFilter>())
+                yield return new MFEntry(BuildPath(n), mf);
+            for (int i = 0; i < n.Children.Count; i++) stack.Push(n.Children[i]);
+        }
+    }
 
 
     Control MaterialEditor(object owner, PropertyInfo prop)
@@ -986,6 +1029,118 @@ public partial class InspectorPanel : UserControl
         return row;
     }
 
+    Control MeshColliderTargetRow(GameObject owner, MeshCollider mc)
+    {
+        var wrap = new StackPanel { Spacing = 6 };
+        wrap.Children.Add(new TextBlock { Text = "Mesh Filters", FontWeight = FontWeight.Bold });
+
+        var status = new TextBlock { Opacity = .7 };
+        void RefreshStatus()
+        {
+            var count = mc.TargetFilters?.Count ?? 0;
+            status.Text = count == 0 ? "Targets: (none)" : $"Targets: {count}";
+        }
+        RefreshStatus();
+        wrap.Children.Add(status);
+
+        // List all filters in scene - MULTISELECT
+        var all = EnumerateMeshFilters().ToList();
+        var list = new ListBox
+        {
+            ItemsSource = all,
+            SelectionMode = SelectionMode.Multiple,
+            Width = 420,
+            Height = 160
+        };
+        wrap.Children.Add(list);
+
+        // Preselect items already targeted
+        void SyncPreselect()
+        {
+            list.SelectedItems.Clear();
+            foreach (var entry in all)
+            {
+                if (mc.TargetFilters != null && mc.TargetFilters.Any(t => ReferenceEquals(t, entry.MF)))
+                    list.SelectedItems.Add(entry);
+                else if (!string.IsNullOrWhiteSpace(entry.Path) &&
+                         (mc.TargetPaths?.Any(p => string.Equals(p, entry.Path, StringComparison.OrdinalIgnoreCase)) == true))
+                    list.SelectedItems.Add(entry);
+            }
+        }
+        SyncPreselect();
+
+        // Buttons
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        var addSel = new Button { Content = "Add Selected" };
+        addSel.Click += (_, __) =>
+        {
+            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            BeginPropertyEdit(mc, p);
+            foreach (MFEntry e in list.SelectedItems.OfType<MFEntry>())
+                mc.AddTarget(e.MF);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(mc, p);
+            RefreshStatus();
+        };
+        row.Children.Add(addSel);
+
+        var remSel = new Button { Content = "Remove Selected" };
+        remSel.Click += (_, __) =>
+        {
+            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            BeginPropertyEdit(mc, p);
+            foreach (MFEntry e in list.SelectedItems.OfType<MFEntry>())
+                mc.RemoveTarget(e.MF);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(mc, p);
+            RefreshStatus();
+            SyncPreselect();
+        };
+        row.Children.Add(remSel);
+
+        var addFromCurrentGO = new Button { Content = "Add From Selected GO" };
+        addFromCurrentGO.Click += (_, __) =>
+        {
+            var sel = SelectionService.Current;
+            if (sel == null) return;
+
+            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            BeginPropertyEdit(mc, p);
+            foreach (var mf in sel.Behaviors.OfType<MeshFilter>().Where(m => m.Enabled && m.Mesh != null))
+                mc.AddTarget(mf);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(mc, p);
+            RefreshStatus();
+            SyncPreselect();
+        };
+        row.Children.Add(addFromCurrentGO);
+
+        var clear = new Button { Content = "Clear All" };
+        clear.Click += (_, __) =>
+        {
+            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            BeginPropertyEdit(mc, p);
+            mc.ClearTargets();
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(mc, p);
+            RefreshStatus();
+            SyncPreselect();
+        };
+        row.Children.Add(clear);
+
+        var bindChk = new CheckBox { Content = "Bind To Each Target Transform", IsChecked = mc.BindToTargetTransform };
+        bindChk.Checked += (_, __) => { mc.BindToTargetTransform = true; SceneService.NotifyChanged(); };
+        bindChk.Unchecked += (_, __) => { mc.BindToTargetTransform = false; SceneService.NotifyChanged(); };
+        row.Children.Add(bindChk);
+
+        wrap.Children.Add(row);
+
+        return new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8), Child = wrap };
+    }
+
+
+
 
 
 
@@ -1138,6 +1293,7 @@ public partial class InspectorPanel : UserControl
             tb.LostFocus += (_, __) => CommitPropertyEdit(target, p);
             return tb;
         }
+        
         // ---- textures ----------------------------------------------------------
         if (typeof(Texture2D).IsAssignableFrom(t))
             return Texture2DEditor(target, p);
