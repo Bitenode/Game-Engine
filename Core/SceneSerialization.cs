@@ -463,6 +463,44 @@ namespace Game_Engine.Core
             catch { return null; }
         }
 
+        static string TryResolveTextureFile(string stored)
+        {
+            if (string.IsNullOrWhiteSpace(stored)) return null;
+
+            var candidates = new List<string?>();
+            // Normal project resolution
+            candidates.Add(ResolveAssetPath(stored));
+
+            // If it’s relative, also try Assets/ and Root/ directly
+            if (!Path.IsPathRooted(stored))
+            {
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(proj.AssetsPath))
+                        candidates.Add(Path.Combine(proj.AssetsPath, stored));
+                    candidates.Add(Path.Combine(proj.RootPath, stored));
+                }
+            }
+
+            //Fallback: search by file name in Assets tree
+            var byName = GuessAssetPathByName(Path.GetFileName(stored));
+            if (!string.IsNullOrWhiteSpace(byName))
+                candidates.Add(ResolveAssetPath(byName));
+
+            foreach (var c in candidates)
+            {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(c) && File.Exists(c))
+                        return c;
+                }
+                catch { /* ignore */ }
+            }
+            return null;
+        }
+
+
         // ---------------- Texture2D DTO ----------------
         sealed class Texture2DDTO
         {
@@ -564,26 +602,27 @@ namespace Game_Engine.Core
 
         static Material FromDto(MaterialDTO d)
         {
-            var mat = new Material();
-            mat.Tint = string.IsNullOrWhiteSpace(d.tint) ? Colors.White : HexToColor(d.tint);
-            mat.Metallic = d.metallic;
-            mat.Smoothness = d.smoothness;
+            var mat = new Material
+            {
+                Tint = string.IsNullOrWhiteSpace(d.tint) ? Colors.White : HexToColor(d.tint),
+                Metallic = d.metallic,
+                Smoothness = d.smoothness
+            };
 
+            // Prefer multi-slot list; if missing, synthesize from legacy texturePath.
             var slots = d.textures;
-
-            // legacy v1 scene: only a single texturePath
             if ((slots == null || slots.Count == 0) && !string.IsNullOrWhiteSpace(d.texturePath))
             {
                 slots = new List<MatSlotDTO>
-                {
-                    new MatSlotDTO
-                    {
-                        name = Path.GetFileName(d.texturePath),
-                        usage = "Albedo",
-                        faceMask = -1,
-                        path = d.texturePath
-                    }
-                };
+        {
+            new MatSlotDTO
+            {
+                name = Path.GetFileName(d.texturePath),
+                usage = "Albedo",
+                faceMask = -1,
+                path = d.texturePath
+            }
+        };
             }
 
             if (slots != null)
@@ -591,24 +630,37 @@ namespace Game_Engine.Core
                 for (int i = 0; i < slots.Count; i++)
                 {
                     var s = slots[i];
-                    var texSlot = new MaterialTexture();
-                    texSlot.Name = s.name;
 
-                    MaterialTexture.TexUsage usage;
-                    if (!Enum.TryParse<MaterialTexture.TexUsage>(s.usage ?? "", true, out usage))
+                    var texSlot = new MaterialTexture
+                    {
+                        Name = s.name
+                    };
+
+                    // Usage (fallback to Albedo if unknown)
+                    if (!Enum.TryParse<MaterialTexture.TexUsage>(s.usage ?? "", true, out var usage))
                         usage = MaterialTexture.TexUsage.Albedo;
                     texSlot.Usage = usage;
 
+                    // Face mask
                     try { texSlot.FaceMask = (MaterialTexture.CubeFaceMask)s.faceMask; }
                     catch { texSlot.FaceMask = MaterialTexture.CubeFaceMask.All; }
 
+                    // Load texture:
+                    // 1) If a path was saved, resolve robustly (root, assets, by-name fallback).
+                    // 2) Else, use inline RGBA payload if present.
                     if (!string.IsNullOrWhiteSpace(s.path))
                     {
-                        texSlot.SourcePath = s.path; // keep relative
-                        var abs = ResolveAssetPath(s.path);
-                        if (!string.IsNullOrWhiteSpace(abs) && File.Exists(abs))
+                        texSlot.SourcePath = s.path; // keep what was in the scene file
+
+                        var file = TryResolveTextureFile(s.path);
+                        if (!string.IsNullOrWhiteSpace(file))
                         {
-                            try { texSlot.Texture = Texture2D.FromFile(abs); } catch { }
+                            try
+                            {
+                                texSlot.Texture = Texture2D.FromFile(file);     // runtime uses this
+                                texSlot.SourcePath = MakeAssetRelative(file);    // normalize for next save
+                            }
+                            catch { /* leave Texture null if load failed */ }
                         }
                     }
                     else if (s.inline != null)
@@ -623,6 +675,7 @@ namespace Game_Engine.Core
 
             return mat;
         }
+
 
         // ---------------- Mesh DTO ----------------
         sealed class MeshDTO

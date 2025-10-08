@@ -892,6 +892,21 @@ public class SceneView : Control
         foreach (var root in SceneService.Root)
             DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
 
+        foreach (var go in Core.SceneService.Root)
+            DrawCollidersRecursive(ctx, vp, size, go);
+
+        void DrawCollidersRecursive(DrawingContext ctx, in SN.Matrix4x4 vp, Size sz, GameObject go)
+        {
+            foreach (var col in go.Behaviors.OfType<Game_Engine.Core.Component.Collider>())
+            {
+                var aabb = col.GetWorldAABB();
+                var colColor = col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue;
+                ColliderGizmos.DrawAABB(ctx, vp, sz, aabb, colColor, 1f);
+            }
+            foreach (var child in go.Children)
+                DrawCollidersRecursive(ctx, vp, sz, child);
+        }
+
         DrawTranslateGizmo(ctx, view, proj, size);
     }
 

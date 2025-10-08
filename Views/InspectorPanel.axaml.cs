@@ -426,6 +426,25 @@ public partial class InspectorPanel : UserControl
 
     Control MaterialEditor(object owner, PropertyInfo prop)
     {
+        // Best-effort: project-relative if possible, otherwise absolute.
+        // SceneView never reads this; it's only for serialization.
+        static string NormalizePathForSave(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return path;
+            try
+            {
+                var abs = Path.GetFullPath(path);
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        return Path.GetRelativePath(root, abs);
+                }
+                return abs; // ok to save absolute if not under project
+            }
+            catch { return path; }
+        }
         var mat = (Material?)prop.GetValue(owner);
         if (mat is null) { mat = new Material(); prop.SetValue(owner, mat); }
 
@@ -536,7 +555,7 @@ public partial class InspectorPanel : UserControl
                         }
                         else
                         {
-                            // keep your previous behavior (temp copy); we only RECORD the path for save
+                            // only RECORD the path for save
                             var tmpDir = ProjectService.Current?.TempPath ?? Path.GetTempPath();
                             Directory.CreateDirectory(tmpDir);
                             var dst = Path.Combine(tmpDir, f.Name);
@@ -784,7 +803,7 @@ public partial class InspectorPanel : UserControl
                     FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower)
                 };
 
-                // ✅ only addition: store a (project-relative when possible) path for serialization
+                // store a (project-relative when possible) path for serialization
                 slot.SourcePath = MakeProjectRelative(f);
 
                 mat.Textures.Add(slot);
@@ -847,7 +866,7 @@ public partial class InspectorPanel : UserControl
 
         string EnsureInProject(string fullPath)
         {
-            
+            // keep if already under project
             try
             {
                 var proj = ProjectService.Current;
