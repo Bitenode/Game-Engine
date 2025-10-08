@@ -39,6 +39,8 @@ public partial class MainWindow : Window
             [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
         };
 
+        
+
         // Defaults
         _counts.Clear();
         AddInitialPanels();

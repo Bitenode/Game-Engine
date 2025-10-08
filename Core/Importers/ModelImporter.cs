@@ -16,17 +16,20 @@ namespace Game_Engine.Core.Importers
         /// <summary>
         /// Load a model (fbx/obj/gltf/dae/…) and return a root GameObject that mirrors the file’s node tree.
         /// Meshes are triangulated; normals are generated if missing; UV0 is imported when available.
-        /// First diffuse/baseColor texture is hooked into Material.
+        /// Diffuse/baseColor/other useful textures are imported and each MaterialTexture gets a project-relative SourcePath.
+        /// MeshFilter exposes a string ModelPath, it is populated (project-relative) for later mesh rebuilds.
         /// </summary>
-        
         public static GameObject ImportModel(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
             if (!File.Exists(path)) throw new FileNotFoundException("Model not found", path);
 
-            var ctx = new AssimpContext();
+            // Keep the original abs path and compute project-relative once
+            var absModel = Path.GetFullPath(path);
+            var relModel = MakeProjectRelative(absModel);
+            var modelDir = Path.GetDirectoryName(absModel)!;
 
-            // Triangulate, join verts, smooth normals, improve cache locality, etc.
+            var ctx = new AssimpContext();
 
             var pp = PostProcessSteps.Triangulate
                    | PostProcessSteps.JoinIdenticalVertices
@@ -34,14 +37,12 @@ namespace Game_Engine.Core.Importers
                    | PostProcessSteps.ImproveCacheLocality
                    | PostProcessSteps.RemoveRedundantMaterials;
 
-            // UV orientation: our sampler flips V already (top-left images), so we do NOT FlipUVs here.
-
-            var scene = ctx.ImportFile(path, pp);
+            var scene = ctx.ImportFile(absModel, pp);
             if (scene is null || !scene.HasMeshes)
                 throw new InvalidDataException("No meshes in file, or import failed.");
 
             // Build materials first (index -> engine Material)
-            var materials = BuildMaterials(scene, Path.GetDirectoryName(path)!);
+            var materials = BuildMaterials(scene, modelDir);
 
             // Normalize scale
             float maxScale = 0f;
@@ -52,14 +53,50 @@ namespace Game_Engine.Core.Importers
             }
             float scaleFactor = maxScale > 0 ? 1f / maxScale : 1f;
 
-            // Convert nodes recursively with scale factor
-            var root = ConvertNode(scene, scene.RootNode, materials, scaleFactor);
+            // Convert nodes recursively with a running part index
+            int partIndex = 0; // <- running layer number across the whole model (DFS order)
+            var root = ConvertNode(scene, scene.RootNode, materials, scaleFactor, relModel, ref partIndex);
 
-            root.Name = Path.GetFileNameWithoutExtension(path);
+            root.Name = Path.GetFileNameWithoutExtension(absModel);
             return root;
         }
 
-        static Dictionary<int, Material> BuildMaterials(Scene sc, string dir)
+
+        // -------- project-relative helpers (kept local to avoid SceneSerialization dependency) --------
+        static string? MakeProjectRelative(string? fullPath)
+        {
+            if (string.IsNullOrWhiteSpace(fullPath)) return null;
+            try
+            {
+                var abs = Path.GetFullPath(fullPath);
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        return Path.GetRelativePath(root, abs);
+                }
+                return abs; // fallback
+            }
+            catch { return fullPath; }
+        }
+
+        static string? ResolveProjectRelative(string? stored)
+        {
+            if (string.IsNullOrWhiteSpace(stored)) return null;
+            try
+            {
+                if (Path.IsPathRooted(stored)) return stored;
+                var proj = ProjectService.Current;
+                if (proj == null) return stored;
+                return Path.Combine(proj.RootPath, stored);
+            }
+            catch { return stored; }
+        }
+
+        // ---------------------------------------------------------------------------------------------
+
+        static Dictionary<int, Material> BuildMaterials(Scene sc, string modelDir)
         {
             var dict = new Dictionary<int, Material>();
 
@@ -78,31 +115,29 @@ namespace Game_Engine.Core.Importers
                         (byte)Math.Clamp((int)(c.B * 255f), 0, 255));
                 }
 
-                // Collect textures from common PBR/classic slots.
-                // We’ll also do a final pass over *all* slots to catch odd exporters.
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // Classic
-                AddAllTexturesOfType(aimat, TextureType.Diffuse, m, sc, dir, MaterialTexture.TexUsage.Albedo, seen);
-                AddAllTexturesOfType(aimat, TextureType.Emissive, m, sc, dir, MaterialTexture.TexUsage.Emissive, seen);
-                AddAllTexturesOfType(aimat, TextureType.Normals, m, sc, dir, MaterialTexture.TexUsage.Normal, seen);
-                AddAllTexturesOfType(aimat, TextureType.Lightmap, m, sc, dir, MaterialTexture.TexUsage.AmbientOcclusion, seen); // many tools put AO here
+                AddAllTexturesOfType(aimat, TextureType.Diffuse, m, sc, modelDir, MaterialTexture.TexUsage.Albedo, seen);
+                AddAllTexturesOfType(aimat, TextureType.Emissive, m, sc, modelDir, MaterialTexture.TexUsage.Emissive, seen);
+                AddAllTexturesOfType(aimat, TextureType.Normals, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
+                AddAllTexturesOfType(aimat, TextureType.Lightmap, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
 
-                // Some exporters use alternative enum values (Assimp build dependent).
+                // Some builds use extra enums
                 if (Enum.TryParse("BaseColor", out TextureType baseColorT))
-                    AddAllTexturesOfType(aimat, baseColorT, m, sc, dir, MaterialTexture.TexUsage.Albedo, seen);
+                    AddAllTexturesOfType(aimat, baseColorT, m, sc, modelDir, MaterialTexture.TexUsage.Albedo, seen);
                 if (Enum.TryParse("NormalCamera", out TextureType normalCamT))
-                    AddAllTexturesOfType(aimat, normalCamT, m, sc, dir, MaterialTexture.TexUsage.Normal, seen);
+                    AddAllTexturesOfType(aimat, normalCamT, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
                 if (Enum.TryParse("Metalness", out TextureType metalT))
-                    AddAllTexturesOfType(aimat, metalT, m, sc, dir, MaterialTexture.TexUsage.Metallic, seen);
+                    AddAllTexturesOfType(aimat, metalT, m, sc, modelDir, MaterialTexture.TexUsage.Metallic, seen);
                 if (Enum.TryParse("DiffuseRoughness", out TextureType roughT))
-                    AddAllTexturesOfType(aimat, roughT, m, sc, dir, MaterialTexture.TexUsage.Roughness, seen);
+                    AddAllTexturesOfType(aimat, roughT, m, sc, modelDir, MaterialTexture.TexUsage.Roughness, seen);
                 if (Enum.TryParse("Roughness", out TextureType roughT2))
-                    AddAllTexturesOfType(aimat, roughT2, m, sc, dir, MaterialTexture.TexUsage.Roughness, seen);
+                    AddAllTexturesOfType(aimat, roughT2, m, sc, modelDir, MaterialTexture.TexUsage.Roughness, seen);
                 if (Enum.TryParse("AmbientOcclusion", out TextureType aoT))
-                    AddAllTexturesOfType(aimat, aoT, m, sc, dir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
+                    AddAllTexturesOfType(aimat, aoT, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
 
-                // Fallback sweep: scan *all* types, guess usage from the type/name, and add anything we missed.
+                // Fallback sweep over all types
                 foreach (TextureType t in Enum.GetValues(typeof(TextureType)))
                 {
                     int cnt = aimat.GetMaterialTextureCount(t);
@@ -110,7 +145,7 @@ namespace Game_Engine.Core.Importers
                     {
                         if (!aimat.GetMaterialTexture(t, k, out var slot)) continue;
                         var guess = GuessUsageFromTypeOrName(t, slot.FilePath);
-                        AddTextureFromSlot(m, slot, sc, dir, guess, seen);
+                        AddTextureFromSlot(m, slot, sc, modelDir, guess, seen);
                     }
                 }
 
@@ -119,7 +154,6 @@ namespace Game_Engine.Core.Importers
 
             return dict;
         }
-
 
         static void AddAllTexturesOfType(Assimp.Material aimat, TextureType type,
                                  Material m, Scene sc, string dir,
@@ -141,7 +175,7 @@ namespace Game_Engine.Core.Importers
             string key = slot.FilePath ?? string.Empty;
             if (!seen.Add(key)) return;
 
-            var tex = TryLoadTexture(slot, sc, dir);
+            var (tex, resolvedAbsPath) = TryLoadTexture(slot, sc, dir);
             if (tex == null) return;
 
             m.Textures.Add(new MaterialTexture
@@ -149,15 +183,16 @@ namespace Game_Engine.Core.Importers
                 Name = Path.GetFileName(slot.FilePath),
                 Texture = tex,
                 Usage = usage,
-                FaceMask = (MaterialTexture.CubeFaceMask)(-1),                     // models: use everywhere by default
-                SourcePath = slot.FilePath
+                FaceMask = (MaterialTexture.CubeFaceMask)(-1),   // all faces for model textures by default
+                SourcePath = string.IsNullOrWhiteSpace(resolvedAbsPath)
+                                ? null
+                                : MakeProjectRelative(resolvedAbsPath)  // project-relative for serialization
             });
         }
 
         // Try to choose a good usage from an Assimp type and/or the filename
         static MaterialTexture.TexUsage GuessUsageFromTypeOrName(TextureType t, string? path)
         {
-            // Map by type first
             switch (t)
             {
                 case TextureType.Diffuse: return MaterialTexture.TexUsage.Albedo;
@@ -166,23 +201,21 @@ namespace Game_Engine.Core.Importers
                 case TextureType.Lightmap: return MaterialTexture.TexUsage.AmbientOcclusion;
             }
 
-            // Some builds ship extra enums we handled above via TryParse (BaseColor, Metalness, Roughness, AmbientOcclusion, NormalCamera)
-            // If we get here, fall back to filename heuristics:
             var n = (path ?? "").ToLowerInvariant();
-
-            // common tokens
-            if (n.Contains("normal") || n.Contains("_n") || n.Contains("_N") || n.Contains("-nrm")) return MaterialTexture.TexUsage.Normal;
+            if (n.Contains("normal") || n.Contains("_n") || n.Contains("-nrm")) return MaterialTexture.TexUsage.Normal;
             if (n.Contains("rough") || n.Contains("_r")) return MaterialTexture.TexUsage.Roughness;
-            if (n.Contains("metal") || n.Contains("metallic") || n.Contains("_M") || n.Contains("_m"))  return MaterialTexture.TexUsage.Metallic;
-            if (n.Contains("ao") || n.Contains("occl") || n.Contains("AO") || n.Contains("ambientocclusion")) return MaterialTexture.TexUsage.AmbientOcclusion;
+            if (n.Contains("metal") || n.Contains("metallic") || n.Contains("_m")) return MaterialTexture.TexUsage.Metallic;
+            if (n.Contains("ao") || n.Contains("occl") || n.Contains("ambientocclusion")) return MaterialTexture.TexUsage.AmbientOcclusion;
             if (n.Contains("emit") || n.Contains("emiss")) return MaterialTexture.TexUsage.Emissive;
-            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("diffuse") || n.Contains("_c")) return MaterialTexture.TexUsage.Albedo;
+            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("diffuse") || n.EndsWith("_c")) return MaterialTexture.TexUsage.Albedo;
 
-            // safest default
             return MaterialTexture.TexUsage.Albedo;
         }
 
-        static Texture2D? TryLoadTexture(TextureSlot slot, Scene sc, string dir)
+        /// <summary>
+        /// Load texture data; return (Texture2D, absoluteResolvedPathOrNullIfEmbedded)
+        /// </summary>
+        static (Texture2D? tex, string? absPath) TryLoadTexture(TextureSlot slot, Scene sc, string dir)
         {
             // Embedded texture (FilePath like "*0", "*1", …)
             if (!string.IsNullOrEmpty(slot.FilePath) && slot.FilePath.StartsWith("*"))
@@ -199,18 +232,18 @@ namespace Game_Engine.Core.Importers
                                 ? emb.CompressedData
                                 : FlattenRawEmbedded(emb);
 
-                            try { return Texture2D.FromBytes(bytes); }
+                            try { return (Texture2D.FromBytes(bytes), null); }
                             catch { /* ignore */ }
                         }
                     }
                 }
+                return (null, null);
             }
 
             // External file path (relative to model)
             if (!string.IsNullOrEmpty(slot.FilePath))
             {
                 var p = slot.FilePath.Replace('\\', '/');
-                // Some exporters put absolute, some relative, some only file names
                 var tryPaths = new[]
                 {
                     Path.Combine(dir, p),
@@ -221,13 +254,13 @@ namespace Game_Engine.Core.Importers
                 {
                     if (File.Exists(tp))
                     {
-                        try { return Texture2D.FromFile(tp); }
+                        try { return (Texture2D.FromFile(tp), Path.GetFullPath(tp)); }
                         catch { /* ignore */ }
                     }
                 }
             }
 
-            return null;
+            return (null, null);
         }
 
         static byte[] FlattenRawEmbedded(EmbeddedTexture t)
@@ -235,34 +268,25 @@ namespace Game_Engine.Core.Importers
             int w = t.Width;
             int h = t.Height;
 
-            // NonCompressedData is Texel[] (BGRA)
-            var src = t.NonCompressedData;
+            var src = t.NonCompressedData; // BGRA texels
             if (src is null || src.Length < w * h) return Array.Empty<byte>();
 
             var rgba = new byte[w * h * 4];
             for (int i = 0; i < w * h; i++)
             {
-                var texel = src[i]; // Assimp.Texel
-                rgba[i * 4 + 0] = texel.R; // R
-                rgba[i * 4 + 1] = texel.G; // G
-                rgba[i * 4 + 2] = texel.B; // B
-                rgba[i * 4 + 3] = texel.A; // A
+                var texel = src[i];
+                rgba[i * 4 + 0] = texel.R;
+                rgba[i * 4 + 1] = texel.G;
+                rgba[i * 4 + 2] = texel.B;
+                rgba[i * 4 + 3] = texel.A;
             }
             return rgba;
         }
 
-
-        static GameObject ConvertNode(Scene sc, Node node, Dictionary<int, Material> materials, float scaleFactor)
+        static GameObject ConvertNode(Scene sc, Node node, Dictionary<int, Material> materials, float scaleFactor, string relModelPathForNode, ref int partIndex)
         {
             var go = new GameObject(node.Name);
             ApplyTransform(node.Transform, go.Transform);
-
-            // Apply scale normalization to each component
-           /* go.Transform.Scale = new Vector3(
-                go.Transform.Scale.X * scaleFactor,
-                go.Transform.Scale.Y * scaleFactor,
-                go.Transform.Scale.Z * scaleFactor
-            );*/
 
             // Mesh instances on this node
             foreach (var idx in node.MeshIndices)
@@ -273,49 +297,62 @@ namespace Game_Engine.Core.Importers
                 var mf = new MeshFilter { Mesh = mesh };
                 var mr = new MeshRenderer();
 
-                // Pass a base color (use Material.Tint as a suggestion)
+                // If MeshFilter exposes a string ModelPath, populate it (project-relative)
+                try
+                {
+                    var mpProp = typeof(MeshFilter).GetProperty("ModelPath",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+                    if (mpProp != null && mpProp.PropertyType == typeof(string) && mpProp.CanWrite)
+                        mpProp.SetValue(mf, relModelPathForNode);
+                }
+                catch { /* ignore if property absent */ }
+
+                //  set the sequential layer number on import if MeshFilter has ModelPartIndex (int)
+                try
+                {
+                    var mpiProp = typeof(MeshFilter).GetProperty("ModelPartIndex",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+                    if (mpiProp != null && mpiProp.CanWrite && mpiProp.PropertyType == typeof(int))
+                        mpiProp.SetValue(mf, partIndex);
+                }
+                catch { /* ignore if property absent */ }
+                finally
+                {
+                    partIndex++; // increment after assigning to this mesh
+                }
+
+                // Attach material if present
                 if (aim.MaterialIndex >= 0 && materials.TryGetValue(aim.MaterialIndex, out var mat))
                 {
                     mr.Material = mat;
-                    mr.Color = mat.Tint; // the rasterizer multiplies texture by MeshRenderer.Color (tint)
+                    mr.Color = mat.Tint; // tint multiplies the textures in your renderer
                 }
 
-                // If no normals in file, we already generated smooth normals above.
                 if (!hasNormals) mesh.RecalculateNormalsSmooth();
 
-                // --- set double-sided from the Assimp material when available ---
+                // Double-sided if material says so
                 bool twoSided = false;
                 if (aim.MaterialIndex >= 0 && aim.MaterialIndex < sc.MaterialCount)
                 {
                     var aiMat = sc.Materials[aim.MaterialIndex];
                     var t = aiMat.GetType();
 
-                    // Newer AssimpNet: bool TwoSided
                     var pTwo = t.GetProperty("TwoSided");
-                    if (pTwo != null)
-                        twoSided = Convert.ToBoolean(pTwo.GetValue(aiMat));
+                    if (pTwo != null) twoSided = Convert.ToBoolean(pTwo.GetValue(aiMat));
                     else
                     {
-                        // Some builds: IsTwoSided
                         var pIs = t.GetProperty("IsTwoSided");
-                        if (pIs != null)
-                            twoSided = Convert.ToBoolean(pIs.GetValue(aiMat));
+                        if (pIs != null) twoSided = Convert.ToBoolean(pIs.GetValue(aiMat));
                         else
                         {
-                            // Older builds: HasTwoSided (usually only present when true)
                             var pHas = t.GetProperty("HasTwoSided");
-                            if (pHas != null)
-                                twoSided = Convert.ToBoolean(pHas.GetValue(aiMat));
+                            if (pHas != null) twoSided = Convert.ToBoolean(pHas.GetValue(aiMat));
                         }
                     }
                 }
-
                 mr.DoubleSided = twoSided;
-
-                // Force double-sided for FBX objects to prevent slicing of thin walls
-                //mr.DoubleSided = true;
-
-                
 
                 go.AddBehavior(mf);
                 go.AddBehavior(mr);
@@ -323,10 +360,11 @@ namespace Game_Engine.Core.Importers
 
             // Children
             foreach (var child in node.Children)
-                go.AddChild(ConvertNode(sc, child, materials, scaleFactor));
+                go.AddChild(ConvertNode(sc, child, materials, scaleFactor, relModelPathForNode, ref partIndex));
 
             return go;
         }
+
 
         static (Mesh mesh, bool hadNormals) ConvertMesh(Assimp.Mesh m, float scale = 1f)
         {
@@ -378,15 +416,12 @@ namespace Game_Engine.Core.Importers
 
         static void ApplyTransform(Matrix4x4 ai, Component.Transform t)
         {
-            // Assimp Matrix4x4 -> TRS
-            // Decompose gives: scaling, rotation, translation
             ai.Decompose(out var s, out var r, out var p);
 
             // Position
             t.Position = new Vector3(p.X, p.Y, p.Z);
 
-            // Rotation: convert quaternion to Euler degrees (YXZ is fine for editors)
-            // We'll use yaw(Y), pitch(X), roll(Z).
+            // Rotation (Euler YXZ)
             ToEulerYXZ(r, out double rx, out double ry, out double rz);
             t.Rotation = new Vector3(rx, ry, rz);
 
@@ -396,23 +431,17 @@ namespace Game_Engine.Core.Importers
 
         static void ToEulerYXZ(Assimp.Quaternion q, out double rx, out double ry, out double rz)
         {
-            // Convert to System.Numerics first for convenience
             var nq = new SN.Quaternion(q.X, q.Y, q.Z, q.W);
-
-            // YXZ decomposition
-            // Reference formulation that’s stable for editors:
             var m = SN.Matrix4x4.CreateFromQuaternion(nq);
 
-            // Extract Euler (YXZ)
-            ry = Math.Atan2(m.M13, m.M33);                 // yaw (Y)
-            rx = Math.Asin(Math.Clamp(-m.M23, -1f, 1f));   // pitch (X)
-            rz = Math.Atan2(m.M21, m.M22);                 // roll (Z)
+            ry = Math.Atan2(m.M13, m.M33);
+            rx = Math.Asin(Math.Clamp(-m.M23, -1f, 1f));
+            rz = Math.Atan2(m.M21, m.M22);
 
             const double Rad2Deg = 180.0 / Math.PI;
             rx *= Rad2Deg; ry *= Rad2Deg; rz *= Rad2Deg;
         }
 
-        // Helper method to approximate radius and height
         static (float radius, float height) ApproxRadialAndHeight(Assimp.Mesh m)
         {
             float minY = float.PositiveInfinity, maxY = float.NegativeInfinity, r = 0f;

@@ -13,15 +13,20 @@ namespace Game_Engine.Core
     /// <summary>
     /// Scene <-> JSON
     /// - GameObject tree + Transform
-    /// - [Persist] properties on Behaviors
+    /// - [Persist] properties on Behaviors (+ MeshFilter.Mesh back-compat)
     /// - Color as #AARRGGBB
     /// - Material with multi-texture slots: name, usage, faceMask, path (project-relative) or inline Texture2D
-    /// - Texture2D (path preferred; else embedded W/H/RGBA)
-    /// - Mesh ALWAYS includes full geometry (v/n/tri/line) + also writes preset/kind for readability
-    /// - Back-compat: 'texturePath' (single slot) still read
+    /// - Texture2D: path preferred; else embedded W/H/RGBA
+    /// - Mesh: if a component exposes "ModelPath" (string), Mesh is rebuilt from disk at load and is NOT persisted;
+    ///         otherwise we persist geometry/preset just like the legacy format.
     /// </summary>
     public static class SceneSerialization
     {
+        // Allow the app to plug in a model loader that returns a Mesh from a file path.
+        // Set this once at startup: SceneSerialization.ResolveMeshFromModelPath = path => ...;
+        public static Func<string, List<Mesh>>? ResolveMeshesFromModelPath;   // multi-mesh (preferred)
+        public static Func<string, Mesh?>? ResolveMeshFromModelPath;     // single-mesh (fallback)
+
         // ---------------- JSON setup ----------------
         static readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
@@ -60,16 +65,18 @@ namespace Game_Engine.Core
         // ---------------- GameObject/Behavior mapping ----------------
         static GameObjectDTO ToDTO(GameObject go)
         {
-            var dto = new GameObjectDTO();
-            dto.Name = go.Name;
-            dto.Transform = new TransformDTO
+            var dto = new GameObjectDTO
             {
-                LocalPosition = go.Transform.Position,
-                LocalRotationEuler = go.Transform.Rotation,
-                LocalScale = go.Transform.Scale
+                Name = go.Name,
+                Transform = new TransformDTO
+                {
+                    LocalPosition = go.Transform.Position,
+                    LocalRotationEuler = go.Transform.Rotation,
+                    LocalScale = go.Transform.Scale
+                },
+                Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
+                Children = go.Children.Select(ToDTO).ToList()
             };
-            dto.Behaviors = go.Behaviors.Where(b => !(b is Component.Transform)).Select(BehaviorToDTO).ToList();
-            dto.Children = go.Children.Select(ToDTO).ToList();
             return dto;
         }
 
@@ -98,7 +105,7 @@ namespace Game_Engine.Core
             var type = behavior.GetType();
             var props = GetPersistableProps(type);
 
-            var bag = new Dictionary<string, object>(StringComparer.Ordinal);
+            var bag = new Dictionary<string, object?>(StringComparer.Ordinal);
 
             foreach (var p in props)
             {
@@ -106,15 +113,15 @@ namespace Game_Engine.Core
                 if (p.GetIndexParameters().Length > 0) continue;
 
                 var n = p.Name;
-                if (n == "Parent" || n == "Children" || n == "gameObject" || n == "Transform") continue;
+                if (n is "Parent" or "Children" or "gameObject" or "Transform") continue;
 
-                object raw = null;
+                object? raw = null;
                 try { raw = p.GetValue(behavior); } catch { }
                 if (raw == null) { bag[n] = null; continue; }
 
                 var persisted = PersistValue(p, raw);
                 if (persisted is Skip) continue;
-                bag[n] = persisted is KeepNull ? (object)null : persisted;
+                bag[n] = persisted is KeepNull ? null : persisted;
             }
 
             return new BehaviorDTO { Type = type.AssemblyQualifiedName, Properties = bag };
@@ -129,32 +136,32 @@ namespace Game_Engine.Core
             if (!typeof(Behavior).IsAssignableFrom(type)) return;
             if (typeof(Component.Transform).IsAssignableFrom(type)) return;
 
-            Behavior instance = null;
+            Behavior? instance = null;
             try { instance = Activator.CreateInstance(type) as Behavior; } catch { }
             if (instance == null) return;
 
             go.AddBehavior(instance);
 
-            // 1) Set all [Persist] properties from JSON (your original logic)
+            // Apply persisted properties ([Persist] + MeshFilter back-compat properties)
             var props = GetPersistableProps(type).ToDictionary(p => p.Name, p => p, StringComparer.Ordinal);
             if (dto.Properties != null)
             {
                 foreach (var kv in dto.Properties)
                 {
-                    PropertyInfo pi;
-                    if (!props.TryGetValue(kv.Key, out pi)) continue;
+                    if (!props.TryGetValue(kv.Key, out var pi)) continue;
                     try
                     {
                         var converted = ConvertPersisted(kv.Value, pi.PropertyType);
                         pi.SetValue(instance, converted);
                     }
-                    catch { /* ignore bad values so other properties can load */ }
+                    catch
+                    {
+                        // Ignore a single bad value so the rest can load
+                    }
                 }
             }
 
-            //    Post-pass: for each Texture2D property, if there is a sibling "<Name>Path" string,
-            //    try to load the texture from disk using the project-relative path.
-            //    This enables Skybox.Texture + Skybox.TexturePath and any other "*Path" convention.
+            // Post-pass: for each Texture2D property with sibling "<Name>Path", try file reload
             var allProps = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             for (int i = 0; i < allProps.Length; i++)
             {
@@ -162,53 +169,114 @@ namespace Game_Engine.Core
                 if (texProp.PropertyType != typeof(Texture2D)) continue;
                 if (!texProp.CanRead || !texProp.CanWrite) continue;
 
-                // Look for sibling "<TexturePropName>Path"
                 var pathProp = type.GetProperty(texProp.Name + "Path",
                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (pathProp == null || pathProp.PropertyType != typeof(string) || !pathProp.CanRead) continue;
 
-                string rel = null;
-                try { rel = (string)pathProp.GetValue(instance); } catch { rel = null; }
-                if (string.IsNullOrWhiteSpace(rel))
+                string? rel = null;
+                try { rel = (string?)pathProp.GetValue(instance); } catch { rel = null; }
+
+                // fallback to raw dto map if property itself wasn't marked
+                if (string.IsNullOrWhiteSpace(rel) && dto.Properties != null &&
+                    dto.Properties.TryGetValue(texProp.Name + "Path", out var raw))
                 {
-                    // In rare cases if the path property wasn't marked [Persist] but exists,
-                    // try to read it directly from the incoming DTO map.
-                    object raw;
-                    if (dto.Properties != null && dto.Properties.TryGetValue(texProp.Name + "Path", out raw))
+                    try
                     {
-                        try
-                        {
-                            if (raw is string) rel = (string)raw;
-                            else if (raw is JsonElement)
-                            {
-                                var je = (JsonElement)raw;
-                                if (je.ValueKind == JsonValueKind.String) rel = je.GetString();
-                            }
-                        }
-                        catch { rel = null; }
+                        if (raw is string sRaw) rel = sRaw;
+                        else if (raw is JsonElement je && je.ValueKind == JsonValueKind.String) rel = je.GetString();
                     }
+                    catch { rel = null; }
                 }
 
                 if (string.IsNullOrWhiteSpace(rel)) continue;
 
-                var abs = ResolveAssetPath(rel);
+                // be robust: try resolve in multiple places
+                var abs = TryResolveTextureFile(rel!);
+                if (string.IsNullOrWhiteSpace(abs)) abs = ResolveAssetPath(rel!);
                 if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs)) continue;
 
                 try
                 {
-                    var texFromFile = Texture2D.FromFile(abs);
-                    if (texFromFile != null)
-                    {
-                        // Prefer file-backed texture so future saves write a clean path.
-                        texProp.SetValue(instance, texFromFile);
-                    }
+                    var texFromFile = Texture2D.FromFile(abs!);
+                    if (texFromFile != null) texProp.SetValue(instance, texFromFile);
                 }
                 catch
                 {
-                    // If loading fails, keep whatever value was already set by ConvertPersisted.
+                    // keep whatever ConvertPersisted set
+                }
+            }
+
+            //    Rebuild Mesh from ModelPath(+ModelPartIndex) if the component exposes them.
+            //    This is what restores multi-part models (one MeshFilter per layer) correctly.
+            var modelPathPI = type.GetProperty("ModelPath",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var partIndexPI = type.GetProperty("ModelPartIndex",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var meshPI = type.GetProperty("Mesh",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+            if (modelPathPI != null && modelPathPI.PropertyType == typeof(string) &&
+                meshPI != null && meshPI.PropertyType == typeof(Mesh) && meshPI.CanWrite)
+            {
+                string? relModel = null;
+                try { relModel = (string?)modelPathPI.GetValue(instance); } catch { relModel = null; }
+
+                // Allow pulling ModelPartIndex from instance or from dto map if not marked with [Persist]
+                int partIdx = 0;
+                if (partIndexPI != null && partIndexPI.PropertyType == typeof(int) && partIndexPI.CanRead)
+                {
+                    try { partIdx = (int)partIndexPI.GetValue(instance)!; } catch { partIdx = 0; }
+                }
+                else if (dto.Properties != null && dto.Properties.TryGetValue("ModelPartIndex", out var rawIdx))
+                {
+                    try
+                    {
+                        if (rawIdx is JsonElement je)
+                        {
+                            if (je.ValueKind == JsonValueKind.Number) partIdx = je.GetInt32();
+                            else if (je.ValueKind == JsonValueKind.String && int.TryParse(je.GetString(), out var parsed)) partIdx = parsed;
+                        }
+                        else if (rawIdx is int i) partIdx = i;
+                        else if (rawIdx is string s && int.TryParse(s, out var parsed)) partIdx = parsed;
+                    }
+                    catch { partIdx = 0; }
+                }
+
+                if (!string.IsNullOrWhiteSpace(relModel))
+                {
+                    var absModel = ResolveAssetPath(relModel!);
+                    if (!string.IsNullOrWhiteSpace(absModel) && File.Exists(absModel!))
+                    {
+                        try
+                        {
+                            // Preferred: multi-mesh resolver (restores each layer by index)
+                            if (ResolveMeshesFromModelPath != null)
+                            {
+                                var list = ResolveMeshesFromModelPath(absModel!);
+                                if (list != null && list.Count > 0)
+                                {
+                                    if (partIdx < 0) partIdx = 0;
+                                    if (partIdx >= list.Count) partIdx = list.Count - 1;
+                                    var picked = list[partIdx];
+                                    if (picked != null) meshPI.SetValue(instance, picked);
+                                }
+                            }
+                            // Fallback: single-mesh resolver
+                            else if (ResolveMeshFromModelPath != null)
+                            {
+                                var m = ResolveMeshFromModelPath(absModel!);
+                                if (m != null) meshPI.SetValue(instance, m);
+                            }
+                        }
+                        catch
+                        {
+                            // leave Mesh as-is on failure
+                        }
+                    }
                 }
             }
         }
+
 
 
         // ---------- Persist rules ----------
@@ -221,6 +289,17 @@ namespace Game_Engine.Core
 
             var t = p.PropertyType;
 
+            // Normalize any "*Path" style strings to project-relative for stable scenes.
+            if (t == typeof(string))
+            {
+                if (p.Name.EndsWith("Path", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(p.Name, "ModelPath", StringComparison.OrdinalIgnoreCase))
+                {
+                    return MakeAssetRelative((string)value);
+                }
+                return value;
+            }
+
             // Block engine refs
             if (typeof(GameObject).IsAssignableFrom(t)
              || typeof(Behavior).IsAssignableFrom(t)
@@ -228,7 +307,7 @@ namespace Game_Engine.Core
                 return Skip.Value;
 
             // Simple types
-            if (t.IsPrimitive || t.IsEnum || t == typeof(string) ||
+            if (t.IsPrimitive || t.IsEnum ||
                 t == typeof(double) || t == typeof(float) || t == typeof(decimal) ||
                 t == typeof(Vector3))
                 return value;
@@ -241,8 +320,7 @@ namespace Game_Engine.Core
             if (t == typeof(Material))
                 return ToDto((Material)value);
 
-            //  Texture2D -> SKIP if this property has a sibling "<Name>Path" string on the same behavior.
-            //    This keeps Skybox nice (TexturePath is saved; Texture object is rebuilt from the path on load).
+            // Texture2D: skip if sibling "<Name>Path" exists; rely on path reload.
             if (t == typeof(Texture2D))
             {
                 var decl = p.DeclaringType;
@@ -251,15 +329,27 @@ namespace Game_Engine.Core
                     var pathProp = decl.GetProperty(p.Name + "Path",
                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                     if (pathProp != null && pathProp.PropertyType == typeof(string))
-                        return Skip.Value; // rely on *Path; don't inline w/h/rgba
+                        return Skip.Value; // use *Path; don’t embed pixels
                 }
-                // if no sibling path property exists (other components), fall back to embedding so it still round-trips
+                // no sibling path -> embed to round-trip
                 return ToDto((Texture2D)value);
             }
 
-            // Mesh -> preset/kind/geometry
+            // Mesh: if the declaring component exposes ModelPath (and optionally ModelPartIndex),
+            // we prefer to rebuild the mesh from disk on load; therefore skip geometry persistence.
             if (t == typeof(Mesh))
+            {
+                var decl = p.DeclaringType;
+                if (decl != null)
+                {
+                    var modelPathProp = decl.GetProperty("ModelPath",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (modelPathProp != null && modelPathProp.PropertyType == typeof(string))
+                        return Skip.Value; // will rebuild from ModelPath(+ModelPartIndex)
+                }
+                // No ModelPath on this behavior -> persist full geometry as DTO.
                 return ToDto((Mesh)value);
+            }
 
             // Arrays / Lists of simple types or Vector3
             if (t.IsArray)
@@ -284,6 +374,7 @@ namespace Game_Engine.Core
             return Skip.Value;
         }
 
+
         static bool IsSimpleOrVec3(Type t)
         {
             return t.IsPrimitive || t.IsEnum || t == typeof(string) ||
@@ -291,27 +382,25 @@ namespace Game_Engine.Core
                    t == typeof(Vector3);
         }
 
-        static object ConvertPersisted(object jsonValue, Type targetType)
+        static object? ConvertPersisted(object? jsonValue, Type targetType)
         {
             if (jsonValue == null) return null;
 
             if (targetType == typeof(Color))
             {
-                string s = null;
-                var je = jsonValue as JsonElement?;
-                if (jsonValue is string) s = (string)jsonValue;
-                else if (je.HasValue && je.Value.ValueKind == JsonValueKind.String) s = je.Value.GetString();
+                string? s = null;
+                if (jsonValue is string str) s = str;
+                else if (jsonValue is JsonElement je && je.ValueKind == JsonValueKind.String) s = je.GetString();
                 return HexToColor(s ?? "#FFFFFFFF");
             }
 
             if (targetType == typeof(Material))
             {
-                MaterialDTO dto = null;
-                var je = jsonValue as JsonElement?;
+                MaterialDTO? dto = null;
                 try
                 {
-                    if (jsonValue is MaterialDTO) dto = (MaterialDTO)jsonValue;
-                    else if (je.HasValue) dto = JsonSerializer.Deserialize<MaterialDTO>(je.Value.GetRawText(), _json);
+                    if (jsonValue is MaterialDTO dd) dto = dd;
+                    else if (jsonValue is JsonElement je) dto = JsonSerializer.Deserialize<MaterialDTO>(je.GetRawText(), _json);
                     else dto = JsonSerializer.Deserialize<MaterialDTO>(JsonSerializer.Serialize(jsonValue, _json), _json);
                 }
                 catch { }
@@ -320,12 +409,11 @@ namespace Game_Engine.Core
 
             if (targetType == typeof(Texture2D))
             {
-                Texture2DDTO dto = null;
-                var je = jsonValue as JsonElement?;
+                Texture2DDTO? dto = null;
                 try
                 {
-                    if (jsonValue is Texture2DDTO) dto = (Texture2DDTO)jsonValue;
-                    else if (je.HasValue) dto = JsonSerializer.Deserialize<Texture2DDTO>(je.Value.GetRawText(), _json);
+                    if (jsonValue is Texture2DDTO dd) dto = dd;
+                    else if (jsonValue is JsonElement je) dto = JsonSerializer.Deserialize<Texture2DDTO>(je.GetRawText(), _json);
                     else dto = JsonSerializer.Deserialize<Texture2DDTO>(JsonSerializer.Serialize(jsonValue, _json), _json);
                 }
                 catch { }
@@ -334,12 +422,11 @@ namespace Game_Engine.Core
 
             if (targetType == typeof(Mesh))
             {
-                MeshDTO dto = null;
-                var je = jsonValue as JsonElement?;
+                MeshDTO? dto = null;
                 try
                 {
-                    if (jsonValue is MeshDTO) dto = (MeshDTO)jsonValue;
-                    else if (je.HasValue) dto = JsonSerializer.Deserialize<MeshDTO>(je.Value.GetRawText(), _json);
+                    if (jsonValue is MeshDTO dd) dto = dd;
+                    else if (jsonValue is JsonElement je) dto = JsonSerializer.Deserialize<MeshDTO>(je.GetRawText(), _json);
                     else dto = JsonSerializer.Deserialize<MeshDTO>(JsonSerializer.Serialize(jsonValue, _json), _json);
                 }
                 catch { }
@@ -348,10 +435,9 @@ namespace Game_Engine.Core
 
             if (targetType == typeof(Vector3))
             {
-                if (jsonValue is Vector3) return (Vector3)jsonValue;
-                var je = jsonValue as JsonElement?;
-                if (je.HasValue && je.Value.ValueKind == JsonValueKind.Array)
-                    return JsonSerializer.Deserialize<Vector3>(je.Value.GetRawText(), _json);
+                if (jsonValue is Vector3 v3) return v3;
+                if (jsonValue is JsonElement je && je.ValueKind == JsonValueKind.Array)
+                    return JsonSerializer.Deserialize<Vector3>(je.GetRawText(), _json);
             }
 
             try
@@ -359,24 +445,21 @@ namespace Game_Engine.Core
                 var t = Nullable.GetUnderlyingType(targetType) ?? targetType;
                 if (t.IsEnum)
                 {
-                    var je = jsonValue as JsonElement?;
-                    if (jsonValue is string) return Enum.Parse(t, (string)jsonValue, true);
-                    if (je.HasValue)
+                    if (jsonValue is string es) return Enum.Parse(t, es, true);
+                    if (jsonValue is JsonElement je)
                     {
-                        if (je.Value.ValueKind == JsonValueKind.String) return Enum.Parse(t, je.Value.GetString(), true);
-                        if (je.Value.ValueKind == JsonValueKind.Number) return Enum.ToObject(t, je.Value.GetInt32());
+                        if (je.ValueKind == JsonValueKind.String) return Enum.Parse(t, je.GetString()!, true);
+                        if (je.ValueKind == JsonValueKind.Number) return Enum.ToObject(t, je.GetInt32());
                     }
                 }
 
-                var je2 = jsonValue as JsonElement?;
-                if (je2.HasValue && je2.Value.ValueKind == JsonValueKind.Number)
+                if (jsonValue is JsonElement numJe && numJe.ValueKind == JsonValueKind.Number)
                 {
-                    var num = je2.Value;
-                    if (t == typeof(double)) return num.GetDouble();
-                    if (t == typeof(float)) return (float)num.GetDouble();
-                    if (t == typeof(int)) return num.GetInt32();
-                    if (t == typeof(long)) return num.GetInt64();
-                    if (t == typeof(decimal)) return num.GetDecimal();
+                    if (t == typeof(double)) return numJe.GetDouble();
+                    if (t == typeof(float)) return (float)numJe.GetDouble();
+                    if (t == typeof(int)) return numJe.GetInt32();
+                    if (t == typeof(long)) return numJe.GetInt64();
+                    if (t == typeof(decimal)) return numJe.GetDecimal();
                 }
                 return Convert.ChangeType(jsonValue, t);
             }
@@ -397,28 +480,58 @@ namespace Game_Engine.Core
 
                 var hasPersist = p.GetCustomAttributes(true).Any(a => a.GetType().Name == "PersistAttribute");
                 var hasDoNot = p.GetCustomAttributes(true).Any(a => a.GetType().Name == "DoNotPersistAttribute");
-
                 if (hasDoNot) continue;
-                if (hasPersist) yield return p;
+
+                // Normal opt-in
+                if (hasPersist)
+                {
+                    yield return p;
+                    continue;
+                }
+
+                // ---- Back-compat / safety for MeshFilter ----
+                // We always persist these even if not annotated, to preserve old scenes and keep defaults working.
+                if (t.FullName == "Game_Engine.Core.Component.MeshFilter")
+                {
+                    // Geometry (may be skipped later by PersistValue if ModelPath is present)
+                    if (p.Name == "Mesh" && p.PropertyType == typeof(Mesh))
+                    {
+                        yield return p;
+                        continue;
+                    }
+
+                    // Rebuild hints for multi-part models
+                    if (p.Name == "ModelPath" && p.PropertyType == typeof(string))
+                    {
+                        yield return p;
+                        continue;
+                    }
+                    if (p.Name == "ModelPartIndex" && p.PropertyType == typeof(int))
+                    {
+                        yield return p;
+                        continue;
+                    }
+                }
             }
         }
 
+
         // ---------------- Color & paths ----------------
-        static string ColorToHex(Color c) { return string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", c.A, c.R, c.G, c.B); }
+        static string ColorToHex(Color c) => string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", c.A, c.R, c.G, c.B);
 
         static Color HexToColor(string s)
         {
             s = (s ?? "").Trim();
-            if (s.StartsWith("#")) s = s.Substring(1);
+            if (s.StartsWith("#")) s = s[1..];
             if (s.Length == 6) s = "FF" + s;
-            byte a = byte.Parse(s.Substring(0, 2), System.Globalization.NumberStyles.HexNumber);
+            byte a = byte.Parse(s[..2], System.Globalization.NumberStyles.HexNumber);
             byte r = byte.Parse(s.Substring(2, 2), System.Globalization.NumberStyles.HexNumber);
             byte g = byte.Parse(s.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
             byte b = byte.Parse(s.Substring(6, 2), System.Globalization.NumberStyles.HexNumber);
             return Color.FromArgb(a, r, g, b);
         }
 
-        static string MakeAssetRelative(string path)
+        static string? MakeAssetRelative(string? path)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
             try
@@ -434,7 +547,7 @@ namespace Game_Engine.Core
             catch { return path; }
         }
 
-        static string ResolveAssetPath(string stored)
+        static string? ResolveAssetPath(string? stored)
         {
             if (string.IsNullOrWhiteSpace(stored)) return null;
             try
@@ -447,7 +560,7 @@ namespace Game_Engine.Core
             catch { return stored; }
         }
 
-        static string GuessAssetPathByName(string fileName)
+        static string? GuessAssetPathByName(string? fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName)) return null;
             var proj = ProjectService.Current;
@@ -463,15 +576,13 @@ namespace Game_Engine.Core
             catch { return null; }
         }
 
-        static string TryResolveTextureFile(string stored)
+        static string? TryResolveTextureFile(string stored)
         {
             if (string.IsNullOrWhiteSpace(stored)) return null;
 
             var candidates = new List<string?>();
-            // Normal project resolution
             candidates.Add(ResolveAssetPath(stored));
 
-            // If it’s relative, also try Assets/ and Root/ directly
             if (!Path.IsPathRooted(stored))
             {
                 var proj = ProjectService.Current;
@@ -483,7 +594,6 @@ namespace Game_Engine.Core
                 }
             }
 
-            //Fallback: search by file name in Assets tree
             var byName = GuessAssetPathByName(Path.GetFileName(stored));
             if (!string.IsNullOrWhiteSpace(byName))
                 candidates.Add(ResolveAssetPath(byName));
@@ -495,32 +605,32 @@ namespace Game_Engine.Core
                     if (!string.IsNullOrWhiteSpace(c) && File.Exists(c))
                         return c;
                 }
-                catch { /* ignore */ }
+                catch { }
             }
             return null;
         }
 
-
         // ---------------- Texture2D DTO ----------------
         sealed class Texture2DDTO
         {
-            public string path { get; set; } // optional project-relative
+            public string? path { get; set; } // optional project-relative
             public int w { get; set; }
             public int h { get; set; }
-            public string rgba { get; set; } // base64 raw RGBA
+            public string? rgba { get; set; } // base64 raw RGBA
         }
 
         static Texture2DDTO ToDto(Texture2D tex)
         {
-            var dto = new Texture2DDTO();
-            dto.w = tex.Width;
-            dto.h = tex.Height;
-            dto.rgba = Convert.ToBase64String(tex.Rgba ?? new byte[0]);
-            // dto.path stays null unless you later store a path on Texture2D
-            return dto;
+            return new Texture2DDTO
+            {
+                w = tex.Width,
+                h = tex.Height,
+                rgba = Convert.ToBase64String(tex.Rgba ?? Array.Empty<byte>())
+                // path stays null unless Texture2D starts carrying a source path 
+            };
         }
 
-        static Texture2D FromDto(Texture2DDTO d)
+        static Texture2D? FromDto(Texture2DDTO d)
         {
             if (!string.IsNullOrWhiteSpace(d.path))
             {
@@ -543,44 +653,51 @@ namespace Game_Engine.Core
         // ---------------- Material DTO (multi-texture) ----------------
         sealed class MaterialDTO
         {
-            public string tint { get; set; }      // "#AARRGGBB"
+            public string? tint { get; set; }      // "#AARRGGBB"
             public float metallic { get; set; }
             public float smoothness { get; set; }
-            public List<MatSlotDTO> textures { get; set; }
+            public List<MatSlotDTO>? textures { get; set; }
 
             // legacy single-path for old scenes
-            public string texturePath { get; set; }
+            public string? texturePath { get; set; }
         }
 
         sealed class MatSlotDTO
         {
-            public string name { get; set; }
-            public string usage { get; set; }     // enum name
-            public int faceMask { get; set; }     // -1 or bitmask
-            public string path { get; set; }      // project-relative
-            public Texture2DDTO inline { get; set; } // if no path
+            public string? name { get; set; }
+            public string? usage { get; set; }     // enum name
+            public int faceMask { get; set; }      // -1 or bitmask
+            public string? path { get; set; }      // project-relative
+            public Texture2DDTO? inline { get; set; } // if no path
         }
 
+        // --- keep the exact authored order; do not reorder anything ---
         static MaterialDTO ToDto(Material m)
         {
-            var dto = new MaterialDTO();
-            dto.tint = ColorToHex(m.Tint);
-            dto.metallic = m.Metallic;
-            dto.smoothness = m.Smoothness;
+            var dto = new MaterialDTO
+            {
+                tint = ColorToHex(m.Tint),
+                metallic = m.Metallic,
+                smoothness = m.Smoothness,
+                textures = new List<MatSlotDTO>()
+            };
 
-            var list = new List<MatSlotDTO>();
-
+            // Preserve order 1:1
             for (int i = 0; i < m.Textures.Count; i++)
             {
                 var t = m.Textures[i];
-                var slot = new MatSlotDTO();
-                slot.name = t.Name;
-                slot.usage = t.Usage.ToString();
-                slot.faceMask = (int)t.FaceMask;
+                var slot = new MatSlotDTO
+                {
+                    name = t.Name,
+                    usage = t.Usage.ToString(),
+                    faceMask = (int)t.FaceMask
+                };
 
                 string rel = null;
-                if (!string.IsNullOrWhiteSpace(t.SourcePath)) rel = t.SourcePath;
-                else if (!string.IsNullOrWhiteSpace(t.Name)) rel = GuessAssetPathByName(Path.GetFileName(t.Name));
+                if (!string.IsNullOrWhiteSpace(t.SourcePath))
+                    rel = t.SourcePath;
+                else if (!string.IsNullOrWhiteSpace(t.Name))
+                    rel = GuessAssetPathByName(Path.GetFileName(t.Name));
 
                 if (!string.IsNullOrWhiteSpace(rel))
                 {
@@ -592,11 +709,11 @@ namespace Game_Engine.Core
                     slot.inline = ToDto(t.Texture);
                 }
 
-                list.Add(slot);
+                dto.textures.Add(slot);
             }
 
-            dto.textures = list;
-            dto.texturePath = (list.Count > 0) ? list[0].path : null; // legacy filler
+            // legacy filler (unchanged)
+            dto.texturePath = (dto.textures.Count > 0) ? dto.textures[0].path : null;
             return dto;
         }
 
@@ -609,7 +726,7 @@ namespace Game_Engine.Core
                 Smoothness = d.smoothness
             };
 
-            // Prefer multi-slot list; if missing, synthesize from legacy texturePath.
+            // Build the working list (support legacy single-path)
             var slots = d.textures;
             if ((slots == null || slots.Count == 0) && !string.IsNullOrWhiteSpace(d.texturePath))
             {
@@ -625,55 +742,119 @@ namespace Game_Engine.Core
         };
             }
 
-            if (slots != null)
+            if (slots == null) return mat;
+
+            // IMPORTANT: do NOT reorder; add in exact serialized order
+            for (int i = 0; i < slots.Count; i++)
             {
-                for (int i = 0; i < slots.Count; i++)
+                var s = slots[i];
+
+                var texSlot = new MaterialTexture
                 {
-                    var s = slots[i];
+                    Name = s.name
+                };
 
-                    var texSlot = new MaterialTexture
+                // Usage (fallback to Albedo)
+                if (!Enum.TryParse<MaterialTexture.TexUsage>(s.usage ?? "", true, out var usage))
+                    usage = MaterialTexture.TexUsage.Albedo;
+                texSlot.Usage = usage;
+
+                // Face mask
+                try { texSlot.FaceMask = (MaterialTexture.CubeFaceMask)s.faceMask; }
+                catch { texSlot.FaceMask = MaterialTexture.CubeFaceMask.All; }
+
+                Texture2D loaded = null;
+
+                // Prefer external file path
+                if (!string.IsNullOrWhiteSpace(s.path))
+                {
+                    texSlot.SourcePath = s.path; // keep relative for the next save
+                    var abs = TryResolveTextureFile(s.path);
+                    if (!string.IsNullOrWhiteSpace(abs) && File.Exists(abs))
                     {
-                        Name = s.name
-                    };
-
-                    // Usage (fallback to Albedo if unknown)
-                    if (!Enum.TryParse<MaterialTexture.TexUsage>(s.usage ?? "", true, out var usage))
-                        usage = MaterialTexture.TexUsage.Albedo;
-                    texSlot.Usage = usage;
-
-                    // Face mask
-                    try { texSlot.FaceMask = (MaterialTexture.CubeFaceMask)s.faceMask; }
-                    catch { texSlot.FaceMask = MaterialTexture.CubeFaceMask.All; }
-
-                    // Load texture:
-                    // 1) If a path was saved, resolve robustly (root, assets, by-name fallback).
-                    // 2) Else, use inline RGBA payload if present.
-                    if (!string.IsNullOrWhiteSpace(s.path))
-                    {
-                        texSlot.SourcePath = s.path; // keep what was in the scene file
-
-                        var file = TryResolveTextureFile(s.path);
-                        if (!string.IsNullOrWhiteSpace(file))
-                        {
-                            try
-                            {
-                                texSlot.Texture = Texture2D.FromFile(file);     // runtime uses this
-                                texSlot.SourcePath = MakeAssetRelative(file);    // normalize for next save
-                            }
-                            catch { /* leave Texture null if load failed */ }
-                        }
+                        try { loaded = Texture2D.FromFile(abs); } catch { /* ignore */ }
                     }
-                    else if (s.inline != null)
-                    {
-                        texSlot.Texture = FromDto(s.inline);
-                        texSlot.SourcePath = null;
-                    }
-
-                    mat.Textures.Add(texSlot);
                 }
+
+                // Fallback: inline RGBA payload
+                if (loaded == null && s.inline != null)
+                {
+                    try { loaded = FromDto(s.inline); } catch { /* ignore */ }
+                }
+
+                // Deep-copy pixel buffer to avoid shared state across layers/runs
+                if (loaded != null)
+                {
+                    try
+                    {
+                        var rgba = loaded.Rgba;
+                        byte[] clone = rgba != null ? (byte[])rgba.Clone() : null;
+                        loaded = new Texture2D(loaded.Width, loaded.Height, clone);
+                    }
+                    catch { /* keep as-is if cloning fails */ }
+
+                    // Best-effort sampler/sRGB normalization per usage (via reflection; safe if members don’t exist)
+                    NormalizeSampler(loaded, usage);
+
+                    texSlot.Texture = loaded;
+                }
+
+                mat.Textures.Add(texSlot);
             }
 
             return mat;
+        }
+
+        // Try to set sensible defaults per usage without taking a hard dependency
+        static void NormalizeSampler(Texture2D tex, MaterialTexture.TexUsage usage)
+        {
+            // Many pipelines want sRGB for color, linear for data maps
+            bool? wantSrgb = usage switch
+            {
+                MaterialTexture.TexUsage.Albedo => true,
+                MaterialTexture.TexUsage.Emissive => true,
+                _ => (bool?)false
+            };
+
+            // These are optional and applied only if properties/methods exist on your Texture2D
+            try
+            {
+                var t = tex.GetType();
+
+                if (wantSrgb.HasValue)
+                {
+                    var pSrgb = t.GetProperty("IsSrgb", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (pSrgb?.CanWrite == true) pSrgb.SetValue(tex, wantSrgb.Value);
+                }
+
+                var mGenMips = t.GetMethod("GenerateMips", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                mGenMips?.Invoke(tex, null);
+
+                var pFilter = t.GetProperty("FilterMode", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (pFilter?.CanWrite == true)
+                {
+                    // try set "Linear" if enum exists
+                    var ft = pFilter.PropertyType;
+                    var linear = Enum.GetNames(ft).FirstOrDefault(n => string.Equals(n, "Linear", StringComparison.OrdinalIgnoreCase));
+                    if (linear != null) pFilter.SetValue(tex, Enum.Parse(ft, linear));
+                }
+
+                // AddressU/V -> Wrap if available
+                foreach (var name in new[] { "AddressU", "AddressV" })
+                {
+                    var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (p?.CanWrite == true)
+                    {
+                        var et = p.PropertyType;
+                        var wrap = Enum.GetNames(et).FirstOrDefault(n => string.Equals(n, "Wrap", StringComparison.OrdinalIgnoreCase));
+                        if (wrap != null) p.SetValue(tex, Enum.Parse(et, wrap));
+                    }
+                }
+            }
+            catch
+            {
+                // Non-fatal: if your Texture2D doesn’t have these members, we just skip.
+            }
         }
 
 
@@ -682,7 +863,7 @@ namespace Game_Engine.Core
         {
             // metadata (for readability)
             public string? preset { get; set; }   // "Cube" | "Quad" | "Plane"
-            public string? kind { get; set; }   // "Generic" | "Sphere" | "Cylinder" | "Cone"
+            public string? kind { get; set; }     // "Generic" | "Sphere" | "Cylinder" | "Cone"
             public int tessA { get; set; }
             public int tessB { get; set; }
 
@@ -710,15 +891,15 @@ namespace Game_Engine.Core
             new Prim("Cone",     () => Mesh.CreateCone(24, 0.5f, 1f, true)),
         };
 
-        static string RecognizePreset(Mesh m)
+        static string? RecognizePreset(Mesh m)
         {
             for (int i = 0; i < _prims.Length; i++)
             {
                 var s = _prims[i].Factory();
                 if (s == null) continue;
                 bool match = s.Vertices.Length == m.Vertices.Length
-                          && s.TriIndices.Length == m.TriIndices.Length
-                          && s.LineIndices.Length == m.LineIndices.Length;
+                             && s.TriIndices.Length == m.TriIndices.Length
+                             && s.LineIndices.Length == m.LineIndices.Length;
                 if (match && (_prims[i].Name == "Cube" || _prims[i].Name == "Quad" || _prims[i].Name == "Plane"))
                     return _prims[i].Name;
             }
@@ -727,7 +908,6 @@ namespace Game_Engine.Core
 
         static MeshDTO ToDto(Mesh m)
         {
-            //  If it's one of our recognized presets, write both preset and "Generic" kind
             var preset = RecognizePreset(m);
             if (!string.IsNullOrWhiteSpace(preset))
             {
@@ -735,11 +915,9 @@ namespace Game_Engine.Core
                 {
                     preset = preset,
                     kind = MeshKind.Generic.ToString()
-                    // (no geometry needed here)
                 };
             }
 
-            // If it's a procedural kind with tessellation, write kind + tess A/B
             if (m.Kind != MeshKind.Generic)
             {
                 return new MeshDTO
@@ -747,11 +925,9 @@ namespace Game_Engine.Core
                     kind = m.Kind.ToString(),
                     tessA = m.TessA,
                     tessB = m.TessB
-                    // (no geometry needed here)
                 };
             }
 
-            // Otherwise, write full geometry and explicitly mark kind as Generic
             var flatV = new float[m.Vertices.Length * 3];
             for (int i = 0, j = 0; i < m.Vertices.Length; i++)
             {
@@ -759,7 +935,7 @@ namespace Game_Engine.Core
                 flatV[j++] = p.X; flatV[j++] = p.Y; flatV[j++] = p.Z;
             }
 
-            float[] flatN = null;
+            float[]? flatN = null;
             if (m.Normals != null && m.Normals.Length > 0)
             {
                 flatN = new float[m.Normals.Length * 3];
@@ -780,10 +956,8 @@ namespace Game_Engine.Core
             };
         }
 
-
         static Mesh FromDto(MeshDTO d)
         {
-            // If a preset is present, prefer it (Cube/Quad/Plane). We allowed "Generic" kind alongside preset.
             if (!string.IsNullOrWhiteSpace(d.preset))
             {
                 switch (d.preset)
@@ -792,10 +966,8 @@ namespace Game_Engine.Core
                     case "Quad": return Mesh.CreateQuad(1f, 1f);
                     case "Plane": return Mesh.CreatePlane(2f, 2f, 16, 16);
                 }
-                // If someone saved "Sphere"/etc in preset by mistake, fall through to B with kind.
             }
 
-            // Procedural kinds (Sphere/Cylinder/Cone) with tessellation numbers
             if (!string.IsNullOrWhiteSpace(d.kind) &&
                 Enum.TryParse<MeshKind>(d.kind, true, out var mk) &&
                 mk != MeshKind.Generic)
@@ -808,7 +980,6 @@ namespace Game_Engine.Core
                 }
             }
 
-            // Full geometry (explicit Generic or missing kind)
             if (d.v == null || d.tri == null)
                 throw new InvalidDataException("Mesh DTO missing vertices or triangles.");
 
@@ -816,7 +987,7 @@ namespace Game_Engine.Core
             for (int i = 0, j = 0; i < verts.Length; i++)
                 verts[i] = new SN.Vector3(d.v[j++], d.v[j++], d.v[j++]);
 
-            SN.Vector3[] norms = null;
+            SN.Vector3[]? norms = null;
             if (d.n != null && d.n.Length > 0)
             {
                 norms = new SN.Vector3[d.n.Length / 3];
@@ -826,12 +997,11 @@ namespace Game_Engine.Core
 
             var mesh = new Mesh(verts, d.line ?? Array.Empty<int>(), d.tri)
             {
-                Kind = MeshKind.Generic, // init-only -> use initializer
+                Kind = MeshKind.Generic,
                 Normals = norms
             };
             return mesh;
         }
-
     }
 
     // ---------------- Converters & root DTOs ----------------
@@ -861,7 +1031,7 @@ namespace Game_Engine.Core
 
     public sealed class TypeNameHandlingConverter : JsonConverter<Type>
     {
-        public override Type Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        public override Type? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             var name = reader.GetString();
             if (string.IsNullOrWhiteSpace(name)) return null;
@@ -877,15 +1047,15 @@ namespace Game_Engine.Core
     public class SceneDTO
     {
         public int Version { get; set; }
-        public List<GameObjectDTO> Root { get; set; } = new List<GameObjectDTO>();
+        public List<GameObjectDTO> Root { get; set; } = new();
     }
 
     public class GameObjectDTO
     {
-        public string Name { get; set; }
-        public TransformDTO Transform { get; set; }
-        public List<BehaviorDTO> Behaviors { get; set; }
-        public List<GameObjectDTO> Children { get; set; }
+        public string? Name { get; set; }
+        public TransformDTO? Transform { get; set; }
+        public List<BehaviorDTO>? Behaviors { get; set; }
+        public List<GameObjectDTO>? Children { get; set; }
     }
 
     public class TransformDTO
@@ -897,7 +1067,7 @@ namespace Game_Engine.Core
 
     public class BehaviorDTO
     {
-        public string Type { get; set; }
-        public Dictionary<string, object> Properties { get; set; }
+        public string? Type { get; set; }
+        public Dictionary<string, object?>? Properties { get; set; }
     }
 }

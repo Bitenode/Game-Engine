@@ -11,6 +11,15 @@ public partial class GamePanel : UserControl
     public static readonly StyledProperty<GameState> StateProperty =
         AvaloniaProperty.Register<GamePanel, GameState>(nameof(State), GameState.Stopped);
 
+    protected override void OnLoaded(RoutedEventArgs e)
+    {
+        base.OnLoaded(e);
+        _game ??= this.FindControl<GameView>("Game");
+        ForwardState();
+    }
+
+    private GameView _game;
+
     public GameState State
     {
         get => GetValue(StateProperty);
@@ -23,6 +32,7 @@ public partial class GamePanel : UserControl
         {
             x.LogState(x.State);
             x.UpdateButtons();
+            x.ForwardState();
         });
     }
 
@@ -32,11 +42,16 @@ public partial class GamePanel : UserControl
         UpdateButtons();
     }
 
+    void ForwardState()
+    {
+        if (_game != null) _game.State = State;
+    }
+
     private void UpdateButtons()
     {
         // Pause only while Playing. Stop only when not Stopped.
-        if (PauseBtn is not null) PauseBtn.IsEnabled = State == GameState.Playing;
-        if (StopBtn is not null) StopBtn.IsEnabled = State != GameState.Stopped;
+        if (PauseBtn != null) PauseBtn.IsEnabled = State == GameState.Playing;
+        if (StopBtn != null) StopBtn.IsEnabled = State != GameState.Stopped;
     }
 
     private void LogState(GameState state)

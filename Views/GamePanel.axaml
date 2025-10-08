@@ -88,7 +88,9 @@
 
 		<!-- Viewport -->
 		<Border Margin="8" BorderThickness="1" CornerRadius="6" BorderBrush="#3A3D41" ClipToBounds="True">
-			<views:GameView x:Name="Game" Focusable="True"/>
+			<views:GameView x:Name="Game"
+                        Grid.Row="1"
+                        State="{Binding State, RelativeSource={RelativeSource AncestorType=views:GamePanel}}"/>
 		</Border>
 	</DockPanel>
 </UserControl>
