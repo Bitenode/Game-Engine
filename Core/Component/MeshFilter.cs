@@ -8,6 +8,9 @@
         [Persist] public string ModelPath { get; set; }
         [Persist] public string ModelPartIndex { get; set; }
 
+        [Persist] public List<string> TargetPaths { get; private set; } = new List<string>();
+
+
 
     }
 }

@@ -11,6 +11,7 @@ using Game_Engine.Core.Component;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using System.Diagnostics;
+using Avalonia.Input;
 
 namespace Game_Engine.Views
 {
@@ -34,9 +35,18 @@ namespace Game_Engine.Views
         readonly Stopwatch _fixedWatch = new();
 
         bool _awakened, _started;
+        // mark when we must refresh collider targets 
+        bool _collidersWarm;
+
+        // INPUT STATE
+        bool _w, _a, _s, _d, _shift, _space;
+        float _axisX, _axisZ;
+        bool _jump, _sprint;
+        float _lookDX, _lookDY;
+        bool _mouseLook; Avalonia.Point _lastPos;
 
         // ---------- Play-mode snapshot -----------------------------------------
-        string? _playSnapshotPath; // temp .scene file path     // <<< NEW
+        string ? _playSnapshotPath; // temp .scene file path 
 
         public GameView()
         {
@@ -49,10 +59,98 @@ namespace Game_Engine.Views
             _fixedTimer.Tick += (_, __) => TickFixedUpdate();
 
             // Repaint when the scene changes (materials, transforms, etc.)
-            SceneService.Changed += () => InvalidateVisual();
+            SceneService.Changed += () =>
+            {
+                _collidersWarm = false; //  edits may invalidate targets
+                InvalidateVisual();
+            };
 
             // React to State changes
             StateProperty.Changed.AddClassHandler<GameView>((s, e) => s.OnStateChanged());
+
+            Focusable = true;
+            this.AttachedToVisualTree += (_, __) => Focus();
+
+            KeyDown += OnKeyDown;
+            KeyUp += OnKeyUp;
+
+            PointerPressed += OnPointerPressed;
+            PointerReleased += OnPointerReleased;
+            PointerMoved += OnPointerMoved;
+            LostFocus += (_, __) => { _w = _a = _s = _d = _shift = _space = false; _mouseLook = false; };
+
+
+        }
+
+        void OnKeyDown(object? s, KeyEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            switch (e.Key)
+            {
+                case Key.W: _w = true; break;
+                case Key.A: _a = true; break;
+                case Key.S: _s = true; break;
+                case Key.D: _d = true; break;
+                case Key.LeftShift:
+                case Key.RightShift: _shift = true; break;
+                case Key.Space: _space = true; break; // one–shot, consumed per frame
+            }
+            e.Handled = true;
+        }
+        void OnKeyUp(object? s, KeyEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            switch (e.Key)
+            {
+                case Key.W: _w = false; break;
+                case Key.A: _a = false; break;
+                case Key.S: _s = false; break;
+                case Key.D: _d = false; break;
+                case Key.LeftShift:
+                case Key.RightShift: _shift = false; break;
+            }
+            e.Handled = true;
+        }
+
+
+        void OnPointerPressed(object? s, PointerPressedEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
+            {
+                _mouseLook = true;
+                _lastPos = e.GetPosition(this);
+                e.Pointer.Capture(this);
+            }
+        }
+        void OnPointerReleased(object? s, PointerReleasedEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            _mouseLook = false;
+            if (e.Pointer.Captured == this) e.Pointer.Capture(null);
+        }
+        void OnPointerMoved(object? s, PointerEventArgs e)
+        {
+            if (!_mouseLook || State != GamePanel.GameState.Playing) return;
+            var p = e.GetPosition(this);
+            var dx = (float)(p.X - _lastPos.X);
+            var dy = (float)(p.Y - _lastPos.Y);
+            _lookDX += dx;   // raw delta; CharacterController scales by sensitivity & dt
+            _lookDY += dy;
+            _lastPos = p;
+        }
+
+
+        // Clear per-frame mouse look after we’ve sent it to controllers
+        void ClearPerFrameLook() { _lookDX = 0f; _lookDY = 0f; }
+
+        // Reset input when entering Play
+        void ResetInput()
+        {
+            _axisX = _axisZ = 0f;
+            _jump = _sprint = false;
+            _lookDX = _lookDY = 0f;
+            _mouseLook = false;
         }
 
 
@@ -61,14 +159,20 @@ namespace Game_Engine.Views
             switch (State)
             {
                 case GamePanel.GameState.Playing:
-                    // Take snapshot BEFORE any Awake/Start can mutate the scene 
                     EnsurePlaySnapshot();
                     EnsureAwakeStart();
+
+                    // Make sure MeshCollider targets are resolved before gameplay 
+                    WarmAllColliders();
+                    ResetInput();
+                    Focus();
                     Game_Engine.Core.Time.Reset();
                     _updateWatch.Restart();
                     _fixedWatch.Restart();
                     _fixedTimer.Start();
                     _updateTimer.Start();
+
+                    
                     break;
 
                 case GamePanel.GameState.Paused:
@@ -81,22 +185,23 @@ namespace Game_Engine.Views
                     _updateTimer.Stop();
                     _updateWatch.Reset();
                     _fixedWatch.Reset();
-                    // Call OnDestroy for the currently-running play instance     // <<< NEW
+
                     CallOnDestroyAll();
 
-                    // Restore the scene back to the snapshot                     // <<< NEW
                     RestorePlaySnapshot();
 
-                    // Reset lifecycle so next Play does a clean Awake/Start      // <<< NEW
+                    // cold-start lifecycle next time
                     _awakened = _started = false;
+
+                    // after restore, resolved targets are stale—rewarm on next Play 
+                    _collidersWarm = false;
                     break;
             }
-            // Force a repaint so the view blanks out when Paused/Stopped
             InvalidateVisual();
         }
 
         // ---------- Snapshot helpers -------------------------------------------
-        void EnsurePlaySnapshot()                                            // <<< NEW
+        void EnsurePlaySnapshot()                                            
         {
             if (_playSnapshotPath != null) return; // already captured
             var tmp = Path.Combine(Path.GetTempPath(),
@@ -105,16 +210,88 @@ namespace Game_Engine.Views
             _playSnapshotPath = tmp;
         }
 
-        void RestorePlaySnapshot()                                           // <<< NEW
+        void RestorePlaySnapshot()
         {
             if (_playSnapshotPath == null) return;
-            // Replace scene with the snapshot
             SceneService.LoadFromFile(_playSnapshotPath);
-            try { File.Delete(_playSnapshotPath); } catch { /* ignore */ }
+            try { File.Delete(_playSnapshotPath); } catch { }
             _playSnapshotPath = null;
+
+            // freshly loaded scene: targets are cold; prewarm now
+            _collidersWarm = false;
+            WarmAllColliders();
         }
 
+
         // ----- Lifecycle drivers -----
+
+        // Ensure *all* colliders are ready for queries.
+        // - MeshCollider: resolve target meshes (triangle soup) once edits/loads happen
+        // - Other Collider types (Box/Capsule/etc.): usually no-op, but we call a few
+        //   optional "prep" methods via reflection 
+        void WarmAllColliders()
+        {
+            if (_collidersWarm) return;
+
+            // Methods we’ll try on generic Collider types if present (optional)
+            static void EnsureColliderReady(Collider c)
+            {
+                var t = c.GetType();
+                // Try a few common names; all optional and safe
+                string[] names =
+                {
+                    "EnsureReady", "EnsureBaked", "Bake", "Precompute",
+                    "Rebuild", "SyncFromTransform", "Warm"
+                };
+
+                foreach (var name in names)
+                {
+                    var m = t.GetMethod(name,
+                            System.Reflection.BindingFlags.Instance |
+                            System.Reflection.BindingFlags.Public |
+                            System.Reflection.BindingFlags.NonPublic,
+                            binder: null, types: Type.EmptyTypes, modifiers: null);
+                    if (m != null)
+                    {
+                        try { m.Invoke(c, null); } catch { /* ignore */ }
+                        break; // first match is enough
+                    }
+                }
+            }
+
+            // Specific resolver for MeshCollider (preferred/explicit)
+            var mcType = typeof(MeshCollider);
+            var resolveMeshTargets =
+                mcType.GetMethod("EnsureTargetsResolved",
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Public)
+                ?? mcType.GetMethod("ResolveTargets",
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Public);
+
+            foreach (var root in SceneService.Root)
+            {
+                Traverse(root, b =>
+                {
+                    if (b is MeshCollider mc)
+                    {
+                        // Make sure multi-target mesh list is up to date (paths -> meshes)
+                        try { resolveMeshTargets?.Invoke(mc, null); } catch { /* ignore */ }
+                    }
+                    else if (b is Collider c)
+                    {
+                        // BoxCollider / CapsuleCollider / any custom collider
+                        EnsureColliderReady(c); 
+                    }
+                });
+            }
+
+            _collidersWarm = true;
+        }
+
+
 
         void EnsureAwakeStart()
         {
@@ -126,10 +303,33 @@ namespace Game_Engine.Views
         {
             if (State != GamePanel.GameState.Playing) return;
 
-            // real frame dt
+            // If the scene changed since last frame, ensure colliders are fresh.
+            WarmAllColliders();
+
             var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
             _updateWatch.Restart();
             Game_Engine.Core.Time.BeginUpdate(dt);
+
+            // derive axes from pressed keys (never “stuck”)
+            _axisZ = (_w ? 1f : 0f) + (_s ? -1f : 0f);
+            _axisX = (_d ? 1f : 0f) + (_a ? -1f : 0f);
+            _axisZ = Math.Clamp(_axisZ, -1f, 1f);
+            _axisX = Math.Clamp(_axisX, -1f, 1f);
+
+            // one–shot jump this frame
+            if (_space) { _jump = true; _space = false; }
+            _sprint = _shift;
+
+            // push to all enabled character controllers
+            foreach (var cc in SceneQuery.FindBehaviors<CharacterController>())
+                if (cc.Enabled) cc.SetInput(_axisX, _axisZ, _lookDX, _lookDY, _jump, _sprint);
+
+            // clear per-frame deltas/flags
+            _jump = false;
+            _lookDX = _lookDY = 0f;
+
+            ClearPerFrameLook();
+
 
             ForEachBehavior(b => b.__Update());
             ForEachBehavior(b => b.__LateUpdate());
@@ -139,7 +339,9 @@ namespace Game_Engine.Views
         {
             if (State != GamePanel.GameState.Playing) return;
 
-            // real fixed dt (falls back to timer interval on first tick)
+            // Physics runs here—make sure colliders are ready.
+            WarmAllColliders();
+
             double dt = _fixedWatch.IsRunning ? _fixedWatch.Elapsed.TotalSeconds : _fixedTimer.Interval.TotalSeconds;
             _fixedWatch.Restart();
             Game_Engine.Core.Time.BeginFixedUpdate(dt);

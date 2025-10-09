@@ -32,19 +32,50 @@ namespace Game_Engine.Core.Component
             if (mf == null) return;
             if (!_targets.Contains(mf)) _targets.Add(mf);
 
-            var path = BuildPath(mf.gameObject);
-            if (!TargetPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
-                TargetPaths.Add(path);
+            var key = BuildKey(mf);
+            if (!TargetPaths.Any(p => string.Equals(p, key, StringComparison.OrdinalIgnoreCase)))
+                TargetPaths.Add(key);
         }
 
         public void RemoveTarget(MeshFilter mf)
         {
             if (mf == null) return;
             _targets.Remove(mf);
-
-            var path = BuildPath(mf.gameObject);
-            TargetPaths.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+            var key = BuildKey(mf);
+            TargetPaths.RemoveAll(p => string.Equals(p, key, StringComparison.OrdinalIgnoreCase));
         }
+
+        
+
+
+        static string BuildKey(MeshFilter mf)
+        {
+            var path = BuildPath(mf.gameObject);
+            var ord = GetOrdinalOnOwner(mf);
+            return $"{path}#mf:{ord}";
+        }
+
+        static bool TryParseKey(string key, out string basePath, out int ordinal)
+        {
+            basePath = key;
+            ordinal = 0;
+            var i = key.LastIndexOf("#mf:", StringComparison.Ordinal);
+            if (i < 0) return false;
+            basePath = key.Substring(0, i);
+            var tail = key.Substring(i + 4);
+            return int.TryParse(tail, System.Globalization.NumberStyles.Integer,
+                                System.Globalization.CultureInfo.InvariantCulture, out ordinal);
+        }
+
+        static int GetOrdinalOnOwner(MeshFilter mf)
+        {
+            var list = mf.gameObject?.Behaviors?.OfType<MeshFilter>().ToList();
+            if (list == null) return 0;
+            for (int i = 0; i < list.Count; i++)
+                if (ReferenceEquals(list[i], mf)) return i;
+            return 0;
+        }
+
 
         // ---- core logic ----
 
@@ -155,23 +186,39 @@ namespace Game_Engine.Core.Component
 
         void EnsureTargetsResolved()
         {
-            // Keep any already-set runtime refs; fill missing ones from paths.
+            // keep already-resolved
             for (int i = 0; i < TargetPaths.Count; i++)
             {
-                var path = TargetPaths[i];
-                if (_targets.Any(tf => string.Equals(BuildPath(tf?.gameObject), path, StringComparison.OrdinalIgnoreCase)))
+                var key = TargetPaths[i];
+                // already present?
+                if (_targets.Any(tf => string.Equals(BuildKey(tf), key, StringComparison.OrdinalIgnoreCase)))
                     continue;
 
-                var go = FindByPath(path);
-                var mf = go?.Behaviors.OfType<MeshFilter>().FirstOrDefault(b => b.Enabled && b.Mesh != null);
-                if (mf != null) _targets.Add(mf);
+                // parse key
+                string basePath; int ord;
+                if (!TryParseKey(key, out basePath, out ord))
+                {
+                    // back-compat: key without #mf: — default to first filter
+                    basePath = key;
+                    ord = 0;
+                }
+
+                var go = FindByPath(basePath);
+                if (go == null) continue;
+
+                var list = go.Behaviors.OfType<MeshFilter>().ToList();
+                if (list.Count == 0) continue;
+
+                if (ord < 0 || ord >= list.Count) ord = 0;  // clamp
+                var mf = list[ord];
+                if (mf != null && mf.Mesh != null) _targets.Add(mf);
             }
 
-            // Clean up stale entries (paths that no longer resolve)
+            // drop stale
             _targets.RemoveAll(tf =>
             {
-                var p = BuildPath(tf?.gameObject);
-                return !TargetPaths.Any(t => string.Equals(t, p, StringComparison.OrdinalIgnoreCase));
+                var k = BuildKey(tf);
+                return !TargetPaths.Any(p => string.Equals(p, k, StringComparison.OrdinalIgnoreCase));
             });
         }
 

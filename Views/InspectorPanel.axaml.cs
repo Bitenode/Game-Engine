@@ -446,10 +446,11 @@ public partial class InspectorPanel : UserControl
 
     readonly struct MFEntry
     {
-        public readonly string Path;
+        public readonly string Key;   // path + "#mf:ord"
+        public readonly string Path;  // pretty (base path only)
         public readonly MeshFilter MF;
-        public MFEntry(string path, MeshFilter mf) { Path = path; MF = mf; }
-        public override string ToString() => Path;
+        public MFEntry(string key, string path, MeshFilter mf) { Key = key; Path = path; MF = mf; }
+        public override string ToString() => Key; // or Path  cleaner UI
     }
 
     // Enumerate every MeshFilter in the scene with its hierarchy path
@@ -457,11 +458,18 @@ public partial class InspectorPanel : UserControl
     {
         var stack = new Stack<GameObject>();
         foreach (var r in SceneService.Root) stack.Push(r);
+
         while (stack.Count > 0)
         {
             var n = stack.Pop();
-            foreach (var mf in n.Behaviors.OfType<MeshFilter>())
-                yield return new MFEntry(BuildPath(n), mf);
+            var filters = n.Behaviors.OfType<MeshFilter>().ToList();
+            for (int i = 0; i < filters.Count; i++)
+            {
+                var mf = filters[i];
+                var basePath = BuildPath(n);
+                var key = $"{basePath}#mf:{i}";
+                yield return new MFEntry(key, basePath, mf);
+            }
             for (int i = 0; i < n.Children.Count; i++) stack.Push(n.Children[i]);
         }
     }
@@ -1043,8 +1051,9 @@ public partial class InspectorPanel : UserControl
         RefreshStatus();
         wrap.Children.Add(status);
 
-        // List all filters in scene - MULTISELECT
+        // All MeshFilters in scene (each entry is a unique "path#mf:N" key)
         var all = EnumerateMeshFilters().ToList();
+
         var list = new ListBox
         {
             ItemsSource = all,
@@ -1054,17 +1063,18 @@ public partial class InspectorPanel : UserControl
         };
         wrap.Children.Add(list);
 
-        // Preselect items already targeted
+        // Preselect items already targeted (by component ref or by saved Key)
         void SyncPreselect()
         {
             list.SelectedItems.Clear();
             foreach (var entry in all)
             {
-                if (mc.TargetFilters != null && mc.TargetFilters.Any(t => ReferenceEquals(t, entry.MF)))
-                    list.SelectedItems.Add(entry);
-                else if (!string.IsNullOrWhiteSpace(entry.Path) &&
-                         (mc.TargetPaths?.Any(p => string.Equals(p, entry.Path, StringComparison.OrdinalIgnoreCase)) == true))
-                    list.SelectedItems.Add(entry);
+                bool selected =
+                    (mc.TargetFilters != null && mc.TargetFilters.Any(t => ReferenceEquals(t, entry.MF))) ||
+                    (mc.TargetPaths != null && mc.TargetPaths.Any(k =>
+                        string.Equals(k, entry.Key, StringComparison.OrdinalIgnoreCase)));
+
+                if (selected) list.SelectedItems.Add(entry);
             }
         }
         SyncPreselect();
@@ -1075,25 +1085,32 @@ public partial class InspectorPanel : UserControl
         var addSel = new Button { Content = "Add Selected" };
         addSel.Click += (_, __) =>
         {
-            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            var p = typeof(MeshCollider).GetProperty(nameof(MeshCollider.TargetPaths),
+                        BindingFlags.Instance | BindingFlags.Public)!;
+
             BeginPropertyEdit(mc, p);
             foreach (MFEntry e in list.SelectedItems.OfType<MFEntry>())
-                mc.AddTarget(e.MF);
+                mc.AddTarget(e.MF);              // MeshCollider builds & stores the Key internally
             SceneService.NotifyChanged();
             CommitPropertyEdit(mc, p);
+
             RefreshStatus();
+            SyncPreselect();
         };
         row.Children.Add(addSel);
 
         var remSel = new Button { Content = "Remove Selected" };
         remSel.Click += (_, __) =>
         {
-            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            var p = typeof(MeshCollider).GetProperty(nameof(MeshCollider.TargetPaths),
+                        BindingFlags.Instance | BindingFlags.Public)!;
+
             BeginPropertyEdit(mc, p);
             foreach (MFEntry e in list.SelectedItems.OfType<MFEntry>())
-                mc.RemoveTarget(e.MF);
+                mc.RemoveTarget(e.MF);           // removes by exact component; keys updated inside
             SceneService.NotifyChanged();
             CommitPropertyEdit(mc, p);
+
             RefreshStatus();
             SyncPreselect();
         };
@@ -1105,12 +1122,15 @@ public partial class InspectorPanel : UserControl
             var sel = SelectionService.Current;
             if (sel == null) return;
 
-            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            var p = typeof(MeshCollider).GetProperty(nameof(MeshCollider.TargetPaths),
+                        BindingFlags.Instance | BindingFlags.Public)!;
+
             BeginPropertyEdit(mc, p);
             foreach (var mf in sel.Behaviors.OfType<MeshFilter>().Where(m => m.Enabled && m.Mesh != null))
                 mc.AddTarget(mf);
             SceneService.NotifyChanged();
             CommitPropertyEdit(mc, p);
+
             RefreshStatus();
             SyncPreselect();
         };
@@ -1119,11 +1139,14 @@ public partial class InspectorPanel : UserControl
         var clear = new Button { Content = "Clear All" };
         clear.Click += (_, __) =>
         {
-            var p = typeof(MeshCollider).GetProperty("TargetPaths", BindingFlags.Instance | BindingFlags.Public)!;
+            var p = typeof(MeshCollider).GetProperty(nameof(MeshCollider.TargetPaths),
+                        BindingFlags.Instance | BindingFlags.Public)!;
+
             BeginPropertyEdit(mc, p);
             mc.ClearTargets();
             SceneService.NotifyChanged();
             CommitPropertyEdit(mc, p);
+
             RefreshStatus();
             SyncPreselect();
         };
@@ -1136,8 +1159,15 @@ public partial class InspectorPanel : UserControl
 
         wrap.Children.Add(row);
 
-        return new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8), Child = wrap };
+        return new Border
+        {
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8),
+            Child = wrap
+        };
     }
+
 
 
 
