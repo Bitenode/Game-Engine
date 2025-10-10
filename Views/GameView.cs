@@ -12,6 +12,9 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using System.Diagnostics;
 using Avalonia.Input;
+using System.IO;
+using static Game_Engine.Core.Component.CapsuleCollider;
+using Game_Engine.Core.Input;
 
 namespace Game_Engine.Views
 {
@@ -38,15 +41,17 @@ namespace Game_Engine.Views
         // mark when we must refresh collider targets 
         bool _collidersWarm;
 
-        // INPUT STATE
-        bool _w, _a, _s, _d, _shift, _space;
-        float _axisX, _axisZ;
-        bool _jump, _sprint;
-        float _lookDX, _lookDY;
-        bool _mouseLook; Avalonia.Point _lastPos;
+        //INPUT
+        bool _mouseLook;
+        SN.Vector2 _lastMouse;
+        bool _hasLastMouse;
+        private Avalonia.Input.IPointer _capturedPointer;
+
+
+
 
         // ---------- Play-mode snapshot -----------------------------------------
-        string ? _playSnapshotPath; // temp .scene file path 
+        string? _playSnapshotPath; // temp .scene file path 
 
         public GameView()
         {
@@ -77,81 +82,169 @@ namespace Game_Engine.Views
             PointerPressed += OnPointerPressed;
             PointerReleased += OnPointerReleased;
             PointerMoved += OnPointerMoved;
-            LostFocus += (_, __) => { _w = _a = _s = _d = _shift = _space = false; _mouseLook = false; };
+
+            this.LostFocus += (_, __) => ExitLookAndClear();
+            this.DetachedFromVisualTree += (_, __) => ExitLookAndClear();
 
 
         }
+
+        void ExitLookAndClear()
+        {
+            if (_capturedPointer != null)
+            {
+                try { _capturedPointer.Capture(null); } catch { }
+                _capturedPointer = null;
+            }
+            _mouseLook = false;
+            _hasLastMouse = false;
+
+            Game_Engine.Core.Input.Input.ClearAll();
+            Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
+        }
+
+
+
+
+        static Game_Engine.Core.Input.KeyCode MapKey(Avalonia.Input.Key k)
+        {
+            switch (k)
+            {
+                case Avalonia.Input.Key.W: return Game_Engine.Core.Input.KeyCode.W;
+                case Avalonia.Input.Key.A: return Game_Engine.Core.Input.KeyCode.A;
+                case Avalonia.Input.Key.S: return Game_Engine.Core.Input.KeyCode.S;
+                case Avalonia.Input.Key.D: return Game_Engine.Core.Input.KeyCode.D;
+                case Avalonia.Input.Key.Up: return Game_Engine.Core.Input.KeyCode.UpArrow;
+                case Avalonia.Input.Key.Down: return Game_Engine.Core.Input.KeyCode.DownArrow;
+                case Avalonia.Input.Key.Left: return Game_Engine.Core.Input.KeyCode.LeftArrow;
+                case Avalonia.Input.Key.Right: return Game_Engine.Core.Input.KeyCode.RightArrow;
+                case Avalonia.Input.Key.Space: return Game_Engine.Core.Input.KeyCode.Space;
+                case Avalonia.Input.Key.LeftShift: return Game_Engine.Core.Input.KeyCode.LeftShift;
+                case Avalonia.Input.Key.Escape: return Game_Engine.Core.Input.KeyCode.Escape;
+                default: return Game_Engine.Core.Input.KeyCode.None;
+            }
+        }
+
 
         void OnKeyDown(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            switch (e.Key)
+
+            var code = MapKey(e.Key);
+            Game_Engine.Core.Input.Input.FeedKeyDown(code);
+
+            // Toggle/exit mouse look with Escape
+            if (code == Game_Engine.Core.Input.KeyCode.Escape && _mouseLook)
             {
-                case Key.W: _w = true; break;
-                case Key.A: _a = true; break;
-                case Key.S: _s = true; break;
-                case Key.D: _d = true; break;
-                case Key.LeftShift:
-                case Key.RightShift: _shift = true; break;
-                case Key.Space: _space = true; break; // one–shot, consumed per frame
+                _mouseLook = false;
+                if (_capturedPointer != null)
+                {
+                    try { _capturedPointer.Capture(null); } catch { }
+                    _capturedPointer = null;
+                }
+                _hasLastMouse = false;
+                Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
             }
-            e.Handled = true;
         }
+
+
+
+
+
         void OnKeyUp(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            switch (e.Key)
-            {
-                case Key.W: _w = false; break;
-                case Key.A: _a = false; break;
-                case Key.S: _s = false; break;
-                case Key.D: _d = false; break;
-                case Key.LeftShift:
-                case Key.RightShift: _shift = false; break;
-            }
-            e.Handled = true;
-        }
 
+            var code = MapKey(e.Key);
+            Game_Engine.Core.Input.Input.FeedKeyUp(code);
+        }
 
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
+
+            var pt = e.GetCurrentPoint(this);
+            if (pt.Properties.IsLeftButtonPressed)
+                Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Left);
+
+            if (pt.Properties.IsRightButtonPressed)
             {
+                Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Right);
+
                 _mouseLook = true;
-                _lastPos = e.GetPosition(this);
-                e.Pointer.Capture(this);
+
+                _capturedPointer = e.Pointer;
+                try { _capturedPointer.Capture(this); } catch { }
+
+                // seed so first move has no spike
+                _lastMouse = new SN.Vector2((float)pt.Position.X, (float)pt.Position.Y);
+                _hasLastMouse = true;
             }
+
+            if (pt.Properties.IsMiddleButtonPressed)
+                Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Middle);
         }
+
+
+
+
         void OnPointerReleased(object? s, PointerReleasedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            _mouseLook = false;
-            if (e.Pointer.Captured == this) e.Pointer.Capture(null);
+
+            var pt = e.GetCurrentPoint(this);
+
+            if (!pt.Properties.IsLeftButtonPressed)
+                Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Left);
+
+            if (!pt.Properties.IsRightButtonPressed)
+            {
+                Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Right);
+                _mouseLook = false;
+
+                if (_capturedPointer != null)
+                {
+                    try { _capturedPointer.Capture(null); } catch { }
+                    _capturedPointer = null;
+                }
+                _hasLastMouse = false;
+                Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
+            }
+
+            if (!pt.Properties.IsMiddleButtonPressed)
+                Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Middle);
         }
+
+
+
+
+
         void OnPointerMoved(object? s, PointerEventArgs e)
         {
-            if (!_mouseLook || State != GamePanel.GameState.Playing) return;
+            if (State != GamePanel.GameState.Playing) return;
+
             var p = e.GetPosition(this);
-            var dx = (float)(p.X - _lastPos.X);
-            var dy = (float)(p.Y - _lastPos.Y);
-            _lookDX += dx;   // raw delta; CharacterController scales by sensitivity & dt
-            _lookDY += dy;
-            _lastPos = p;
+            var cur = new SN.Vector2((float)p.X, (float)p.Y);
+
+            if (_mouseLook)
+            {
+                if (_hasLastMouse)
+                {
+                    var dx = cur.X - _lastMouse.X;
+                    var dy = cur.Y - _lastMouse.Y;
+                    Game_Engine.Core.Input.Input.FeedMouseDelta(dx, dy);
+                }
+                _lastMouse = cur;
+                _hasLastMouse = true;
+            }
+            else
+            {
+                // Not in look mode: just refresh last so first click doesn't spike
+                _lastMouse = cur;
+                _hasLastMouse = true;
+            }
         }
 
-
-        // Clear per-frame mouse look after we’ve sent it to controllers
-        void ClearPerFrameLook() { _lookDX = 0f; _lookDY = 0f; }
-
-        // Reset input when entering Play
-        void ResetInput()
-        {
-            _axisX = _axisZ = 0f;
-            _jump = _sprint = false;
-            _lookDX = _lookDY = 0f;
-            _mouseLook = false;
-        }
 
 
         void OnStateChanged()
@@ -161,18 +254,14 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Playing:
                     EnsurePlaySnapshot();
                     EnsureAwakeStart();
-
-                    // Make sure MeshCollider targets are resolved before gameplay 
                     WarmAllColliders();
-                    ResetInput();
                     Focus();
                     Game_Engine.Core.Time.Reset();
                     _updateWatch.Restart();
                     _fixedWatch.Restart();
+                    Game_Engine.Core.Input.Input.ClearAll();
                     _fixedTimer.Start();
                     _updateTimer.Start();
-
-                    
                     break;
 
                 case GamePanel.GameState.Paused:
@@ -185,23 +274,27 @@ namespace Game_Engine.Views
                     _updateTimer.Stop();
                     _updateWatch.Reset();
                     _fixedWatch.Reset();
-
                     CallOnDestroyAll();
-
                     RestorePlaySnapshot();
-
-                    // cold-start lifecycle next time
                     _awakened = _started = false;
-
-                    // after restore, resolved targets are stale—rewarm on next Play 
                     _collidersWarm = false;
+
+                    if (_capturedPointer != null)
+                    {
+                        try { _capturedPointer.Capture(null); } catch { }
+                        _capturedPointer = null;
+                    }
+                    _mouseLook = false; _hasLastMouse = false;
+                    Game_Engine.Core.Input.Input.ClearAll();
                     break;
             }
             InvalidateVisual();
         }
 
+
+
         // ---------- Snapshot helpers -------------------------------------------
-        void EnsurePlaySnapshot()                                            
+        void EnsurePlaySnapshot()
         {
             if (_playSnapshotPath != null) return; // already captured
             var tmp = Path.Combine(Path.GetTempPath(),
@@ -283,7 +376,7 @@ namespace Game_Engine.Views
                     else if (b is Collider c)
                     {
                         // BoxCollider / CapsuleCollider / any custom collider
-                        EnsureColliderReady(c); 
+                        EnsureColliderReady(c);
                     }
                 });
             }
@@ -303,36 +396,21 @@ namespace Game_Engine.Views
         {
             if (State != GamePanel.GameState.Playing) return;
 
-            // If the scene changed since last frame, ensure colliders are fresh.
+            // keep colliders fresh if scene changed
             WarmAllColliders();
 
             var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
             _updateWatch.Restart();
             Game_Engine.Core.Time.BeginUpdate(dt);
 
-            // derive axes from pressed keys (never “stuck”)
-            _axisZ = (_w ? 1f : 0f) + (_s ? -1f : 0f);
-            _axisX = (_d ? 1f : 0f) + (_a ? -1f : 0f);
-            _axisZ = Math.Clamp(_axisZ, -1f, 1f);
-            _axisX = Math.Clamp(_axisX, -1f, 1f);
-
-            // one–shot jump this frame
-            if (_space) { _jump = true; _space = false; }
-            _sprint = _shift;
-
-            // push to all enabled character controllers
-            foreach (var cc in SceneQuery.FindBehaviors<CharacterController>())
-                if (cc.Enabled) cc.SetInput(_axisX, _axisZ, _lookDX, _lookDY, _jump, _sprint);
-
-            // clear per-frame deltas/flags
-            _jump = false;
-            _lookDX = _lookDY = 0f;
-
-            ClearPerFrameLook();
-
+            // >>> INPUT: start-of-frame
+            Game_Engine.Core.Input.Input.NewFrame((float)dt);
 
             ForEachBehavior(b => b.__Update());
             ForEachBehavior(b => b.__LateUpdate());
+
+            // let the UI (Inspector/SceneView) know values changed this frame
+            SceneService.NotifyChanged();
         }
 
         void TickFixedUpdate()
