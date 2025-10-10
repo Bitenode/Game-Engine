@@ -104,14 +104,25 @@ namespace Game_Engine.Core.Input
             sFrameId++;
             sDt = deltaTime;
 
-            // clear per-frame edges & mouse deltas
+            // Clear per-frame edges.
             sDownKeys.Clear(); sUpKeys.Clear();
             sDownMouse.Clear(); sUpMouse.Clear();
-            sMouseDX = 0f; sMouseDY = 0f;
 
-            // axes will compute lazily on first GetAxis per frame
+            // IMPORTANT: do NOT clear mouse deltas here.
+            // We want PlayerMovement to consume the deltas that were accumulated
+            // since the last frame.
+
+            // Axes will compute lazily on first GetAxis per frame.
             sAxesUpdatedInFrame = -1;
         }
+
+        
+        public static void EndFrame()
+        {
+            sMouseDX = 0f;
+            sMouseDY = 0f;
+        }
+
 
         public static void ClearAll()
         {

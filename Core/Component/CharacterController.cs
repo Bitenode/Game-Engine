@@ -28,12 +28,16 @@ namespace Game_Engine.Core.Component
 
         [Persist] public float StepUpMax { get; set; } = 0.5f;        // max auto step height
         [Persist] public float GroundSnapDistance { get; set; } = 0.7f;
-        [Persist] public float WallPush { get; set; } = 0.15f;        // extra unstick clearance
+        [Persist] public float WallPush { get; set; } = 0f;        // extra unstick clearance
         [Persist] public float MaxSlopeAngleDeg { get; set; } = 55f;  // slopes steeper than this are not "ground"
 
         // Capsule fallback if no CapsuleCollider on this GO
         [Persist] public float FallbackCapsuleRadius { get; set; } = 0.35f;
         [Persist] public float FallbackCapsuleHeight { get; set; } = 1.8f;
+
+        [Persist] public bool UnstickIgnoreHuge = true;
+        [Persist] public float UnstickMaxExtent = 25f; // meters per axis
+        [Persist] public bool UnstickSkipIfInside = true;
 
         // ---------- Runtime (read-only to others) ----------
         public bool IsGrounded { get; private set; }
@@ -342,17 +346,37 @@ namespace Game_Engine.Core.Component
             float pad = Math.Max(0f, WallPush);
 
             var cols = SceneQuery.FindBehaviors<Collider>()
-                .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject);
+                .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider);
 
             foreach (var col in cols)
             {
                 var aabb = col.GetWorldAABB();
 
-                // vertical overlap (capsule’s full span)
+                //  skip "world-sized" colliders (environment shells)
+                if (UnstickIgnoreHuge)
+                {
+                    var sx = aabb.Max.X - aabb.Min.X;
+                    var sy = aabb.Max.Y - aabb.Min.Y;
+                    var sz = aabb.Max.Z - aabb.Min.Z;
+                    if (sx > UnstickMaxExtent || sy > UnstickMaxExtent || sz > UnstickMaxExtent)
+                        continue;
+                }
+
+                //  if we're fully inside the box (typical of an interior container), skip
+                if (UnstickSkipIfInside &&
+                    pos.X > aabb.Min.X && pos.X < aabb.Max.X &&
+                    pos.Y > aabb.Min.Y && pos.Y < aabb.Max.Y &&
+                    pos.Z > aabb.Min.Z && pos.Z < aabb.Max.Z)
+                {
+                    continue;
+                }
+
+                // vertical overlap? (use capsule full extent)
                 var bodyMinY = pos.Y - (halfCyl + radius);
                 var bodyMaxY = pos.Y + (halfCyl + radius);
                 if (bodyMaxY < aabb.Min.Y || bodyMinY > aabb.Max.Y) continue;
 
+                // Closest point on AABB to capsule center (XZ)
                 float cx = Math.Clamp(pos.X, aabb.Min.X, aabb.Max.X);
                 float cz = Math.Clamp(pos.Z, aabb.Min.Z, aabb.Max.Z);
 
@@ -366,11 +390,11 @@ namespace Game_Engine.Core.Component
                     float d = (float)Math.Sqrt(Math.Max(d2, 1e-12f));
                     if (d < EPS)
                     {
+                        // On an edge or corner: push along least-penetration axis
                         float dl = Math.Abs(pos.X - aabb.Min.X);
                         float dr = Math.Abs(aabb.Max.X - pos.X);
                         float dn = Math.Abs(pos.Z - aabb.Min.Z);
                         float df = Math.Abs(aabb.Max.Z - pos.Z);
-
                         if (Math.Min(dl, dr) < Math.Min(dn, df))
                             pos.X += (dl < dr ? -(rr) : +(rr));
                         else
@@ -385,6 +409,7 @@ namespace Game_Engine.Core.Component
                 }
             }
         }
+
 
         bool RaycastWallForward(SN.Vector3 start, SN.Vector3 dir, float maxDist, out float tHit, out SN.Vector3 nHit)
         {

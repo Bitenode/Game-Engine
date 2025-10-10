@@ -49,7 +49,13 @@ namespace Game_Engine.Core.Component
             var tr = Transform;
             _yawDeg = (float)tr.Rotation.Y;
             _pitchDeg = 0f;
+
+            // make mouse feel reasonable if defaults are tiny
+            Game_Engine.Core.Log.Debug($"[PM] Awake: MoveSpeed={MoveSpeed} LookSensitivity={LookSensitivity} Input.MouseSensitivity={Game_Engine.Core.Input.Input.MouseSensitivity}");
+            if (Game_Engine.Core.Input.Input.MouseSensitivity < 0.15f)
+                Game_Engine.Core.Input.Input.MouseSensitivity = 0.25f;
         }
+
 
         public override void OnEnable() => ResolveCamera();
 
@@ -77,78 +83,102 @@ namespace Game_Engine.Core.Component
                 _cam = cams.FirstOrDefault(c => c.IsMain) ?? cams.FirstOrDefault();
                 _camTr = _cam?.Transform;
             }
+
+            Game_Engine.Core.Log.Debug(_camTr == null
+                ? "[PM] ResolveCamera: NO camera found"
+                : $"[PM] ResolveCamera: bound to camera on GO='{_cam.gameObject?.Name ?? "?"}' pos=({_camTr.Position.X:F2},{_camTr.Position.Y:F2},{_camTr.Position.Z:F2}) rot=({_camTr.Rotation.X:F1},{_camTr.Rotation.Y:F1},{_camTr.Rotation.Z:F1})");
         }
+
+        [Persist] public bool DebugBypassMotor { get; set; } = true;
+
 
         public override void Update()
         {
             var dt = Math.Max(0.0001f, Time.deltaTime);
 
-            // ---- Read input ----
-            // Axes (smoothed): WASD/Arrows -> Horizontal/Vertical, mouse -> Mouse X/Y
-            float mx = GEInput.GetAxis("Horizontal");
-            float mz = GEInput.GetAxis("Vertical");
+            // --- Look (mouse deltas are per-frame) ---
             float lookX = GEInput.GetAxis("Mouse X");
             float lookY = GEInput.GetAxis("Mouse Y");
+            _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity);
+            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity, -89f, 89f);
+
+            // --- Raw keys -> local intent (Z = forward/back, X = right/left) ---
+            int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
+                       - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.S) ? 1 : 0);
+            int xRight = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.D) ? 1 : 0)
+                       - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.A) ? 1 : 0);
+
+            // IMPORTANT: flip local.Z so W moves toward -Z at yaw=0 (typical camera forward)
+            var local = new SN.Vector3(xRight, 0f, -zFwd);
+
+            float m2 = local.X * local.X + local.Z * local.Z;
+            if (m2 > 1e-6f)
+            {
+                float inv = 1f / MathF.Sqrt(m2);
+                local.X *= inv; local.Z *= inv;
+            }
 
             bool sprint = GEInput.GetAction("Sprint");
+            float speed = MoveSpeed * (sprint ? SprintMultiplier : 1f);
+            local *= speed * dt;
+
+            // --- Rotate local (X right, Z fwd) by yaw about +Y into world ---
+            float r = (float)(Math.PI / 180.0) * _yawDeg;
+            float c = MathF.Cos(r), s = MathF.Sin(r);
+            // worldX = localX*c + localZ*s
+            // worldZ = -localX*s + localZ*c
+            var worldDelta = new SN.Vector3(local.X * c + local.Z * s, 0f,
+                                            -local.X * s + local.Z * c);
+
             bool jump = GEInput.GetActionDown("Jump");
 
-            // ---- Look -> yaw/pitch ----
-          //  var lookScale = LookSensitivity;
-            _yawDeg -= lookX * LookSensitivity;
-            _pitchDeg -= lookY * LookSensitivity;
-            _pitchDeg = Clamp(_pitchDeg, -89f, 89f);
-            _yawDeg = Normalize180(_yawDeg);
+            var before = Transform.Position;
+            if (_motor != null && !DebugBypassMotor)
+                _motor.Simulate(worldDelta, jump);
+            else
+                Transform.Position = new Vector3(before.X + worldDelta.X, before.Y, before.Z + worldDelta.Z);
+            var after = Transform.Position;
 
-            // ---- Build world-space basis from yaw ----
-            // Forward = +X at yaw=0; Right = +Z at yaw=0 (matches your renderer)
-            float yawRad = Deg2Rad(_yawDeg);
-            var fwd = new SN.Vector3((float)Math.Cos(yawRad), 0f, (float)Math.Sin(yawRad));
-            var right = new SN.Vector3(-(float)Math.Sin(yawRad), 0f, (float)Math.Cos(yawRad));
-
-            // Desired horizontal delta for this frame
-            var wish = right * mx + fwd * mz;
-            if (wish.LengthSquared() > 1e-6f) wish = SN.Vector3.Normalize(wish);
-
-            float speed = MoveSpeed * (sprint ? SprintMultiplier : 1f);
-            var desiredDeltaXZ = wish * (speed * dt);
-
-            // ---- Simulate via motor (handles CCD, grounding, gravity) ----
-            if (_motor != null) _motor.Simulate(desiredDeltaXZ, jump);
-            else Transform.Position = new Vector3(
-                Transform.Position.X + desiredDeltaXZ.X,
-                Transform.Position.Y,
-                Transform.Position.Z + desiredDeltaXZ.Z);
-
-            // ---- Body facing options ----
-            if (RotateBodyWithLook)
+            if (m2 > 1e-6f && (RotateBodyWithLook || TurnBodyWhileMoving))
             {
-                var r = Transform.Rotation; r.Y = _yawDeg; Transform.Rotation = r;
-            }
-            else if (TurnBodyWhileMoving && wish.LengthSquared() > 1e-6f)
-            {
-                var r = Transform.Rotation; r.Y = _yawDeg; Transform.Rotation = r;
+                var rE = Transform.Rotation; rE.Y = _yawDeg; Transform.Rotation = rE;
             }
 
-            // ---- Camera drive (child camera) ----
-            if (_cam != null && _camTr != null)
+            if (_camTr != null)
             {
                 if (FirstPerson) DriveCameraFirstPerson();
                 else DriveCameraThirdPerson(dt);
             }
+
+            if (m2 > 0 || lookX != 0 || lookY != 0 || jump || sprint)
+                Log.Debug($"[PM] W/S={(zFwd):+0;-0;0}, A/D={(xRight):+0;-0;0}  local=({local.X:F3},{local.Z:F3}) worldΔ=({worldDelta.X:F3},{worldDelta.Z:F3})");
         }
+
+
+
+
+
+
+
+
+
 
         void DriveCameraFirstPerson()
         {
+            var before = _camTr.Rotation;
+
             // position camera at head height above player
             var p = Transform.Position; p.Y += FirstPersonHeight;
             _camTr.Position = p;
 
-            // camera eulers get pitch/yaw, zero roll
+            // set camera eulers
             var cr = _camTr.Rotation;
             cr.X = _pitchDeg; cr.Y = _yawDeg; cr.Z = 0;
             _camTr.Rotation = cr;
+
+         //   Game_Engine.Core.Log.Debug($"[PM] DriveFP: set cam rot from ({before.X:F1},{before.Y:F1}) -> ({cr.X:F1},{cr.Y:F1}), pos=({p.X:F2},{p.Y:F2},{p.Z:F2})");
         }
+
 
         void DriveCameraThirdPerson(float dt)
         {

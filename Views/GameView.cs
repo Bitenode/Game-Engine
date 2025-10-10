@@ -91,6 +91,7 @@ namespace Game_Engine.Views
 
         void ExitLookAndClear()
         {
+            Game_Engine.Core.Log.Debug("[GV] ExitLookAndClear");
             if (_capturedPointer != null)
             {
                 try { _capturedPointer.Capture(null); } catch { }
@@ -102,6 +103,7 @@ namespace Game_Engine.Views
             Game_Engine.Core.Input.Input.ClearAll();
             Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
         }
+
 
 
 
@@ -131,11 +133,12 @@ namespace Game_Engine.Views
             if (State != GamePanel.GameState.Playing) return;
 
             var code = MapKey(e.Key);
+            Game_Engine.Core.Log.Debug($"[GV] KeyDown {e.Key} -> {code}");
             Game_Engine.Core.Input.Input.FeedKeyDown(code);
 
-            // Toggle/exit mouse look with Escape
             if (code == Game_Engine.Core.Input.KeyCode.Escape && _mouseLook)
             {
+                Game_Engine.Core.Log.Debug("[GV] Escape -> exit mouse-look");
                 _mouseLook = false;
                 if (_capturedPointer != null)
                 {
@@ -151,39 +154,49 @@ namespace Game_Engine.Views
 
 
 
+
         void OnKeyUp(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
 
             var code = MapKey(e.Key);
+            Game_Engine.Core.Log.Debug($"[GV] KeyUp {e.Key} -> {code}");
             Game_Engine.Core.Input.Input.FeedKeyUp(code);
         }
+
 
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
 
             var pt = e.GetCurrentPoint(this);
+
             if (pt.Properties.IsLeftButtonPressed)
+            {
+                Game_Engine.Core.Log.Debug("[GV] Mouse Left Down");
                 Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Left);
+            }
 
             if (pt.Properties.IsRightButtonPressed)
             {
+                Game_Engine.Core.Log.Debug("[GV] Mouse Right Down -> enter mouse-look + capture");
                 Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Right);
 
                 _mouseLook = true;
-
                 _capturedPointer = e.Pointer;
                 try { _capturedPointer.Capture(this); } catch { }
 
-                // seed so first move has no spike
                 _lastMouse = new SN.Vector2((float)pt.Position.X, (float)pt.Position.Y);
                 _hasLastMouse = true;
             }
 
             if (pt.Properties.IsMiddleButtonPressed)
+            {
+                Game_Engine.Core.Log.Debug("[GV] Mouse Middle Down");
                 Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Middle);
+            }
         }
+
 
 
 
@@ -195,10 +208,14 @@ namespace Game_Engine.Views
             var pt = e.GetCurrentPoint(this);
 
             if (!pt.Properties.IsLeftButtonPressed)
+            {
+                Game_Engine.Core.Log.Debug("[GV] Mouse Left Up");
                 Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Left);
+            }
 
             if (!pt.Properties.IsRightButtonPressed)
             {
+                Game_Engine.Core.Log.Debug("[GV] Mouse Right Up -> exit mouse-look + release capture");
                 Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Right);
                 _mouseLook = false;
 
@@ -212,8 +229,12 @@ namespace Game_Engine.Views
             }
 
             if (!pt.Properties.IsMiddleButtonPressed)
+            {
+                Game_Engine.Core.Log.Debug("[GV] Mouse Middle Up");
                 Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Middle);
+            }
         }
+
 
 
 
@@ -232,6 +253,8 @@ namespace Game_Engine.Views
                 {
                     var dx = cur.X - _lastMouse.X;
                     var dy = cur.Y - _lastMouse.Y;
+                    if (dx != 0 || dy != 0)
+                        Game_Engine.Core.Log.Debug($"[GV] MouseMove (look) dx={dx:F1} dy={dy:F1}");
                     Game_Engine.Core.Input.Input.FeedMouseDelta(dx, dy);
                 }
                 _lastMouse = cur;
@@ -239,11 +262,11 @@ namespace Game_Engine.Views
             }
             else
             {
-                // Not in look mode: just refresh last so first click doesn't spike
                 _lastMouse = cur;
                 _hasLastMouse = true;
             }
         }
+
 
 
 
@@ -261,7 +284,7 @@ namespace Game_Engine.Views
                     _fixedWatch.Restart();
                     Game_Engine.Core.Input.Input.ClearAll();
                     _fixedTimer.Start();
-                    _updateTimer.Start();
+                    _updateTimer.Start();   
                     break;
 
                 case GamePanel.GameState.Paused:
@@ -326,11 +349,11 @@ namespace Game_Engine.Views
         {
             if (_collidersWarm) return;
 
-            // Methods we’ll try on generic Collider types if present (optional)
+            //  we’ll try on generic Collider types if present 
             static void EnsureColliderReady(Collider c)
             {
                 var t = c.GetType();
-                // Try a few common names; all optional and safe
+                //  few common names
                 string[] names =
                 {
                     "EnsureReady", "EnsureBaked", "Bake", "Precompute",
@@ -396,22 +419,25 @@ namespace Game_Engine.Views
         {
             if (State != GamePanel.GameState.Playing) return;
 
-            // keep colliders fresh if scene changed
             WarmAllColliders();
 
             var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
             _updateWatch.Restart();
             Game_Engine.Core.Time.BeginUpdate(dt);
 
-            // >>> INPUT: start-of-frame
+            // Start-of-frame: clear edges, BUT keep mouse deltas from last frame
             Game_Engine.Core.Input.Input.NewFrame((float)dt);
 
             ForEachBehavior(b => b.__Update());
             ForEachBehavior(b => b.__LateUpdate());
 
-            // let the UI (Inspector/SceneView) know values changed this frame
+            // End-of-frame: now that behaviors consumed them, clear mouse deltas
+            Game_Engine.Core.Input.Input.EndFrame();
+
             SceneService.NotifyChanged();
         }
+
+
 
         void TickFixedUpdate()
         {
