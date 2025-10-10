@@ -51,7 +51,7 @@ namespace Game_Engine.Core.Component
             _pitchDeg = 0f;
 
             // make mouse feel reasonable if defaults are tiny
-            Game_Engine.Core.Log.Debug($"[PM] Awake: MoveSpeed={MoveSpeed} LookSensitivity={LookSensitivity} Input.MouseSensitivity={Game_Engine.Core.Input.Input.MouseSensitivity}");
+          //  Game_Engine.Core.Log.Debug($"[PM] Awake: MoveSpeed={MoveSpeed} LookSensitivity={LookSensitivity} Input.MouseSensitivity={Game_Engine.Core.Input.Input.MouseSensitivity}");
             if (Game_Engine.Core.Input.Input.MouseSensitivity < 0.15f)
                 Game_Engine.Core.Input.Input.MouseSensitivity = 0.25f;
         }
@@ -150,8 +150,8 @@ namespace Game_Engine.Core.Component
                 else DriveCameraThirdPerson(dt);
             }
 
-            if (m2 > 0 || lookX != 0 || lookY != 0 || jump || sprint)
-                Log.Debug($"[PM] W/S={(zFwd):+0;-0;0}, A/D={(xRight):+0;-0;0}  local=({local.X:F3},{local.Z:F3}) worldΔ=({worldDelta.X:F3},{worldDelta.Z:F3})");
+          //  if (m2 > 0 || lookX != 0 || lookY != 0 || jump || sprint)
+             //   Log.Debug($"[PM] W/S={(zFwd):+0;-0;0}, A/D={(xRight):+0;-0;0}  local=({local.X:F3},{local.Z:F3}) worldΔ=({worldDelta.X:F3},{worldDelta.Z:F3})");
         }
 
 

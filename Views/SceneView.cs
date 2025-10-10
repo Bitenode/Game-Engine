@@ -46,7 +46,10 @@ public class SceneView : Control
 
     GameObject? _selected;
 
-    
+    private readonly System.Diagnostics.Stopwatch _windWatch = System.Diagnostics.Stopwatch.StartNew();
+    private double _windPrev = 0.0;
+
+
 
     private (SN.Matrix4x4 View, SN.Matrix4x4 Proj, Camera? Cam, bool UsingComponent)
     GetActiveViewProj(Size size)
@@ -686,6 +689,13 @@ public class SceneView : Control
     public override void Render(DrawingContext ctx)
     {
         base.Render(ctx);
+
+        var now = _windWatch.Elapsed.TotalSeconds;
+        var dt = now - _windPrev;
+        _windPrev = now;
+        if (dt < 0) dt = 0;
+        if (dt > 0.1) dt = 0.1; // clamp to avoid huge jumps on stalls
+        WindSystem.Update((float)dt);
 
         var size = Bounds.Size;
         int W = Math.Max(1, (int)size.Width);

@@ -91,7 +91,7 @@ namespace Game_Engine.Views
 
         void ExitLookAndClear()
         {
-            Game_Engine.Core.Log.Debug("[GV] ExitLookAndClear");
+           // Game_Engine.Core.Log.Debug("[GV] ExitLookAndClear");
             if (_capturedPointer != null)
             {
                 try { _capturedPointer.Capture(null); } catch { }
@@ -133,12 +133,12 @@ namespace Game_Engine.Views
             if (State != GamePanel.GameState.Playing) return;
 
             var code = MapKey(e.Key);
-            Game_Engine.Core.Log.Debug($"[GV] KeyDown {e.Key} -> {code}");
+          //  Game_Engine.Core.Log.Debug($"[GV] KeyDown {e.Key} -> {code}");
             Game_Engine.Core.Input.Input.FeedKeyDown(code);
 
             if (code == Game_Engine.Core.Input.KeyCode.Escape && _mouseLook)
             {
-                Game_Engine.Core.Log.Debug("[GV] Escape -> exit mouse-look");
+            //    Game_Engine.Core.Log.Debug("[GV] Escape -> exit mouse-look");
                 _mouseLook = false;
                 if (_capturedPointer != null)
                 {
@@ -160,7 +160,7 @@ namespace Game_Engine.Views
             if (State != GamePanel.GameState.Playing) return;
 
             var code = MapKey(e.Key);
-            Game_Engine.Core.Log.Debug($"[GV] KeyUp {e.Key} -> {code}");
+         //   Game_Engine.Core.Log.Debug($"[GV] KeyUp {e.Key} -> {code}");
             Game_Engine.Core.Input.Input.FeedKeyUp(code);
         }
 
@@ -173,13 +173,13 @@ namespace Game_Engine.Views
 
             if (pt.Properties.IsLeftButtonPressed)
             {
-                Game_Engine.Core.Log.Debug("[GV] Mouse Left Down");
+           //     Game_Engine.Core.Log.Debug("[GV] Mouse Left Down");
                 Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Left);
             }
 
             if (pt.Properties.IsRightButtonPressed)
             {
-                Game_Engine.Core.Log.Debug("[GV] Mouse Right Down -> enter mouse-look + capture");
+            //    Game_Engine.Core.Log.Debug("[GV] Mouse Right Down -> enter mouse-look + capture");
                 Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Right);
 
                 _mouseLook = true;
@@ -192,7 +192,7 @@ namespace Game_Engine.Views
 
             if (pt.Properties.IsMiddleButtonPressed)
             {
-                Game_Engine.Core.Log.Debug("[GV] Mouse Middle Down");
+           //     Game_Engine.Core.Log.Debug("[GV] Mouse Middle Down");
                 Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Middle);
             }
         }
@@ -209,13 +209,13 @@ namespace Game_Engine.Views
 
             if (!pt.Properties.IsLeftButtonPressed)
             {
-                Game_Engine.Core.Log.Debug("[GV] Mouse Left Up");
+          //      Game_Engine.Core.Log.Debug("[GV] Mouse Left Up");
                 Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Left);
             }
 
             if (!pt.Properties.IsRightButtonPressed)
             {
-                Game_Engine.Core.Log.Debug("[GV] Mouse Right Up -> exit mouse-look + release capture");
+          //      Game_Engine.Core.Log.Debug("[GV] Mouse Right Up -> exit mouse-look + release capture");
                 Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Right);
                 _mouseLook = false;
 
@@ -230,7 +230,7 @@ namespace Game_Engine.Views
 
             if (!pt.Properties.IsMiddleButtonPressed)
             {
-                Game_Engine.Core.Log.Debug("[GV] Mouse Middle Up");
+           //     Game_Engine.Core.Log.Debug("[GV] Mouse Middle Up");
                 Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Middle);
             }
         }
@@ -254,7 +254,7 @@ namespace Game_Engine.Views
                     var dx = cur.X - _lastMouse.X;
                     var dy = cur.Y - _lastMouse.Y;
                     if (dx != 0 || dy != 0)
-                        Game_Engine.Core.Log.Debug($"[GV] MouseMove (look) dx={dx:F1} dy={dy:F1}");
+              //          Game_Engine.Core.Log.Debug($"[GV] MouseMove (look) dx={dx:F1} dy={dy:F1}");
                     Game_Engine.Core.Input.Input.FeedMouseDelta(dx, dy);
                 }
                 _lastMouse = cur;

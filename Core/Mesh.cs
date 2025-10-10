@@ -22,6 +22,8 @@ public sealed class Mesh
     /// Tessellation parameter B (lat for spheres)
     public int TessB { get; init; }
 
+    public SN.Vector2[]? UV2 { get; set; } // wind weight (x) & phase (y)
+
     public Mesh(SN.Vector3[] v, int[] lines, int[] tris)
     {
         Vertices = v;

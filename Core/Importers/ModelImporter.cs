@@ -410,6 +410,19 @@ namespace Game_Engine.Core.Importers
                     mesh.UVs[i] = new SN.Vector2(t.X, t.Y);
                 }
             }
+            // UV1 -> UV2 (for wind weight/phase)
+            if (m.HasTextureCoords(1))
+            {
+                var ch = m.TextureCoordinateChannels[1];
+                var uv2 = new SN.Vector2[ch.Count];
+                for (int i = 0; i < uv2.Length; i++)
+                {
+                    var t = ch[i]; // Assimp stores 3D UVs; ignore Z
+                    uv2[i] = new SN.Vector2(t.X, t.Y);
+                }
+                mesh.UV2 = uv2;
+            }
+
 
             return (mesh, hadNormals);
         }
