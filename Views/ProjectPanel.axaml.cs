@@ -200,7 +200,9 @@ public sealed partial class ProjectPanel : UserControl
         if (p is null) return;
 
         var baseDir = CurrentDirOrFallback(p.AssetsPath);
-        var name = await AskText("New C# Script", "Enter script name:", "NewScript.cs");
+
+        // Let the user type either "MyScript" or "MyScript.cs"
+        var name = await AskText("New C# Script", "Enter script name:", "NewBehaviour.cs");
         if (string.IsNullOrWhiteSpace(name)) return;
 
         name = name.Trim();
@@ -208,18 +210,37 @@ public sealed partial class ProjectPanel : UserControl
             name += ".cs";
 
         name = MakeSafeName(name);
+
+        // Ensure uniqueness on disk (may append " (1)" etc.)
         var path = UniquePath(Path.Combine(baseDir, name), isFolder: false);
 
-        const string template =
-@"using Game_Engine.Core;
+        // Derive the class name from the *final* file name
+        var finalFileNameNoExt = Path.GetFileNameWithoutExtension(path);
+        var className = MakeValidClassName(finalFileNameNoExt);
 
-public class NewBehaviour : Behavior
-{
-    public override void Start() { }
+        string template =
+    @"using Game_Engine.Core;
 
-    public override void Update(float dt) { }
-}
-";
+    public class " + className + @" : Behavior
+    {
+        public override void Awake() { }
+
+        public override void Start() { }
+        
+        public override void Update() { }
+
+        public override void FixedUpdate() { }
+
+        public override void LateUpdate() { }
+        
+        public override void OnEnable() { }
+
+        public override void OnDisable() { }
+        
+        public override void OnDestroy() { }
+
+    }
+    ";
 
         try
         {
@@ -228,11 +249,48 @@ public class NewBehaviour : Behavior
         }
         catch (Exception ex)
         {
-            await ShowError($"Failed to create script:\n{ex.Message}");
+            await ShowError("Failed to create script:\n" + ex.Message);
         }
 
         Refresh();
     }
+
+    private static string MakeValidClassName(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "NewBehaviour";
+
+        // Replace separators with underscores and strip invalid chars
+        var sb = new System.Text.StringBuilder(raw.Length);
+        for (int i = 0; i < raw.Length; i++)
+        {
+            char ch = raw[i];
+
+            // Treat common separators as underscore
+            if (ch == ' ' || ch == '-' || ch == '.' || ch == '/' || ch == '\\')
+                ch = '_';
+
+            if (i == 0)
+            {
+                // First char must be letter or underscore
+                if (char.IsLetter(ch) || ch == '_') sb.Append(ch);
+                else if (char.IsDigit(ch)) { sb.Append('_'); sb.Append(ch); }
+                else sb.Append('_');
+            }
+            else
+            {
+                // Subsequent chars: letters, digits, or underscore
+                if (char.IsLetterOrDigit(ch) || ch == '_') sb.Append(ch);
+                else sb.Append('_');
+            }
+        }
+
+        // Collapse multiple underscores
+        var s = sb.ToString();
+        while (s.Contains("__")) s = s.Replace("__", "_");
+        if (s == "_" || string.IsNullOrWhiteSpace(s)) s = "NewBehaviour";
+        return s;
+    }
+
 
     private async Task NewScene()
     {

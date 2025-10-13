@@ -519,7 +519,7 @@ static readonly Regex RxBaseContainsBehavior =
         Host.Children.Add(EditorForTransform(go.Transform));
 
         // ---- Add Component --------------------------------------------------
-        // 1) Already-loaded Behavior types (built-ins/plugins in AppDomain)
+        // Already-loaded Behavior types (built-ins/plugins in AppDomain)
         var builtInTypes = AppDomain.CurrentDomain.GetAssemblies()
             .SelectMany(LoadableTypes)
             .Where(t => t != null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
@@ -527,11 +527,11 @@ static readonly Regex RxBaseContainsBehavior =
             .OrderBy(t => t.Name)
             .ToList();
 
-        // 2) Project scripts discovered from source files
+        // Project scripts discovered from source files
         var scriptInfos = DiscoverProjectBehaviorScripts();
         scriptInfos.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
 
-        // 3) Unified list for the ComboBox
+        // Unified list for the ComboBox
         var choices = new List<ComboItem>();
         for (int i = 0; i < builtInTypes.Count; i++)
         {

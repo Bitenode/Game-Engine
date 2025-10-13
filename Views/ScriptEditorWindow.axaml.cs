@@ -10,9 +10,9 @@ using Game_Engine.Core;
 using System.Linq;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Runtime.Loader;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using System.Collections.ObjectModel;
 
 namespace Game_Engine.Views;
 
@@ -21,6 +21,8 @@ public partial class ScriptEditorWindow : Window
     private string _path;
     private bool _dirty;
     private static AssemblyLoadContext? s_scriptsAlc; // hot-reloadable ALC
+    private readonly ObservableCollection<TreeViewItem> _treeItems = new ObservableCollection<TreeViewItem>();
+
 
 
     public ScriptEditorWindow(string path)
@@ -38,6 +40,13 @@ public partial class ScriptEditorWindow : Window
             }
         };
 
+        //  file tree wiring 
+        FileTree.ItemsSource = _treeItems;
+        FileTree.DoubleTapped += OnTreeDoubleTapped; // open on double-click
+        FileTree.SelectionChanged += OnTreeSelectionChanged; // just to show selection path in status (optional)
+
+        // Build initial tree (uses project paths)
+        RebuildScriptTree();
 
         // Keyboard shortcuts
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
@@ -48,7 +57,7 @@ public partial class ScriptEditorWindow : Window
         // First title
         UpdateTitle();
 
-        Title = $"Script Editor v1.1 — {Path.GetFileName(_path)}";
+        Title = $"Script Editor v1.2 — {Path.GetFileName(_path)}";
 
         // Wire UI
         BtnSave.Click += OnSave;
@@ -60,9 +69,140 @@ public partial class ScriptEditorWindow : Window
         TryLoad();
     }
 
+    // Represents a folder or .cs file in the Scripts tree
+    private sealed class NodeTag
+    {
+        public string FullPath;
+        public bool IsFolder;
+        public NodeTag(string fullPath, bool isFolder) { FullPath = fullPath; IsFolder = isFolder; }
+    }
+
+    private void OnProjectChanged()
+    {
+        // Avoid blocking UI thread while scanning disk; small projects are fine sync.
+        Dispatcher.UIThread.Post(RebuildScriptTree);
+    }
+
+    private void RebuildScriptTree()
+    {
+        _treeItems.Clear();
+
+        // Collect candidate "Scripts" folders
+        var scriptRoots = CandidateScriptFolders().Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        // If none exist yet, ensure Assets/Scripts so there is at least one root
+        var p = ProjectService.Current;
+        if (scriptRoots.Count == 0 && p != null)
+        {
+            var fallback = Path.Combine(p.AssetsPath, "Scripts");
+            try { Directory.CreateDirectory(fallback); } catch { }
+            if (Directory.Exists(fallback)) scriptRoots.Add(fallback);
+        }
+
+        foreach (var scriptsDir in scriptRoots)
+        {
+            var rootItem = BuildTreeItemForFolder(scriptsDir, displayName: MakeNiceRootName(scriptsDir));
+            if (rootItem != null) _treeItems.Add(rootItem);
+        }
+
+        // Expand first root by default
+        if (_treeItems.Count > 0) _treeItems[0].IsExpanded = true;
+    }
+
+    private static string MakeNiceRootName(string scriptsDir)
+    {
+        var proj = ProjectService.Current;
+        if (proj == null) return Path.GetFileName(scriptsDir);
+        // Show relative path under project root for clarity
+        var rel = Path.GetRelativePath(proj.RootPath, scriptsDir);
+        return string.IsNullOrWhiteSpace(rel) ? Path.GetFileName(scriptsDir) : rel.Replace('\\', '/');
+    }
+
+    private TreeViewItem BuildTreeItemForFolder(string dir, string displayName = null)
+    {
+        if (!Directory.Exists(dir)) return null;
+
+        var header = string.IsNullOrEmpty(displayName) ? Path.GetFileName(dir) : displayName;
+        var item = new TreeViewItem
+        {
+            Header = string.IsNullOrEmpty(header) ? dir : header,
+            Tag = new NodeTag(dir, isFolder: true)
+        };
+
+        // Folders first (alpha)
+        IEnumerable<string> subDirs = Enumerable.Empty<string>();
+        try { subDirs = Directory.EnumerateDirectories(dir).OrderBy(d => d, StringComparer.OrdinalIgnoreCase); } catch { }
+
+        foreach (var sd in subDirs)
+        {
+            // Skip typical build/system folders just in case
+            var name = Path.GetFileName(sd);
+            if (name.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("obj", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals(".git", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var child = BuildTreeItemForFolder(sd);
+            if (child != null) item.Items.Add(child);
+        }
+
+        // Then .cs files (alpha)
+        IEnumerable<string> files = Enumerable.Empty<string>();
+        try { files = Directory.EnumerateFiles(dir, "*.cs", SearchOption.TopDirectoryOnly).OrderBy(f => f, StringComparer.OrdinalIgnoreCase); } catch { }
+
+        foreach (var f in files)
+        {
+            item.Items.Add(new TreeViewItem
+            {
+                Header = Path.GetFileName(f),
+                Tag = new NodeTag(f, isFolder: false)
+            });
+        }
+
+        return item;
+    }
+
+    private void OnTreeDoubleTapped(object sender, RoutedEventArgs e)
+    {
+        var tvi = FileTree.SelectedItem as TreeViewItem;
+        var tag = tvi?.Tag as NodeTag;
+        if (tag == null || tag.IsFolder) return;
+
+        TryOpenScriptPath(tag.FullPath);
+    }
+
+    private void OnTreeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var tvi = FileTree.SelectedItem as TreeViewItem;
+        var tag = tvi?.Tag as NodeTag;
+        if (tag != null) StatusText(tag.FullPath);
+    }
+
+    private void TryOpenScriptPath(string fullPath)
+    {
+        try
+        {
+            // Save current file first if edited
+            SaveIfDirty();
+
+            if (!File.Exists(fullPath)) { ShowError("File not found:\n" + fullPath); return; }
+            _path = fullPath;
+            TryLoad();
+            _dirty = false;
+            UpdateTitle();
+        }
+        catch (Exception ex)
+        {
+            ShowError("Failed to open:\n" + ex.Message);
+        }
+    }
+
+
+
+
     private void UpdateTitle()
     {
-        Title = $"Script Editor v1.1 — {(_dirty ? "*" : "")}{Path.GetFileName(_path)}";
+        Title = $"Script Editor v1.2 — {(_dirty ? "*" : "")}{Path.GetFileName(_path)}";
         if (Status != null && string.IsNullOrWhiteSpace(Status.Text))
             Status.Text = "";
     }
@@ -80,6 +220,8 @@ public partial class ScriptEditorWindow : Window
             e.Handled = true;
         }
     }
+
+
 
 
     private void TryLoad()
@@ -128,6 +270,28 @@ public partial class ScriptEditorWindow : Window
             ShowError($"Failed to save:\n{ex.Message}");
         }
     }
+
+    // Auto-save current buffer if there are unsaved edits.
+    private void SaveIfDirty()
+    {
+        if (!_dirty) return;
+        try
+        {
+            File.WriteAllText(_path, Editor.Text ?? "");
+            ProjectService.TouchModified();
+        }
+        catch (Exception ex)
+        {
+            // Don’t block the switch; just report the issue.
+            ShowError("Auto-save failed:\n" + ex.Message);
+        }
+        finally
+        {
+            _dirty = false;
+            UpdateTitle();
+        }
+    }
+
 
     private void OnReload(object? s, RoutedEventArgs e) { 
 
@@ -286,6 +450,41 @@ public partial class ScriptEditorWindow : Window
         }
     }
 
+    // Find "Scripts" folders inside project Assets and Packages
+    private static List<string> CandidateScriptFolders()
+    {
+        var list = new List<string>();
+        var p = ProjectService.Current;
+        if (p == null) return list;
+
+        // Assets/Scripts
+        var a = Path.Combine(p.AssetsPath, "Scripts");
+        if (Directory.Exists(a)) list.Add(Path.GetFullPath(a));
+
+        // Top-level Packages/*/Scripts
+        IEnumerable<string> pkgs;
+        try
+        {
+            pkgs = Directory.Exists(p.PackagesPath)
+                ? Directory.EnumerateDirectories(p.PackagesPath)
+                : Array.Empty<string>();
+        }
+        catch
+        {
+            pkgs = Array.Empty<string>();
+        }
+
+        foreach (var pkg in pkgs)
+        {
+            var s = Path.Combine(pkg, "Scripts");
+            if (Directory.Exists(s)) list.Add(Path.GetFullPath(s));
+        }
+
+        return list;
+    }
+
+
+
 
     // Grab all currently-loaded assembly locations as Roslyn references
     private static IEnumerable<MetadataReference> CollectMetadataReferences()
@@ -331,7 +530,7 @@ public partial class ScriptEditorWindow : Window
         await win.ShowDialog(this);
     }
 
-    /// <summary>Convenience opener used by ProjectPanel.</summary>
+    /// <summary>Convenience opener used by ProjectPanel and Inspector.</summary>
     public static async void Open(Window? owner, string path)
     {
         var w = new ScriptEditorWindow(path) { WindowStartupLocation = WindowStartupLocation.CenterOwner };
