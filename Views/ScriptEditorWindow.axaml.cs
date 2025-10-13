@@ -57,7 +57,7 @@ public partial class ScriptEditorWindow : Window
         // First title
         UpdateTitle();
 
-        Title = $"Script Editor v1.2 — {Path.GetFileName(_path)}";
+        Title = $"Script Editor v1.3 — {Path.GetFileName(_path)}";
 
         // Wire UI
         BtnSave.Click += OnSave;
@@ -202,7 +202,7 @@ public partial class ScriptEditorWindow : Window
 
     private void UpdateTitle()
     {
-        Title = $"Script Editor v1.2 — {(_dirty ? "*" : "")}{Path.GetFileName(_path)}";
+        Title = $"Script Editor v1.3 — {(_dirty ? "*" : "")}{Path.GetFileName(_path)}";
         if (Status != null && string.IsNullOrWhiteSpace(Status.Text))
             Status.Text = "";
     }
@@ -364,6 +364,13 @@ public partial class ScriptEditorWindow : Window
             var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
             var trees = allFiles.Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), parseOpts, f)).ToList();
 
+            // Make editor APIs visible to all scripts without per-file usings
+            const string Prelude = @"
+                global using Avalonia.Controls;        // Control
+                global using Game_Engine.Views;        // ICustomInspector, InspectorContext, CustomInspectorAttribute
+            ";
+            trees.Insert(0, CSharpSyntaxTree.ParseText(Prelude, parseOpts, "ScriptPrelude.g.cs"));
+
             var refs = CollectMetadataReferences();
             var compOpts = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
                 .WithOptimizationLevel(OptimizationLevel.Debug)
@@ -382,35 +389,56 @@ public partial class ScriptEditorWindow : Window
                 throw new Exception(errors);
             }
 
-            // Persist the DLL to disk then hot-load from memory
+            // Helper: try delete; if locked, quarantine by renaming to .old
+            void TryDeleteOrQuarantine(string file)
+            {
+                try { File.SetAttributes(file, FileAttributes.Normal); } catch { }
+                try { File.Delete(file); return; } catch { /* locked */ }
+                try
+                {
+                    var old = file + ".old";
+                    if (File.Exists(old)) File.Delete(old);
+                    File.Move(file, old);
+                }
+                catch { /* give up quietly */ }
+            }
+
+            // Unload any previous hot assembly BEFORE touching files
+            try { s_scriptsAlc?.Unload(); } catch { }
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+
+            // Decide output dir
+            var proj = ProjectService.Current;
+            var outRoot = proj?.BuildsPath;
+            if (string.IsNullOrWhiteSpace(outRoot))
+                outRoot = proj?.RootPath ?? Path.GetTempPath();
+
+            var outDir = Path.Combine(outRoot!, "EditorScripts");
+            Directory.CreateDirectory(outDir);
+
+            // Clean old builds (dll + pdb)
             try
             {
-                var proj = ProjectService.Current;
-                var outRoot = proj?.BuildsPath;
-                if (string.IsNullOrWhiteSpace(outRoot))
-                    outRoot = proj?.RootPath ?? Path.GetTempPath();
-
-                var outDir = Path.Combine(outRoot!, "EditorScripts");
-                Directory.CreateDirectory(outDir);
-
-                // keep the folder tidy
                 foreach (var old in Directory.GetFiles(outDir, "EditorScripts_*.dll"))
-                    try { File.Delete(old); } catch { /* ignore locks */ }
+                    TryDeleteOrQuarantine(old);
+                foreach (var old in Directory.GetFiles(outDir, "EditorScripts_*.pdb"))
+                    TryDeleteOrQuarantine(old);
+            }
+            catch { /* non-fatal */ }
 
+            // Save the new DLL to disk (optional; we still load from memory)
+            try
+            {
                 var dllPath = Path.Combine(outDir, asmName + ".dll");
                 File.WriteAllBytes(dllPath, ms.ToArray());
-
                 StatusText($"Build OK — {asmName}.dll saved to {dllPath}");
             }
             catch
             {
-                // Writing the file is optional don’t fail the build if it can’t be written.
+                // Writing the file is optional — don’t fail the build.
             }
 
-            // Unload any previous hot assembly, then load this one from memory
-            try { s_scriptsAlc?.Unload(); } catch { }
-            GC.Collect(); GC.WaitForPendingFinalizers();
-
+            // Load the new assembly from memory into a fresh collectible ALC (no file lock)
             ms.Position = 0;
             var alc = new AssemblyLoadContext(asmName, isCollectible: true);
             var asm = alc.LoadFromStream(ms);
@@ -421,8 +449,7 @@ public partial class ScriptEditorWindow : Window
             int loaded = 0;
             try
             {
-                loaded = asm.GetTypes().Count(t =>
-                    t != null && !t.IsAbstract && behaviorType.IsAssignableFrom(t));
+                loaded = asm.GetTypes().Count(t => t != null && !t.IsAbstract && behaviorType.IsAssignableFrom(t));
             }
             catch { /* ignore type load issues */ }
 
@@ -431,7 +458,7 @@ public partial class ScriptEditorWindow : Window
     }
 
 
-    // Where to search for scripts (same places the Inspector scans)
+    // Where to search for scripts 
     private static IEnumerable<string> CandidateScriptRoots()
     {
         var p = ProjectService.Current;

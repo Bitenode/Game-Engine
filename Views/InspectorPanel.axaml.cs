@@ -62,12 +62,179 @@ file sealed class NumberConverter : IValueConverter
     }
 }
 
+// === User-extensible custom inspector contract ===
+[AttributeUsage(AttributeTargets.Method, Inherited = true, AllowMultiple = false)]
+public sealed class CustomInspectorAttribute : Attribute { }
+
+// Optional interface (users may implement instead of using the attribute)
+public interface ICustomInspector
+{
+    // Return a root Control (return null to fall back to default inspector)
+    Control? BuildInspectorUI(InspectorContext ctx);
+}
+
+// Helper handed to user code so they can reuse the built-in editors safely.
+public sealed class InspectorContext
+{
+    public Behavior Target { get; }
+    public Func<PropertyInfo, Control> EditorForProperty { get; }
+    public Func<string, Control> Header { get; }
+    public Func<string, Control, Control> Row { get; }
+    public Func<Control> DefaultInspector { get; }
+    public IEnumerable<PropertyInfo> Properties => _props();
+    private readonly Func<IEnumerable<PropertyInfo>> _props;
+
+    public InspectorContext(
+        Behavior target,
+        Func<PropertyInfo, Control> editorForProperty,
+        Func<string, Control> header,
+        Func<string, Control, Control> row,
+        Func<Control> defaultInspector,
+        Func<IEnumerable<PropertyInfo>> props)
+    {
+        Target = target;
+        EditorForProperty = editorForProperty;
+        Header = header;
+        Row = row;
+        DefaultInspector = defaultInspector;
+        _props = props;
+    }
+}
+
+
 public partial class InspectorPanel : UserControl
 {
     private GameObject? _target;   // what THIS inspector is showing
     private bool _isLocked;        // lock state for THIS inspector
     private Window? OwnerWindow => this.GetVisualRoot() as Window;
 
+    // Build the list of default/inspectable properties for a Behavior
+    IEnumerable<PropertyInfo> InspectableProps(Behavior b)
+    {
+        return b.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
+            .Where(p => p.Name is not nameof(Behavior.Enabled) && p.Name is not nameof(Behavior.gameObject))
+            // hide MeshCollider internals; they are drawn in MeshColliderTargetRow(...)
+            .Where(p => !(b is MeshCollider) ||
+                        (p.Name != nameof(MeshCollider.TargetFilters) &&
+                         p.Name != nameof(MeshCollider.TargetPaths) &&
+                         p.Name != nameof(MeshCollider.BindToTargetTransform) &&
+                         p.Name != nameof(MeshCollider.Mesh)));
+    }
+
+    // Default property panel (what we previously inlined)
+    Control DefaultPropsPanel(Behavior b)
+    {
+        var panel = new StackPanel { Spacing = 8 };
+        foreach (var p in InspectableProps(b))
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new TextBlock { Text = p.Name, Width = 120, VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(PropertyEditor(b, p));
+            panel.Children.Add(row);
+        }
+        return panel;
+    }
+
+    // Try to obtain a custom inspector UI from the user's script
+    bool TryBuildCustomInspectorUI(Behavior b, out Control? ui)
+    {
+        // Assemble the context the user can use to reuse built-ins
+        var ctx = new InspectorContext(
+            b,
+            editorForProperty: pi => PropertyEditor(b, pi),
+            header: SectionHeader,
+            row: (label, control) =>
+            {
+                var r = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                r.Children.Add(new TextBlock { Text = label, Width = 120, VerticalAlignment = VerticalAlignment.Center });
+                r.Children.Add(control);
+                return r;
+            },
+            defaultInspector: () => DefaultPropsPanel(b),
+            props: () => InspectableProps(b)
+        );
+
+        // Interface path
+        if (b is ICustomInspector ic)
+        {
+            try { ui = ic.BuildInspectorUI(ctx); if (ui != null) return true; } catch { /* ignore */ }
+        }
+
+        //  Attribute path: instance method marked with [CustomInspector]
+        var method = b.GetType()
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .FirstOrDefault(m => m.GetCustomAttribute<CustomInspectorAttribute>() != null);
+
+        if (method != null)
+        {
+            try
+            {
+                object? result;
+                var ps = method.GetParameters();
+                if (ps.Length == 0)
+                {
+                    result = method.Invoke(b, null);
+                }
+                else if (ps.Length == 1 && ps[0].ParameterType.IsAssignableFrom(typeof(InspectorContext)))
+                {
+                    result = method.Invoke(b, new object[] { ctx });
+                }
+                else
+                {
+                    result = null; // unsupported signature -> ignore
+                }
+
+                if (result is Control c) { ui = c; return true; }
+            }
+            catch { /* ignore */ }
+        }
+
+        // Conventional name fallback (OnInspectorGUI / BuildInspector)
+        foreach (var name in new[] { "OnInspectorGUI", "BuildInspector" })
+        {
+            var m = b.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (m == null) continue;
+            try
+            {
+                object? result;
+                var ps = m.GetParameters();
+                if (ps.Length == 0) result = m.Invoke(b, null);
+                else if (ps.Length == 1 && ps[0].ParameterType.IsAssignableFrom(typeof(InspectorContext)))
+                    result = m.Invoke(b, new object[] { ctx });
+                else continue;
+
+                if (result is Control c) { ui = c; return true; }
+            }
+            catch { }
+        }
+
+        ui = null;
+        return false;
+    }
+
+    static bool IsEditorScriptAssembly(Assembly asm)
+    {
+        try
+        {
+            // Hot build loaded into a collectible ALC
+            if (AssemblyLoadContext.GetLoadContext(asm)?.IsCollectible == true)
+                return true;
+
+            var loc = asm.Location;
+            if (string.IsNullOrWhiteSpace(loc)) return false;
+
+            // Persisted editor build (the files ScriptEditor saves)
+            if (Path.GetFileName(loc).StartsWith("EditorScripts_", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Anything under an ".../EditorScripts/..." folder
+            var marker = Path.DirectorySeparatorChar + "EditorScripts" + Path.DirectorySeparatorChar;
+            var norm = Path.GetFullPath(loc);
+            return norm.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch { return false; }
+    }
 
     // ---------- Project Script Discovery (source .cs,  DLLs) ----------
     sealed class ScriptInfo
@@ -133,8 +300,6 @@ public partial class InspectorPanel : UserControl
             if (seen.Add(full)) yield return full;
         }
     }
-
-
 
     // Find .cs files that declare "class X : Behavior" (tolerant of attributes, whitespace, fqns)
     static List<ScriptInfo> DiscoverProjectBehaviorScripts()
@@ -296,8 +461,6 @@ public partial class InspectorPanel : UserControl
         return true;
     }
 
-
-
     void ShowInfo(string msg)
     {
         var win = this.GetVisualRoot() as Window;
@@ -312,11 +475,14 @@ public partial class InspectorPanel : UserControl
         alert.ShowDialog(win);
     }
 
-    // Track what we've already loaded this session
+    // Add a long-lived collectible ALC for persisted editor scripts
+    static AssemblyLoadContext s_persistedScriptsAlc =
+        new AssemblyLoadContext("EditorScriptsPersisted", isCollectible: true);
+
+    // Track loaded paths to avoid double loads
     static readonly HashSet<string> s_loadedDlls = new(StringComparer.OrdinalIgnoreCase);
     static bool s_triedLoadPersisted;
 
-    // Where the ScriptEditor saves hot builds (and any other plugin folders you like)
     static IEnumerable<string> EditorScriptDllFolders()
     {
         var p = ProjectService.Current;
@@ -327,47 +493,49 @@ public partial class InspectorPanel : UserControl
             var dir = Path.Combine(p.BuildsPath, "EditorScripts");
             if (Directory.Exists(dir)) yield return dir;
         }
-        // add more places to load under Packages etc.
     }
 
-    // Load every EditorScripts_*.dll exactly once into the default ALC
-    static void EnsurePersistedEditorScriptsLoaded()
-    {
-        if (s_triedLoadPersisted) return;
-        s_triedLoadPersisted = true;
-
-        foreach (var dir in EditorScriptDllFolders())
-        {
-            foreach (var dll in Directory.EnumerateFiles(dir, "EditorScripts_*.dll", SearchOption.TopDirectoryOnly))
-                TryLoadEditorDll(dll);
-        }
-    }
-
+    // Read file with delete sharing; load from memory into a collectible ALC.
     static void TryLoadEditorDll(string path)
     {
         try
         {
             var full = Path.GetFullPath(path);
             if (!File.Exists(full)) return;
-            if (!s_loadedDlls.Add(full)) return; // already loaded
+            if (!s_loadedDlls.Add(full)) return;
 
-            // If an assembly with this name is already present, skip
-            var name = AssemblyName.GetAssemblyName(full);
-            if (AppDomain.CurrentDomain.GetAssemblies()
-                .Any(a => string.Equals(a.GetName().Name, name.Name, StringComparison.OrdinalIgnoreCase)))
-                return;
+            using var fs = new FileStream(full, FileMode.Open, FileAccess.Read,
+                                          FileShare.ReadWrite | FileShare.Delete);
+            using var ms = new MemoryStream();
+            fs.CopyTo(ms);
+            ms.Position = 0;
 
-            AssemblyLoadContext.Default.LoadFromAssemblyPath(full);
-           Game_Engine.Core.Log.Info($"Loaded editor script assembly: {full}");
+            // (optional) try load PDB for better stack traces
+            Stream? pdb = null;
+            var pdbPath = Path.ChangeExtension(full, ".pdb");
+            if (File.Exists(pdbPath))
+            {
+                pdb = new MemoryStream(File.ReadAllBytes(pdbPath));
+            }
+
+            s_persistedScriptsAlc.LoadFromStream(ms, pdb);  // <- no file lock
+            Game_Engine.Core.Log.Info($"Loaded editor script assembly (memory): {full}");
         }
         catch
         {
-            // Swallow — a bad dll shouldn’t break the UI
+            // swallow – bad DLLs shouldn’t break the UI
         }
     }
 
+    static void EnsurePersistedEditorScriptsLoaded()
+    {
+        if (s_triedLoadPersisted) return;
+        s_triedLoadPersisted = true;
 
-
+        foreach (var dir in EditorScriptDllFolders())
+            foreach (var dll in Directory.EnumerateFiles(dir, "EditorScripts_*.dll", SearchOption.TopDirectoryOnly))
+                TryLoadEditorDll(dll);
+    }
 
     // ---------- Undo snapshots (begin/commit) ----------
     readonly Dictionary<(object target, PropertyInfo prop), object?> _editStart = new();
@@ -462,8 +630,6 @@ public partial class InspectorPanel : UserControl
             return (null, null);
         }
     }
-
-
 
     static bool ValueEquals(Type t, object? a, object? b)
     {
@@ -564,8 +730,9 @@ public partial class InspectorPanel : UserControl
         Host.Children.Add(EditorForTransform(go.Transform));
 
         // ---- Add Component --------------------------------------------------
-        // Already-loaded Behavior types (built-ins/plugins in AppDomain)
+        // Built-ins = engine/editor components only (exclude any Script assemblies)
         var builtInTypes = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => !IsEditorScriptAssembly(a))
             .SelectMany(LoadableTypes)
             .Where(t => t != null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
             .Where(t => t != typeof(CoreTransform))
@@ -576,20 +743,25 @@ public partial class InspectorPanel : UserControl
         var scriptInfos = DiscoverProjectBehaviorScripts();
         scriptInfos.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
 
-        // Unified list for the ComboBox
         var choices = new List<ComboItem>();
-        for (int i = 0; i < builtInTypes.Count; i++)
+        var scriptFullNames = new HashSet<string>(scriptInfos.Select(s => s.FullName), StringComparer.Ordinal);
+
+        // Scripts first — always labeled as [Script] (or [Script: source only])
+        foreach (var s in scriptInfos)
         {
-            var t = builtInTypes[i];
-            choices.Add(new ComboItem { Display = t.Name, Type = t, Script = null });
-        }
-        for (int i = 0; i < scriptInfos.Count; i++)
-        {
-            var s = scriptInfos[i];
             var loaded = TryResolveLoadedType(s.FullName);
-            var label = loaded != null ? (s.Name + "  [Script]") : (s.Name + "  [Script: source only]");
+            var label = (loaded != null) ? $"{s.Name}  [Script]" : $"{s.Name}  [Script: source only]";
             choices.Add(new ComboItem { Display = label, Type = loaded, Script = s });
         }
+
+        // Built-ins after — skip anything that matches a script type FullName
+        foreach (var t in builtInTypes)
+        {
+            var fn = t.FullName ?? t.Name;
+            if (scriptFullNames.Contains(fn)) continue; // avoid duplicate entries
+            choices.Add(new ComboItem { Display = t.Name, Type = t, Script = null });
+        }
+
 
         var addRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         var typeBox = new ComboBox
@@ -736,7 +908,7 @@ public partial class InspectorPanel : UserControl
         // --- outer container (border -> vertical stack) ---
         var outer = new StackPanel { Spacing = 6 };
 
-        // ensure we inspect the freshest version of this script
+        // make sure we're showing the freshest type
         TryMigrateBehaviorToLatest(owner, ref b);
 
         // Header row: [Enabled] [Title] [Remove]
@@ -751,7 +923,6 @@ public partial class InspectorPanel : UserControl
         enabled.Bind(CheckBox.IsCheckedProperty,
             new Binding(nameof(Behavior.Enabled)) { Source = b, Mode = BindingMode.TwoWay });
 
-        // Make enabling undoable and repaint immediately
         var pEnabled = typeof(Behavior).GetProperty(nameof(Behavior.Enabled))!;
         enabled.GotFocus += (_, __) => BeginPropertyEdit(b, pEnabled);
         enabled.IsCheckedChanged += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(b, pEnabled); };
@@ -771,35 +942,22 @@ public partial class InspectorPanel : UserControl
         header.Children.Add(remove);
         outer.Children.Add(header);
 
+        // MeshCollider extra UI
         if (b is MeshCollider mc)
             outer.Children.Add(MeshColliderTargetRow(owner, mc));
 
-        // --- properties area (disabled when b.Enabled == false) ---
-        var propsPanel = new StackPanel { Spacing = 8 };
-        propsPanel.Bind(IsEnabledProperty,
+        // --------- BODY: custom inspector first, else default ----------
+        Control body = TryBuildCustomInspectorUI(b, out var custom) && custom != null
+            ? custom
+            : DefaultPropsPanel(b); // builds rows from InspectableProps(...)
+
+        // disable body when component disabled
+        var bodyHost = new StackPanel { Spacing = 8 };
+        bodyHost.Bind(IsEnabledProperty,
             new Binding(nameof(Behavior.Enabled)) { Source = b, Mode = BindingMode.OneWay });
+        bodyHost.Children.Add(body);
 
-        var props = b.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
-            .Where(p => p.CanRead && p.GetIndexParameters().Length == 0)
-            .Where(p => p.Name is not nameof(Behavior.Enabled) && p.Name is not nameof(Behavior.gameObject))
-            // hide MeshCollider internals; we render them in MeshColliderTargetRow(...)
-            .Where(p => !(b is MeshCollider) ||
-                        (p.Name != nameof(MeshCollider.TargetFilters) &&
-                         p.Name != nameof(MeshCollider.TargetPaths) &&
-                         p.Name != nameof(MeshCollider.BindToTargetTransform) &&
-                         p.Name != nameof(MeshCollider.Mesh)))
-            .Where(p => p.CanWrite) // avoid private-set or readonly things in generic editor
-            .ToList();
-
-        foreach (var p in props)
-        {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            row.Children.Add(new TextBlock { Text = p.Name, Width = 120, VerticalAlignment = VerticalAlignment.Center });
-            row.Children.Add(PropertyEditor(b, p));
-            propsPanel.Children.Add(row);
-        }
-
-        outer.Children.Add(propsPanel);
+        outer.Children.Add(bodyHost);
 
         return new Border
         {
@@ -808,9 +966,8 @@ public partial class InspectorPanel : UserControl
             Padding = new Thickness(8),
             Child = outer
         };
-
-        
     }
+
 
     // Build a stable "Root/Child/SubChild" path for a GO
     static string BuildPath(GameObject go)
@@ -1263,11 +1420,6 @@ public partial class InspectorPanel : UserControl
         Rebuild();
         return box;
     }
-
-
-
-
-
 
     Control Texture2DEditor(object owner, PropertyInfo prop)
     {
@@ -2086,6 +2238,8 @@ file sealed class ColorStringConverter : IValueConverter
         ["orange"] = Color.FromRgb(0xFF, 0xA5, 0x00),
         ["deepskyblue"] = Colors.DeepSkyBlue,
     };
+
+
 
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
