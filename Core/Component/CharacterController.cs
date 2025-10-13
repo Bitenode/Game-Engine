@@ -7,8 +7,8 @@ using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core.Component
 {
-    /// <summary>
-    /// CharacterController (Motor-only):
+    /// <summary> Needs cleaned up
+    /// CharacterController (Motor-only): 
     /// - Finds a CapsuleCollider (preferred) or falls back to defaults
     /// - Provides grounding check + gravity integration
     /// - Kinematic horizontal motion with CCD, wall slide, AABB unstick

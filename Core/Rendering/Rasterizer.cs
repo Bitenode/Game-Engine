@@ -194,7 +194,7 @@ public static class Rasterizer
             var Pc = Vtx[ic];
 
             // Wind weights & phases from UV2 (X=weight, Y=phase), defaults to zero if missing
-            // If you don't have a UV2 channel yet, you can temporarily use UV0 by doing:
+            
             // var UVMesh2 = UVMesh;
             SN.Vector2 windA = (UVMesh2 != null && UVMesh2.Length == Vtx.Length) ? UVMesh2[ia] : default;
             SN.Vector2 windB = (UVMesh2 != null && UVMesh2.Length == Vtx.Length) ? UVMesh2[ib] : default;

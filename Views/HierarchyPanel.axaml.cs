@@ -1,6 +1,9 @@
+using System;
 using System.Collections.ObjectModel;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.VisualTree;
@@ -8,207 +11,309 @@ using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Importers;
 
-namespace Game_Engine.Views;
-
-public partial class HierarchyPanel : UserControl
+namespace Game_Engine.Views
 {
-    private const string DragFormat = "application/x-gameobject";
-
-    private sealed class HierarchyViewModel
+    public partial class HierarchyPanel : UserControl
     {
-        public ObservableCollection<GameObject> Root { get; } = new();
+        private const string DragFormat = "application/x-gameobject";
+        private const double DragThreshold = 4.0; // px before starting a drag
 
-        public HierarchyViewModel()
+        private sealed class HierarchyViewModel
         {
-            Root.Add(new GameObject("Main Camera"));
-            Root.Add(new GameObject("Directional Light"));
-            Root.Add(new GameObject("Cube"));
+            public ObservableCollection<GameObject> Root { get; } = new ObservableCollection<GameObject>();
+
+            public HierarchyViewModel()
+            {
+                Root.Add(new GameObject("Main Camera"));
+                AddLight();
+                AddPrimitiveCube();
+            }
+
+            public void AddEmpty(GameObject parent = null)
+            {
+                var go = new GameObject("GameObject");
+                if (parent == null) Root.Add(go); else parent.AddChild(go);
+            }
+
+            public void Delete(GameObject go)
+            {
+                if (go == null) return;
+                if (go.Parent == null) Root.Remove(go);
+                else go.Parent.Children.Remove(go);
+            }
+
+            public void Unparent(GameObject go)
+            {
+                if (go == null) return;
+                var wasRoot = go.Parent == null;
+                go.RemoveFromParent();
+                if (!wasRoot && !Root.Contains(go))
+                    Root.Add(go);
+            }
+
+            public GameObject AddLight(GameObject parent = null)
+            {
+                var go = new GameObject("Directional Light");
+                
+                go.AddBehavior(new Light());
+                go.Transform.Rotation.X = 90;
+                if (parent == null) Root.Add(go); else parent.AddChild(go);
+                return go;
+            }
+
+            public GameObject AddPrimitiveCube(GameObject parent = null)
+            {
+                var go = new GameObject("Cube");
+                go.AddBehavior(new MeshFilter { Mesh = Mesh.CreateCube(1f) });
+                go.AddBehavior(new MeshRenderer());
+                if (parent == null) Root.Add(go); else parent.AddChild(go);
+                return go;
+            }
+            public GameObject AddPrimitiveCone(GameObject parent = null)
+            {
+                var go = new GameObject("Cone");
+                go.AddBehavior(new MeshFilter { Mesh = Mesh.CreateCone(1) });
+                go.AddBehavior(new MeshRenderer());
+                if (parent == null) Root.Add(go); else parent.AddChild(go);
+                return go;
+            }
+            public GameObject AddPrimitiveCylinder(GameObject parent = null)
+            {
+                var go = new GameObject("Cylinder");
+                go.AddBehavior(new MeshFilter { Mesh = Mesh.CreateCylinder(1) });
+                go.AddBehavior(new MeshRenderer());
+                if (parent == null) Root.Add(go); else parent.AddChild(go);
+                return go;
+            }
         }
 
-        public void AddEmpty(GameObject? parent = null)
+        private readonly HierarchyViewModel _vm;
+        private GameObject _contextTarget;
+
+        // Drag gesture state
+        private bool _leftPressed;
+        private Point _pressPos;
+        private GameObject _pressedItem;
+        private bool _isDragging;
+
+        public HierarchyPanel()
         {
-            var go = new GameObject("GameObject");
-            if (parent is null) Root.Add(go); else parent.AddChild(go);
+            InitializeComponent();
+
+            _vm = new HierarchyViewModel();
+            DataContext = _vm;
+
+            SceneService.AttachRoot(_vm.Root);
+
+            Tree.SelectionChanged += (_, __) =>
+            {
+                var selected =
+                    Tree.SelectedItem as GameObject
+                    ?? (Tree.SelectedItem as TreeViewItem)?.DataContext as GameObject;
+                SelectionService.Set(selected);
+            };
+
+            DragDrop.SetAllowDrop(Tree, true);
+
+            // Drag gesture: press -> move beyond threshold -> start drag
+            Tree.AddHandler(InputElement.PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
+            Tree.AddHandler(InputElement.PointerMovedEvent, OnPointerMoved, RoutingStrategies.Tunnel);
+            Tree.AddHandler(InputElement.PointerReleasedEvent, OnPointerReleased, RoutingStrategies.Tunnel);
+
+            // DnD target handling
+            Tree.AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Bubble);
+            Tree.AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Bubble);
+
+            // Remember which node (or none) was right-clicked
+            Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
         }
 
-        public void Delete(GameObject go)
+        // ---------------- Context menu target capture ----------------
+        private void OnContextRequested(object sender, ContextRequestedEventArgs e)
         {
-            if (go.Parent is null) Root.Remove(go);
-            else go.Parent.Children.Remove(go);
+            var v = e.Source as Visual;
+            var tvi = v != null ? v.FindAncestorOfType<TreeViewItem>() : null;
+            _contextTarget = tvi != null ? tvi.DataContext as GameObject : null;
         }
 
-        public void Unparent(GameObject go)
+        // ---------------- Context menu handlers ----------------
+        private void OnCreateChild(object sender, RoutedEventArgs e)
         {
-            var wasRoot = go.Parent is null;
-            go.RemoveFromParent();
-            if (!wasRoot && !Root.Contains(go))
-                Root.Add(go);
-        }
-        public GameObject AddPrimitiveCube(GameObject? parent = null)
-        {
-            var go = new GameObject("Cube");
-            go.AddBehavior(new MeshFilter { Mesh = Mesh.CreateCube(1f) });
-            go.AddBehavior(new MeshRenderer());
-            if (parent is null) Root.Add(go); else parent.AddChild(go);
-            return go;
-        }
-
-    }
-
-    private readonly HierarchyViewModel _vm;
-    private GameObject? _contextTarget; // the item whose context menu is open
-
-    public HierarchyPanel()
-    {
-        InitializeComponent();
-
-        _vm = new HierarchyViewModel();
-        DataContext = _vm;
-
-        Game_Engine.Core.SceneService.AttachRoot(_vm.Root);
-
-
-        Tree.SelectionChanged += (_, __) =>
-        {
-            var selected =
-                Tree.SelectedItem as GameObject
-                ?? (Tree.SelectedItem as TreeViewItem)?.DataContext as GameObject;
-
-            SelectionService.Set(selected);
-        };
-
-
-
-        DragDrop.SetAllowDrop(Tree, true);
-        Tree.AddHandler(InputElement.PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
-        Tree.AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Bubble);
-        Tree.AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Bubble);
-
-        // Capture which node was right-clicked BEFORE the menu opens
-        Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
-    }
-
-    // ----- Context menu target capture -----
-    private void OnContextRequested(object? sender, ContextRequestedEventArgs e)
-    {
-        var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-        _contextTarget = tvi?.DataContext as GameObject;
-    }
-
-    // ----- Context menu handlers -----
-    private void OnCreateChild(object? sender, RoutedEventArgs e)
-        => _vm.AddEmpty(_contextTarget);
-
-    private void OnUnparent(object? sender, RoutedEventArgs e)
-    {
-        if (_contextTarget is null) return;
-        _vm.Unparent(_contextTarget);
-    }
-
-    private void OnDelete(object? sender, RoutedEventArgs e)
-    {
-        if (_contextTarget is null) return;
-        _vm.Delete(_contextTarget);
-    }
-
-    private void OnCreateCube(object? s, RoutedEventArgs e)
-    {
-        _vm.AddPrimitiveCube(_contextTarget);
-        Game_Engine.Core.SceneService.NotifyChanged();
-    }
-
-
-    private async void OnImportModel(object? sender, RoutedEventArgs e)
-    {
-        var win = this.GetVisualRoot() as Window;
-        var dlg = new OpenFileDialog
-        {
-            Title = "Import model",
-            AllowMultiple = false,
-            Filters =
-        {
-            new FileDialogFilter { Name="Models", Extensions = { "fbx","obj","gltf","glb","dae" } },
-            new FileDialogFilter { Name="All files", Extensions = { "*" } }
-        }
-        };
-        var files = await dlg.ShowAsync(win);
-        if (files is null || files.Length == 0) return;
-
-        try
-        {
-            var go = ModelImporter.ImportModel(files[0]);
-            // under the currently right-clicked target if there is one, else at root.
-            if (_contextTarget is null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
-
-            // handy defaults
-            SelectionService.Set(go);
+            _vm.AddEmpty(_contextTarget);
             SceneService.NotifyChanged();
-            Game_Engine.Core.Log.Success($"Imported model: {files[0]}");
         }
-        catch (Exception ex)
+
+        private void OnCreateCube(object sender, RoutedEventArgs e)
         {
-            Game_Engine.Core.Log.Error(ex, "Model import failed");
+            _vm.AddPrimitiveCube(_contextTarget);
+            SceneService.NotifyChanged();
         }
-    }
-
-
-
-
-    // ----- Drag & drop parenting -----
-    private async void OnPointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
-
-        var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-        var go = tvi?.DataContext as GameObject;
-        if (go is null) return;
-
-        var data = new DataObject();
-        data.Set(DragFormat, go);
-        await DragDrop.DoDragDrop(e, data, DragDropEffects.Move);
-    }
-
-    private void OnDragOver(object? sender, DragEventArgs e)
-    {
-        var dragged = e.Data.Get(DragFormat) as GameObject;
-        if (dragged is null) return;
-
-        var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-        var target = tvi?.DataContext as GameObject;
-
-        var ok = true;
-        if (target is not null)
+        private void OnCreateCone(object sender, RoutedEventArgs e)
         {
-            if (ReferenceEquals(target, dragged) || dragged.IsAncestorOf(target))
-                ok = false; // can't drop onto self/descendant
+            _vm.AddPrimitiveCone(_contextTarget);
+            SceneService.NotifyChanged();
         }
-
-        e.DragEffects = ok ? DragDropEffects.Move : DragDropEffects.None;
-        e.Handled = true;
-    }
-
-    private void OnDrop(object? sender, DragEventArgs e)
-    {
-        var dragged = e.Data.Get(DragFormat) as GameObject;
-        if (dragged is null) return;
-
-        var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-        var target = tvi?.DataContext as GameObject;
-
-        if (target is null)
+        private void OnCreateCylinder(object sender, RoutedEventArgs e)
         {
-            // Dropped on empty area -> root
-            _vm.Unparent(dragged);
+            _vm.AddPrimitiveCylinder(_contextTarget);
+            SceneService.NotifyChanged();
         }
-        else
+
+        private async void OnImportModel(object sender, RoutedEventArgs e)
         {
-            // Prevent duplicate when dragging from root into a parent
-            if (dragged.Parent is null)
-                _vm.Root.Remove(dragged);
+            var win = this.GetVisualRoot() as Window;
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import model",
+                AllowMultiple = false,
+                Filters =
+                {
+                    new FileDialogFilter { Name="Models", Extensions = { "fbx","obj","gltf","glb","dae" } },
+                    new FileDialogFilter { Name="All files", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            if (files == null || files.Length == 0) return;
 
-            target.AddChild(dragged);
+            try
+            {
+                var go = ModelImporter.ImportModel(files[0]);
+                if (_contextTarget == null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
+
+                SelectionService.Set(go);
+                SceneService.NotifyChanged();
+                Log.Success("Imported model: " + files[0]);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Model import failed");
+            }
         }
 
-        e.Handled = true;
+        private void OnUnparent(object sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null) return;
+            _vm.Unparent(_contextTarget);
+            SceneService.NotifyChanged();
+        }
+
+        private void OnDelete(object sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null) return;
+            _vm.Delete(_contextTarget);
+            SceneService.NotifyChanged();
+        }
+
+        private void OnExpandAll(object sender, RoutedEventArgs e) { SetExpandedForScope(true); }
+        private void OnCollapseAll(object sender, RoutedEventArgs e) { SetExpandedForScope(false); }
+
+        private void SetExpandedForScope(bool expand)
+        {
+            var all = Tree.GetVisualDescendants().OfType<TreeViewItem>();
+            foreach (var tvi in all)
+            {
+                var go = tvi.DataContext as GameObject;
+                if (go == null) continue;
+
+                if (_contextTarget == null ||
+                    ReferenceEquals(go, _contextTarget) ||
+                    (_contextTarget != null && _contextTarget.IsAncestorOf(go)))
+                {
+                    tvi.IsExpanded = expand;
+                }
+            }
+        }
+
+        // ---------------- Safe drag gesture (no drag on simple click/double-click/expander) ----------------
+        private void OnPointerPressed(object sender, PointerPressedEventArgs e)
+        {
+            var pt = e.GetCurrentPoint(this);
+            if (!pt.Properties.IsLeftButtonPressed) return;
+
+            // If the click happened on the TreeViewItem's expander toggle, let it expand/collapse
+            var v = e.Source as Visual;
+            if (v != null && v.FindAncestorOfType<ToggleButton>() != null)
+                return;
+
+            var tvi = v != null ? v.FindAncestorOfType<TreeViewItem>() : null;
+            var go = tvi != null ? tvi.DataContext as GameObject : null;
+            if (go == null) return;
+
+            _leftPressed = true;
+            _pressPos = e.GetPosition(this);
+            _pressedItem = go;
+        }
+
+        private async void OnPointerMoved(object sender, PointerEventArgs e)
+        {
+            if (!_leftPressed || _isDragging || _pressedItem == null) return;
+
+            var pos = e.GetPosition(this);
+            if (Math.Abs(pos.X - _pressPos.X) < DragThreshold &&
+                Math.Abs(pos.Y - _pressPos.Y) < DragThreshold)
+                return;
+
+            _isDragging = true;
+
+            var data = new DataObject();
+            data.Set(DragFormat, _pressedItem);
+            await DragDrop.DoDragDrop(e, data, DragDropEffects.Move);
+
+            _isDragging = false;
+            _leftPressed = false;
+            _pressedItem = null;
+        }
+
+        private void OnPointerReleased(object sender, PointerReleasedEventArgs e)
+        {
+            _leftPressed = false;
+            _pressedItem = null;
+        }
+
+        // ---------------- DnD parenting ----------------
+        private void OnDragOver(object sender, DragEventArgs e)
+        {
+            var dragged = e.Data.Get(DragFormat) as GameObject;
+            if (dragged == null) return;
+
+            var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+            var target = tvi != null ? tvi.DataContext as GameObject : null;
+
+            var ok = true;
+            if (target != null)
+            {
+                if (ReferenceEquals(target, dragged) || dragged.IsAncestorOf(target))
+                    ok = false;
+            }
+
+            e.DragEffects = ok ? DragDropEffects.Move : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void OnDrop(object sender, DragEventArgs e)
+        {
+            var dragged = e.Data.Get(DragFormat) as GameObject;
+            if (dragged == null) return;
+
+            var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+            var target = tvi != null ? tvi.DataContext as GameObject : null;
+
+            if (target == null)
+            {
+                // Dropped on empty area -> move to root only if it had a parent
+                if (dragged.Parent != null)
+                    _vm.Unparent(dragged);
+            }
+            else
+            {
+                if (dragged.Parent == null)
+                    _vm.Root.Remove(dragged);
+
+                target.AddChild(dragged);
+            }
+
+            e.Handled = true;
+            SceneService.NotifyChanged();
+        }
     }
 }

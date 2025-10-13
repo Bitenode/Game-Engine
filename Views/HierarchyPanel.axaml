@@ -2,33 +2,46 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:core="clr-namespace:Game_Engine.Core"
              x:Class="Game_Engine.Views.HierarchyPanel">
+
+	<!-- Shared menu used by BOTH the Tree root and each TreeViewItem -->
+	<UserControl.Resources>
+		<ContextMenu x:Key="HierarchyMenu">
+			<MenuItem Header="Create Empty Child" Click="OnCreateChild"/>
+			<MenuItem Header="Create Cube"        Click="OnCreateCube"/>
+			<MenuItem Header="Create Cone"        Click="OnCreateCone"/>
+			<MenuItem Header="Create Cylinder"    Click="OnCreateCylinder"/>
+			<MenuItem Header="Import Model"       Click="OnImportModel"/>
+			<Separator/>
+			<MenuItem Header="Unparent"           Click="OnUnparent"/>
+			<MenuItem Header="Delete"             Click="OnDelete"/>
+			<Separator/>
+			<MenuItem Header="Expand All"         Click="OnExpandAll"/>
+			<MenuItem Header="Collapse All"       Click="OnCollapseAll"/>
+		</ContextMenu>
+	</UserControl.Resources>
+
 	<DockPanel>
 		<TextBlock DockPanel.Dock="Top"
-				   Text="Hierarchy" FontSize="14" Margin="8,6" />
+                   Text="Hierarchy" FontSize="14" Margin="8,6" />
+
 		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
-			<!-- NOTE: ItemsSource (not Items) in Avalonia 11 -->
+			<!-- ItemsSource (not Items) -->
 			<TreeView x:Name="Tree"
-					  SelectionMode="Single"
-					  ItemsSource="{Binding Root}">
+                      SelectionMode="Single"
+                      ItemsSource="{Binding Root}"
+                      ContextMenu="{StaticResource HierarchyMenu}">
 				<TreeView.Styles>
 					<Style Selector="TreeViewItem">
 						<Setter Property="IsExpanded" Value="True"/>
-						<Setter Property="ContextMenu">
-							<ContextMenu>
-								<MenuItem Header="Create Empty Child"  Click="OnCreateChild"/>
-								<MenuItem Header="Create Cube"         Click="OnCreateCube"/>
-								<MenuItem Header="Import Model"         Click="OnImportModel"/>
-								<MenuItem Header="Unparent"            Click="OnUnparent"/>
-								<MenuItem Header="Delete"              Click="OnDelete"/>
-							</ContextMenu>
-						</Setter>
+						<!-- same menu on items -->
+						<Setter Property="ContextMenu" Value="{StaticResource HierarchyMenu}"/>
 					</Style>
 				</TreeView.Styles>
 
 				<!-- Avalonia 11: TreeDataTemplate -->
 				<TreeView.DataTemplates>
 					<TreeDataTemplate DataType="core:GameObject"
-									  ItemsSource="{Binding Children}">
+                                      ItemsSource="{Binding Children}">
 						<TextBlock Text="{Binding Name}"/>
 					</TreeDataTemplate>
 				</TreeView.DataTemplates>

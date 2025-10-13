@@ -348,39 +348,47 @@ public sealed class Mesh
     public static Mesh CreateCone(int sides = 24, float radius = 0.5f, float height = 1f, bool cap = true)
     {
         sides = Math.Max(3, sides);
-        int ring = sides + 1;
         float hy = height * 0.5f;
 
-        var verts = new List<SN.Vector3>(ring + 2);
-        // base ring
-        for (int i = 0; i < ring; i++)
+        var verts = new List<SN.Vector3>(sides + (cap ? 2 : 1));
+
+        // Base ring
+        for (int i = 0; i < sides; i++)
         {
-            float u = i / (float)sides;
-            float th = u * MathF.Tau;
+            float th = (i / (float)sides) * MathF.Tau;
             float x = radius * MathF.Cos(th);
             float z = radius * MathF.Sin(th);
             verts.Add(new SN.Vector3(x, -hy, z));
         }
-        int apex = verts.Count; verts.Add(new SN.Vector3(0, hy, 0));
-        int baseCenter = cap ? verts.Count : -1;
-        if (cap) verts.Add(new SN.Vector3(0, -hy, 0));
 
-        var tris = new List<int>();
-        // sides (fan from apex) — CCW
+        int apex = verts.Count;
+        verts.Add(new SN.Vector3(0, hy, 0));
+
+        int baseCenter = -1;
+        if (cap)
+        {
+            baseCenter = verts.Count;
+            verts.Add(new SN.Vector3(0, -hy, 0));
+        }
+
+        var tris = new List<int>(sides * 3 + (cap ? sides * 3 : 0));
+
+        // Sides (fan from apex) — outward winding
         for (int i = 0; i < sides; i++)
         {
             int a = i;
-            int b = i + 1;
+            int b = (i + 1) % sides;
             tris.Add(a); tris.Add(b); tris.Add(apex);
         }
-        // base cap (CCW when seen from -Y -> reverse order)
+
+        // Bottom cap — wind so normals face -Y (visible from outside/below)
         if (cap)
         {
             for (int i = 0; i < sides; i++)
             {
                 int a = i;
-                int b = i + 1;
-                tris.Add(baseCenter); tris.Add(a); tris.Add(b);
+                int b = (i + 1) % sides;
+                tris.Add(baseCenter); tris.Add(b); tris.Add(a); // note b,a order
             }
         }
 
@@ -392,4 +400,5 @@ public sealed class Mesh
             TessA = sides
         };
     }
+
 }

@@ -119,21 +119,48 @@ public partial class InspectorPanel : UserControl
         return null;
     }
 
-    // Load preview (Avalonia Bitmap) and try to build an engine Texture2D via the helper above.
-    // No Bitmap.Lock() anywhere — purely path/stream based.
+    // Load preview (Avalonia Bitmap) and try to build an engine Texture2D.
+    // Now supports PNG/JPG/BMP/TGA/DDS. For TGA/DDS we decode to RGBA,
+    // build a WriteableBitmap (preview), then feed PNG bytes to Texture2D.FromBytes via TryCreateEngineTextureFromPath.
     private static (Texture2D? tex, IImage? preview) TryLoadTexture2D(string path)
     {
         try
         {
-            var bmp = new Bitmap(path);  // preview for the UI
-            var tex = TryCreateEngineTextureFromPath(path, bmp);
-            return (tex, bmp);
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext is ".png" or ".jpg" or ".jpeg" or ".bmp")
+            {
+                using var fs = File.OpenRead(path);
+                var bmp = new Bitmap(fs);                 // preview for UI
+                var tex = TryCreateEngineTextureFromPath(path, bmp); // engine texture
+                return (tex, bmp);
+            }
+
+            if (ext is ".tga" or ".targa")
+            {
+                var bytes = File.ReadAllBytes(path);
+                var (w, h, rgba) = DecodeTgaToRgba(bytes);
+                var wb = (WriteableBitmap)RgbaToWriteableBitmap(w, h, rgba);
+                var tex = TryCreateEngineTextureFromPath(path, wb);  // will call FromBytes(PNG) using wb.Save(...)
+                return (tex, wb);
+            }
+
+            if (ext == ".dds")
+            {
+                var bytes = File.ReadAllBytes(path);
+                var (w, h, rgba) = DecodeDdsToRgba(bytes);
+                var wb = (WriteableBitmap)RgbaToWriteableBitmap(w, h, rgba);
+                var tex = TryCreateEngineTextureFromPath(path, wb);  // FromBytes(PNG)
+                return (tex, wb);
+            }
+
+            return (null, null);
         }
         catch
         {
             return (null, null);
         }
     }
+
 
 
     static bool ValueEquals(Type t, object? a, object? b)
@@ -538,10 +565,10 @@ public partial class InspectorPanel : UserControl
                 Title = "Import textures",
                 AllowMultiple = true,
                 Filters =
-            {
-                new FileDialogFilter { Name = "Images", Extensions = { "png","jpg","jpeg","bmp" } },
-                new FileDialogFilter { Name = "All files", Extensions = { "*" } }
-            }
+                {
+                    new FileDialogFilter { Name = "Images", Extensions = { "png","jpg","jpeg","bmp","tga","dds","tif","tiff" } },
+                    new FileDialogFilter { Name = "All files", Extensions = { "*" } }
+                }
             };
             var files = await dlg.ShowAsync(OwnerWindow);
             if (files is { Length: > 0 }) AddFiles(files);
@@ -570,7 +597,7 @@ public partial class InspectorPanel : UserControl
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6),
             Background = Brushes.Transparent,
-            Child = new TextBlock { Text = "Drop textures here (png/jpg/bmp)…", Opacity = .7 }
+            Child = new TextBlock { Text = "Drop textures here (png/jpg/bmp/tga/dds)…", Opacity = .7 }
         };
         DragDrop.SetAllowDrop(drop, true);
 
@@ -840,7 +867,7 @@ public partial class InspectorPanel : UserControl
             foreach (var f in files)
             {
                 var ext = Path.GetExtension(f).ToLowerInvariant();
-                if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp")) continue;
+                if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp" or ".tga" or ".dds")) continue;
 
                 var (tex, previewBmp) = TryLoadTexture2D(f);
                 var name = Path.GetFileName(f);
@@ -849,13 +876,11 @@ public partial class InspectorPanel : UserControl
                 var slot = new MaterialTexture
                 {
                     Name = name,
-                    Texture = tex,
+                    Texture = tex, // may be null if load failed; path still saved
                     Usage = GuessUsageFromName(Path.GetFileNameWithoutExtension(f)),
-                    FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower)
+                    FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower),
+                    SourcePath = /* keep your helper */ MakeProjectRelative(f)
                 };
-
-                // store a (project-relative when possible) path for serialization
-                slot.SourcePath = MakeProjectRelative(f);
 
                 mat.Textures.Add(slot);
                 if (previewBmp is not null) previews[slot] = previewBmp;
@@ -864,6 +889,7 @@ public partial class InspectorPanel : UserControl
             SceneService.NotifyChanged();
             Rebuild();
         }
+
 
         static MaterialTexture.TexUsage GuessUsageFromName(string nameRaw)
         {
@@ -976,7 +1002,10 @@ public partial class InspectorPanel : UserControl
             var dlg = new OpenFileDialog
             {
                 AllowMultiple = false,
-                Filters = { new FileDialogFilter { Name = "Images", Extensions = { "png", "jpg", "jpeg", "bmp" } } }
+                Filters =
+                {
+                    new FileDialogFilter { Name = "Images", Extensions = { "png","jpg","jpeg","bmp","tga","dds","tif","tiff" } }
+                }
             };
             var files = await dlg.ShowAsync(OwnerWindow);
             var rawPath = files?.FirstOrDefault();
@@ -1170,6 +1199,340 @@ public partial class InspectorPanel : UserControl
 
 
 
+    // BGRA WriteableBitmap for Avalonia preview from RGBA bytes
+    private static IImage RgbaToWriteableBitmap(int w, int h, byte[] rgba)
+    {
+        var wb = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+            Avalonia.Platform.PixelFormat.Bgra8888, Avalonia.Platform.AlphaFormat.Unpremul);
+
+        using var fb = wb.Lock();
+        unsafe
+        {
+            var dst = (byte*)fb.Address;
+            fixed (byte* srcBase = rgba)
+            {
+                var src = srcBase;
+                int count = w * h;
+                for (int i = 0; i < count; i++)
+                {
+                    byte r = *src++; byte g = *src++; byte b = *src++; byte a = *src++;
+                    *dst++ = b; *dst++ = g; *dst++ = r; *dst++ = a; // RGBA -> BGRA
+                }
+            }
+        }
+        return wb;
+    }
+
+    // Minimal TGA (24/32bpp truecolor; uncompressed or RLE)
+    private static (int w, int h, byte[] rgba) DecodeTgaToRgba(byte[] bytes)
+    {
+        using var ms = new MemoryStream(bytes);
+        using var br = new BinaryReader(ms);
+
+        byte idLength = br.ReadByte();
+        byte colorMapType = br.ReadByte();
+        byte imageType = br.ReadByte(); // 2 or 10
+        br.ReadBytes(5);                 // color map spec
+        br.ReadUInt16();                 // x origin
+        br.ReadUInt16();                 // y origin
+        ushort w = br.ReadUInt16();
+        ushort h = br.ReadUInt16();
+        byte bpp = br.ReadByte();        // 24/32
+        byte desc = br.ReadByte();
+
+        if (!(imageType == 2 || imageType == 10) || !(bpp == 24 || bpp == 32))
+            throw new NotSupportedException("TGA: only 24/32bpp truecolor (RLE/uncompressed) supported.");
+        if (idLength > 0) br.ReadBytes(idLength);
+        if (colorMapType != 0) throw new NotSupportedException("TGA color-mapped not supported.");
+
+        int cpp = bpp / 8;
+        int count = w * h;
+        var rgba = new byte[count * 4];
+
+        void write(int i, byte b, byte g, byte r, byte a)
+        {
+            int o = i * 4;
+            rgba[o + 0] = r; rgba[o + 1] = g; rgba[o + 2] = b; rgba[o + 3] = a;
+        }
+
+        if (imageType == 2)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                byte b = br.ReadByte(); byte g = br.ReadByte(); byte r = br.ReadByte();
+                byte a = (cpp == 4) ? br.ReadByte() : (byte)255;
+                write(i, b, g, r, a);
+            }
+        }
+        else // RLE
+        {
+            int i = 0;
+            while (i < count)
+            {
+                byte packet = br.ReadByte();
+                int run = (packet & 0x7F) + 1;
+                if ((packet & 0x80) != 0)
+                {
+                    byte b = br.ReadByte(); byte g = br.ReadByte(); byte r = br.ReadByte();
+                    byte a = (cpp == 4) ? br.ReadByte() : (byte)255;
+                    for (int k = 0; k < run; k++) write(i++, b, g, r, a);
+                }
+                else
+                {
+                    for (int k = 0; k < run; k++)
+                    {
+                        byte b = br.ReadByte(); byte g = br.ReadByte(); byte r = br.ReadByte();
+                        byte a = (cpp == 4) ? br.ReadByte() : (byte)255;
+                        write(i++, b, g, r, a);
+                    }
+                }
+            }
+        }
+
+        // origin fix (bit 5)
+        bool topLeft = (desc & 0x20) != 0;
+        if (!topLeft)
+        {
+            int stride = w * 4;
+            var row = new byte[stride];
+            for (int y = 0; y < h / 2; y++)
+            {
+                int a = y * stride, b = (h - 1 - y) * stride;
+                Buffer.BlockCopy(rgba, a, row, 0, stride);
+                Buffer.BlockCopy(rgba, b, rgba, a, stride);
+                Buffer.BlockCopy(row, 0, rgba, b, stride);
+            }
+        }
+
+        return (w, h, rgba);
+    }
+
+    // Minimal DDS (DXT1/3/5 compressed or 32-bit uncompressed)
+    private static (int w, int h, byte[] rgba) DecodeDdsToRgba(byte[] bytes)
+    {
+        using var ms = new MemoryStream(bytes);
+        using var br = new BinaryReader(ms);
+
+        uint magic = br.ReadUInt32(); // 'DDS '
+        if (magic != 0x20534444) throw new InvalidDataException("Not a DDS.");
+
+        int headerSize = br.ReadInt32(); // 124
+        if (headerSize != 124) throw new InvalidDataException("Bad DDS header.");
+
+        uint flags = br.ReadUInt32();
+        int h = br.ReadInt32();
+        int w = br.ReadInt32();
+        int pitchOrLinear = br.ReadInt32();
+        br.ReadInt32(); // depth
+        br.ReadInt32(); // mip count
+        br.ReadBytes(44);
+
+        uint pfSize = br.ReadUInt32(); // 32
+        uint pfFlags = br.ReadUInt32();
+        uint fourCC = br.ReadUInt32();
+        uint rgbBits = br.ReadUInt32();
+        uint rMask = br.ReadUInt32();
+        uint gMask = br.ReadUInt32();
+        uint bMask = br.ReadUInt32();
+        uint aMask = br.ReadUInt32();
+        br.ReadBytes(16); // caps
+
+        var rgba = new byte[w * h * 4];
+
+        if ((pfFlags & 0x4) != 0) // FOURCC
+        {
+            int bw = Math.Max(1, (w + 3) / 4);
+            int bh = Math.Max(1, (h + 3) / 4);
+            if (fourCC == 0x31545844) // 'DXT1'
+                DecompressDXT1(br.ReadBytes(pitchOrLinear > 0 ? pitchOrLinear : (bw * bh * 8)), w, h, rgba);
+            else if (fourCC == 0x33545844) // 'DXT3'
+                DecompressDXT3(br.ReadBytes(pitchOrLinear > 0 ? pitchOrLinear : (bw * bh * 16)), w, h, rgba);
+            else if (fourCC == 0x35545844) // 'DXT5'
+                DecompressDXT5(br.ReadBytes(pitchOrLinear > 0 ? pitchOrLinear : (bw * bh * 16)), w, h, rgba);
+            else
+                throw new NotSupportedException("DDS FourCC not supported.");
+        }
+        else
+        {
+            if (rgbBits != 32) throw new NotSupportedException("DDS: only 32-bit uncompressed supported.");
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    uint px = br.ReadUInt32();
+                    byte r = (byte)((px & rMask) >> 16);
+                    byte g = (byte)((px & gMask) >> 8);
+                    byte b = (byte)((px & bMask) >> 0);
+                    byte a = (byte)((px & aMask) >> 24);
+                    int o = (y * w + x) * 4;
+                    rgba[o + 0] = r; rgba[o + 1] = g; rgba[o + 2] = b; rgba[o + 3] = a;
+                }
+        }
+
+        return (w, h, rgba);
+    }
+
+    private static void DecompressDXT1(byte[] data, int w, int h, byte[] rgba)
+    {
+        int bw = (w + 3) / 4, bh = (h + 3) / 4;
+        int idx = 0;
+        for (int by = 0; by < bh; by++)
+            for (int bx = 0; bx < bw; bx++)
+            {
+                ushort c0 = BitConverter.ToUInt16(data, idx); idx += 2;
+                ushort c1 = BitConverter.ToUInt16(data, idx); idx += 2;
+                uint bits = BitConverter.ToUInt32(data, idx); idx += 4;
+
+                Span<uint> pal = stackalloc uint[4];
+                pal[0] = R5G6B5to8888(c0) | 0xFF000000u;
+                pal[1] = R5G6B5to8888(c1) | 0xFF000000u;
+                if (c0 > c1)
+                {
+                    pal[2] = Lerp8888(pal[0], pal[1], 1, 2);
+                    pal[3] = Lerp8888(pal[0], pal[1], 2, 1);
+                }
+                else
+                {
+                    pal[2] = Lerp8888(pal[0], pal[1], 1, 1);
+                    pal[3] = 0x00000000u;
+                }
+
+                for (int py = 0; py < 4; py++)
+                    for (int px = 0; px < 4; px++)
+                    {
+                        int x = bx * 4 + px, y = by * 4 + py;
+                        if (x >= w || y >= h) continue;
+                        uint sel = (bits >> (2 * (py * 4 + px))) & 0x3;
+                        uint p = pal[(int)sel];
+                        int o = (y * w + x) * 4;
+                        rgba[o + 0] = (byte)((p >> 16) & 0xFF);
+                        rgba[o + 1] = (byte)((p >> 8) & 0xFF);
+                        rgba[o + 2] = (byte)(p & 0xFF);
+                        rgba[o + 3] = (byte)((p >> 24) & 0xFF);
+                    }
+            }
+    }
+
+    private static void DecompressDXT3(byte[] data, int w, int h, byte[] rgba)
+    {
+        int bw = (w + 3) / 4, bh = (h + 3) / 4;
+        int idx = 0;
+        for (int by = 0; by < bh; by++)
+            for (int bx = 0; bx < bw; bx++)
+            {
+                ulong alpha = BitConverter.ToUInt64(data, idx); idx += 8;
+
+                ushort c0 = BitConverter.ToUInt16(data, idx); idx += 2;
+                ushort c1 = BitConverter.ToUInt16(data, idx); idx += 2;
+                uint bits = BitConverter.ToUInt32(data, idx); idx += 4;
+
+                Span<uint> pal = stackalloc uint[4];
+                pal[0] = R5G6B5to8888(c0);
+                pal[1] = R5G6B5to8888(c1);
+                pal[2] = Lerp8888(pal[0], pal[1], 1, 2);
+                pal[3] = Lerp8888(pal[0], pal[1], 2, 1);
+
+                for (int py = 0; py < 4; py++)
+                    for (int px = 0; px < 4; px++)
+                    {
+                        int x = bx * 4 + px, y = by * 4 + py;
+                        if (x >= w || y >= h) continue;
+
+                        uint sel = (bits >> (2 * (py * 4 + px))) & 0x3;
+                        uint p = pal[(int)sel];
+
+                        int o = (y * w + x) * 4;
+                        int a4 = (int)((alpha >> (4 * (py * 4 + px))) & 0xF);
+                        byte a = (byte)((a4 << 4) | a4);
+
+                        rgba[o + 0] = (byte)((p >> 16) & 0xFF);
+                        rgba[o + 1] = (byte)((p >> 8) & 0xFF);
+                        rgba[o + 2] = (byte)(p & 0xFF);
+                        rgba[o + 3] = a;
+                    }
+            }
+    }
+
+    private static void DecompressDXT5(byte[] data, int w, int h, byte[] rgba)
+    {
+        int bw = (w + 3) / 4, bh = (h + 3) / 4;
+        int idx = 0;
+        for (int by = 0; by < bh; by++)
+            for (int bx = 0; bx < bw; bx++)
+            {
+                byte a0 = data[idx++], a1 = data[idx++];
+                ulong abits = 0;
+                for (int i = 0; i < 6; i++) abits |= (ulong)data[idx++] << (8 * i);
+
+                ushort c0 = BitConverter.ToUInt16(data, idx); idx += 2;
+                ushort c1 = BitConverter.ToUInt16(data, idx); idx += 2;
+                uint bits = BitConverter.ToUInt32(data, idx); idx += 4;
+
+                Span<byte> apal = stackalloc byte[8];
+                apal[0] = a0; apal[1] = a1;
+                if (a0 > a1)
+                {
+                    apal[2] = (byte)((6 * a0 + 1 * a1) / 7);
+                    apal[3] = (byte)((5 * a0 + 2 * a1) / 7);
+                    apal[4] = (byte)((4 * a0 + 3 * a1) / 7);
+                    apal[5] = (byte)((3 * a0 + 4 * a1) / 7);
+                    apal[6] = (byte)((2 * a0 + 5 * a1) / 7);
+                    apal[7] = (byte)((1 * a0 + 6 * a1) / 7);
+                }
+                else
+                {
+                    apal[2] = (byte)((4 * a0 + 1 * a1) / 5);
+                    apal[3] = (byte)((3 * a0 + 2 * a1) / 5);
+                    apal[4] = (byte)((2 * a0 + 3 * a1) / 5);
+                    apal[5] = (byte)((1 * a0 + 4 * a1) / 5);
+                    apal[6] = 0x00;
+                    apal[7] = 0xFF;
+                }
+
+                Span<uint> pal = stackalloc uint[4];
+                pal[0] = R5G6B5to8888(c0);
+                pal[1] = R5G6B5to8888(c1);
+                pal[2] = Lerp8888(pal[0], pal[1], 1, 2);
+                pal[3] = Lerp8888(pal[0], pal[1], 2, 1);
+
+                for (int py = 0; py < 4; py++)
+                    for (int px = 0; px < 4; px++)
+                    {
+                        int x = bx * 4 + px, y = by * 4 + py;
+                        if (x >= w || y >= h) continue;
+
+                        int ai = (int)((abits >> (3 * (py * 4 + px))) & 0x7);
+                        byte a = apal[ai];
+
+                        uint sel = (bits >> (2 * (py * 4 + px))) & 0x3;
+                        uint p = pal[(int)sel];
+
+                        int o = (y * w + x) * 4;
+                        rgba[o + 0] = (byte)((p >> 16) & 0xFF);
+                        rgba[o + 1] = (byte)((p >> 8) & 0xFF);
+                        rgba[o + 2] = (byte)(p & 0xFF);
+                        rgba[o + 3] = a;
+                    }
+            }
+    }
+
+    private static uint R5G6B5to8888(ushort c)
+    {
+        uint r = (uint)((c >> 11) & 0x1F);
+        uint g = (uint)((c >> 5) & 0x3F);
+        uint b = (uint)(c & 0x1F);
+        r = (r << 3) | (r >> 2);
+        g = (g << 2) | (g >> 4);
+        b = (b << 3) | (b >> 2);
+        return (r << 16) | (g << 8) | b;
+    }
+
+    private static uint Lerp8888(uint a, uint b, int na, int nb)
+    {
+        uint r = ((a >> 16) * (uint)na + (b >> 16) * (uint)nb) / (uint)(na + nb);
+        uint g = ((a >> 8) * (uint)na + (b >> 8) * (uint)nb) / (uint)(na + nb);
+        uint bl = ((a >> 0) * (uint)na + (b >> 0) * (uint)nb) / (uint)(na + nb);
+        return (r << 16) | (g << 8) | bl;
+    }
 
 
 

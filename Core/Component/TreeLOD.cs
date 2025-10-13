@@ -4,7 +4,7 @@ using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
 {
-    /// <summary>
+    /// <summary> NOT USED YET THE LOGIC WAS BREAKING MY BRAIN will fix sometime!
     /// SpeedTree-style LOD + billboard (no SDK).
     /// Attach to a tree GameObject that already has a MeshFilter + MeshRenderer.
     /// - LOD0,1,2 are optional Mesh references (highest -> lowest).
