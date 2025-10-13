@@ -136,6 +136,8 @@ public class SceneView : Control
         set => SetValue(ShowWireProperty, value);
     }
 
+    
+
     public static readonly StyledProperty<bool> ShowLightProperty =
         AvaloniaProperty.Register<SceneView, bool>(nameof(ShowLight), true);
     public bool ShowLight
@@ -317,6 +319,7 @@ public class SceneView : Control
         };
         // scene graph changes
         SceneService.Changed += () => InvalidateVisual();
+        AffectsRender<SceneView>(GizmoLocalProperty);
         // input
         AddHandler(PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
         AddHandler(PointerReleasedEvent, OnPointerReleased, RoutingStrategies.Tunnel);
@@ -902,7 +905,8 @@ public class SceneView : Control
         foreach (var root in SceneService.Root)
             DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
 
-        foreach (var go in Core.SceneService.Root)
+        if (GizmoLocal)
+            foreach (var go in Core.SceneService.Root)
             DrawCollidersRecursive(ctx, vp, size, go);
 
         void DrawCollidersRecursive(DrawingContext ctx, in SN.Matrix4x4 viewProj, Size sz, GameObject go)
@@ -965,8 +969,9 @@ public class SceneView : Control
         }
 
 
-
-        DrawTranslateGizmo(ctx, view, proj, size);
+        if (GizmoLocal)
+            DrawTranslateGizmo(ctx, view, proj, size);
+            
     }
 
 

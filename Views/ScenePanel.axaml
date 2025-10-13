@@ -15,53 +15,57 @@
 
 				<TextBlock Text="Tool" Foreground="#DCE0E6" VerticalAlignment="Center"/>
 
-				<!-- Tool mode radios (Hand / Move / Rotate / Scale) -->
-				<RadioButton Content="Hand"
-							 GroupName="tool"
-							 Foreground="#DCE0E6"
+				<!-- Tool mode radios -->
+				<RadioButton Content="Hand"   GroupName="tool" Foreground="#DCE0E6"
 							 IsChecked="{Binding ElementName=Scene, Path=Tool,
                                          Converter={StaticResource EnumEq},
                                          ConverterParameter=Hand}" />
-				<RadioButton Content="Move"
-							 GroupName="tool"
-							 Foreground="#DCE0E6"
+				<RadioButton Content="Move"   GroupName="tool" Foreground="#DCE0E6"
 							 IsChecked="{Binding ElementName=Scene, Path=Tool,
                                          Converter={StaticResource EnumEq},
                                          ConverterParameter=Move}" />
-				<RadioButton Content="Rotate"
-							 GroupName="tool"
-							 Foreground="#DCE0E6"
+				<RadioButton Content="Rotate" GroupName="tool" Foreground="#DCE0E6"
 							 IsChecked="{Binding ElementName=Scene, Path=Tool,
                                          Converter={StaticResource EnumEq},
                                          ConverterParameter=Rotate}" />
-				<RadioButton Content="Scale"
-							 GroupName="tool"
-							 Foreground="#DCE0E6"
+				<RadioButton Content="Scale"  GroupName="tool" Foreground="#DCE0E6"
 							 IsChecked="{Binding ElementName=Scene, Path=Tool,
                                          Converter={StaticResource EnumEq},
                                          ConverterParameter=Scale}" />
 
+				<!-- AA -->
 				<ToggleButton Content="AA ×2"
-                ToolTip.Tip="Supersample render at 2× and downsample (smoother edges)"
-                IsChecked="{Binding ElementName=scene, Path=Supersample2x, Mode=TwoWay}" />
+							  ToolTip.Tip="Supersample render at 2× and downsample (smoother edges)"
+							  IsChecked="{Binding ElementName=Scene, Path=Supersample2x, Mode=TwoWay}" />
 
 				<Separator Margin="5,0"/>
 
-				<!-- View toggles (bind to your SceneView bool properties) -->
-				<CheckBox Content="Grid"
-						  Foreground="#DCE0E6"
-						  IsChecked="{Binding ElementName=Scene, Path=ShowGrid}" />
-				<CheckBox Content="Wire"
-						  Foreground="#DCE0E6"
-						  IsChecked="{Binding ElementName=Scene, Path=ShowWire}" />
-				<CheckBox Content="Light"
-						  Foreground="#DCE0E6"
-						  IsChecked="{Binding ElementName=Scene, Path=ShowLight}" />
-				<CheckBox Content="2D"
-						  Foreground="#DCE0E6"
-						  IsChecked="{Binding ElementName=Scene, Path=Is2D}" />
-				
-				
+				<!-- View toggles -> dropdown with actual CheckBoxes -->
+				<Button Content="View ▾" Foreground="#DCE0E6">
+					<Button.Flyout>
+						<Flyout Placement="Bottom">
+							<StackPanel Spacing="6" Margin="10,8">
+								<CheckBox Content="Grid"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=ShowGrid, Mode=TwoWay}" />
+								<CheckBox Content="Wire"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=ShowWire, Mode=TwoWay}" />
+								<CheckBox Content="Gizmos"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=GizmoLocal, Mode=TwoWay}" />
+								<CheckBox Content="Light"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=ShowLight, Mode=TwoWay}" />
+								<CheckBox Content="2D"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=Is2D, Mode=TwoWay}" />
+							</StackPanel>
+						</Flyout>
+					</Button.Flyout>
+				</Button>
+
+
 			</StackPanel>
 		</Border>
 
