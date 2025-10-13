@@ -89,13 +89,13 @@ public partial class InspectorPanel : UserControl
     }
 
     // tolerant: captures class name and the entire base list up to '{' or newline
-static readonly Regex RxClassDecl =
-    new Regex(@"(?:(?:\[[^\]]*\]\s*)|(?:public|internal|protected|private|sealed|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)\s*:\s*([^\r\n{]+)",
-              RegexOptions.Compiled);
+    static readonly Regex RxClassDecl =
+        new Regex(@"(?:(?:\[[^\]]*\]\s*)|(?:public|internal|protected|private|sealed|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)\s*:\s*([^\r\n{]+)",
+                  RegexOptions.Compiled);
 
-// used to decide if the base list contains Behavior (with or without namespace)
-static readonly Regex RxBaseContainsBehavior =
-    new Regex(@"\b(?:global::)?(?:[A-Za-z_]\w*\.)*Behavior\b", RegexOptions.Compiled);
+    // used to decide if the base list contains Behavior (with or without namespace)
+    static readonly Regex RxBaseContainsBehavior =
+        new Regex(@"\b(?:global::)?(?:[A-Za-z_]\w*\.)*Behavior\b", RegexOptions.Compiled);
 
 
     static List<ScriptInfo> _scriptCache = new List<ScriptInfo>();
@@ -224,33 +224,78 @@ static readonly Regex RxBaseContainsBehavior =
     }
 
 
-    static Type TryResolveLoadedType(string fullName)
+    static Type? TryResolveLoadedType(string fullName)
     {
-        // First try whatever is already loaded
-        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+        Type? best = null;
+
+        // Prefer types from a collectible ALC (built this session via the ScriptEditor)
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            Type? t = null;
+            try { t = asm.GetType(fullName, throwOnError: false, ignoreCase: false); } catch { }
+            if (t == null) continue;
+
+            var alc = AssemblyLoadContext.GetLoadContext(asm);
+            if (alc?.IsCollectible == true)               // hot build
+                return t;
+
+            if (best == null) best = t;                   // keep a fallback
+        }
+
+        // Otherwise pick the newest persisted EditorScripts_*.dll
+        DateTime bestTime = DateTime.MinValue;
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
         {
             try
             {
-                var t = a.GetType(fullName, throwOnError: false, ignoreCase: false);
-                if (t != null) return t;
+                var t = asm.GetType(fullName, false, false);
+                if (t == null) continue;
+
+                var loc = asm.Location;
+                if (!string.IsNullOrWhiteSpace(loc) &&
+                    Path.GetFileName(loc).StartsWith("EditorScripts_", StringComparison.OrdinalIgnoreCase))
+                {
+                    var ts = File.GetLastWriteTimeUtc(loc);
+                    if (ts > bestTime) { best = t; bestTime = ts; }
+                }
             }
             catch { }
         }
 
-        // Not found? Try bring the persisted editor scripts into memory, then try again
-        EnsurePersistedEditorScriptsLoaded();
-
-        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            try
-            {
-                var t = a.GetType(fullName, throwOnError: false, ignoreCase: false);
-                if (t != null) return t;
-            }
-            catch { }
-        }
-        return null;
+        return best;
     }
+
+    static bool TryMigrateBehaviorToLatest(GameObject owner, ref Behavior b)
+    {
+        var fromType = b.GetType();
+        var latest = TryResolveLoadedType(fromType.FullName!);
+        if (latest == null || latest == fromType) return false;
+
+        Behavior? nb = null;
+        try { nb = (Behavior)Activator.CreateInstance(latest)!; }
+        catch { return false; }
+
+        // copy simple public props by name/type (best effort)
+        var srcProps = fromType.GetProperties(BindingFlags.Instance | BindingFlags.Public);
+        var dstProps = latest.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                             .ToDictionary(p => p.Name);
+
+        foreach (var sp in srcProps)
+        {
+            if (!sp.CanRead || sp.GetIndexParameters().Length != 0) continue;
+            if (!dstProps.TryGetValue(sp.Name, out var dp) || dp.SetMethod == null) continue;
+            if (!dp.PropertyType.IsAssignableFrom(sp.PropertyType)) continue;
+
+            try { dp.SetValue(nb, sp.GetValue(b)); } catch { }
+        }
+
+        // swap on the GameObject
+        owner.RemoveBehavior(b);
+        owner.AddBehavior(nb);
+        b = nb;
+        return true;
+    }
+
 
 
     void ShowInfo(string msg)
@@ -691,6 +736,9 @@ static readonly Regex RxBaseContainsBehavior =
         // --- outer container (border -> vertical stack) ---
         var outer = new StackPanel { Spacing = 6 };
 
+        // ensure we inspect the freshest version of this script
+        TryMigrateBehaviorToLatest(owner, ref b);
+
         // Header row: [Enabled] [Title] [Remove]
         var header = new StackPanel
         {
@@ -760,6 +808,8 @@ static readonly Regex RxBaseContainsBehavior =
             Padding = new Thickness(8),
             Child = outer
         };
+
+        
     }
 
     // Build a stable "Root/Child/SubChild" path for a GO
