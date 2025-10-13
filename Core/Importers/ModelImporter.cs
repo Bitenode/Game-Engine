@@ -297,7 +297,7 @@ namespace Game_Engine.Core.Importers
                 var mf = new MeshFilter { Mesh = mesh };
                 var mr = new MeshRenderer();
 
-                // If MeshFilter exposes a string ModelPath, populate it (project-relative)
+                //MeshFilter exposes a string ModelPath, populate it (project-relative)
                 try
                 {
                     var mpProp = typeof(MeshFilter).GetProperty("ModelPath",

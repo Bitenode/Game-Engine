@@ -5,16 +5,18 @@
         WindowStartupLocation="CenterOwner"
         Title="Script Editor">
 	<DockPanel>
-		<StackPanel Orientation="Horizontal"
-					DockPanel.Dock="Top"
-					Margin="10"
-					Spacing="8"
-					HorizontalAlignment="Right">
-			<Button x:Name="BtnSave"   Content="Save"     MinWidth="80"/>
-			<Button x:Name="BtnSaveAs" Content="Save As…" MinWidth="90"/>
-			<Button x:Name="BtnReload" Content="Reload"   MinWidth="80"/>
-			<Button x:Name="BtnClose"  Content="Close"    MinWidth="80"/>
+		<!-- Toolbar row ... -->
+		<StackPanel Orientation="Horizontal" Spacing="8">
+			<Button x:Name="BtnSave"   Content="Save"/>
+			<Button x:Name="BtnSaveAs" Content="Save As…"/>
+			<Button x:Name="BtnReload" Content="Reload"/>
+			<!-- NEW -->
+			<Button x:Name="BtnBuild"  Content="Build &amp; Load"/>
+			<Button x:Name="BtnClose"  Content="Close"/>
 		</StackPanel>
+
+		<!-- status bar at the bottom -->
+		<TextBlock x:Name="Status" Margin="8,4,8,0" Opacity=".7"/>
 
 		<TextBox x:Name="Editor"
 				 AcceptsReturn="True"

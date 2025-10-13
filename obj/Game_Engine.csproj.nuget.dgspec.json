@@ -65,6 +65,10 @@
               "target": "Package",
               "version": "[11.*, )"
             },
+            "Microsoft.CodeAnalysis.CSharp": {
+              "target": "Package",
+              "version": "[4.14.0, )"
+            },
             "SkiaSharp": {
               "target": "Package",
               "version": "[2.88.9, )"

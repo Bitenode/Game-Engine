@@ -24,6 +24,8 @@ using Avalonia.Platform.Storage;
 using System.Runtime.CompilerServices;
 using Game_Engine.Core.Component;
 using static Assimp.Metadata;
+using System.Text.RegularExpressions;
+using System.Runtime.Loader;
 
 namespace Game_Engine.Views;
 
@@ -65,6 +67,261 @@ public partial class InspectorPanel : UserControl
     private GameObject? _target;   // what THIS inspector is showing
     private bool _isLocked;        // lock state for THIS inspector
     private Window? OwnerWindow => this.GetVisualRoot() as Window;
+
+
+    // ---------- Project Script Discovery (source .cs,  DLLs) ----------
+    sealed class ScriptInfo
+    {
+        public string Name { get; }
+        public string FullName { get; }
+        public string FilePath { get; }
+        public ScriptInfo(string name, string fullName, string filePath)
+        {
+            Name = name; FullName = fullName; FilePath = filePath;
+        }
+    }
+
+    sealed class ComboItem
+    {
+        public string Display { get; set; } = "";   // <— property (not field)
+        public Type Type { get; set; }              // non-null if loaded/instantiable
+        public ScriptInfo Script { get; set; }      // non-null for source scripts
+    }
+
+    // tolerant: captures class name and the entire base list up to '{' or newline
+static readonly Regex RxClassDecl =
+    new Regex(@"(?:(?:\[[^\]]*\]\s*)|(?:public|internal|protected|private|sealed|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)\s*:\s*([^\r\n{]+)",
+              RegexOptions.Compiled);
+
+// used to decide if the base list contains Behavior (with or without namespace)
+static readonly Regex RxBaseContainsBehavior =
+    new Regex(@"\b(?:global::)?(?:[A-Za-z_]\w*\.)*Behavior\b", RegexOptions.Compiled);
+
+
+    static List<ScriptInfo> _scriptCache = new List<ScriptInfo>();
+    static string _scriptCacheRoot = "";
+    static DateTime _scriptCacheStamp = DateTime.MinValue;
+
+    static void InvalidateScriptCache()
+    {
+        _scriptCache.Clear();
+        _scriptCacheRoot = "";
+        _scriptCacheStamp = DateTime.MinValue;
+    }
+
+    // Scan all likely project roots (dedup + exists)
+    static IEnumerable<string> CandidateScriptRoots()
+    {
+        var p = ProjectService.Current;
+        if (p == null) yield break;
+
+        var dirs = new[]
+        {
+        p.RootPath,
+        p.AssetsPath,
+        p.ScenesPath,
+        p.PackagesPath,
+        p.BuildsPath
+    };
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in dirs)
+        {
+            if (string.IsNullOrWhiteSpace(d)) continue;
+            var full = Path.GetFullPath(d);
+            if (!Directory.Exists(full)) continue;
+            if (seen.Add(full)) yield return full;
+        }
+    }
+
+
+
+    // Find .cs files that declare "class X : Behavior" (tolerant of attributes, whitespace, fqns)
+    static List<ScriptInfo> DiscoverProjectBehaviorScripts()
+    {
+        var p = ProjectService.Current;
+        if (p == null) return new List<ScriptInfo>();
+
+        // small cache
+        var rootSig = p.RootPath ?? "";
+        if (_scriptCache.Count > 0 && string.Equals(_scriptCacheRoot, rootSig, StringComparison.OrdinalIgnoreCase))
+        {
+            if ((DateTime.UtcNow - _scriptCacheStamp).TotalSeconds < 2)
+                return new List<ScriptInfo>(_scriptCache);
+        }
+
+        // local tolerant regex (don’t rely on outer fields)
+        var rxNamespace = new Regex(@"namespace\s+([A-Za-z_][\w\.]*)", RegexOptions.Compiled);
+        var rxClassDecl = new Regex(
+            @"(?:(?:\[[^\]]*\]\s*)|(?:public|internal|protected|private|sealed|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)\s*:\s*([^\r\n{]+)",
+            RegexOptions.Compiled);
+        var rxBaseContainsBehavior = new Regex(@"\b(?:global::)?(?:[A-Za-z_]\w*\.)*Behavior\b", RegexOptions.Compiled);
+
+        var found = new List<ScriptInfo>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in CandidateScriptRoots())
+        {
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+                                 .Where(f =>
+                                 {
+                                     // skip common build/metadata folders
+                                     var s = f.Replace('/', Path.DirectorySeparatorChar);
+                                     var sep = Path.DirectorySeparatorChar;
+                                     return s.IndexOf($"{sep}obj{sep}", StringComparison.OrdinalIgnoreCase) < 0
+                                         && s.IndexOf($"{sep}bin{sep}", StringComparison.OrdinalIgnoreCase) < 0
+                                         && s.IndexOf($"{sep}.git{sep}", StringComparison.OrdinalIgnoreCase) < 0;
+                                 })
+                                 .Take(5000); // safety cap
+            }
+            catch { continue; }
+
+            foreach (var f in files)
+            {
+                string text;
+                try { text = File.ReadAllText(f); } catch { continue; }
+
+                // choose last namespace in file (typical pattern for one-class files)
+                string ns = "";
+                var nsMatches = rxNamespace.Matches(text);
+                if (nsMatches.Count > 0)
+                    ns = nsMatches[nsMatches.Count - 1].Groups[1].Value.Trim();
+
+                var clsMatches = rxClassDecl.Matches(text);
+                if (clsMatches.Count == 0) continue;
+
+                for (int m = 0; m < clsMatches.Count; m++)
+                {
+                    var cm = clsMatches[m];
+                    var className = cm.Groups[1].Value.Trim();
+                    var baseList = cm.Groups[2].Value.Trim();
+
+                    // must inherit Behavior somewhere in the base list
+                    if (!rxBaseContainsBehavior.IsMatch(baseList)) continue;
+
+                    // skip abstract classes (quick header check around decl)
+                    var headStart = Math.Max(0, cm.Index - 64);
+                    var headLen = Math.Min(text.Length - headStart, cm.Length + 64);
+                    var header = text.Substring(headStart, headLen);
+                    if (header.IndexOf("abstract class", StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+
+                    var full = string.IsNullOrEmpty(ns) ? className : (ns + "." + className);
+                    if (!seen.Add(full)) continue;
+
+                    found.Add(new ScriptInfo(className, full, f));
+                }
+            }
+        }
+
+        _scriptCache = found;
+        _scriptCacheRoot = rootSig;
+        _scriptCacheStamp = DateTime.UtcNow;
+        return new List<ScriptInfo>(_scriptCache);
+    }
+
+
+    static Type TryResolveLoadedType(string fullName)
+    {
+        // First try whatever is already loaded
+        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            try
+            {
+                var t = a.GetType(fullName, throwOnError: false, ignoreCase: false);
+                if (t != null) return t;
+            }
+            catch { }
+        }
+
+        // Not found? Try bring the persisted editor scripts into memory, then try again
+        EnsurePersistedEditorScriptsLoaded();
+
+        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            try
+            {
+                var t = a.GetType(fullName, throwOnError: false, ignoreCase: false);
+                if (t != null) return t;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+
+    void ShowInfo(string msg)
+    {
+        var win = this.GetVisualRoot() as Window;
+        var alert = new Window
+        {
+            Title = "Info",
+            Width = 420,
+            Height = 200,
+            Content = new TextBlock { Text = msg, Margin = new Thickness(16), TextWrapping = TextWrapping.Wrap },
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        alert.ShowDialog(win);
+    }
+
+    // Track what we've already loaded this session
+    static readonly HashSet<string> s_loadedDlls = new(StringComparer.OrdinalIgnoreCase);
+    static bool s_triedLoadPersisted;
+
+    // Where the ScriptEditor saves hot builds (and any other plugin folders you like)
+    static IEnumerable<string> EditorScriptDllFolders()
+    {
+        var p = ProjectService.Current;
+        if (p == null) yield break;
+
+        if (!string.IsNullOrWhiteSpace(p.BuildsPath))
+        {
+            var dir = Path.Combine(p.BuildsPath, "EditorScripts");
+            if (Directory.Exists(dir)) yield return dir;
+        }
+        // add more places to load under Packages etc.
+    }
+
+    // Load every EditorScripts_*.dll exactly once into the default ALC
+    static void EnsurePersistedEditorScriptsLoaded()
+    {
+        if (s_triedLoadPersisted) return;
+        s_triedLoadPersisted = true;
+
+        foreach (var dir in EditorScriptDllFolders())
+        {
+            foreach (var dll in Directory.EnumerateFiles(dir, "EditorScripts_*.dll", SearchOption.TopDirectoryOnly))
+                TryLoadEditorDll(dll);
+        }
+    }
+
+    static void TryLoadEditorDll(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            if (!File.Exists(full)) return;
+            if (!s_loadedDlls.Add(full)) return; // already loaded
+
+            // If an assembly with this name is already present, skip
+            var name = AssemblyName.GetAssemblyName(full);
+            if (AppDomain.CurrentDomain.GetAssemblies()
+                .Any(a => string.Equals(a.GetName().Name, name.Name, StringComparison.OrdinalIgnoreCase)))
+                return;
+
+            AssemblyLoadContext.Default.LoadFromAssemblyPath(full);
+           Game_Engine.Core.Log.Info($"Loaded editor script assembly: {full}");
+        }
+        catch
+        {
+            // Swallow — a bad dll shouldn’t break the UI
+        }
+    }
+
+
 
 
     // ---------- Undo snapshots (begin/commit) ----------
@@ -225,6 +482,12 @@ public partial class InspectorPanel : UserControl
                 BuildUI(_target);
             };
         }
+        // Load persisted editor script dlls when a project opens and on first run
+        ProjectService.ProjectOpened += () => { s_triedLoadPersisted = false; EnsurePersistedEditorScriptsLoaded(); InvalidateScriptCache(); };
+        EnsurePersistedEditorScriptsLoaded(); // first-time (app just launched)
+
+        ProjectService.ProjectClosed += InvalidateScriptCache;
+        ProjectService.Changed += InvalidateScriptCache;
 
         BuildUI(_target);
     }
@@ -245,7 +508,6 @@ public partial class InspectorPanel : UserControl
         var nameBox = new TextBox { Margin = new Thickness(0, 0, 0, 6) };
         nameBox.Bind(TextBox.TextProperty, new Binding("Name") { Source = go, Mode = BindingMode.TwoWay });
 
-        // Make name undoable
         var pName = typeof(GameObject).GetProperty(nameof(GameObject.Name))!;
         nameBox.GotFocus += (_, __) => BeginPropertyEdit(go, pName);
         nameBox.LostFocus += (_, __) => CommitPropertyEdit(go, pName);
@@ -257,32 +519,70 @@ public partial class InspectorPanel : UserControl
         Host.Children.Add(EditorForTransform(go.Transform));
 
         // ---- Add Component --------------------------------------------------
-        var allTypes = AppDomain.CurrentDomain.GetAssemblies()
+        // 1) Already-loaded Behavior types (built-ins/plugins in AppDomain)
+        var builtInTypes = AppDomain.CurrentDomain.GetAssemblies()
             .SelectMany(LoadableTypes)
-            .Where(t => t is not null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
+            .Where(t => t != null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
             .Where(t => t != typeof(CoreTransform))
-            .OrderBy(t => t!.Name)
-            .ToList()!;
+            .OrderBy(t => t.Name)
+            .ToList();
+
+        // 2) Project scripts discovered from source files
+        var scriptInfos = DiscoverProjectBehaviorScripts();
+        scriptInfos.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+
+        // 3) Unified list for the ComboBox
+        var choices = new List<ComboItem>();
+        for (int i = 0; i < builtInTypes.Count; i++)
+        {
+            var t = builtInTypes[i];
+            choices.Add(new ComboItem { Display = t.Name, Type = t, Script = null });
+        }
+        for (int i = 0; i < scriptInfos.Count; i++)
+        {
+            var s = scriptInfos[i];
+            var loaded = TryResolveLoadedType(s.FullName);
+            var label = loaded != null ? (s.Name + "  [Script]") : (s.Name + "  [Script: source only]");
+            choices.Add(new ComboItem { Display = label, Type = loaded, Script = s });
+        }
 
         var addRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         var typeBox = new ComboBox
         {
-            Width = 220,
-            ItemsSource = allTypes,
-            SelectedIndex = allTypes.Count > 0 ? 0 : -1,
-            DisplayMemberBinding = new Binding("Name"),
+            Width = 260,
+            ItemsSource = choices,
+            SelectedIndex = choices.Count > 0 ? 0 : -1,
+            DisplayMemberBinding = new Binding(nameof(ComboItem.Display)),
         };
-        var addBtn = new Button { Content = "Add Component", IsEnabled = allTypes.Count > 0 };
+        var addBtn = new Button { Content = "Add Component", IsEnabled = choices.Count > 0 };
+
         addBtn.Click += (_, __) =>
         {
-            if (typeBox.SelectedItem is Type t)
+            var sel = typeBox.SelectedItem as ComboItem;
+            if (sel == null) return;
+
+            if (sel.Type != null)
             {
-                var inst = (Behavior)Activator.CreateInstance(t)!;
-                go.AddBehavior(inst);
-                SceneService.NotifyChanged();
-                BuildUI(go);
+                try
+                {
+                    var inst = (Behavior)Activator.CreateInstance(sel.Type)!;
+                    go.AddBehavior(inst);
+                    SceneService.NotifyChanged();
+                    BuildUI(go);
+                }
+                catch (Exception ex)
+                {
+                    ShowInfo("Failed to add component:\n" + ex.Message);
+                }
+            }
+            else if (sel.Script != null)
+            {
+                ShowInfo("That script exists in your project but isn’t compiled into the editor yet:\n\n" +
+                         sel.Script.FullName + "\n\nOpen it, add it to your editor solution, and build so it becomes available.");
+                try { ScriptEditorWindow.Open(OwnerWindow, sel.Script.FilePath); } catch { }
             }
         };
+
         addRow.Children.Add(typeBox);
         addRow.Children.Add(addBtn);
         Host.Children.Add(addRow);
@@ -291,6 +591,7 @@ public partial class InspectorPanel : UserControl
         foreach (var b in go.Behaviors.ToList())
             Host.Children.Add(EditorForBehavior(go, b));
     }
+
 
     private static IEnumerable<Type> LoadableTypes(Assembly a)
     {
