@@ -18,15 +18,37 @@ namespace Game_Engine.Views
         private const string DragFormat = "application/x-gameobject";
         private const double DragThreshold = 4.0; // px before starting a drag
 
+        // ViewModel that never creates a new collection unless the engine has none yet.
         private sealed class HierarchyViewModel
         {
-            public ObservableCollection<GameObject> Root { get; } = new ObservableCollection<GameObject>();
+            public ObservableCollection<GameObject> Root { get; }
 
             public HierarchyViewModel()
             {
-                Root.Add(new GameObject("Main Camera"));
-                AddLight();
+              
+                // create root and attach once
+                Root = new ObservableCollection<GameObject>();
+                SceneService.AttachRoot(Root);
+
+                // Default bootstrap (only once, for a brand new empty scene)
+                AddDefaultCamera();
+                AddDefaultLight();
                 AddPrimitiveCube();
+            }
+
+            private static void AddDefaultCamera()
+            {
+                var cam = new GameObject("Main Camera");
+                cam.AddBehavior(new Camera());
+                SceneService.Root.Add(cam);
+            }
+
+            private static void AddDefaultLight()
+            {
+                var light = new GameObject("Directional Light");
+                light.AddBehavior(new Light());
+                light.Transform.Rotation.X = 90; 
+                SceneService.Root.Add(light);
             }
 
             public void AddEmpty(GameObject parent = null)
@@ -45,20 +67,10 @@ namespace Game_Engine.Views
             public void Unparent(GameObject go)
             {
                 if (go == null) return;
-                var wasRoot = go.Parent == null;
+                bool wasRoot = go.Parent == null;
                 go.RemoveFromParent();
                 if (!wasRoot && !Root.Contains(go))
                     Root.Add(go);
-            }
-
-            public GameObject AddLight(GameObject parent = null)
-            {
-                var go = new GameObject("Directional Light");
-                
-                go.AddBehavior(new Light());
-                go.Transform.Rotation.X = 90;
-                if (parent == null) Root.Add(go); else parent.AddChild(go);
-                return go;
             }
 
             public GameObject AddPrimitiveCube(GameObject parent = null)
@@ -69,6 +81,7 @@ namespace Game_Engine.Views
                 if (parent == null) Root.Add(go); else parent.AddChild(go);
                 return go;
             }
+
             public GameObject AddPrimitiveCone(GameObject parent = null)
             {
                 var go = new GameObject("Cone");
@@ -77,6 +90,7 @@ namespace Game_Engine.Views
                 if (parent == null) Root.Add(go); else parent.AddChild(go);
                 return go;
             }
+
             public GameObject AddPrimitiveCylinder(GameObject parent = null)
             {
                 var go = new GameObject("Cylinder");
@@ -103,8 +117,7 @@ namespace Game_Engine.Views
             _vm = new HierarchyViewModel();
             DataContext = _vm;
 
-            SceneService.AttachRoot(_vm.Root);
-
+            // Selection -> engine selection
             Tree.SelectionChanged += (_, __) =>
             {
                 var selected =
@@ -113,6 +126,7 @@ namespace Game_Engine.Views
                 SelectionService.Set(selected);
             };
 
+            // Drag & drop wiring
             DragDrop.SetAllowDrop(Tree, true);
 
             // Drag gesture: press -> move beyond threshold -> start drag
@@ -124,7 +138,7 @@ namespace Game_Engine.Views
             Tree.AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Bubble);
             Tree.AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Bubble);
 
-            // Remember which node (or none) was right-clicked
+            // Context menu target capture
             Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
         }
 
@@ -132,8 +146,8 @@ namespace Game_Engine.Views
         private void OnContextRequested(object sender, ContextRequestedEventArgs e)
         {
             var v = e.Source as Visual;
-            var tvi = v != null ? v.FindAncestorOfType<TreeViewItem>() : null;
-            _contextTarget = tvi != null ? tvi.DataContext as GameObject : null;
+            var tvi = v?.FindAncestorOfType<TreeViewItem>();
+            _contextTarget = tvi?.DataContext as GameObject;
         }
 
         // ---------------- Context menu handlers ----------------
@@ -148,11 +162,13 @@ namespace Game_Engine.Views
             _vm.AddPrimitiveCube(_contextTarget);
             SceneService.NotifyChanged();
         }
+
         private void OnCreateCone(object sender, RoutedEventArgs e)
         {
             _vm.AddPrimitiveCone(_contextTarget);
             SceneService.NotifyChanged();
         }
+
         private void OnCreateCylinder(object sender, RoutedEventArgs e)
         {
             _vm.AddPrimitiveCylinder(_contextTarget);
@@ -168,8 +184,8 @@ namespace Game_Engine.Views
                 AllowMultiple = false,
                 Filters =
                 {
-                    new FileDialogFilter { Name="Models", Extensions = { "fbx","obj","gltf","glb","dae" } },
-                    new FileDialogFilter { Name="All files", Extensions = { "*" } }
+                    new FileDialogFilter { Name = "Models", Extensions = { "fbx","obj","gltf","glb","dae" } },
+                    new FileDialogFilter { Name = "All files", Extensions = { "*" } }
                 }
             };
             var files = await dlg.ShowAsync(win);
@@ -204,8 +220,8 @@ namespace Game_Engine.Views
             SceneService.NotifyChanged();
         }
 
-        private void OnExpandAll(object sender, RoutedEventArgs e) { SetExpandedForScope(true); }
-        private void OnCollapseAll(object sender, RoutedEventArgs e) { SetExpandedForScope(false); }
+        private void OnExpandAll(object sender, RoutedEventArgs e) => SetExpandedForScope(true);
+        private void OnCollapseAll(object sender, RoutedEventArgs e) => SetExpandedForScope(false);
 
         private void SetExpandedForScope(bool expand)
         {
@@ -235,8 +251,8 @@ namespace Game_Engine.Views
             if (v != null && v.FindAncestorOfType<ToggleButton>() != null)
                 return;
 
-            var tvi = v != null ? v.FindAncestorOfType<TreeViewItem>() : null;
-            var go = tvi != null ? tvi.DataContext as GameObject : null;
+            var tvi = v?.FindAncestorOfType<TreeViewItem>();
+            var go = tvi?.DataContext as GameObject;
             if (go == null) return;
 
             _leftPressed = true;
@@ -277,7 +293,7 @@ namespace Game_Engine.Views
             if (dragged == null) return;
 
             var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-            var target = tvi != null ? tvi.DataContext as GameObject : null;
+            var target = tvi?.DataContext as GameObject;
 
             var ok = true;
             if (target != null)
@@ -296,11 +312,10 @@ namespace Game_Engine.Views
             if (dragged == null) return;
 
             var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-            var target = tvi != null ? tvi.DataContext as GameObject : null;
+            var target = tvi?.DataContext as GameObject;
 
             if (target == null)
             {
-                // Dropped on empty area -> move to root only if it had a parent
                 if (dragged.Parent != null)
                     _vm.Unparent(dragged);
             }

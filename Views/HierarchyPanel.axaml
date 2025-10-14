@@ -21,27 +21,23 @@
 	</UserControl.Resources>
 
 	<DockPanel>
-		<TextBlock DockPanel.Dock="Top"
-                   Text="Hierarchy" FontSize="14" Margin="8,6" />
+		<TextBlock DockPanel.Dock="Top" Text="Hierarchy" FontSize="14" Margin="8,6" />
 
 		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
-			<!-- ItemsSource (not Items) -->
 			<TreeView x:Name="Tree"
-                      SelectionMode="Single"
-                      ItemsSource="{Binding Root}"
-                      ContextMenu="{StaticResource HierarchyMenu}">
+					  SelectionMode="Single"
+					  ItemsSource="{Binding Root}"
+					  ContextMenu="{StaticResource HierarchyMenu}">
 				<TreeView.Styles>
 					<Style Selector="TreeViewItem">
 						<Setter Property="IsExpanded" Value="True"/>
-						<!-- same menu on items -->
 						<Setter Property="ContextMenu" Value="{StaticResource HierarchyMenu}"/>
 					</Style>
 				</TreeView.Styles>
 
-				<!-- Avalonia 11: TreeDataTemplate -->
 				<TreeView.DataTemplates>
 					<TreeDataTemplate DataType="core:GameObject"
-                                      ItemsSource="{Binding Children}">
+									  ItemsSource="{Binding Children}">
 						<TextBlock Text="{Binding Name}"/>
 					</TreeDataTemplate>
 				</TreeView.DataTemplates>
