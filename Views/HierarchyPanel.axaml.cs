@@ -25,8 +25,14 @@ namespace Game_Engine.Views
 
             public HierarchyViewModel()
             {
-              
-                // create root and attach once
+                // If the engine already has a root, reuse it (no scene churn)
+                if (SceneService.Root is ObservableCollection<GameObject> existing)
+                {
+                    Root = existing;
+                    return;
+                }
+
+                // Otherwise, create one and attach once
                 Root = new ObservableCollection<GameObject>();
                 SceneService.AttachRoot(Root);
 
@@ -47,7 +53,7 @@ namespace Game_Engine.Views
             {
                 var light = new GameObject("Directional Light");
                 light.AddBehavior(new Light());
-                light.Transform.Rotation.X = 90; 
+                light.Transform.Rotation.X = 90; // your previous default
                 SceneService.Root.Add(light);
             }
 
