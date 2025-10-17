@@ -1,28 +1,29 @@
-﻿using System;
+﻿#nullable enable
+using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Media.TextFormatting;
+using Avalonia.Platform;
 using Avalonia.Threading;
 using SN = System.Numerics;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
-using Avalonia.Media.Imaging;
-using Avalonia.Platform;
-using System.Diagnostics;
-using Avalonia.Input;
-using System.IO;
-using static Game_Engine.Core.Component.CapsuleCollider;
 using Game_Engine.Core.Input;
 
 namespace Game_Engine.Views
 {
     public class GameView : Control
     {
-        // Mirror the GamePanel state (we bind/forward to this)
         public static readonly StyledProperty<GamePanel.GameState> StateProperty =
-            AvaloniaProperty.Register<GameView, GamePanel.GameState>(nameof(State), GamePanel.GameState.Stopped);
+            AvaloniaProperty.Register<GameView, GamePanel.GameState>(
+                nameof(State), GamePanel.GameState.Stopped);
 
         public GamePanel.GameState State
         {
@@ -30,246 +31,180 @@ namespace Game_Engine.Views
             set => SetValue(StateProperty, value);
         }
 
-        // --- Loop clocks ---
-        readonly DispatcherTimer _updateTimer = new DispatcherTimer();     // ~60Hz
-        readonly DispatcherTimer _fixedTimer = new DispatcherTimer();      // 50Hz (20ms)
-
-        readonly Stopwatch _updateWatch = new();
-        readonly Stopwatch _fixedWatch = new();
+        // ---------- clocks ----------
+        // Keep update timer defined but unused during Play (single 20 Hz loop).
+        readonly DispatcherTimer _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16.666) };
+        readonly DispatcherTimer _fixedTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) }; // 20 Hz
+        readonly Stopwatch _updateWatch = new Stopwatch();
+        readonly Stopwatch _fixedWatch = new Stopwatch();
 
         bool _awakened, _started;
-        // mark when we must refresh collider targets 
         bool _collidersWarm;
+        bool _needsWarm; // warm colliders only when scene actually changes
 
-        //INPUT
+        // ---------- input ----------
         bool _mouseLook;
         SN.Vector2 _lastMouse;
         bool _hasLastMouse;
-        private Avalonia.Input.IPointer _capturedPointer;
+        IPointer? _capturedPointer;
 
+        // ---------- play snapshot ----------
+        string? _playSnapshotPath;
 
+        // ---------- FPS HUD ----------
+        readonly Stopwatch _fpsTick = new Stopwatch();
+        readonly Stopwatch _fpsWindow = new Stopwatch();
+        double _fpsEma; bool _fpsPrimed;
 
+        // ---------- pass profiling (always on) ----------
+        readonly Stopwatch _passWatch = new Stopwatch();
+        double _msOpaqueLast, _msTranspLast;
+        double _msOpaqueEma, _msTranspEma;
 
-        // ---------- Play-mode snapshot -----------------------------------------
-        string? _playSnapshotPath; // temp .scene file path 
+        // ---------- reusable backbuffer ----------
+        uint[]? _bbColor;
+        float[]? _bbZ;
+        WriteableBitmap? _bbWB;
+        int _bbW, _bbH;
 
         public GameView()
         {
             ClipToBounds = true;
 
-            _updateTimer.Interval = TimeSpan.FromMilliseconds(16.666); // ≈60Hz
+            // We do not run _updateTimer while playing (single 20 Hz loop), but keep this for non-Play.
             _updateTimer.Tick += (_, __) => { TickUpdate(); InvalidateVisual(); };
 
-            _fixedTimer.Interval = TimeSpan.FromMilliseconds(20);      // 50Hz
-            _fixedTimer.Tick += (_, __) => TickFixedUpdate();
-
-            // Repaint when the scene changes (materials, transforms, etc.)
-            SceneService.Changed += () =>
+            // Single driver at 20 Hz: FixedUpdate -> Update/LateUpdate -> render
+            _fixedTimer.Tick += (_, __) =>
             {
-                _collidersWarm = false; //  edits may invalidate targets
+                TickFixedUpdate();
+                TickUpdate();
                 InvalidateVisual();
             };
 
-            // React to State changes
+            // When the scene changes, request a one-shot collider warm and a repaint.
+            SceneService.Changed += () => { _needsWarm = true; InvalidateVisual(); };
+
             StateProperty.Changed.AddClassHandler<GameView>((s, e) => s.OnStateChanged());
 
             Focusable = true;
-            this.AttachedToVisualTree += (_, __) => Focus();
+            AttachedToVisualTree += (_, __) => Focus();
+            LostFocus += (_, __) => ExitLookAndClear();
+            DetachedFromVisualTree += (_, __) => ExitLookAndClear();
 
             KeyDown += OnKeyDown;
             KeyUp += OnKeyUp;
-
             PointerPressed += OnPointerPressed;
             PointerReleased += OnPointerReleased;
             PointerMoved += OnPointerMoved;
 
-            this.LostFocus += (_, __) => ExitLookAndClear();
-            this.DetachedFromVisualTree += (_, __) => ExitLookAndClear();
-
-
+            _fpsTick.Restart();
+            _fpsWindow.Restart();
         }
+
+        // ---------- backbuffer ----------
+        void EnsureBackbuffers(int w, int h)
+        {
+            w = Math.Max(1, w);
+            h = Math.Max(1, h);
+            if (_bbWB != null && _bbW == w && _bbH == h && _bbColor != null && _bbZ != null) return;
+
+            _bbW = w; _bbH = h;
+            _bbColor = new uint[w * h];
+            _bbZ = new float[w * h];
+            _bbWB = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+                                        PixelFormat.Bgra8888, AlphaFormat.Premul);
+        }
+
+        // ---------- input ----------
+        static KeyCode MapKey(Key k) => k switch
+        {
+            Key.W => KeyCode.W,
+            Key.A => KeyCode.A,
+            Key.S => KeyCode.S,
+            Key.D => KeyCode.D,
+            Key.Up => KeyCode.UpArrow,
+            Key.Down => KeyCode.DownArrow,
+            Key.Left => KeyCode.LeftArrow,
+            Key.Right => KeyCode.RightArrow,
+            Key.Space => KeyCode.Space,
+            Key.LeftShift => KeyCode.LeftShift,
+            Key.Escape => KeyCode.Escape,
+            _ => KeyCode.None
+        };
 
         void ExitLookAndClear()
         {
-           // Game_Engine.Core.Log.Debug("[GV] ExitLookAndClear");
-            if (_capturedPointer != null)
-            {
-                try { _capturedPointer.Capture(null); } catch { }
-                _capturedPointer = null;
-            }
-            _mouseLook = false;
-            _hasLastMouse = false;
-
-            Game_Engine.Core.Input.Input.ClearAll();
-            Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
+            if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
+            _mouseLook = false; _hasLastMouse = false;
+            Input.ClearAll();
+            Input.FeedMouseDelta(0, 0);
         }
-
-
-
-
-
-        static Game_Engine.Core.Input.KeyCode MapKey(Avalonia.Input.Key k)
-        {
-            switch (k)
-            {
-                case Avalonia.Input.Key.W: return Game_Engine.Core.Input.KeyCode.W;
-                case Avalonia.Input.Key.A: return Game_Engine.Core.Input.KeyCode.A;
-                case Avalonia.Input.Key.S: return Game_Engine.Core.Input.KeyCode.S;
-                case Avalonia.Input.Key.D: return Game_Engine.Core.Input.KeyCode.D;
-                case Avalonia.Input.Key.Up: return Game_Engine.Core.Input.KeyCode.UpArrow;
-                case Avalonia.Input.Key.Down: return Game_Engine.Core.Input.KeyCode.DownArrow;
-                case Avalonia.Input.Key.Left: return Game_Engine.Core.Input.KeyCode.LeftArrow;
-                case Avalonia.Input.Key.Right: return Game_Engine.Core.Input.KeyCode.RightArrow;
-                case Avalonia.Input.Key.Space: return Game_Engine.Core.Input.KeyCode.Space;
-                case Avalonia.Input.Key.LeftShift: return Game_Engine.Core.Input.KeyCode.LeftShift;
-                case Avalonia.Input.Key.Escape: return Game_Engine.Core.Input.KeyCode.Escape;
-                default: return Game_Engine.Core.Input.KeyCode.None;
-            }
-        }
-
 
         void OnKeyDown(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-
             var code = MapKey(e.Key);
-          //  Game_Engine.Core.Log.Debug($"[GV] KeyDown {e.Key} -> {code}");
-            Game_Engine.Core.Input.Input.FeedKeyDown(code);
+            Input.FeedKeyDown(code);
 
-            if (code == Game_Engine.Core.Input.KeyCode.Escape && _mouseLook)
+            if (code == KeyCode.Escape && _mouseLook)
             {
-            //    Game_Engine.Core.Log.Debug("[GV] Escape -> exit mouse-look");
                 _mouseLook = false;
-                if (_capturedPointer != null)
-                {
-                    try { _capturedPointer.Capture(null); } catch { }
-                    _capturedPointer = null;
-                }
+                if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
                 _hasLastMouse = false;
-                Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
+                Input.FeedMouseDelta(0, 0);
             }
         }
-
-
-
-
-
-
         void OnKeyUp(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-
-            var code = MapKey(e.Key);
-         //   Game_Engine.Core.Log.Debug($"[GV] KeyUp {e.Key} -> {code}");
-            Game_Engine.Core.Input.Input.FeedKeyUp(code);
+            Input.FeedKeyUp(MapKey(e.Key));
         }
-
-
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-
             var pt = e.GetCurrentPoint(this);
-
-            if (pt.Properties.IsLeftButtonPressed)
-            {
-           //     Game_Engine.Core.Log.Debug("[GV] Mouse Left Down");
-                Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Left);
-            }
-
+            if (pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Left);
+            if (pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Middle);
             if (pt.Properties.IsRightButtonPressed)
             {
-            //    Game_Engine.Core.Log.Debug("[GV] Mouse Right Down -> enter mouse-look + capture");
-                Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Right);
-
+                Input.FeedMouseButtonDown(Core.Input.MouseButton.Right);
                 _mouseLook = true;
                 _capturedPointer = e.Pointer;
                 try { _capturedPointer.Capture(this); } catch { }
-
                 _lastMouse = new SN.Vector2((float)pt.Position.X, (float)pt.Position.Y);
                 _hasLastMouse = true;
             }
-
-            if (pt.Properties.IsMiddleButtonPressed)
-            {
-           //     Game_Engine.Core.Log.Debug("[GV] Mouse Middle Down");
-                Game_Engine.Core.Input.Input.FeedMouseButtonDown(Game_Engine.Core.Input.MouseButton.Middle);
-            }
         }
-
-
-
-
-
         void OnPointerReleased(object? s, PointerReleasedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-
             var pt = e.GetCurrentPoint(this);
-
-            if (!pt.Properties.IsLeftButtonPressed)
-            {
-          //      Game_Engine.Core.Log.Debug("[GV] Mouse Left Up");
-                Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Left);
-            }
-
+            if (!pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Left);
+            if (!pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Middle);
             if (!pt.Properties.IsRightButtonPressed)
             {
-          //      Game_Engine.Core.Log.Debug("[GV] Mouse Right Up -> exit mouse-look + release capture");
-                Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Right);
+                Input.FeedMouseButtonUp(Core.Input.MouseButton.Right);
                 _mouseLook = false;
-
-                if (_capturedPointer != null)
-                {
-                    try { _capturedPointer.Capture(null); } catch { }
-                    _capturedPointer = null;
-                }
+                if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
                 _hasLastMouse = false;
-                Game_Engine.Core.Input.Input.FeedMouseDelta(0, 0);
-            }
-
-            if (!pt.Properties.IsMiddleButtonPressed)
-            {
-           //     Game_Engine.Core.Log.Debug("[GV] Mouse Middle Up");
-                Game_Engine.Core.Input.Input.FeedMouseButtonUp(Game_Engine.Core.Input.MouseButton.Middle);
+                Input.FeedMouseDelta(0, 0);
             }
         }
-
-
-
-
-
-
         void OnPointerMoved(object? s, PointerEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-
             var p = e.GetPosition(this);
             var cur = new SN.Vector2((float)p.X, (float)p.Y);
-
-            if (_mouseLook)
+            if (_mouseLook && _hasLastMouse)
             {
-                if (_hasLastMouse)
-                {
-                    var dx = cur.X - _lastMouse.X;
-                    var dy = cur.Y - _lastMouse.Y;
-                    if (dx != 0 || dy != 0)
-              //          Game_Engine.Core.Log.Debug($"[GV] MouseMove (look) dx={dx:F1} dy={dy:F1}");
-                    Game_Engine.Core.Input.Input.FeedMouseDelta(dx, dy);
-                }
-                _lastMouse = cur;
-                _hasLastMouse = true;
+                var dx = cur.X - _lastMouse.X; var dy = cur.Y - _lastMouse.Y;
+                if (dx != 0 || dy != 0) Input.FeedMouseDelta(dx, dy);
             }
-            else
-            {
-                _lastMouse = cur;
-                _hasLastMouse = true;
-            }
+            _lastMouse = cur; _hasLastMouse = true;
         }
 
-
-
-
+        // ---------- state ----------
         void OnStateChanged()
         {
             switch (State)
@@ -277,14 +212,21 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Playing:
                     EnsurePlaySnapshot();
                     EnsureAwakeStart();
-                    WarmAllColliders();
+                    _needsWarm = true;
                     Focus();
-                    Game_Engine.Core.Time.Reset();
+                    Core.Time.Reset();
                     _updateWatch.Restart();
                     _fixedWatch.Restart();
-                    Game_Engine.Core.Input.Input.ClearAll();
+                    Input.ClearAll();
+
+                    _updateTimer.Stop();
+                    _fixedTimer.Interval = TimeSpan.FromMilliseconds(50);
                     _fixedTimer.Start();
-                    _updateTimer.Start();   
+
+                    _fpsTick.Restart(); _fpsWindow.Restart();
+                    _fpsPrimed = false; _fpsEma = 0;
+                    _msOpaqueEma = _msTranspEma = 0;
+                    _msOpaqueLast = _msTranspLast = 0;
                     break;
 
                 case GamePanel.GameState.Paused:
@@ -295,111 +237,84 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Stopped:
                     _fixedTimer.Stop();
                     _updateTimer.Stop();
-                    _updateWatch.Reset();
-                    _fixedWatch.Reset();
+                    _updateWatch.Reset(); _fixedWatch.Reset();
                     CallOnDestroyAll();
                     RestorePlaySnapshot();
                     _awakened = _started = false;
                     _collidersWarm = false;
-
-                    if (_capturedPointer != null)
-                    {
-                        try { _capturedPointer.Capture(null); } catch { }
-                        _capturedPointer = null;
-                    }
+                    _needsWarm = true;
+                    if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
                     _mouseLook = false; _hasLastMouse = false;
-                    Game_Engine.Core.Input.Input.ClearAll();
+                    Input.ClearAll();
                     break;
             }
             InvalidateVisual();
         }
 
-
-
-        // ---------- Snapshot helpers -------------------------------------------
+        // ---------- snapshot ----------
         void EnsurePlaySnapshot()
         {
-            if (_playSnapshotPath != null) return; // already captured
-            var tmp = Path.Combine(Path.GetTempPath(),
+            if (_playSnapshotPath != null) return;
+            var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
                 $"GE_PlaySnapshot_{Guid.NewGuid():N}.scene");
             SceneService.SaveToFile(tmp);
             _playSnapshotPath = tmp;
         }
-
         void RestorePlaySnapshot()
         {
             if (_playSnapshotPath == null) return;
             SceneService.LoadFromFile(_playSnapshotPath);
-            try { File.Delete(_playSnapshotPath); } catch { }
+            try { System.IO.File.Delete(_playSnapshotPath); } catch { }
             _playSnapshotPath = null;
-
-            // freshly loaded scene: targets are cold; prewarm now
             _collidersWarm = false;
-            WarmAllColliders();
+            _needsWarm = true;
         }
 
+        // ---------- lifecycle drivers ----------
+        void EnsureAwakeStart()
+        {
+            if (!_awakened) { ForEachBehavior(b => b.__Awake()); _awakened = true; }
+            if (!_started) { ForEachBehavior(b => b.__Start()); _started = true; }
+        }
 
-        // ----- Lifecycle drivers -----
-
-        // Ensure *all* colliders are ready for queries.
-        // - MeshCollider: resolve target meshes (triangle soup) once edits/loads happen
-        // - Other Collider types (Box/Capsule/etc.): usually no-op, but we call a few
-        //   optional "prep" methods via reflection 
         void WarmAllColliders()
         {
             if (_collidersWarm) return;
 
-            //  we’ll try on generic Collider types if present 
             static void EnsureColliderReady(Collider c)
             {
                 var t = c.GetType();
-                //  few common names
-                string[] names =
+                string[] names = { "EnsureReady", "EnsureBaked", "Bake", "Precompute", "Rebuild", "SyncFromTransform", "Warm" };
+                for (int i = 0; i < names.Length; i++)
                 {
-                    "EnsureReady", "EnsureBaked", "Bake", "Precompute",
-                    "Rebuild", "SyncFromTransform", "Warm"
-                };
-
-                foreach (var name in names)
-                {
-                    var m = t.GetMethod(name,
-                            System.Reflection.BindingFlags.Instance |
-                            System.Reflection.BindingFlags.Public |
-                            System.Reflection.BindingFlags.NonPublic,
-                            binder: null, types: Type.EmptyTypes, modifiers: null);
-                    if (m != null)
-                    {
-                        try { m.Invoke(c, null); } catch { /* ignore */ }
-                        break; // first match is enough
-                    }
+                    var n = names[i];
+                    var m = t.GetMethod(n,
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
+                        null, Type.EmptyTypes, null);
+                    if (m != null) { try { m.Invoke(c, null); } catch { } break; }
                 }
             }
 
-            // Specific resolver for MeshCollider (preferred/explicit)
             var mcType = typeof(MeshCollider);
             var resolveMeshTargets =
                 mcType.GetMethod("EnsureTargetsResolved",
-                    System.Reflection.BindingFlags.Instance |
-                    System.Reflection.BindingFlags.NonPublic |
-                    System.Reflection.BindingFlags.Public)
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)
                 ?? mcType.GetMethod("ResolveTargets",
-                    System.Reflection.BindingFlags.Instance |
-                    System.Reflection.BindingFlags.NonPublic |
-                    System.Reflection.BindingFlags.Public);
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
 
             foreach (var root in SceneService.Root)
             {
                 Traverse(root, b =>
                 {
-                    if (b is MeshCollider mc)
+                    var mc = b as MeshCollider;
+                    if (mc != null)
                     {
-                        // Make sure multi-target mesh list is up to date (paths -> meshes)
-                        try { resolveMeshTargets?.Invoke(mc, null); } catch { /* ignore */ }
+                        try { if (resolveMeshTargets != null) resolveMeshTargets.Invoke(mc, null); } catch { }
                     }
-                    else if (b is Collider c)
+                    else
                     {
-                        // BoxCollider / CapsuleCollider / any custom collider
-                        EnsureColliderReady(c);
+                        var c = b as Collider;
+                        if (c != null) EnsureColliderReady(c);
                     }
                 });
             }
@@ -407,141 +322,70 @@ namespace Game_Engine.Views
             _collidersWarm = true;
         }
 
-
-
-        void EnsureAwakeStart()
-        {
-            if (!_awakened) { ForEachBehavior(b => b.__Awake()); _awakened = true; }
-            if (!_started) { ForEachBehavior(b => b.__Start()); _started = true; }
-        }
-
         void TickUpdate()
         {
             if (State != GamePanel.GameState.Playing) return;
 
-            WarmAllColliders();
+            if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
 
             var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
             _updateWatch.Restart();
-            Game_Engine.Core.Time.BeginUpdate(dt);
+            Core.Time.BeginUpdate(dt);
 
-            // Start-of-frame: clear edges, BUT keep mouse deltas from last frame
-            Game_Engine.Core.Input.Input.NewFrame((float)dt);
-
+            Input.NewFrame((float)dt);
             ForEachBehavior(b => b.__Update());
             ForEachBehavior(b => b.__LateUpdate());
-
-            // End-of-frame: now that behaviors consumed them, clear mouse deltas
-            Game_Engine.Core.Input.Input.EndFrame();
-
-            SceneService.NotifyChanged();
+            Input.EndFrame();
         }
-
-
 
         void TickFixedUpdate()
         {
             if (State != GamePanel.GameState.Playing) return;
 
-            // Physics runs here—make sure colliders are ready.
-            WarmAllColliders();
+            if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
 
             double dt = _fixedWatch.IsRunning ? _fixedWatch.Elapsed.TotalSeconds : _fixedTimer.Interval.TotalSeconds;
             _fixedWatch.Restart();
-            Game_Engine.Core.Time.BeginFixedUpdate(dt);
-
+            Core.Time.BeginFixedUpdate(dt);
             ForEachBehavior(b => b.__FixedUpdate());
         }
 
-        void CallOnDestroyAll()
+        void CallOnDestroyAll() => ForEachBehavior(b => b.__OnDestroy());
+        static void ForEachBehavior(Action<Behavior> a) { foreach (var r in SceneService.Root) Traverse(r, a); }
+        static void Traverse(GameObject go, Action<Behavior> a)
         {
-            ForEachBehavior(b => b.__OnDestroy());
+            foreach (var b in go.Behaviors) a(b);
+            foreach (var c in go.Children) Traverse(c, a);
         }
 
-        static void ForEachBehavior(Action<Behavior> action)
-        {
-            // Traverse the scene and call on every enabled Behavior
-            foreach (var root in SceneService.Root)
-                Traverse(root, action);
-        }
-
-        static void Traverse(GameObject go, Action<Behavior> action)
-        {
-            // Behaviors first (consistent with Unity‐like expectations)
-            foreach (var b in go.Behaviors)
-                action(b);
-            // Then children
-            foreach (var c in go.Children)
-                Traverse(c, action);
-        }
-
-        // ----- Rendering (Game camera path) -----
-
+        // ---------- render ----------
         public override void Render(DrawingContext ctx)
         {
             base.Render(ctx);
 
-            var size = Bounds.Size;
-            int W = Math.Max(1, (int)size.Width);
-            int H = Math.Max(1, (int)size.Height);
+            // FPS integrate
+            double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
+            _fpsTick.Restart(); UpdateFps(dt);
 
-            // --- Gate: only render during Play ---
+            int W = Math.Max(1, (int)Bounds.Width);
+            int H = Math.Max(1, (int)Bounds.Height);
+            EnsureBackbuffers(W, H);
+            var color = _bbColor!; var zbuf = _bbZ!;
+
             if (State != GamePanel.GameState.Playing)
             {
                 ctx.FillRectangle(new SolidColorBrush(Color.Parse("#121417")), new Rect(0, 0, W, H));
+                DrawFpsHud(ctx);
                 return;
             }
-            var color = new uint[W * H];
-            var zbuf = new float[W * H];
 
-            // Skybox (same, but NEVER affected by scene Light)
+            // ---------- Sky ----------
             var sky = SceneQuery.FindBehaviors<Skybox>().FirstOrDefault();
-            var skyTop = sky?.Top ?? Color.Parse("#1f1f1f");
-            var skyBot = sky?.Bottom ?? Color.Parse("#0a0a0a");
+            var skyTop = sky != null ? sky.Top : Color.Parse("#1f1f1f");
+            var skyBot = sky != null ? sky.Bottom : Color.Parse("#0a0a0a");
+            Texture2D? skyTex = sky != null ? sky.Texture : null;
+            float skyBlend = Math.Clamp(sky != null ? (sky.TextureBlend) : 0f, 0f, 1f);
 
-            Texture2D skyTex = null;
-            float skyBlend = 0f;
-            if (sky != null)
-            {
-                skyTex = sky.Texture;
-                skyBlend = Math.Clamp(sky.TextureBlend, 0f, 1f);
-            }
-
-            // Lighting: single Light for now (matches SceneView’s current approach)
-            var light = SceneQuery.FindBehaviors<Light>().FirstOrDefault();
-
-            // Defaults
-            SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
-            float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
-            float DiffuseK = 1f;
-
-            bool lightIsPoint = false;
-            SN.Vector3 lightPosW = SN.Vector3.Zero;
-            float lightRange = 10f;
-
-            if (light != null)
-            {
-                float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
-                DiffuseK *= MathF.Max(0.01f, light.Intensity * lum);
-
-                if (light.Type == LightType.Directional && light.gameObject != null)
-                {
-                    // Light direction = -forward in WORLD space
-                    var go = light.gameObject;
-                    var m = TransformUtil.WorldFromTransform(go.Transform);
-                    var fwd = SN.Vector3.Normalize(new SN.Vector3(m.M13, m.M23, m.M33));
-                    L = -fwd;
-                }
-                else if (light.Type == LightType.Point && light.gameObject != null)
-                {
-                    lightIsPoint = true;
-                    var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
-                    lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, m);
-                    lightRange = Math.Max(0.001f, light.Range);
-                }
-            }
-
-            // sun hotspot purely from sky yaw (unlit sky)
             SN.Vector3? sunDir = null;
             if (sky != null)
             {
@@ -550,81 +394,243 @@ namespace Game_Engine.Views
                 sunDir = SN.Vector3.Normalize(SN.Vector3.Transform(baseSun, rotY));
             }
 
-            // Cameras in “Game” — use in-scene cameras; if none, render nothing (or preview fallback)
+            // ---------- Lighting ----------
+            float Ambient = Math.Clamp(sky != null ? sky.Ambient : 0f, 0f, 1f);
+
+            var light = SceneQuery.FindBehaviors<Light>().FirstOrDefault(l => l.Enabled);
+            SN.Vector3 L = SN.Vector3.UnitY;
+            float DiffuseK = 0f;
+            bool lightIsPoint = false;
+            SN.Vector3 lightPosW = SN.Vector3.Zero;
+            float lightRange = 0f;
+
+            if (light != null && light.gameObject != null)
+            {
+                float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
+                float baseK = light.Intensity * (lum > 0f ? lum : 0.001f);
+                DiffuseK = baseK > 0.001f ? baseK : 0.001f;
+
+                if (light.Type == LightType.Directional)
+                {
+                    var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
+                    var fwd = SN.Vector3.Normalize(new SN.Vector3(m.M13, m.M23, m.M33));
+                    L = -fwd;
+                    lightIsPoint = false;
+                }
+                else if (light.Type == LightType.Point)
+                {
+                    lightIsPoint = true;
+                    var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
+                    lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, m);
+                    lightRange = Math.Max(0.001f, light.Range);
+                }
+            }
+
+            // ---------- Cameras ----------
             var cams = SceneQuery.FindBehaviors<Camera>().ToList();
 
-            if (cams.Count == 0)
+            // Fast path: one full-screen camera
+            if (cams.Count == 1)
             {
-                // Fallback: just fill with sky so the Game tab shows 
-                var view = SN.Matrix4x4.Identity;
-                var proj = SN.Matrix4x4.Identity;
-                Core.Sky.FillWorldUp(color, zbuf, W, H, view, proj,
-                    skyTop, skyBot, sunDir, skyTex, skyBlend,
-                    sky?.Yaw ?? 0f, sky?.SeamFeather ?? 0.01f,
-                    sky?.KeyOutNearBlack ?? false, sky?.KeyLuma ?? 0.08f,
-                    zWriteNdc: 1f - 1e-6f);
+                var cam = cams[0];
+                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, W, H);
+                if (vx == 0 && vy == 0 && vw == W && vh == H)
+                {
+                    var vView = cam.GetViewMatrix();
+                    var vProj = cam.GetProjectionMatrix(new Size(W, H));
 
-                Blit(ctx, color, W, H);
+                    CameraClear.ClearForCamera(cam, color, zbuf, W, H,
+                        vView, vProj,
+                        skyTop, skyBot, sunDir,
+                        skyTex, skyBlend,
+                        sky != null ? sky.Yaw : 0f, sky != null ? sky.SeamFeather : 0.01f,
+                        sky != null ? sky.KeyOutNearBlack : false, sky != null ? sky.KeyLuma : 0.08f);
+
+                    // ---- Opaque pass (timed) ----
+                    _passWatch.Restart();
+                    foreach (var root in SceneService.Root)
+                        SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
+                            color, zbuf, W, H,
+                            L, DiffuseK, Ambient,
+                            lightIsPoint, lightPosW, lightRange,
+                            shadow: null);
+                    _passWatch.Stop();
+                    _msOpaqueLast = _passWatch.Elapsed.TotalMilliseconds;
+                    Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
+
+                    // ---- Transparent pass (timed) ----
+                    _passWatch.Restart();
+                    foreach (var root in SceneService.Root)
+                        SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
+                            color, zbuf, W, H,
+                            L, DiffuseK, Ambient,
+                            lightIsPoint, lightPosW, lightRange,
+                            shadow: null);
+                    _passWatch.Stop();
+                    _msTranspLast = _passWatch.Elapsed.TotalMilliseconds;
+                    Ema(ref _msTranspEma, _msTranspLast, 0.18);
+
+                    BlitToScreen(ctx, _bbWB!, color, W, H);
+                    DrawFpsHud(ctx);
+                    return;
+                }
+            }
+
+            // Multi-camera: cheap master background, then per-camera clears
+            FillVerticalGradient(color, W, H, skyTop, skyBot);
+
+            double totalOpaqueMs = 0, totalTranspMs = 0;
+
+            foreach (var cam in cams)
+            {
+                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, W, H);
+
+                var vColor = ArrayPool<uint>.Shared.Rent(vw * vh);
+                var vZ = ArrayPool<float>.Shared.Rent(vw * vh);
+
+                try
+                {
+                    var vView = cam.GetViewMatrix();
+                    var vProj = cam.GetProjectionMatrix(new Size(vw, vh));
+
+                    CameraClear.ClearForCamera(cam, vColor, vZ, vw, vh,
+                        vView, vProj,
+                        skyTop, skyBot, sunDir,
+                        skyTex, skyBlend,
+                        sky != null ? sky.Yaw : 0f, sky != null ? sky.SeamFeather : 0.01f,
+                        sky != null ? sky.KeyOutNearBlack : false, sky != null ? sky.KeyLuma : 0.08f);
+
+                    _passWatch.Restart();
+                    foreach (var root in SceneService.Root)
+                        SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
+                            vColor, vZ, vw, vh,
+                            L, DiffuseK, Ambient,
+                            lightIsPoint, lightPosW, lightRange,
+                            shadow: null);
+                    _passWatch.Stop();
+                    totalOpaqueMs += _passWatch.Elapsed.TotalMilliseconds;
+
+                    _passWatch.Restart();
+                    foreach (var root in SceneService.Root)
+                        SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
+                            vColor, vZ, vw, vh,
+                            L, DiffuseK, Ambient,
+                            lightIsPoint, lightPosW, lightRange,
+                            shadow: null);
+                    _passWatch.Stop();
+                    totalTranspMs += _passWatch.Elapsed.TotalMilliseconds;
+
+                    ImageUtil.Blit(vColor, vw, vh, color, W, H, vx, vy);
+                }
+                finally
+                {
+                    ArrayPool<uint>.Shared.Return(vColor, false);
+                    ArrayPool<float>.Shared.Return(vZ, false);
+                }
+            }
+
+            _msOpaqueLast = totalOpaqueMs;
+            _msTranspLast = totalTranspMs;
+            Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
+            Ema(ref _msTranspEma, _msTranspLast, 0.18);
+
+            BlitToScreen(ctx, _bbWB!, color, W, H);
+            DrawFpsHud(ctx);
+        }
+
+        // ---------- helpers ----------
+        static void Ema(ref double acc, double sample, double a)
+        {
+            acc = acc <= 0 ? sample : (1 - a) * acc + a * sample;
+        }
+
+        void UpdateFps(double dt)
+        {
+            const double a = 0.12;
+            double inst = dt > 1e-6 ? 1.0 / dt : 0.0;
+            if (!_fpsPrimed) { _fpsEma = inst; _fpsPrimed = true; }
+            else _fpsEma = (1 - a) * _fpsEma + a * inst;
+
+            if (_fpsWindow.ElapsedMilliseconds >= 1000)
+            {
+                _fpsWindow.Restart();
+            }
+        }
+
+        void DrawFpsHud(DrawingContext ctx)
+        {
+            string line1 = $"FPS: {_fpsEma:F1}";
+            string line2 = $"Opaque: {_msOpaqueLast:F2} ms (EMA {_msOpaqueEma:F2})   Transparent: {_msTranspLast:F2} ms (EMA {_msTranspEma:F2})";
+
+            const double font = 12;
+            const double padX = 8, padY = 6;
+            const double gapY = 2;
+
+            // Heuristic metrics – avoids TextLayout.Size/Bounds so it compiles everywhere
+            Func<string, double> estWidth = s => s.Length * font * 0.62;   // avg char width ≈0.62em
+            double lineH = font * 1.4;                                     // line height ≈1.4em
+
+            double w = Math.Max(estWidth(line1), estWidth(line2)) + padX * 2;
+            double h = (lineH + gapY + lineH) + padY * 2;
+
+            var bg = new Rect(6, 6, Math.Ceiling(w), Math.Ceiling(h));
+            ctx.FillRectangle(new SolidColorBrush(Color.Parse("#80000000")), bg);
+
+            var tf = new Typeface("Segoe UI");
+
+            // Draw text 
+            double x = bg.X + padX;
+            double y = bg.Y + padY;
+
+            var l1 = new TextLayout(line1, tf, font, Brushes.White);
+            l1.Draw(ctx, new Point(x, y));
+
+            y += lineH + gapY;
+            var l2 = new TextLayout(line2, tf, font, Brushes.White);
+            l2.Draw(ctx, new Point(x, y));
+        }
+
+
+
+        static unsafe void BlitToScreen(DrawingContext ctx, WriteableBitmap wb, uint[] color, int W, int H)
+        {
+            using (var fb = wb.Lock())
+            {
+                byte* dst = (byte*)fb.Address;
+                int rowB = fb.RowBytes;
+                fixed (uint* src = color)
+                {
+                    for (int y = 0; y < H; y++)
+                        Buffer.MemoryCopy(src + y * W, dst + y * rowB, rowB, W * 4);
+                }
+            }
+            ctx.DrawImage(wb, new Rect(0, 0, W, H));
+        }
+
+        private static void FillVerticalGradient(uint[] dst, int W, int H, Color top, Color bot)
+        {
+            Func<byte, byte, byte, uint> Pack = (r, g, b) => (uint)(0xFF << 24 | (uint)b << 16 | (uint)g << 8 | r);
+
+            int r0 = top.R, g0 = top.G, b0 = top.B;
+            int r1 = bot.R, g1 = bot.G, b1 = bot.B;
+
+            if (H <= 1)
+            {
+                uint c = Pack((byte)r0, (byte)g0, (byte)b0);
+                for (int i = 0; i < dst.Length; i++) dst[i] = c;
                 return;
             }
 
-            // Render all cameras with their normalized viewports (like game)
-            foreach (var cam in cams)
+            for (int y = 0; y < H; y++)
             {
-                // compute pixel viewport
-                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, W, H);
+                int r = r0 + (r1 - r0) * y / (H - 1);
+                int g = g0 + (g1 - g0) * y / (H - 1);
+                int b = b0 + (b1 - b0) * y / (H - 1);
 
-                var vColor = new uint[vw * vh];
-                var vZ = new float[vw * vh];
-
-                var vView = cam.GetViewMatrix();
-                var vProj = cam.GetProjectionMatrix(new Size(vw, vh));
-
-                // Clear per camera (sky or solid)
-                CameraClear.ClearForCamera(cam, vColor, vZ, vw, vh,
-                    vView, vProj,
-                    skyTop, skyBot, sunDir,
-                    skyTex, skyBlend,
-                    sky?.Yaw ?? 0f, sky?.SeamFeather ?? 0.01f,
-                    sky?.KeyOutNearBlack ?? false, sky?.KeyLuma ?? 0.08f);
-
-                // Solid pass
-                foreach (var root in SceneService.Root)
-                    SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
-                        vColor, vZ, vw, vh,
-                        L, DiffuseK, Ambient,
-                        lightIsPoint, lightPosW, lightRange,
-                        shadow: null);
-
-                // Transparent queue
-                foreach (var root in SceneService.Root)
-                    SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
-                        vColor, vZ, vw, vh,
-                        L, DiffuseK, Ambient,
-                        lightIsPoint, lightPosW, lightRange,
-                        shadow: null);
-
-                // Blit into master backbuffer
-                ImageUtil.Blit(vColor, vw, vh, color, W, H, vx, vy);
+                uint row = Pack((byte)r, (byte)g, (byte)b);
+                int off = y * W;
+                for (int x = 0; x < W; x++) dst[off + x] = row;
             }
-
-            Blit(ctx, color, W, H);
-        }
-
-        static void Blit(DrawingContext ctx, uint[] color, int W, int H)
-        {
-            var wb = new WriteableBitmap(new PixelSize(W, H), new Avalonia.Vector(96, 96),
-                                         PixelFormat.Bgra8888, AlphaFormat.Premul);
-            using (var fb = wb.Lock())
-                unsafe
-                {
-                    byte* dst = (byte*)fb.Address;
-                    int rowB = fb.RowBytes;
-                    fixed (uint* src = color)
-                        for (int y = 0; y < H; y++)
-                            Buffer.MemoryCopy(src + y * W, dst + y * rowB, rowB, W * 4);
-                }
-            ctx.DrawImage(wb, new Rect(0, 0, W, H));
         }
     }
 }

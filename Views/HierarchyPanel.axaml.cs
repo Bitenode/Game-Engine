@@ -53,7 +53,7 @@ namespace Game_Engine.Views
             {
                 var light = new GameObject("Directional Light");
                 light.AddBehavior(new Light());
-                light.Transform.Rotation.X = 90; // your previous default
+                light.Transform.Rotation.X = 90; 
                 SceneService.Root.Add(light);
             }
 

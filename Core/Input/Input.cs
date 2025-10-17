@@ -11,6 +11,7 @@ namespace Game_Engine.Core.Input
         W, A, S, D,
         UpArrow, DownArrow, LeftArrow, RightArrow,
         Space, LeftShift, Escape,
+        F5, F6, F7
     }
 
     public enum MouseButton

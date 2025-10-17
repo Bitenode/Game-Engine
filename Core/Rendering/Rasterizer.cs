@@ -13,24 +13,16 @@ public static class Rasterizer
     // ======== PUBLIC ENTRY POINTS ========
 
     public static void RasterizeDepth(
-    Mesh mesh,
-    in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-    float[] zbuf, int W, int H, bool doubleSided = false)
+        Mesh mesh,
+        in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+        float[] zbuf, int W, int H, bool doubleSided = false)
     {
         if (mesh.Vertices == null || mesh.TriIndices == null) return;
-
         var V = mesh.Vertices;
         var I = mesh.TriIndices;
         var WV = world * view;
         var WVP = WV * proj;
         float winding = world.GetDeterminant() >= 0 ? 1f : -1f;
-
-        // --- wind data (same as color pass) --------------------
-        var UVMesh2 = GetMeshUVs2(mesh); // may be null => no wind
-        float windT = WindSystem.Time;
-        var windDir = WindSystem.Direction;
-        float windAmp = WindSystem.Amplitude;
-        // ------------------------------------------------------------
 
         static int OutMask(SN.Vector4 n) =>
             (n.X < -1 ? 1 : 0) | (n.X > 1 ? 2 : 0) |
@@ -41,19 +33,6 @@ public static class Rasterizer
         {
             int ia = I[i], ib = I[i + 1], ic = I[i + 2];
             var a = V[ia]; var b = V[ib]; var c = V[ic];
-
-            //  apply wind before transforms -------------------
-            if (UVMesh2 != null && UVMesh2.Length == V.Length)
-            {
-                SN.Vector2 wa = UVMesh2[ia];
-                SN.Vector2 wb = UVMesh2[ib];
-                SN.Vector2 wc = UVMesh2[ic];
-
-                a = ApplyWind(a, wa.X, wa.Y, windDir, windT, windAmp);
-                b = ApplyWind(b, wb.X, wb.Y, windDir, windT, windAmp);
-                c = ApplyWind(c, wc.X, wc.Y, windDir, windT, windAmp);
-            }
-            // ----------------------------------------------------------
 
             var Ac = SN.Vector4.Transform(new SN.Vector4(a, 1), WVP);
             var Bc = SN.Vector4.Transform(new SN.Vector4(b, 1), WVP);
@@ -106,36 +85,30 @@ public static class Rasterizer
                     float invW = w0 * aInvW + w1 * bInvW + w2 * cInvW;
                     if (invW <= 0) continue;
                     float z = (w0 * aZw + w1 * bZw + w2 * cZw) / invW;
-
                     int idx = y * W + x;
                     if (z < zbuf[idx]) zbuf[idx] = z;
                 }
         }
     }
 
-
     public static void RasterizeMeshSolidZ(
-        Mesh m,
-        in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-        uint[] color, float[] zbuf, int W, int H,
-        Color tint, Material? mat,
-        SN.Vector3 L, float DiffuseK, float Ambient,
-        bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
-        ShadowMap? shadow, bool receiveShadows, bool doubleSided,
-        bool invertFrontFace,
-        bool transparentPass)
+    Mesh m,
+    in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+    uint[] color, float[] zbuf, int W, int H,
+    Color tint, Material? mat,
+    SN.Vector3 L, float DiffuseK, float Ambient,
+    bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
+    ShadowMap? shadow, bool receiveShadows, bool doubleSided,
+    bool invertFrontFace,
+    bool transparentPass)
     {
         var Vtx = m.Vertices;
         var Idx = m.TriIndices;
         var Nor = m.Normals;
 
         var UVMesh = GetMeshUVs(m);
-        var UVMesh2 = GetMeshUVs2(m); // may be null if mesh has no UV2 (then wind=0)
-        float windT = WindSystem.Time;
-        var windDir = WindSystem.Direction;
-        float windAmp = WindSystem.Amplitude;
 
-        // object-space AABB (for planar UV fallback )
+        // object-space AABB (for planar UV fallback)
         SN.Vector3 bbMin = new(float.MaxValue), bbMax = new(float.MinValue);
         for (int v = 0; v < Vtx.Length; v++)
         {
@@ -148,29 +121,26 @@ public static class Rasterizer
                                 bbSize.Y == 0 ? 1f : bbSize.Y,
                                 bbSize.Z == 0 ? 1f : bbSize.Z);
 
-        // Resolve material slots ONCE (no reflection in inner loop)
-        var slots = ResolveSlots(mat);                   
-        bool hasAnyTexture = slots.Count > 0;
-        bool anyFaceMasks = false;                      // used to skip mask work when not needed
-        for (int s = 0; s < slots.Count; s++)
-            if (slots[s].FaceMask != -1) { anyFaceMasks = true; break; }
+        bool hasAnyTexture = mat?.Textures?.Any(t => t?.Texture != null) == true;
 
+        // Matrices
         SN.Matrix4x4 mv = world * view;
         SN.Matrix4x4 mvp = mv * proj;
 
         const float near = 0.1f;
-        SN.Matrix4x4.Invert(mv, out var invMv);
-        SN.Matrix4x4 normalMatrix = SN.Matrix4x4.Transpose(invMv);
 
-        // VIEW-space light params (LdirV points FROM surface TO the light)
-        SN.Vector3 LdirV = lightIsPoint ? SN.Vector3.Zero
-                                        : SN.Vector3.Normalize(SN.Vector3.TransformNormal(-L, view));
-        SN.Vector3 lightPosV = lightIsPoint ? SN.Vector3.Transform(lightPosW, view)
-                                            : SN.Vector3.Zero;
+        // Normal matrices
+        SN.Matrix4x4.Invert(mv, out var invMv);
+        SN.Matrix4x4 normalMatrixV = SN.Matrix4x4.Transpose(invMv);    // for view-space culling (existing)
+        SN.Matrix4x4.Invert(world, out var invWorld);
+        SN.Matrix4x4 normalMatrixW = SN.Matrix4x4.Transpose(invWorld);     // for world-space lighting (new)
+
+        // Light in WORLD space (camera-invariant)
+        SN.Vector3 LdirW = lightIsPoint ? SN.Vector3.Zero : SN.Vector3.Normalize(-L);
+        SN.Vector3 lightPosWorld = lightIsPoint ? lightPosW : SN.Vector3.Zero;
 
         const float INSIDE_EPS = 1e-3f;
 
-        // Material opacity (query once)
         float matOpacity = 1f;
         if (mat != null)
         {
@@ -183,31 +153,15 @@ public static class Rasterizer
             }
         }
         float tintA = tint.A / 255f;
-        Color safeTint = (tint.R | tint.G | tint.B) == 0 ? Color.FromRgb(255, 255, 255) : tint;
 
         // ===== main tri loop =====
         for (int i = 0; i < Idx.Length; i += 3)
         {
             int ia = Idx[i], ib = Idx[i + 1], ic = Idx[i + 2];
-            var Pa = Vtx[ia];
-            var Pb = Vtx[ib];
-            var Pc = Vtx[ic];
 
-            // Wind weights & phases from UV2 (X=weight, Y=phase), defaults to zero if missing
-            
-            // var UVMesh2 = UVMesh;
-            SN.Vector2 windA = (UVMesh2 != null && UVMesh2.Length == Vtx.Length) ? UVMesh2[ia] : default;
-            SN.Vector2 windB = (UVMesh2 != null && UVMesh2.Length == Vtx.Length) ? UVMesh2[ib] : default;
-            SN.Vector2 windC = (UVMesh2 != null && UVMesh2.Length == Vtx.Length) ? UVMesh2[ic] : default;
+            var Pa = Vtx[ia]; var Pb = Vtx[ib]; var Pc = Vtx[ic];
 
-            // Deform in object space BEFORE transform
-            Pa = ApplyWind(Pa, windA.X, windA.Y, windDir, windT, windAmp);
-            Pb = ApplyWind(Pb, windB.X, windB.Y, windDir, windT, windAmp);
-            Pc = ApplyWind(Pc, windC.X, windC.Y, windDir, windT, windAmp);
-
-
-
-            // choose UVs 
+            // choose UVs
             SN.Vector2 Ua, Ub, Uc;
             if (UVMesh != null && UVMesh.Length == Vtx.Length)
             {
@@ -217,19 +171,19 @@ public static class Rasterizer
             {
                 var nObj = SN.Vector3.Normalize(SN.Vector3.Cross(Pb - Pa, Pc - Pa));
                 var a = new SN.Vector3(MathF.Abs(nObj.X), MathF.Abs(nObj.Y), MathF.Abs(nObj.Z));
-                if (a.X >= a.Y && a.X >= a.Z) // YZ
+                if (a.X >= a.Y && a.X >= a.Z)
                 {
                     Ua = new((Pa.Z - bbMin.Z) / bbSize.Z, (Pa.Y - bbMin.Y) / bbSize.Y);
                     Ub = new((Pb.Z - bbMin.Z) / bbSize.Z, (Pb.Y - bbMin.Y) / bbSize.Y);
                     Uc = new((Pc.Z - bbMin.Z) / bbSize.Z, (Pc.Y - bbMin.Y) / bbSize.Y);
                 }
-                else if (a.Y >= a.X && a.Y >= a.Z) // XZ
+                else if (a.Y >= a.X && a.Y >= a.Z)
                 {
                     Ua = new((Pa.X - bbMin.X) / bbSize.X, (Pa.Z - bbMin.Z) / bbSize.Z);
                     Ub = new((Pb.X - bbMin.X) / bbSize.X, (Pb.Z - bbMin.Z) / bbSize.Z);
                     Uc = new((Pc.X - bbMin.X) / bbSize.X, (Pc.Z - bbMin.Z) / bbSize.Z);
                 }
-                else // XY
+                else
                 {
                     Ua = new((Pa.X - bbMin.X) / bbSize.X, (Pa.Y - bbMin.Y) / bbSize.Y);
                     Ub = new((Pb.X - bbMin.X) / bbSize.X, (Pb.Y - bbMin.Y) / bbSize.Y);
@@ -247,17 +201,23 @@ public static class Rasterizer
             var Vb = SN.Vector3.Transform(Pb, mv);
             var Vc = SN.Vector3.Transform(Pc, mv);
 
+            // World positions for lighting
             var Wa = SN.Vector3.Transform(Pa, world);
             var Wb = SN.Vector3.Transform(Pb, world);
             var Wc = SN.Vector3.Transform(Pc, world);
 
-            var Na = Nor != null ? SN.Vector3.TransformNormal(Nor[ia], normalMatrix) : SN.Vector3.UnitY;
-            var Nb = Nor != null ? SN.Vector3.TransformNormal(Nor[ib], normalMatrix) : SN.Vector3.UnitY;
-            var Nc = Nor != null ? SN.Vector3.TransformNormal(Nor[ic], normalMatrix) : SN.Vector3.UnitY;
+            // Normals in VIEW for culling; in WORLD for lighting
+            var NaV = Nor != null ? SN.Vector3.TransformNormal(Nor[ia], normalMatrixV) : SN.Vector3.UnitY;
+            var NbV = Nor != null ? SN.Vector3.TransformNormal(Nor[ib], normalMatrixV) : SN.Vector3.UnitY;
+            var NcV = Nor != null ? SN.Vector3.TransformNormal(Nor[ic], normalMatrixV) : SN.Vector3.UnitY;
 
-            var cv0 = new ClipVertex { ClipPos = A, ViewPos = Va, WorldPos = Wa, ViewNormal = Na, UV = Ua };
-            var cv1 = new ClipVertex { ClipPos = B, ViewPos = Vb, WorldPos = Wb, ViewNormal = Nb, UV = Ub };
-            var cv2 = new ClipVertex { ClipPos = C, ViewPos = Vc, WorldPos = Wc, ViewNormal = Nc, UV = Uc };
+            var NaW = Nor != null ? SN.Vector3.TransformNormal(Nor[ia], normalMatrixW) : SN.Vector3.UnitY;
+            var NbW = Nor != null ? SN.Vector3.TransformNormal(Nor[ib], normalMatrixW) : SN.Vector3.UnitY;
+            var NcW = Nor != null ? SN.Vector3.TransformNormal(Nor[ic], normalMatrixW) : SN.Vector3.UnitY;
+
+            var cv0 = new ClipVertex { ClipPos = A, ViewPos = Va, WorldPos = Wa, ViewNormal = NaV, UV = Ua };
+            var cv1 = new ClipVertex { ClipPos = B, ViewPos = Vb, WorldPos = Wb, ViewNormal = NbV, UV = Ub };
+            var cv2 = new ClipVertex { ClipPos = C, ViewPos = Vc, WorldPos = Wc, ViewNormal = NcV, UV = Uc };
 
             var clipped = ClipTriangle(cv0, cv1, cv2, near);
             if (clipped.Count < 3) continue;
@@ -265,9 +225,9 @@ public static class Rasterizer
             for (int kt = 0; kt < clipped.Count - 2; kt++)
             {
                 cv0 = clipped[0]; cv1 = clipped[kt + 1]; cv2 = clipped[kt + 2];
-                A = cv0.ClipPos; Va = cv0.ViewPos; Wa = cv0.WorldPos; Na = cv0.ViewNormal; Ua = cv0.UV;
-                B = cv1.ClipPos; Vb = cv1.ViewPos; Wb = cv1.WorldPos; Nb = cv1.ViewNormal; Ub = cv1.UV;
-                C = cv2.ClipPos; Vc = cv2.ViewPos; Wc = cv2.WorldPos; Nc = cv2.ViewNormal; Uc = cv2.UV;
+                A = cv0.ClipPos; Va = cv0.ViewPos; Wa = cv0.WorldPos; NaV = cv0.ViewNormal; Ua = cv0.UV;
+                B = cv1.ClipPos; Vb = cv1.ViewPos; Wb = cv1.WorldPos; NbV = cv1.ViewNormal; Ub = cv1.UV;
+                C = cv2.ClipPos; Vc = cv2.ViewPos; Wc = cv2.WorldPos; NcV = cv2.ViewNormal; Uc = cv2.UV;
 
                 var nView = SN.Vector3.Cross(Vb - Va, Vc - Va);
                 float facing = nView.Z * (world.GetDeterminant() >= 0 ? 1f : -1f);
@@ -293,10 +253,43 @@ public static class Rasterizer
                 int minY = (int)MathF.Max(0, MathF.Min(Ays, MathF.Min(Bys, Cys)));
                 int maxY = (int)MathF.Min(H - 1, MathF.Ceiling(MathF.Max(Ays, MathF.Max(Bys, Cys))));
 
-                // compute face-mask ONCE per triangle
-                int triFaceMask = anyFaceMasks ? FaceMaskFromTriAndAabb(Pa, Pb, Pc, bbMin, bbMax) : -1;
+                // material slots for this tri
+                int triFaceMask = transparentPass ? -1 : FaceMaskFromTriAndAabb(Pa, Pb, Pc, bbMin, bbMax);
+                var slots = ResolveSlotsForTriangle(mat, triFaceMask);
+                bool hasOpacitySlotTri = slots.Any(s => s.Usage == SlotUsage.Opacity);
+                bool hasAnySlots = slots.Count > 0;
+
+                // buckets
+                List<ResolvedSlot>? albedoSlots = null, emissiveSlots = null, opacitySlots = null,
+                                    aoSlots = null, detailSlots = null, specSlots = null,
+                                    roughSlots = null, metalSlots = null;
+
+                if (hasAnySlots)
+                {
+                    albedoSlots = new(4); emissiveSlots = new(2); opacitySlots = new(2);
+                    aoSlots = new(2); detailSlots = new(2); specSlots = new(1);
+                    roughSlots = new(1); metalSlots = new(1);
+
+                    for (int si = 0; si < slots.Count; si++)
+                    {
+                        var rs = slots[si];
+                        switch (rs.Usage)
+                        {
+                            case SlotUsage.Emissive: emissiveSlots.Add(rs); break;
+                            case SlotUsage.Opacity: opacitySlots.Add(rs); break;
+                            case SlotUsage.Occlusion: aoSlots.Add(rs); break;
+                            case SlotUsage.Detail: detailSlots.Add(rs); break;
+                            case SlotUsage.Specular: specSlots.Add(rs); break;
+                            case SlotUsage.Roughness: roughSlots.Add(rs); break;
+                            case SlotUsage.Metallic: metalSlots.Add(rs); break;
+                            default: albedoSlots.Add(rs); break;
+                        }
+                    }
+                }
 
                 for (int y = minY; y <= maxY; y++)
+                {
+                    int rowOff = y * W;
                     for (int x = minX; x <= maxX; x++)
                     {
                         var p = new SN.Vector2(x + 0.5f, y + 0.5f);
@@ -313,30 +306,54 @@ public static class Rasterizer
                         float invW = w0 * aInvW + w1 * bInvW + w2 * cInvW;
                         if (invW <= 0) continue;
 
+                        // perspective correct depth (store/compare in Zw form)
                         float z = w0 * aZw + w1 * bZw + w2 * cZw;
-                        if (doubleSided && backfacing && !transparentPass) z += 1e-5f;
 
-                        int idx = y * W + x;
+                        int idx = rowOff + x;
 
-                        float zTest = transparentPass ? (z - 1e-5f) : z;
-                        if (zTest >= zbuf[idx]) continue;
-                        if (!transparentPass) zbuf[idx] = z;
+                        // depth test
+                        if (transparentPass)
+                        {
+                            // transparent must be **strictly** in front of what’s there
+                            if (z >= zbuf[idx] - 1e-4f) continue;
+                        }
+                        else
+                        {
+                            if (z >= zbuf[idx]) continue;
+                            zbuf[idx] = z; // write early for opaque
+                        }
 
+                        // perspective-correct interpolation (world & view)
                         var viewPos = (w0 * Va * aInvW + w1 * Vb * bInvW + w2 * Vc * cInvW) / invW;
+                        var worldPos = (w0 * Wa * aInvW + w1 * Wb * bInvW + w2 * Wc * cInvW) / invW;
 
-                        var normal = SN.Vector3.Normalize((w0 * Na * aInvW + w1 * Nb * bInvW + w2 * Nc * cInvW) / invW);
-                        if (doubleSided && backfacing) normal = -normal;
+                        // normals: view for backface flip, world for lighting
+                        var nV = (w0 * NaV * aInvW + w1 * NbV * bInvW + w2 * NcV * cInvW) / invW;
+                        var nW = (w0 * NaW * aInvW + w1 * NbW * bInvW + w2 * NcW * cInvW) / invW;
 
-                        // ---------------- Lighting ----------------
-                        float ndl, atten = 1f; SN.Vector3 Ldir;
+                        // Flip ONLY the view-space normal (for consistent front-face tests).
+                        if (doubleSided && backfacing) nV = -nV;
+
+                        // normalize world normal (cheap guard)
+                        float nWlen2 = nW.X * nW.X + nW.Y * nW.Y + nW.Z * nW.Z;
+                        if (nWlen2 < 0.85f || nWlen2 > 1.21f)
+                        {
+                            float invLen = 1.0f / MathF.Sqrt(nWlen2 + 1e-12f);
+                            nW.X *= invLen; nW.Y *= invLen; nW.Z *= invLen;
+                        }
+
+                        // ---------------- Lighting (WORLD space, camera-invariant) ----------------
+                        float ndl, atten = 1f;
+
                         if (lightIsPoint)
                         {
-                            var toL = lightPosV - viewPos;
+                            var toL = lightPosWorld - worldPos;     // world space
                             float dist = toL.Length();
-                            Ldir = toL / (dist + 1e-6f);
+                            var Ldir = toL / (dist + 1e-6f);
 
-                            float dotNL = SN.Vector3.Dot(normal, Ldir);
-                            if (doubleSided && dotNL < 0f) dotNL = -dotNL;
+                            float dotNL = SN.Vector3.Dot(nW, Ldir);
+                            // Two-sided for point lights (surfaces can be lit on either side).
+                            if (doubleSided) dotNL = MathF.Abs(dotNL);
                             ndl = MathF.Max(0f, dotNL);
 
                             if (lightRange > 0f)
@@ -347,10 +364,17 @@ public static class Rasterizer
                         }
                         else
                         {
-                            Ldir = LdirV;
-                            float dotNL = SN.Vector3.Dot(normal, Ldir);
-                            ndl = MathF.Max(0f, dotNL);
+                            // Directional: allow two-sided lighting for interiors if doubleSided is on.
+                            // This lights ceilings even when their normals face away from the sun.
+                            float dotNL = SN.Vector3.Dot(nW, LdirW);
+                            if (doubleSided)
+                                dotNL = MathF.Abs(dotNL);        // non-physical, but great for interior preview
+                            else
+                                dotNL = MathF.Max(0f, dotNL);
+
+                            ndl = dotNL;
                         }
+
 
                         float dir01 = Math.Clamp(ndl * atten, 0f, 1f);
 
@@ -358,66 +382,103 @@ public static class Rasterizer
                         float u = (w0 * Ua.X * aInvW + w1 * Ub.X * bInvW + w2 * Uc.X * cInvW) / invW;
                         float v = (w0 * Ua.Y * aInvW + w1 * Ub.Y * bInvW + w2 * Uc.Y * cInvW) / invW;
 
-                        // -------- material sampling (no reflection here) --------
+                        // -------- material sampling --------
                         Color albedo = Color.FromRgb(255, 255, 255);
                         Color detailMul = Color.FromRgb(255, 255, 255);
                         Color emissive = Color.FromRgb(0, 0, 0);
                         float aoMul = 1f, specMap = 0f, roughFromMap = -1f, metalFromMap = -1f;
                         float albedoAlpha = 0f, opacityMapMul = 1f;
-                        bool hadAlbedoRGB = false, sawAlbedoSlot = false, hasOpacitySlot = false;
+                        bool hadAlbedoRGB = false, sawAlbedoSlot = false;
 
-                        if (slots.Count > 0)
+                        if (hasAnySlots)
                         {
-                            for (int si = 0; si < slots.Count; si++)
+                            if (transparentPass && hasOpacitySlotTri && opacitySlots!.Count > 0)
                             {
-                                var s = slots[si];
-                                if (s.FaceMask != -1 && triFaceMask != -1 && (s.FaceMask & triFaceMask) == 0) continue;
-
-                                // UV xform
-                                float uu = u, vv = v;
-                                float U = (uu - 0.5f) * s.Su;
-                                float V = (vv - 0.5f) * s.Sv;
-                                if (MathF.Abs(s.Sn) > 1e-6f)
+                                for (int iop = 0; iop < opacitySlots.Count; iop++)
                                 {
-                                    float rU = U * s.Cs - V * s.Sn;
-                                    float rV = U * s.Sn + V * s.Cs;
-                                    U = rU; V = rV;
-                                }
-                                uu = U + 0.5f + s.Ou;
-                                vv = V + 0.5f + s.Ov;
-
-                                var samp = TextureSampling.SamplePMClamped(s.Tex, uu, s.NoFlipV ? (1f - vv) : vv);
-
-                                if (s.Usage.Contains("emiss"))
-                                    emissive = ColorUtil.AddColor(emissive, samp);
-                                else if (s.Usage.Contains("occl") || s.Usage == "ao")
-                                    aoMul *= Math.Clamp(ColorUtil.Luma(samp), 0f, 1f);
-                                else if (s.Usage.Contains("detail"))
-                                    detailMul = ColorUtil.MulColor(detailMul, samp);
-                                else if (s.Usage.Contains("spec"))
-                                    specMap = Math.Clamp(ColorUtil.Luma(samp), 0f, 1f);
-                                else if (s.Usage.Contains("rough"))
-                                    roughFromMap = Math.Clamp(ColorUtil.Luma(samp), 0f, 1f);
-                                else if (s.Usage.Contains("metal"))
-                                    metalFromMap = Math.Clamp(ColorUtil.Luma(samp), 0f, 1f);
-                                else if (s.Usage.Contains("opacity") || s.Usage.Contains("alpha") || s.Usage.Contains("transp"))
-                                {
-                                    hasOpacitySlot = true;
-                                    float op = (samp.A < 254) ? (samp.A / 255f) : Math.Clamp(ColorUtil.Luma(samp), 0f, 1f);
+                                    var rs = opacitySlots[iop];
+                                    rs.ApplyUV(u, v, out var uu, out var vv);
+                                    var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                    float op = (s.A < 254) ? (s.A / 255f) : Math.Clamp(ColorUtil.Luma(s), 0f, 1f);
                                     opacityMapMul *= op;
                                     if (!hadAlbedoRGB && !sawAlbedoSlot)
                                     {
-                                        albedo = ColorUtil.MulColor(albedo, Color.FromRgb(samp.R, samp.G, samp.B));
+                                        albedo = ColorUtil.MulColor(albedo, Color.FromRgb(s.R, s.G, s.B));
                                         hadAlbedoRGB = true;
                                     }
                                 }
-                                else
+                            }
+
+                            if (emissiveSlots!.Count > 0)
+                                for (int ie = 0; ie < emissiveSlots.Count; ie++)
                                 {
-                                    albedo = ColorUtil.AlphaOver(albedo, samp);
+                                    var rs = emissiveSlots[ie];
+                                    rs.ApplyUV(u, v, out var uu, out var vv);
+                                    var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                    emissive = ColorUtil.AddColor(emissive, s);
+                                }
+
+                            if (albedoSlots!.Count > 0)
+                                for (int iAlb = 0; iAlb < albedoSlots.Count; iAlb++)
+                                {
+                                    var rs = albedoSlots[iAlb];
+                                    rs.ApplyUV(u, v, out var uu, out var vv);
+                                    var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                    albedo = ColorUtil.AlphaOver(albedo, s);
                                     hadAlbedoRGB = true; sawAlbedoSlot = true;
-                                    float aA = samp.A / 255f;
+                                    float aA = s.A / 255f;
                                     albedoAlpha = albedoAlpha + (1f - albedoAlpha) * aA;
                                 }
+
+                            if (Ambient > 0f)
+                            {
+                                if (aoSlots!.Count > 0)
+                                    for (int iao = 0; iao < aoSlots.Count; iao++)
+                                    {
+                                        var rs = aoSlots[iao];
+                                        rs.ApplyUV(u, v, out var uu, out var vv);
+                                        var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                        aoMul *= Math.Clamp(ColorUtil.Luma(s), 0f, 1f);
+                                    }
+
+                                if (detailSlots!.Count > 0)
+                                    for (int idt = 0; idt < detailSlots.Count; idt++)
+                                    {
+                                        var rs = detailSlots[idt];
+                                        rs.ApplyUV(u, v, out var uu, out var vv);
+                                        var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                        detailMul = ColorUtil.MulColor(detailMul, s);
+                                    }
+                            }
+
+                            if (DiffuseK > 0f && dir01 > 0f)
+                            {
+                                if (specSlots!.Count > 0)
+                                    for (int isp = 0; isp < specSlots.Count; isp++)
+                                    {
+                                        var rs = specSlots[isp];
+                                        rs.ApplyUV(u, v, out var uu, out var vv);
+                                        var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                        specMap = Math.Clamp(ColorUtil.Luma(s), 0f, 1f);
+                                    }
+
+                                if (roughSlots!.Count > 0)
+                                    for (int ir = 0; ir < roughSlots.Count; ir++)
+                                    {
+                                        var rs = roughSlots[ir];
+                                        rs.ApplyUV(u, v, out var uu, out var vv);
+                                        var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                        roughFromMap = Math.Clamp(ColorUtil.Luma(s), 0f, 1f);
+                                    }
+
+                                if (metalSlots!.Count > 0)
+                                    for (int im = 0; im < metalSlots.Count; im++)
+                                    {
+                                        var rs = metalSlots[im];
+                                        rs.ApplyUV(u, v, out var uu, out var vv);
+                                        var s = TextureSampling.SamplePMClamped(rs.Tex!, uu, rs.NoFlipV ? (1f - vv) : vv);
+                                        metalFromMap = Math.Clamp(ColorUtil.Luma(s), 0f, 1f);
+                                    }
                             }
                         }
 
@@ -426,21 +487,23 @@ public static class Rasterizer
                         float specStr = Math.Clamp(specMap, 0f, 1f);
                         float shininess = 8f + smooth * smooth * 248f;
 
-                        // lighting combine (exact)
-                        float amb = Ambient * (1f - dir01);
+                        // lighting combine
+                        float amb = Ambient * (1f + dir01);
                         float dif = DiffuseK * dir01;
                         float shade = amb * aoMul + dif;
 
+                        Color safeTint = (tint.R | tint.G | tint.B) == 0 ? Color.FromRgb(255, 255, 255) : tint;
                         Color lit = ColorUtil.ShadeColor(safeTint, shade);
                         Color baseCol = ColorUtil.MulColor(ColorUtil.MulColor(albedo, detailMul), lit);
 
-                        // specular (Blinn-Phong), gated by direct
+                        // specular (Blinn-Phong) — use world-space half vector
                         Color specAdd = Color.FromRgb(0, 0, 0);
                         if (DiffuseK > 0f && specStr > 0.001f && dir01 > 0f)
                         {
-                            var Vdir = SN.Vector3.Normalize(-viewPos);
-                            SN.Vector3 halfVec = SN.Vector3.Normalize(Ldir + Vdir);
-                            float ndh = MathF.Max(0f, SN.Vector3.Dot(normal, halfVec));
+                            var VdirW = SN.Vector3.Normalize(CameraDirectionFromWorldPos(worldPos)); // see helper below
+                            var LdirWused = lightIsPoint ? SN.Vector3.Normalize(lightPosWorld - worldPos) : LdirW;
+                            SN.Vector3 halfVec = SN.Vector3.Normalize(LdirWused + VdirW);
+                            float ndh = MathF.Max(0f, SN.Vector3.Dot(nW, halfVec));
                             float spec = MathF.Pow(ndh, shininess) * specStr * (0.25f + 0.75f * metallic) * dir01;
                             byte sr = (byte)Math.Clamp(spec * 255f, 0f, 255f);
                             specAdd = Color.FromRgb(sr, sr, sr);
@@ -450,11 +513,12 @@ public static class Rasterizer
 
                         if (transparentPass)
                         {
-                            float baseAlpha = hasOpacitySlot ? 1f : (sawAlbedoSlot ? albedoAlpha : 1f);
+                            float baseAlpha = sawAlbedoSlot ? albedoAlpha : 1f;
                             float aEff = Math.Clamp(baseAlpha * opacityMapMul * matOpacity * tintA, 0f, 1f);
                             if (aEff <= 0.0001f) continue;
-                            const float OPAQUEISH = 0.60f;
-                            if (aEff >= OPAQUEISH) zbuf[idx] = z;
+
+                            
+
                             color[idx] = ColorUtil.BlendOver(color[idx], pix, aEff);
                         }
                         else
@@ -462,91 +526,198 @@ public static class Rasterizer
                             color[idx] = ColorUtil.PackBGRA(pix);
                         }
                     }
+                }
             }
         }
+
+        // local helper: view direction in WORLD space (from fragment toward camera)
+        static SN.Vector3 CameraDirectionFromWorldPos(SN.Vector3 worldPos)
+        {
+            // Camera is at world origin in view space; to get a stable specular,
+            // use direction from point to camera position. If you keep camera position available,
+            
+            var v = -worldPos;
+            float len = v.Length();
+            return len > 1e-6f ? v / len : new SN.Vector3(0, 0, -1);
+        }
     }
+
+
+
+
+
+
 
     // ======== PRIVATES ========
 
-    private struct ResolvedSlot
+    // Fast usage enum
+    private enum SlotUsage : byte
     {
-        public string Usage;     
-        public Texture2D Tex;     // ensured Texture2D
-        public int FaceMask;      // -1 = all
-        public bool NoFlipV;
-        public float Su, Sv, Ou, Ov;
-        public float Cs, Sn;      // cos/sin of RotateUV
+        Albedo, Emissive, Occlusion, Detail, Specular, Roughness, Metallic, Opacity, Normal, Unknown
     }
 
-    private static List<ResolvedSlot> ResolveSlots(Material mat)
+    // Pre-resolved slot with NO reflection in the inner loop
+    private readonly struct ResolvedSlot
     {
-        var list = new List<ResolvedSlot>(mat?.Textures?.Count ?? 0);
-        if (mat?.Textures == null) return list;
+        public readonly Texture2D? Tex;
+        public readonly SlotUsage Usage;
+        public readonly int FaceMask;     // -1 means "any"
+        public readonly bool NoFlipV;
+        // UV xform precomputed
+        public readonly float Su, Sv, Ou, Ov, Cs, Sn;
 
-        for (int i = 0; i < mat.Textures.Count; i++)
+        public ResolvedSlot(Texture2D? tex, SlotUsage usage, int mask, bool noFlipV,
+                            float su, float sv, float ou, float ov, float cs, float sn)
         {
-            var slot = mat.Textures[i];
-            if (slot == null) continue;
+            Tex = tex; Usage = usage; FaceMask = mask; NoFlipV = noFlipV;
+            Su = su; Sv = sv; Ou = ou; Ov = ov; Cs = cs; Sn = sn;
+        }
 
-            // Texture
-            var pTex = slot.GetType().GetProperty("Texture",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            var raw = pTex != null ? pTex.GetValue(slot) : null;
-            var tex = raw as Texture2D ?? TextureBridge.EnsureEngineTexture2D(raw);
-            if (tex == null || tex.Width <= 0 || tex.Height <= 0) continue;
-            if (tex != raw && pTex != null && pTex.CanWrite) pTex.SetValue(slot, tex);
-
-            // Usage + mask (use your existing helpers if present)
-            string usage = GetUsageName(slot).ToLowerInvariant();
-            int faceMask = GetFaceMask(slot);
-
-            // UV xform
-            float su = GetFloat(slot, "ScaleU", 1f);
-            float sv = GetFloat(slot, "ScaleV", 1f);
-            float ou = GetFloat(slot, "OffsetU", 0f);
-            float ov = GetFloat(slot, "OffsetV", 0f);
-            float rotDeg = GetFloat(slot, "RotateUV", 0f);
-            float rot = rotDeg * (MathF.PI / 180f);
-            float cs = MathF.Cos(rot), sn = MathF.Sin(rot);
-            bool noFlipV = GetBool(slot, "NoFlipV", false);
-
-            list.Add(new ResolvedSlot
+        // Apply UV transform without any reflection/Math inside the pixel loop
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public readonly void ApplyUV(float uIn, float vIn, out float u, out float v)
+        {
+            float uu = (uIn - 0.5f) * Su;
+            float vv = (vIn - 0.5f) * Sv;
+            if (Sn != 0f || Cs != 1f)
             {
-                Usage = usage,
-                Tex = tex,
-                FaceMask = faceMask,
-                NoFlipV = noFlipV,
-                Su = su,
-                Sv = sv,
-                Ou = ou,
-                Ov = ov,
-                Cs = cs,
-                Sn = sn
-            });
+                float x = uu * Cs - vv * Sn;
+                float y = uu * Sn + vv * Cs;
+                uu = x; vv = y;
+            }
+            u = uu + 0.5f + Ou;
+            v = vv + 0.5f + Ov;
+        }
+    }
+
+    // Resolve material slots ONCE per triangle (or per material) — no reflection in inner loop.
+    private static readonly Dictionary<Type, Func<object, Texture2D?>> _getterTexture = new();
+    private static Texture2D? GetTextureFast(object slot)
+    {
+        var t = slot.GetType();
+        if (!_getterTexture.TryGetValue(t, out var getter))
+        {
+            var pTex = t.GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (pTex == null) { _getterTexture[t] = _ => null; return null; }
+            getter = (object s) =>
+            {
+                var raw = pTex.GetValue(s);
+                return raw as Texture2D ?? TextureBridge.EnsureEngineTexture2D(raw);
+            };
+            _getterTexture[t] = getter;
+        }
+        return getter(slot);
+    }
+
+    private static readonly Dictionary<Type, Func<object, string>> _getterUsage = new();
+    private static string GetUsageFast(object slot)
+    {
+        var t = slot.GetType();
+        if (!_getterUsage.TryGetValue(t, out var getter))
+        {
+            var p = t.GetProperty("Usage", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            getter = p == null ? (_ => "Albedo") : (object s) => p.GetValue(s)?.ToString() ?? "Albedo";
+            _getterUsage[t] = getter;
+        }
+        return getter(slot);
+    }
+
+    private static readonly Dictionary<Type, Func<object, int>> _getterFaceMask = new();
+    private static int GetFaceMaskFast(object slot)
+    {
+        var t = slot.GetType();
+        if (!_getterFaceMask.TryGetValue(t, out var getter))
+        {
+            var p = t.GetProperty("FaceMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p == null) { _getterFaceMask[t] = _ => -1; return -1; }
+            getter = (object s) =>
+            {
+                var v = p.GetValue(s);
+                if (v is int i) return i;
+                return v != null && v.GetType().IsEnum ? Convert.ToInt32(v) : -1;
+            };
+            _getterFaceMask[t] = getter;
+        }
+        return getter(slot);
+    }
+
+    private static readonly Dictionary<Type, Func<object, bool>> _getterNoFlipV = new();
+    private static bool GetNoFlipVFast(object slot)
+    {
+        var t = slot.GetType();
+        if (!_getterNoFlipV.TryGetValue(t, out var getter))
+        {
+            var p = t.GetProperty("NoFlipV", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            getter = p == null ? (_ => false) : (object s) => p.GetValue(s) is bool b && b;
+            _getterNoFlipV[t] = getter;
+        }
+        return getter(slot);
+    }
+
+    private static readonly Dictionary<Type, (Func<object, float> su, Func<object, float> sv, Func<object, float> ou, Func<object, float> ov, Func<object, float> rot)> _getterUV = new();
+    private static (float su, float sv, float ou, float ov, float cs, float sn) GetUVXformFast(object slot)
+    {
+        var t = slot.GetType();
+        if (!_getterUV.TryGetValue(t, out var g))
+        {
+            Func<object, float> gf(string name, float def)
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (p == null) return _ => def;
+                return (object s) =>
+                {
+                    var v = p.GetValue(s);
+                    return v is float f ? f : v is double d ? (float)d : def;
+                };
+            }
+            g = (gf("ScaleU", 1f), gf("ScaleV", 1f), gf("OffsetU", 0f), gf("OffsetV", 0f), gf("RotateUV", 0f));
+            _getterUV[t] = g;
+        }
+
+        float su = g.su(slot), sv = g.sv(slot), ou = g.ou(slot), ov = g.ov(slot);
+        float rotDeg = g.rot(slot);
+        float r = rotDeg * (MathF.PI / 180f);
+        float cs = MathF.Abs(r) < 1e-6f ? 1f : MathF.Cos(r);
+        float sn = MathF.Abs(r) < 1e-6f ? 0f : MathF.Sin(r);
+        return (su, sv, ou, ov, cs, sn);
+    }
+
+    private static SlotUsage ParseUsage(string usage)
+    {
+        usage = usage.ToLowerInvariant();
+        if (usage.Contains("emis")) return SlotUsage.Emissive;
+        if (usage.Contains("occl") || usage == "ao") return SlotUsage.Occlusion;
+        if (usage.Contains("detail")) return SlotUsage.Detail;
+        if (usage.Contains("spec")) return SlotUsage.Specular;
+        if (usage.Contains("rough")) return SlotUsage.Roughness;
+        if (usage.Contains("metal")) return SlotUsage.Metallic;
+        if (usage.Contains("opacity") || usage.Contains("alpha") || usage.Contains("transp")) return SlotUsage.Opacity;
+        if (usage.Contains("normal")) return SlotUsage.Normal;
+        return SlotUsage.Albedo;
+    }
+
+    // Build a filtered list of slots for THIS triangle (respect FaceMask) – no string/reflection in the inner loop.
+    private static List<ResolvedSlot> ResolveSlotsForTriangle(Material? mat, int triFaceMask)
+    {
+        var list = new List<ResolvedSlot>(8);
+        if (mat?.Textures == null || mat.Textures.Count == 0) return list;
+
+        foreach (var slot in mat.Textures)
+        {
+            if (slot == null) continue;
+            int mask = GetFaceMaskFast(slot);
+            if (mask != -1 && triFaceMask != -1 && (mask & triFaceMask) == 0) continue;
+
+            var tex = GetTextureFast(slot);
+            if (tex == null) continue;
+
+            var (su, sv, ou, ov, cs, sn) = GetUVXformFast(slot);
+            bool noFlipV = GetNoFlipVFast(slot);
+            var usage = ParseUsage(GetUsageFast(slot));
+
+            list.Add(new ResolvedSlot(tex, usage, mask, noFlipV, su, sv, ou, ov, cs, sn));
         }
         return list;
-    }
-
-    private static float GetFloat(object obj, string name, float defV)
-    {
-        var p = obj.GetType().GetProperty(name,
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-        if (p == null) return defV;
-        var v = p.GetValue(obj);
-        if (v is float f) return f;
-        if (v is double d) return (float)d;
-        if (v is int i) return i;
-        return defV;
-    }
-
-    private static bool GetBool(object obj, string name, bool defV)
-    {
-        var p = obj.GetType().GetProperty(name,
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-        if (p == null) return defV;
-        var v = p.GetValue(obj);
-        if (v is bool b) return b;
-        return defV;
     }
 
 
@@ -626,62 +797,6 @@ public static class Rasterizer
         return null;
     }
 
-    // --- UV2 cache (for wind metadata) ------------------------------------------
-    private static readonly Dictionary<Type, SN.Vector2[]?> _uv2Cache = new Dictionary<Type, SN.Vector2[]?>();
-
-    private static SN.Vector2[]? GetMeshUVs2(Mesh m)
-    {
-        var t = m.GetType();
-        SN.Vector2[]? v;
-        if (_uv2Cache.TryGetValue(t, out v)) return v;
-
-        // common names that exporters use for the 2nd channel
-        string[] names = { "UV2", "TexCoord1", "UV1" };
-        foreach (var n in names)
-        {
-            var p = t.GetProperty(n, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            if (p != null && p.PropertyType == typeof(SN.Vector2[]))
-            {
-                v = (SN.Vector2[]?)p.GetValue(m);
-                _uv2Cache[t] = v;
-                return v;
-            }
-            var f = t.GetField(n, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            if (f != null && f.FieldType == typeof(SN.Vector2[]))
-            {
-                v = (SN.Vector2[]?)f.GetValue(m);
-                _uv2Cache[t] = v;
-                return v;
-            }
-        }
-        _uv2Cache[t] = null;
-        return null;
-    }
-
-    private static SN.Vector3 ApplyWind(in SN.Vector3 p, float weight01, float phase01,
-                                    in SN.Vector3 windDir, float t, float amp)
-    {
-        // Clamp weight (safety if data is dirty)
-        if (weight01 < 0f) weight01 = 0f; else if (weight01 > 1f) weight01 = 1f;
-
-        // Phase gives per-vertex variability so trees don't sway in lockstep
-        float phase = phase01 * 6.2831853f; // 2π
-
-        // Low-frequency sway + a touch of flutter for leaves/cards
-        float sway = (float)System.Math.Sin(t * 0.7f + phase);
-        float flutter = 0.15f * (float)System.Math.Sin(t * 5.3f + phase * 1.7f);
-
-        float disp = amp * weight01 * (0.6f * sway + 0.4f * flutter);
-
-        // Simple displacement along wind direction (object space)
-        var wd = windDir;
-        if (wd.LengthSquared() > 1e-6f) wd = SN.Vector3.Normalize(wd);
-        else wd = new SN.Vector3(1f, 0f, 0f);
-
-        return p + wd * disp;
-    }
-
-
     // Face helpers
     private static int FaceMaskFromTriAndAabb(in SN.Vector3 pa, in SN.Vector3 pb, in SN.Vector3 pc,
                                               in SN.Vector3 bbMin, in SN.Vector3 bbMax)
@@ -701,18 +816,5 @@ public static class Rasterizer
         return (cz >= mz) ? 16 : 32;                                     // +Z / -Z
     }
 
-
-    private static string GetUsageName(MaterialTexture slot)
-        => slot.GetType().GetProperty("Usage")?.GetValue(slot)?.ToString() ?? "Albedo";
-
-    private static int GetFaceMask(object slot)
-    {
-        var prop = slot.GetType().GetProperty("FaceMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        if (prop == null) return -1;
-        var v = prop.GetValue(slot);
-        if (v is int i) return i;
-        if (v != null && v.GetType().IsEnum) return Convert.ToInt32(v);
-        return -1;
-    }
-
+  
 }
