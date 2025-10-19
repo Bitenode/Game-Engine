@@ -1389,6 +1389,22 @@
           "lib/netstandard1.3/System.ObjectModel.dll": {}
         }
       },
+      "System.Reactive/6.1.0": {
+        "type": "package",
+        "compile": {
+          "lib/net6.0/System.Reactive.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net6.0/System.Reactive.dll": {
+            "related": ".xml"
+          }
+        },
+        "build": {
+          "buildTransitive/net6.0/_._": {}
+        }
+      },
       "System.Reflection/4.3.0": {
         "type": "package",
         "dependencies": {
@@ -5268,6 +5284,33 @@
         "system.objectmodel.nuspec"
       ]
     },
+    "System.Reactive/6.1.0": {
+      "sha512": "M5cCC1ZMkZr9jbSQGTHnVkb5TDN67qWCV7AP8TAHdGkvDlu0puT5NzemESNn9+HkYIDpWpocP68/i+/ame2/2w==",
+      "type": "package",
+      "path": "system.reactive/6.1.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "build/net6.0-windows10.0.19041/_._",
+        "build/net6.0/_._",
+        "buildTransitive/net6.0-windows10.0.19041/_._",
+        "buildTransitive/net6.0/_._",
+        "icon.png",
+        "lib/net472/System.Reactive.dll",
+        "lib/net472/System.Reactive.xml",
+        "lib/net6.0-windows10.0.19041/System.Reactive.dll",
+        "lib/net6.0-windows10.0.19041/System.Reactive.xml",
+        "lib/net6.0/System.Reactive.dll",
+        "lib/net6.0/System.Reactive.xml",
+        "lib/netstandard2.0/System.Reactive.dll",
+        "lib/netstandard2.0/System.Reactive.xml",
+        "lib/uap10.0.18362/System.Reactive.dll",
+        "lib/uap10.0.18362/System.Reactive.xml",
+        "readme.md",
+        "system.reactive.6.1.0.nupkg.sha512",
+        "system.reactive.nuspec"
+      ]
+    },
     "System.Reflection/4.3.0": {
       "sha512": "KMiAFoW7MfJGa9nDFNcfu+FpEdiHpWgTcS2HdMpDvt9saK3y/G4GwprPyzqjFH9NTaGPQeWNHU+iDlDILj96aQ==",
       "type": "package",
@@ -6964,7 +7007,8 @@
       "Avalonia.Fonts.Inter >= 11.*",
       "Avalonia.Themes.Fluent >= 11.*",
       "Microsoft.CodeAnalysis.CSharp >= 4.14.0",
-      "SkiaSharp >= 2.88.9"
+      "SkiaSharp >= 2.88.9",
+      "System.Reactive >= 6.1.0"
     ]
   },
   "packageFolders": {
@@ -7039,6 +7083,10 @@
           "SkiaSharp": {
             "target": "Package",
             "version": "[2.88.9, )"
+          },
+          "System.Reactive": {
+            "target": "Package",
+            "version": "[6.1.0, )"
           }
         },
         "imports": [

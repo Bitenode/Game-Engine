@@ -72,6 +72,10 @@
             "SkiaSharp": {
               "target": "Package",
               "version": "[2.88.9, )"
+            },
+            "System.Reactive": {
+              "target": "Package",
+              "version": "[6.1.0, )"
             }
           },
           "imports": [

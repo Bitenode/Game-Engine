@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.IO;
 using System.Runtime.Loader;
 using Avalonia;
@@ -13,6 +13,8 @@ using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using System.Collections.ObjectModel;
+using Game_Engine.Core.Extensibility;
+using Avalonia.Controls.ApplicationLifetimes;
 
 namespace Game_Engine.Views;
 
@@ -22,6 +24,11 @@ public partial class ScriptEditorWindow : Window
     private bool _dirty;
     private static AssemblyLoadContext? s_scriptsAlc; // hot-reloadable ALC
     private readonly ObservableCollection<TreeViewItem> _treeItems = new ObservableCollection<TreeViewItem>();
+
+    //  indent: "\t" or 4 spaces.
+    private const string IndentToken = "    ";
+
+    private const string EditorVersion = "v1.4";
 
 
 
@@ -50,6 +57,7 @@ public partial class ScriptEditorWindow : Window
 
         // Keyboard shortcuts
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+        Editor.AddHandler(KeyDownEvent, OnEditorKeyDown, RoutingStrategies.Tunnel);
 
         // Wire Build button
         BtnBuild.Click += OnBuildAll;
@@ -57,7 +65,8 @@ public partial class ScriptEditorWindow : Window
         // First title
         UpdateTitle();
 
-        Title = $"Script Editor v1.3 — {Path.GetFileName(_path)}";
+        Title = $"Script Editor {EditorVersion} â€” {Path.GetFileName(_path)}";
+
 
         // Wire UI
         BtnSave.Click += OnSave;
@@ -82,6 +91,136 @@ public partial class ScriptEditorWindow : Window
         // Avoid blocking UI thread while scanning disk; small projects are fine sync.
         Dispatcher.UIThread.Post(RebuildScriptTree);
     }
+
+    
+
+    private void OnEditorKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender != Editor) return;
+
+        if (e.Key == Key.Tab && !e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            e.Handled = true; // stop focus navigation
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                OutdentSelection();
+            else
+                IndentSelection();
+        }
+    }
+
+    private void IndentSelection()
+    {
+        var text = Editor.Text ?? string.Empty;
+        GetSelectionBounds(out var selStart, out var selEnd);
+
+        // Expand to whole lines
+        var lineStart = FindLineStart(text, selStart);
+        var lineEnd = FindLineEnd(text, selEnd);
+
+        var before = text.Substring(0, lineStart);
+        var middle = text.Substring(lineStart, lineEnd - lineStart);
+        var after = text.Substring(lineEnd);
+
+        // Insert indentation at the start of each line in selection
+        var lines = middle.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            // preserve CR if the file is CRLF
+            var l = lines[i];
+            var hasCR = l.EndsWith("\r", StringComparison.Ordinal);
+            if (hasCR) l = l[..^1];
+            l = IndentToken + l;
+            if (hasCR) l += "\r";
+            lines[i] = l;
+        }
+
+        var newMiddle = string.Join("\n", lines);
+        Editor.Text = before + newMiddle + after;
+
+        // Selection should cover the same logical lines; adjust to include the extra indent we added.
+        var added = IndentToken.Length * lines.Length;
+        Editor.SelectionStart = selStart + IndentToken.Length;       // caret still on first line but after the inserted indent
+        Editor.SelectionEnd = selEnd + added;                      // whole selection grows by added chars
+        _dirty = true;
+        UpdateTitle();
+    }
+
+    private void OutdentSelection()
+    {
+        var text = Editor.Text ?? string.Empty;
+        GetSelectionBounds(out var selStart, out var selEnd);
+
+        var lineStart = FindLineStart(text, selStart);
+        var lineEnd = FindLineEnd(text, selEnd);
+
+        var before = text.Substring(0, lineStart);
+        var middle = text.Substring(lineStart, lineEnd - lineStart);
+        var after = text.Substring(lineEnd);
+
+        var lines = middle.Split('\n');
+        int removedTotal = 0;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var l = lines[i];
+            var hasCR = l.EndsWith("\r", StringComparison.Ordinal);
+            if (hasCR) l = l[..^1];
+
+            int removed = 0;
+            if (l.StartsWith("\t", StringComparison.Ordinal))
+            {
+                l = l[1..];
+                removed = 1;
+            }
+            else
+            {
+                // remove up to IndentToken.Length spaces
+                int n = 0;
+                while (n < IndentToken.Length && n < l.Length && l[n] == ' ') n++;
+                if (n > 0) { l = l[n..]; removed = n; }
+            }
+
+            removedTotal += removed;
+            if (hasCR) l += "\r";
+            lines[i] = l;
+        }
+
+        var newMiddle = string.Join("\n", lines);
+        Editor.Text = before + newMiddle + after;
+
+        // Shrink selection by how much we removed (donâ€™t go negative)
+        var newSelStart = Math.Max(0, selStart - Math.Min(IndentToken.Length, selStart - lineStart));
+        var newSelEnd = Math.Max(newSelStart, selEnd - removedTotal);
+        Editor.SelectionStart = newSelStart;
+        Editor.SelectionEnd = newSelEnd;
+
+        _dirty = true;
+        UpdateTitle();
+    }
+
+    private static int FindLineStart(string text, int index)
+    {
+        if (index <= 0) return 0;
+        var i = text.LastIndexOf('\n', Math.Clamp(index - 1, 0, text.Length - 1));
+        return i < 0 ? 0 : i + 1;
+    }
+
+    private static int FindLineEnd(string text, int index)
+    {
+        if (index >= text.Length) return text.Length;
+        var i = text.IndexOf('\n', index);
+        return i < 0 ? text.Length : i;
+    }
+
+    private void GetSelectionBounds(out int selStart, out int selEnd)
+    {
+        // Avalonia TextBox guarantees SelectionStart/End, but order can vary
+        var a = Editor.SelectionStart;
+        var b = Editor.SelectionEnd;
+        if (a <= b) { selStart = a; selEnd = b; }
+        else { selStart = b; selEnd = a; }
+    }
+
 
     private void RebuildScriptTree()
     {
@@ -202,7 +341,7 @@ public partial class ScriptEditorWindow : Window
 
     private void UpdateTitle()
     {
-        Title = $"Script Editor v1.3 — {(_dirty ? "*" : "")}{Path.GetFileName(_path)}";
+        Title = $"Script Editor {EditorVersion} â€” {(_dirty ? "*" : "")}{Path.GetFileName(_path)}";
         if (Status != null && string.IsNullOrWhiteSpace(Status.Text))
             Status.Text = "";
     }
@@ -249,7 +388,7 @@ public partial class ScriptEditorWindow : Window
     {
         var dlg = new SaveFileDialog
         {
-            Title = "Save Script As…",
+            Title = "Save Script Asâ€¦",
             InitialFileName = Path.GetFileName(_path),
             Filters = { new FileDialogFilter { Name = "C# File", Extensions = { "cs" } } }
         };
@@ -260,7 +399,7 @@ public partial class ScriptEditorWindow : Window
         {
             File.WriteAllText(dst, Editor.Text ?? "");
             _path = dst;
-            Title = $"Script Editor — {Path.GetFileName(_path)}";
+            Title = $"Script Editor â€” {Path.GetFileName(_path)}";
             ProjectService.TouchModified();
             _dirty = false;
             UpdateTitle();
@@ -282,7 +421,7 @@ public partial class ScriptEditorWindow : Window
         }
         catch (Exception ex)
         {
-            // Don’t block the switch; just report the issue.
+            // Donâ€™t block the switch; just report the issue.
             ShowError("Auto-save failed:\n" + ex.Message);
         }
         finally
@@ -302,17 +441,30 @@ public partial class ScriptEditorWindow : Window
 
     private async void OnBuildAll(object? s, RoutedEventArgs e)
     {
-        // Save current file first so the build picks it up
         OnSave(this, new RoutedEventArgs());
 
         try
         {
             var (files, typesLoaded) = await BuildAndLoadProjectScriptsAsync();
-            ProjectService.TouchModified(); // nudge UI to refresh caches
+            ProjectService.TouchModified();
 
-            var msg = $"Build OK — {typesLoaded} Behavior types loaded from {files} script file(s).";
+            var msg = $"Build OK â€” {typesLoaded} Behavior types loaded from {files} script file(s).";
             StatusText(msg);
             Game_Engine.Core.Log.Info(msg);
+
+            // nuke current extension commands/menus + load the NEW EditorScripts_*.dll
+            ExtensionService.RefreshFromEditorScriptsFolder();
+
+            //Tell the main window to refresh UI + rebuild its menu bar
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime life
+                    && life.MainWindow is MainWindow mw)
+                {
+                    mw.RefreshProjectUI();       
+                    mw.RebuildExtensionMenus();  // rebuilds top bar from ExtensionService.BuildAvaloniaMenus()
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -320,6 +472,9 @@ public partial class ScriptEditorWindow : Window
             ShowError("Build failed:\n\n" + ex.Message);
         }
     }
+
+
+
 
     private void StatusText(string text)
     {
@@ -431,11 +586,11 @@ public partial class ScriptEditorWindow : Window
             {
                 var dllPath = Path.Combine(outDir, asmName + ".dll");
                 File.WriteAllBytes(dllPath, ms.ToArray());
-                StatusText($"Build OK — {asmName}.dll saved to {dllPath}");
+                StatusText($"Build OK â€” {asmName}.dll saved to {dllPath}");
             }
             catch
             {
-                // Writing the file is optional — don’t fail the build.
+                // Writing the file is optional â€” donâ€™t fail the build.
             }
 
             // Load the new assembly from memory into a fresh collectible ALC (no file lock)
@@ -545,7 +700,7 @@ public partial class ScriptEditorWindow : Window
         {
             Title = "Error",
             Width = 420,
-            Height = 180,
+            Height = 280,
             Content = new TextBlock
             {
                 Text = message,

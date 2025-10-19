@@ -6,7 +6,9 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Game_Engine.Core;
+using Game_Engine.Core.Extensibility;
 using Game_Engine.Docking;
 using Game_Engine.Views;
 
@@ -38,8 +40,6 @@ public partial class MainWindow : Window
             [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
             [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
         };
-
-        
 
         // Defaults
         _counts.Clear();
@@ -73,7 +73,15 @@ public partial class MainWindow : Window
         MI_NewProject.Click += OnNewProject;
         MI_OpenProject.Click += OnOpenProject;
         MI_OpenFolder.Click += OnOpenFolder;
-        MI_CloseProject.Click += (_, __) => { ProjectService.Close(); RefreshProjectUI(); };
+        MI_CloseProject.Click += (_, __) =>
+        {
+            ProjectService.Close();
+            RefreshProjectUI();
+
+            // Remove all extension menus + instances, then rebuild top bar to only Project/Window.
+            ExtensionService.Clear();
+            RebuildExtensionMenus();
+        };
         MI_RevealInExplorer.Click += (_, __) => RevealInExplorer();
 
         // Project lifecycle → refresh title/enablement
@@ -81,10 +89,76 @@ public partial class MainWindow : Window
         ProjectService.ProjectClosed += RefreshProjectUI;
         ProjectService.Changed += RefreshProjectUI;
 
+        // --- Extensions + Menus wiring ---
+
+        // Seal built-in commands once (so extension commands can be cleared safely)
+        CommandRegistry.SealBuiltins();
+
+        // Subscribe exactly once to extension changes → rebuild menu bar
+        ExtensionService.Changed -= OnExtensionsChanged;
+        ExtensionService.Changed += OnExtensionsChanged;
+
+        // Initial populate: scan current AppDomain for extensions; event will rebuild menus
+        ExtensionService.RefreshFromAppDomain();
+
+        // Also build once now so the bar is correct even if no extensions are found
+        RebuildExtensionMenus();
+
+        // Keep menus in sync when a project opens/closes (event will rebuild)
+        ProjectService.ProjectOpened += () => ExtensionService.RefreshFromAppDomain();
+        ProjectService.ProjectClosed += () => ExtensionService.RefreshFromAppDomain();
+
+        // Final: window title etc.
         RefreshProjectUI();
     }
 
+
+
     // ---------- layout / tabs ----------
+    public void RebuildExtensionMenus()
+    {
+        var host = this.FindControl<Menu>("MainMenu");
+        if (host == null) { Log.Warning("[UI] RebuildExtensionMenus: MainMenu not found"); return; }
+
+        var projectRoot = this.FindControl<MenuItem>("MI_ProjectRoot");
+        var windowRoot = this.FindControl<MenuItem>("MI_WindowRoot");
+
+      //  Log.Info($"[UI] RebuildExtensionMenus: clearing old menu (was count={host.Items?.Count ?? 0})");
+        host.Items.Clear();
+
+        if (projectRoot != null) host.Items.Add(projectRoot);
+        if (windowRoot != null) host.Items.Add(windowRoot);
+
+        var customs = ExtensionService.BuildAvaloniaMenus();
+        for (int i = 0; i < customs.Count; i++) host.Items.Add(customs[i]);
+
+      //  Log.Info($"[UI] RebuildExtensionMenus: rebuilt total count={host.Items.Count} (project+window+customs={2 + customs.Count})");
+
+        // dump what’s there
+        //DumpMenu(host);
+    }
+
+    private static void DumpMenu(Menu host)
+    {
+        int i = 0;
+        foreach (var it in host.Items)
+        {
+            var head = (it as MenuItem)?.Header?.ToString() ?? it?.ToString() ?? "<null>";
+            Log.Info($"[UI] Menu[{i++}] = {head}");
+        }
+    }
+
+    private void OnExtensionsChanged()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+            Dispatcher.UIThread.Post(RebuildExtensionMenus);
+        else
+            RebuildExtensionMenus();
+    }
+
+
+
+
 
     private void AddInitialPanels()
     {
@@ -196,7 +270,7 @@ public partial class MainWindow : Window
 
     // ---------- Project menu helpers ----------
 
-    private void RefreshProjectUI()
+    public void RefreshProjectUI()
     {
         var has = ProjectService.Current is not null;
 
@@ -222,6 +296,8 @@ public partial class MainWindow : Window
         {
             ProjectService.CreateNew(parent, name, openAfterCreate: true);
             RefreshProjectUI();
+            ExtensionService.RefreshFromAppDomain();
+            RebuildExtensionMenus();
         }
         catch (Exception ex)
         {
@@ -244,6 +320,8 @@ public partial class MainWindow : Window
         {
             ProjectService.Open(files[0]);
             RefreshProjectUI();
+            ExtensionService.RefreshFromAppDomain();
+            RebuildExtensionMenus();
         }
         catch (Exception ex)
         {
