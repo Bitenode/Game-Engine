@@ -6,6 +6,7 @@ using SN = System.Numerics;
 
 namespace Game_Engine.Core;
 
+//Note to self optimize this class
 public static class Sky
 {
     /// Fill the framebuffer with a world-up gradient/optional lat-long sky (far-plane z).

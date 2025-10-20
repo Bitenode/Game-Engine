@@ -1,7 +1,7 @@
 {
   "version": 3,
   "targets": {
-    "net8.0": {
+    "net9.0": {
       "AssimpNet/4.1.0": {
         "type": "package",
         "dependencies": {
@@ -37,6 +37,12 @@
             "assetType": "native",
             "rid": "win-x86"
           }
+        }
+      },
+      "AutoConstructor/5.6.0": {
+        "type": "package",
+        "build": {
+          "build/AutoConstructor.props": {}
         }
       },
       "Avalonia/11.3.7": {
@@ -311,6 +317,41 @@
           }
         }
       },
+      "ComputeSharp/3.2.0": {
+        "type": "package",
+        "dependencies": {
+          "ComputeSharp.Core": "3.2.0"
+        },
+        "compile": {
+          "lib/net8.0/ComputeSharp.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/ComputeSharp.dll": {
+            "related": ".xml"
+          }
+        },
+        "build": {
+          "buildTransitive/ComputeSharp.targets": {}
+        }
+      },
+      "ComputeSharp.Core/3.2.0": {
+        "type": "package",
+        "compile": {
+          "lib/net8.0/ComputeSharp.Core.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/ComputeSharp.Core.dll": {
+            "related": ".xml"
+          }
+        },
+        "build": {
+          "buildTransitive/ComputeSharp.Core.targets": {}
+        }
+      },
       "HarfBuzzSharp/8.3.1.1": {
         "type": "package",
         "dependencies": {
@@ -458,53 +499,53 @@
           "System.Reflection.Metadata": "9.0.0"
         },
         "compile": {
-          "lib/net8.0/Microsoft.CodeAnalysis.dll": {
+          "lib/net9.0/Microsoft.CodeAnalysis.dll": {
             "related": ".pdb;.xml"
           }
         },
         "runtime": {
-          "lib/net8.0/Microsoft.CodeAnalysis.dll": {
+          "lib/net9.0/Microsoft.CodeAnalysis.dll": {
             "related": ".pdb;.xml"
           }
         },
         "resource": {
-          "lib/net8.0/cs/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/cs/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "cs"
           },
-          "lib/net8.0/de/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/de/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "de"
           },
-          "lib/net8.0/es/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/es/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "es"
           },
-          "lib/net8.0/fr/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/fr/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "fr"
           },
-          "lib/net8.0/it/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/it/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "it"
           },
-          "lib/net8.0/ja/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/ja/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "ja"
           },
-          "lib/net8.0/ko/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/ko/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "ko"
           },
-          "lib/net8.0/pl/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/pl/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "pl"
           },
-          "lib/net8.0/pt-BR/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/pt-BR/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "pt-BR"
           },
-          "lib/net8.0/ru/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/ru/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "ru"
           },
-          "lib/net8.0/tr/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/tr/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "tr"
           },
-          "lib/net8.0/zh-Hans/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/zh-Hans/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "zh-Hans"
           },
-          "lib/net8.0/zh-Hant/Microsoft.CodeAnalysis.resources.dll": {
+          "lib/net9.0/zh-Hant/Microsoft.CodeAnalysis.resources.dll": {
             "locale": "zh-Hant"
           }
         }
@@ -518,53 +559,53 @@
           "System.Reflection.Metadata": "9.0.0"
         },
         "compile": {
-          "lib/net8.0/Microsoft.CodeAnalysis.CSharp.dll": {
+          "lib/net9.0/Microsoft.CodeAnalysis.CSharp.dll": {
             "related": ".pdb;.xml"
           }
         },
         "runtime": {
-          "lib/net8.0/Microsoft.CodeAnalysis.CSharp.dll": {
+          "lib/net9.0/Microsoft.CodeAnalysis.CSharp.dll": {
             "related": ".pdb;.xml"
           }
         },
         "resource": {
-          "lib/net8.0/cs/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/cs/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "cs"
           },
-          "lib/net8.0/de/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/de/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "de"
           },
-          "lib/net8.0/es/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/es/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "es"
           },
-          "lib/net8.0/fr/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/fr/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "fr"
           },
-          "lib/net8.0/it/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/it/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "it"
           },
-          "lib/net8.0/ja/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/ja/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "ja"
           },
-          "lib/net8.0/ko/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/ko/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "ko"
           },
-          "lib/net8.0/pl/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/pl/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "pl"
           },
-          "lib/net8.0/pt-BR/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/pt-BR/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "pt-BR"
           },
-          "lib/net8.0/ru/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/ru/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "ru"
           },
-          "lib/net8.0/tr/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/tr/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "tr"
           },
-          "lib/net8.0/zh-Hans/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/zh-Hans/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "zh-Hans"
           },
-          "lib/net8.0/zh-Hant/Microsoft.CodeAnalysis.CSharp.resources.dll": {
+          "lib/net9.0/zh-Hant/Microsoft.CodeAnalysis.CSharp.resources.dll": {
             "locale": "zh-Hant"
           }
         }
@@ -987,12 +1028,12 @@
       "System.Collections.Immutable/9.0.0": {
         "type": "package",
         "compile": {
-          "lib/net8.0/System.Collections.Immutable.dll": {
+          "lib/net9.0/System.Collections.Immutable.dll": {
             "related": ".xml"
           }
         },
         "runtime": {
-          "lib/net8.0/System.Collections.Immutable.dll": {
+          "lib/net9.0/System.Collections.Immutable.dll": {
             "related": ".xml"
           }
         },
@@ -1487,16 +1528,13 @@
       },
       "System.Reflection.Metadata/9.0.0": {
         "type": "package",
-        "dependencies": {
-          "System.Collections.Immutable": "9.0.0"
-        },
         "compile": {
-          "lib/net8.0/System.Reflection.Metadata.dll": {
+          "lib/net9.0/System.Reflection.Metadata.dll": {
             "related": ".xml"
           }
         },
         "runtime": {
-          "lib/net8.0/System.Reflection.Metadata.dll": {
+          "lib/net9.0/System.Reflection.Metadata.dll": {
             "related": ".xml"
           }
         },
@@ -2056,6 +2094,22 @@
         "runtimes/win-x86/native/assimp.dll"
       ]
     },
+    "AutoConstructor/5.6.0": {
+      "sha512": "YvxxMNLJ7XplEx8e5ezIHNvq9PxhVDciqb+yrRYbcNnJC/6OF9WauUIGXVT4lc8hEXC8ganQXgZsK/1te4oc0g==",
+      "type": "package",
+      "path": "autoconstructor/5.6.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "analyzers/dotnet/cs/AutoConstructor.CodeFixes.dll",
+        "analyzers/dotnet/cs/AutoConstructor.Generator.dll",
+        "autoconstructor.5.6.0.nupkg.sha512",
+        "autoconstructor.nuspec",
+        "build/AutoConstructor.props",
+        "logo_128x128.png"
+      ]
+    },
     "Avalonia/11.3.7": {
       "sha512": "QlVvaYTSTqzoUflmAEMuPzi3vYdybEIXmFQgLZxdTbzTeyhlwKZ1WqtLwHVe1Fbt8oGSCqYYKsU8SViZsdXR2Q==",
       "type": "package",
@@ -2427,6 +2481,43 @@
         "lib/net8.0/Avalonia.X11.xml",
         "lib/netstandard2.0/Avalonia.X11.dll",
         "lib/netstandard2.0/Avalonia.X11.xml"
+      ]
+    },
+    "ComputeSharp/3.2.0": {
+      "sha512": "DaFaqJS2cp6pCmjXcqG4KxE8KAy+x7W9SLxF1UnvPr+V29nj0a+0dMp0qSVNu49ePhYNBvSv8ZzuHZr2ac23rA==",
+      "type": "package",
+      "path": "computesharp/3.2.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "analyzers/dotnet/cs/ComputeSharp.CodeFixers.dll",
+        "analyzers/dotnet/cs/ComputeSharp.SourceGenerators.dll",
+        "build/ComputeSharp.targets",
+        "buildTransitive/ComputeSharp.targets",
+        "computesharp.3.2.0.nupkg.sha512",
+        "computesharp.nuspec",
+        "icon.png",
+        "lib/net8.0/ComputeSharp.dll",
+        "lib/net8.0/ComputeSharp.xml"
+      ]
+    },
+    "ComputeSharp.Core/3.2.0": {
+      "sha512": "ImIKT+x8IpWG+i/D8bIBtxeZ7FwlzcpKtoOgLzrwgJu0XopoVLsh3Xu6uzgZQIgtegFZK15PYqpgZKhMu2UTcg==",
+      "type": "package",
+      "path": "computesharp.core/3.2.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "analyzers/dotnet/cs/ComputeSharp.Core.SourceGenerators.dll",
+        "build/ComputeSharp.Core.targets",
+        "buildTransitive/ComputeSharp.Core.targets",
+        "computesharp.core.3.2.0.nupkg.sha512",
+        "computesharp.core.nuspec",
+        "icon.png",
+        "lib/net8.0/ComputeSharp.Core.dll",
+        "lib/net8.0/ComputeSharp.Core.xml"
       ]
     },
     "HarfBuzzSharp/8.3.1.1": {
@@ -7000,12 +7091,14 @@
     }
   },
   "projectFileDependencyGroups": {
-    "net8.0": [
+    "net9.0": [
       "AssimpNet >= 4.1.0",
+      "AutoConstructor >= 5.6.0",
       "Avalonia >= 11.*",
       "Avalonia.Desktop >= 11.*",
       "Avalonia.Fonts.Inter >= 11.*",
       "Avalonia.Themes.Fluent >= 11.*",
+      "ComputeSharp >= 3.2.0",
       "Microsoft.CodeAnalysis.CSharp >= 4.14.0",
       "SkiaSharp >= 2.88.9",
       "System.Reactive >= 6.1.0"
@@ -7033,7 +7126,7 @@
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
       ],
       "originalTargetFrameworks": [
-        "net8.0"
+        "net9.0"
       ],
       "sources": {
         "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
@@ -7041,8 +7134,8 @@
         "https://api.nuget.org/v3/index.json": {}
       },
       "frameworks": {
-        "net8.0": {
-          "targetAlias": "net8.0",
+        "net9.0": {
+          "targetAlias": "net9.0",
           "projectReferences": {}
         }
       },
@@ -7050,15 +7143,27 @@
         "warnAsError": [
           "NU1605"
         ]
-      }
+      },
+      "restoreAuditProperties": {
+        "enableAudit": "true",
+        "auditLevel": "low",
+        "auditMode": "direct"
+      },
+      "SdkAnalysisLevel": "9.0.300"
     },
     "frameworks": {
-      "net8.0": {
-        "targetAlias": "net8.0",
+      "net9.0": {
+        "targetAlias": "net9.0",
         "dependencies": {
           "AssimpNet": {
             "target": "Package",
             "version": "[4.1.0, )"
+          },
+          "AutoConstructor": {
+            "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
+            "suppressParent": "All",
+            "target": "Package",
+            "version": "[5.6.0, )"
           },
           "Avalonia": {
             "target": "Package",
@@ -7075,6 +7180,10 @@
           "Avalonia.Themes.Fluent": {
             "target": "Package",
             "version": "[11.*, )"
+          },
+          "ComputeSharp": {
+            "target": "Package",
+            "version": "[3.2.0, )"
           },
           "Microsoft.CodeAnalysis.CSharp": {
             "target": "Package",
@@ -7105,7 +7214,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.100/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.306/PortableRuntimeIdentifierGraph.json"
       }
     }
   }

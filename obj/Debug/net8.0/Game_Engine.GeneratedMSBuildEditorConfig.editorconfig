@@ -6,6 +6,13 @@ build_property.AvaloniaNameGeneratorFilterByPath = *
 build_property.AvaloniaNameGeneratorFilterByNamespace = *
 build_property.AvaloniaNameGeneratorViewFileNamingStrategy = NamespaceAndClassName
 build_property.AvaloniaNameGeneratorAttachDevTools = true
+build_property.AutoConstructor_DisableNullChecking = 
+build_property.AutoConstructor_GenerateConstructorDocumentation = 
+build_property.AutoConstructor_ConstructorDocumentationComment = 
+build_property.AutoConstructor_GenerateThisCalls = 
+build_property.AutoConstructor_GenerateArgumentNullExceptionChecks = 
+build_property.AutoConstructor_MarkParameterlessConstructorAsObsolete = 
+build_property.AutoConstructor_ParameterlessConstructorObsoleteMessage = 
 build_property.TargetFramework = net8.0
 build_property.TargetFramework = net8.0
 build_property.TargetPlatformMinVersion = 
@@ -26,6 +33,8 @@ build_property.RootNamespace = Game_Engine
 build_property.ProjectDir = C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\
 build_property.EnableComHosting = 
 build_property.EnableGeneratedComInterfaceComImportInterop = 
+build_property.EffectiveAnalysisLevelStyle = 8.0
+build_property.EnableCodeStyleSeverity = 
 
 [C:/Users/Bitenode/Desktop/Github Engine/Game-Engine/App.axaml]
 build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml

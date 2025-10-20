@@ -1,10 +1,11 @@
 {
   "version": 2,
-  "dgSpecHash": "eGLXkgGDEN2bxFh4Ok9fSjcfkZlEZQyQJ65r8lyZKnmPLRmTAcm00QqJ0+1RePs+FklmnAQRjYTUU8YZyP7cBA==",
+  "dgSpecHash": "ZN5eft4yfaA=",
   "success": true,
   "projectFilePath": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Game_Engine.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Bitenode\\.nuget\\packages\\assimpnet\\4.1.0\\assimpnet.4.1.0.nupkg.sha512",
+    "C:\\Users\\Bitenode\\.nuget\\packages\\autoconstructor\\5.6.0\\autoconstructor.5.6.0.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\avalonia\\11.3.7\\avalonia.11.3.7.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\avalonia.angle.windows.natives\\2.1.25547.20250602\\avalonia.angle.windows.natives.2.1.25547.20250602.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\avalonia.buildservices\\11.3.1\\avalonia.buildservices.11.3.1.nupkg.sha512",
@@ -17,6 +18,8 @@
     "C:\\Users\\Bitenode\\.nuget\\packages\\avalonia.themes.fluent\\11.3.7\\avalonia.themes.fluent.11.3.7.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\avalonia.win32\\11.3.7\\avalonia.win32.11.3.7.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\avalonia.x11\\11.3.7\\avalonia.x11.11.3.7.nupkg.sha512",
+    "C:\\Users\\Bitenode\\.nuget\\packages\\computesharp\\3.2.0\\computesharp.3.2.0.nupkg.sha512",
+    "C:\\Users\\Bitenode\\.nuget\\packages\\computesharp.core\\3.2.0\\computesharp.core.3.2.0.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\harfbuzzsharp\\8.3.1.1\\harfbuzzsharp.8.3.1.1.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\harfbuzzsharp.nativeassets.linux\\8.3.1.1\\harfbuzzsharp.nativeassets.linux.8.3.1.1.nupkg.sha512",
     "C:\\Users\\Bitenode\\.nuget\\packages\\harfbuzzsharp.nativeassets.macos\\8.3.1.1\\harfbuzzsharp.nativeassets.macos.8.3.1.1.nupkg.sha512",
