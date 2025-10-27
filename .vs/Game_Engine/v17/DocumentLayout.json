@@ -101,8 +101,7 @@
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\MainWindow.axaml",
               "RelativeToolTip": "MainWindow.axaml",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003549|",
-              "WhenOpened": "2025-10-27T18:06:43.46Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-10-27T18:06:43.46Z"
             },
             {
               "$type": "Document",
@@ -112,7 +111,7 @@
               "RelativeDocumentMoniker": "Core\\Input\\Input.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Input\\Input.cs",
               "RelativeToolTip": "Core\\Input\\Input.cs",
-              "ViewState": "AgIAAFwBAAAAAAAAAAAAAHEBAAAJAAAAAAAAAA==",
+              "ViewState": "AgIAAFsBAAAAAAAAAAAAAGcBAAAfAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-27T18:02:27.061Z",
               "EditorCaption": ""
@@ -125,7 +124,7 @@
               "RelativeDocumentMoniker": "Views\\InputRemappingWindow.axaml.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\InputRemappingWindow.axaml.cs",
               "RelativeToolTip": "Views\\InputRemappingWindow.axaml.cs",
-              "ViewState": "AgIAADABAAAAAAAAAAAIwKYAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAAgBAAAAAAAAAAAuwAgBAAAjAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-27T18:29:11.014Z",
               "EditorCaption": ""

@@ -22,9 +22,13 @@ namespace Game_Engine.Views
         private readonly List<AxisBindingInfo> _defaultAxes;
         private readonly List<ActionBindingInfo> _defaultActions;
 
+        private readonly float _defaultMouseSensitivity;
+
         public InputRemappingWindow()
         {
             InitializeComponent();
+
+            _defaultMouseSensitivity = Input.MouseSensitivity;
 
             // Take a snapshot of current bindings when the window opens
             _defaultAxes = Input.GetAxisNames()
@@ -260,20 +264,41 @@ namespace Game_Engine.Views
 
         private void OnResetClicked(object sender, RoutedEventArgs e)
         {
+            // Remove any actions that were created after the snapshot
+            var defaultActionNames = new HashSet<string>(
+                _defaultActions.Select(a => a.Name), StringComparer.Ordinal);
+
+            var existingActions = Input.GetActionNames();
+            for (int i = 0; i < existingActions.Count; i++)
+            {
+                var name = existingActions[i];
+                if (!defaultActionNames.Contains(name))
+                    Input.RemoveAction(name); 
+            }
+
+            // Restore axes to snapshot values
             for (int i = 0; i < _defaultAxes.Count; i++)
             {
                 var a = _defaultAxes[i];
                 Input.SetAxis(a.Name, a.Positive, a.Negative, a.Sensitivity, a.Gravity, a.Snap);
             }
+
+            // Restore actions to snapshot values (re-creates any deleted built-ins)
             for (int j = 0; j < _defaultActions.Count; j++)
             {
                 var ac = _defaultActions[j];
                 Input.SetAction(ac.Name, ac.Keys, ac.MouseButtons);
             }
+
+            //  restore mouse sensitivity to snapshot
+            Input.MouseSensitivity = _defaultMouseSensitivity;
+
+            //Rebuild UI
             BuildAxesUI();
             BuildActionsUI();
             UpdateTitleWithPath();
         }
+
 
         private void OnSaveClicked(object sender, RoutedEventArgs e)
         {
