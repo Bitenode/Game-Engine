@@ -116,14 +116,29 @@ namespace Game_Engine.Views
 
                 var row = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4 };
 
-                row.Children.Add(new TextBlock
+                // Header with Delete button (right-aligned)
+                var header = new DockPanel();
+                var delBtn = new Button { Content = "Delete", Tag = name };
+                DockPanel.SetDock(delBtn, Dock.Right);
+                header.Children.Add(delBtn);
+                header.Children.Add(new TextBlock
                 {
                     Text = name,
-                    FontWeight = FontWeight.SemiBold
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
                 });
+                row.Children.Add(header);
 
+                delBtn.Click += delegate
+                {
+                    // remove and rebuild list
+                    if (Input.RemoveAction(name))
+                        BuildActionsUI();
+                };
+
+                // Keys line
                 var line1 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                var keyLbl = new TextBlock { Text = "Keys:", Width = 70, VerticalAlignment = VerticalAlignment.Center };
+                var keyLbl = new TextBlock { Text = "Keys:", Width = 70, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
                 var keyList = new TextBlock { Text = string.Join(", ", info.Keys.Select(k => k.ToString())), Width = 260 };
                 var rebindKeyBtn = new Button { Content = "Rebind Keys (add)", Tag = name };
                 rebindKeyBtn.Click += delegate { BeginActionKeyRebind(name); };
@@ -132,8 +147,9 @@ namespace Game_Engine.Views
                 line1.Children.Add(keyList);
                 line1.Children.Add(rebindKeyBtn);
 
+                // Mouse line
                 var line2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                var mouseLbl = new TextBlock { Text = "Mouse:", Width = 70, VerticalAlignment = VerticalAlignment.Center };
+                var mouseLbl = new TextBlock { Text = "Mouse:", Width = 70, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
                 var mouseList = new TextBlock { Text = string.Join(", ", info.MouseButtons.Select(m => m.ToString())), Width = 260 };
                 var rebindMouseBtn = new Button { Content = "Rebind Mouse (add)", Tag = name };
                 rebindMouseBtn.Click += delegate { BeginActionMouseRebind(name); };
@@ -148,6 +164,7 @@ namespace Game_Engine.Views
                 ActionsHost.Children.Add(row);
             }
         }
+
 
         // ---------- Rebinding ----------
         private void BeginAxisRebind(string axisName, bool positive)

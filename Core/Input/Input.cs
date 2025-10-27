@@ -363,6 +363,12 @@ namespace Game_Engine.Core.Input
             return info;
         }
 
+        public static bool RemoveAction(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            return sActions.Remove(name);
+        }
+
         // ---------- Persistence (save/load to project) ----------
 
         class AxisDTO
