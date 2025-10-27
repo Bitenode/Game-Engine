@@ -19,7 +19,7 @@ namespace Game_Engine.Core
         private const int BAND_HEIGHT = 192;
 
         // GPU pre-Z options
-        private const bool USE_GPU_PREZ = false;                 // <- do not enable yet
+        private const bool USE_GPU_PREZ = true;                 
         private const int GPU_PREZ_TRI_THRESHOLD = 512;          // offload only when enough clipped tris
         private const float PREZ_EPS = 1e-5f;                    // small epsilon on the z-compare
 
@@ -94,7 +94,7 @@ namespace Game_Engine.Core
 
         // ======================= GPU PRE-Z TYPES & KERNELS ==================
 
-      
+
         //not used
         private static ReadWriteBuffer<uint> EnsureZTemp(GraphicsDevice device, int w, int h)
         {
@@ -728,10 +728,10 @@ namespace Game_Engine.Core
 
         private static bool TryBuildPreZGPU(List<TriSS> triSS, int W, int H, float[] preZ01)
         {
-            #if !COMPUTE_PREZ
-                        // GPU path not compiled in this build; always fall back.
-                        return false;
-            #else
+#if !COMPUTE_PREZ
+            // GPU path not compiled in this build; always fall back.
+            return false;
+#else
                 if (sGpuUnavailable) return false;
 
                 try
@@ -765,8 +765,8 @@ namespace Game_Engine.Core
                     sGpuUnavailable = true;
                     return false;
                 }
-            #endif
-         }
+#endif
+        }
 
 
         // Build clipped screen-space triangles with z in [0,1] for the GPU pre-Z pass
@@ -1379,7 +1379,7 @@ namespace Game_Engine.Core
 
             dudx = ndxu; dudy = ndyu; dvdx = ndxv; dvdy = ndyv;
 
-            
+
             // if NoFlipV == true -> flip V (assets authored with opposite convention)
             if (rs.NoFlipV)
             {

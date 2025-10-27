@@ -1,18 +1,17 @@
-﻿using System;
-using System.Linq;
-using SN = System.Numerics;
-using Game_Engine.Core;
+﻿using Game_Engine.Core;
 using Game_Engine.Core.Component;
+using System;
+using System.Diagnostics;
+using System.Linq;
 using GEInput = Game_Engine.Core.Input.Input;
+using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
 {
     /// <summary>
-    /// Basic player movement & camera driver.
-    /// - Reads Input axes/actions
-    /// - Builds world-space horizontal delta from yaw
-    /// - Calls CharacterController.Simulate(...) for CCD, grounding, gravity
-    /// - Drives a child Camera (first/third person)
+    /// Player movement & camera:
+    /// - Update(): collect input, update look, drive camera
+    /// - __FixedUpdate(): call CharacterController.Simulate(...) with FixedDeltaTime
     /// </summary>
     public sealed class PlayerMovement : Behavior
     {
@@ -23,13 +22,20 @@ namespace Game_Engine.Core.Component
         // ---- Look / camera tunables ----
         [Persist] public float LookSensitivity { get; set; } = 90f; // deg per look unit per second
         [Persist] public bool FirstPerson { get; set; } = true;
-        [Persist] public float FirstPersonHeight { get; set; } = 1.7f;
-        [Persist] public Vector3 ThirdPersonOffset { get; set; } = new Vector3(0, 1.7, -3.5); // X=right, Y=up, Z=back
-        [Persist] public float CameraFollowLerp { get; set; } = 12f; // 0 = snap
+        [Persist] public Vector3 FirstPersonOffset { get; set; } = new Vector3(0, 1.7, 0);   // head
+        [Persist] public Vector3 ThirdPersonOffset { get; set; } = new Vector3(0, 1.7, -3.5);
+        [Persist] public float CameraFollowLerp { get; set; } = 12f;
 
         // ---- Body facing behavior ----
-        [Persist] public bool RotateBodyWithLook { get; set; } = true;  // true = body yaw follows camera
-        [Persist] public bool TurnBodyWhileMoving { get; set; } = false; // if false and !RotateBodyWithLook, body keeps its yaw
+        [Persist] public bool RotateBodyWithLook { get; set; } = true;
+        [Persist] public bool TurnBodyWhileMoving { get; set; } = false;
+
+        // ---- Debug / fallback ----
+        [Persist] public bool DebugBypassMotor { get; set; } = false; // MUST be false in normal play
+
+        // ---- Debug logging ----
+        //[Persist] public bool DebugLogJump { get; set; } = true;
+        double _heldLogCooldown = 0; // rate-limit held logs
 
         // ---- Runtime ----
         CharacterController _motor;
@@ -40,22 +46,26 @@ namespace Game_Engine.Core.Component
         float _yawDeg;
         float _pitchDeg;
 
+        // input state captured in Update and consumed in FixedUpdate
+        SN.Vector2 _wishLocal;       // X=right, Y=fwd (normalized)
+        bool _sprintHeld;
+
+        // Jump buffer to survive timing between Update and FixedUpdate
+        [Persist] public float JumpBufferSeconds { get; set; } = 0.12f;
+        float _jumpBuf;   // counts down
+
         public override void Awake()
         {
             _motor = GetComponent<CharacterController>();
             ResolveCamera();
 
-            // seed yaw/pitch from current transforms
             var tr = Transform;
             _yawDeg = (float)tr.Rotation.Y;
             _pitchDeg = 0f;
 
-            // make mouse feel reasonable if defaults are tiny
-          //  Game_Engine.Core.Log.Debug($"[PM] Awake: MoveSpeed={MoveSpeed} LookSensitivity={LookSensitivity} Input.MouseSensitivity={Game_Engine.Core.Input.Input.MouseSensitivity}");
             if (Game_Engine.Core.Input.Input.MouseSensitivity < 0.15f)
                 Game_Engine.Core.Input.Input.MouseSensitivity = 0.25f;
         }
-
 
         public override void OnEnable() => ResolveCamera();
 
@@ -63,7 +73,6 @@ namespace Game_Engine.Core.Component
         {
             _cam = null; _camTr = null;
 
-            // prefer child camera
             if (gameObject != null)
             {
                 foreach (var c in gameObject.Children)
@@ -72,74 +81,57 @@ namespace Game_Engine.Core.Component
                     if (cc != null && cc.Enabled) { _cam = cc; _camTr = cc.Transform; break; }
                 }
             }
-
-            // fallback: camera on same GO
             if (_cam == null) { _cam = GetComponent<Camera>(); _camTr = _cam?.Transform; }
-
-            // last fallback: main/first enabled camera in scene
             if (_cam == null)
             {
                 var cams = SceneQuery.FindBehaviors<Camera>();
                 _cam = cams.FirstOrDefault(c => c.IsMain) ?? cams.FirstOrDefault();
                 _camTr = _cam?.Transform;
             }
-
-            Game_Engine.Core.Log.Debug(_camTr == null
-                ? "[PM] ResolveCamera: NO camera found"
-                : $"[PM] ResolveCamera: bound to camera on GO='{_cam.gameObject?.Name ?? "?"}' pos=({_camTr.Position.X:F2},{_camTr.Position.Y:F2},{_camTr.Position.Z:F2}) rot=({_camTr.Rotation.X:F1},{_camTr.Rotation.Y:F1},{_camTr.Rotation.Z:F1})");
         }
-
-        [Persist] public bool DebugBypassMotor { get; set; } = true;
-
 
         public override void Update()
         {
-            var dt = Math.Max(0.0001f, Time.deltaTime);
+            float dt = Math.Max(0.0001f, Time.deltaTime);
 
-            // --- Look (mouse deltas are per-frame) ---
+            // --- Look ---
             float lookX = GEInput.GetAxis("Mouse X");
             float lookY = GEInput.GetAxis("Mouse Y");
-            _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity);
-            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity, -89f, 89f);
+            _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
+            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -89f, 89f);
 
-            // --- Raw keys -> local intent (Z = forward/back, X = right/left) ---
+            // --- Move intent (normalized, camera-local) ---
             int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
                        - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.S) ? 1 : 0);
             int xRight = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.D) ? 1 : 0)
                        - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.A) ? 1 : 0);
 
-            // IMPORTANT: flip local.Z so W moves toward -Z at yaw=0 (typical camera forward)
-            var local = new SN.Vector3(xRight, 0f, -zFwd);
-
-            float m2 = local.X * local.X + local.Z * local.Z;
+            var local = new SN.Vector2(xRight, -zFwd);
+            float m2 = local.X * local.X + local.Y * local.Y;
             if (m2 > 1e-6f)
             {
                 float inv = 1f / MathF.Sqrt(m2);
-                local.X *= inv; local.Z *= inv;
+                local.X *= inv; local.Y *= inv;
+            }
+            _wishLocal = local;
+
+            // sprint / jump
+            _sprintHeld = GEInput.GetAction("Sprint");
+
+            // Primary: rising edge
+            if (GEInput.GetActionDown("Jump"))
+            {
+                _jumpBuf = JumpBufferSeconds;
+             //   Debug.WriteLine("[PlayerMovement] Jump queued (ActionDown)");
+            }
+            // Fallback: while Space held, keep a tiny buffer alive (helps if edge got cleared before Update)
+            else if (GEInput.GetAction("Jump"))
+            {
+                _jumpBuf = Math.Max(_jumpBuf, 0.04f);
             }
 
-            bool sprint = GEInput.GetAction("Sprint");
-            float speed = MoveSpeed * (sprint ? SprintMultiplier : 1f);
-            local *= speed * dt;
-
-            // --- Rotate local (X right, Z fwd) by yaw about +Y into world ---
-            float r = (float)(Math.PI / 180.0) * _yawDeg;
-            float c = MathF.Cos(r), s = MathF.Sin(r);
-            // worldX = localX*c + localZ*s
-            // worldZ = -localX*s + localZ*c
-            var worldDelta = new SN.Vector3(local.X * c + local.Z * s, 0f,
-                                            -local.X * s + local.Z * c);
-
-            bool jump = GEInput.GetActionDown("Jump");
-
-            var before = Transform.Position;
-            if (_motor != null && !DebugBypassMotor)
-                _motor.Simulate(worldDelta, jump);
-            else
-                Transform.Position = new Vector3(before.X + worldDelta.X, before.Y, before.Z + worldDelta.Z);
-            var after = Transform.Position;
-
-            if (m2 > 1e-6f && (RotateBodyWithLook || TurnBodyWhileMoving))
+            // --- Camera + body (visual only; no physics here) ---
+            if (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f))
             {
                 var rE = Transform.Rotation; rE.Y = _yawDeg; Transform.Rotation = rE;
             }
@@ -149,42 +141,70 @@ namespace Game_Engine.Core.Component
                 if (FirstPerson) DriveCameraFirstPerson();
                 else DriveCameraThirdPerson(dt);
             }
-
-          //  if (m2 > 0 || lookX != 0 || lookY != 0 || jump || sprint)
-             //   Log.Debug($"[PM] W/S={(zFwd):+0;-0;0}, A/D={(xRight):+0;-0;0}  local=({local.X:F3},{local.Z:F3}) worldΔ=({worldDelta.X:F3},{worldDelta.Z:F3})");
         }
 
 
+        public override void FixedUpdate()
+        {
+            float dt = Time.fixedDeltaTime;
+
+            float speed = MoveSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+            var wishLocal3 = new SN.Vector3(_wishLocal.X, 0f, _wishLocal.Y) * (speed * dt);
+
+            float r = Deg2Rad(_yawDeg);
+            float c = MathF.Cos(r), s = MathF.Sin(r);
+            var worldDelta = new SN.Vector3(
+                wishLocal3.X * c + wishLocal3.Z * s,
+                0f,
+                -wishLocal3.X * s + wishLocal3.Z * c);
+
+            bool wantJump = _jumpBuf > 0f;
+
+            if (_motor != null && !DebugBypassMotor)
+            {
+                _motor.Simulate(worldDelta, wantJump);
+
+                // diagnostics
+              //  if (wantJump)
+              //      Debug.WriteLine($"[PlayerMovement] wantJump=TRUE  grounded={_motor.IsGrounded} vy={_motor.VerticalVelocity:F3}");
+
+                // If we took off, clear buffer; else tick down
+                if (_motor.VerticalVelocity > 0f) _jumpBuf = 0f;
+                else _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+            }
+            else
+            {
+                var p = Transform.Position;
+                Transform.Position = new Vector3(p.X + worldDelta.X, p.Y, p.Z + worldDelta.Z);
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+            }
+        }
 
 
-
-
-
-
-
+        // -------- Camera --------
 
         void DriveCameraFirstPerson()
         {
-            var before = _camTr.Rotation;
+            var p = Transform.Position;
+            var head = new Vector3(
+                p.X + FirstPersonOffset.X,
+                p.Y + FirstPersonOffset.Y,
+                p.Z + FirstPersonOffset.Z
+            );
+            _camTr.Position = head;
 
-            // position camera at head height above player
-            var p = Transform.Position; p.Y += FirstPersonHeight;
-            _camTr.Position = p;
-
-            // set camera eulers
             var cr = _camTr.Rotation;
-            cr.X = _pitchDeg; cr.Y = _yawDeg; cr.Z = 0;
+            cr.X = _pitchDeg;
+            cr.Y = _yawDeg;
+            cr.Z = 0;
             _camTr.Rotation = cr;
-
-         //   Game_Engine.Core.Log.Debug($"[PM] DriveFP: set cam rot from ({before.X:F1},{before.Y:F1}) -> ({cr.X:F1},{cr.Y:F1}), pos=({p.X:F2},{p.Y:F2},{p.Z:F2})");
         }
-
 
         void DriveCameraThirdPerson(float dt)
         {
             float yawRad = Deg2Rad(_yawDeg);
-            var fwd = new SN.Vector3((float)Math.Cos(yawRad), 0f, (float)Math.Sin(yawRad));
-            var right = new SN.Vector3(-(float)Math.Sin(yawRad), 0f, (float)Math.Cos(yawRad));
+            var fwd = new SN.Vector3(MathF.Cos(yawRad), 0f, MathF.Sin(yawRad));
+            var right = new SN.Vector3(-MathF.Sin(yawRad), 0f, MathF.Cos(yawRad));
             var up = SN.Vector3.UnitY;
 
             var off = new SN.Vector3((float)ThirdPersonOffset.X, (float)ThirdPersonOffset.Y, (float)ThirdPersonOffset.Z);
@@ -200,13 +220,12 @@ namespace Game_Engine.Core.Component
             else
             {
                 var cur = new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
-                var t = 1f - (float)Math.Exp(-CameraFollowLerp * dt); // exp smoothing
+                var t = 1f - (float)Math.Exp(-CameraFollowLerp * dt);
                 var blended = cur + (desiredPos - cur) * t;
                 _camTr.Position = new Vector3(blended.X, blended.Y, blended.Z);
             }
 
-            // Aim camera at head height
-            var lookAt = target + up * (float)FirstPersonHeight;
+            var lookAt = target + up * (float)FirstPersonOffset.Y;
             var dir = lookAt - new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
             if (dir.LengthSquared() > 1e-6f)
             {
@@ -225,11 +244,6 @@ namespace Game_Engine.Core.Component
             while (a < -180f) a += 360f;
             return a;
         }
-        static float Clamp(float v, float min, float max)
-        {
-            if (v < min) return min;
-            if (v > max) return max;
-            return v;
-        }
+        static float Clamp(float v, float min, float max) => v < min ? min : (v > max ? max : v);
     }
 }

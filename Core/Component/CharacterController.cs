@@ -1,119 +1,113 @@
-﻿using System;
-using System.Collections.Generic;
+﻿#nullable enable
+using System;
 using System.Linq;
 using SN = System.Numerics;
-using Game_Engine.Core;
-using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core.Component
 {
-    /// <summary> Needs cleaned up
-    /// CharacterController (Motor-only): 
-    /// - Finds a CapsuleCollider (preferred) or falls back to defaults
-    /// - Provides grounding check + gravity integration
-    /// - Kinematic horizontal motion with CCD, wall slide, AABB unstick
-    /// - No input, no camera. Call Simulate(...) from your player script.
-    /// 
-    /// Usage (from another Behavior):
-    ///   var motor = GetComponent<CharacterController>();
-    ///   var wish = (right * mx + fwd * mz) * (speed * Time.deltaTime);
-    ///   motor.Simulate(wish, jumpPressed);
-    ///   // read motor.IsGrounded, motor.VerticalVelocity, etc.
+    /// <summary>
+    /// CharacterController (motor-only; kinematic):
+    ///  - Capsule dims from CapsuleCollider if present (fallback otherwise)
+    ///  - Robust grounding w/ stick-to-ground + short grace ("coyote") time
+    ///  - Kinematic horiz motion w/ CCD ray + wall slide + AABB unstick
+    ///  - Gravity/jump integration (no input here; call Simulate from your player)
     /// </summary>
     public sealed class CharacterController : Behavior
     {
-        // ---------- Tunables (motor only) ----------
+        // ---------------- Tunables ----------------
         [Persist] public bool UseGravity { get; set; } = true;
+
+        // Default gravity 9.81 Earthlike Gravity
         [Persist] public float Gravity { get; set; } = 9.81f;
 
-        [Persist] public float StepUpMax { get; set; } = 0.5f;        // max auto step height
-        [Persist] public float GroundSnapDistance { get; set; } = 0.7f;
-        [Persist] public float WallPush { get; set; } = 0f;        // extra unstick clearance
-        [Persist] public float MaxSlopeAngleDeg { get; set; } = 55f;  // slopes steeper than this are not "ground"
+        // Desired jump apex height (meters in world units)
+        [Persist] public float JumpHeight { get; set; } = 1.2f;
 
-        // Capsule fallback if no CapsuleCollider on this GO
+        [Persist] public float StepUpMax { get; set; } = 0.5f;
+        [Persist] public float GroundSnapDistance { get; set; } = 0.7f;
+
+        // Extra clearance when unsticking from AABBs (not mesh)
+        [Persist] public float WallPush { get; set; } = 0f;
+
+        [Persist] public float MaxSlopeAngleDeg { get; set; } = 55f;
+
+        // Jump grace (after leaving ground)
+        [Persist] public float CoyoteTimeSeconds { get; set; } = 0.12f;
+
+        // Capsule fallback if no CapsuleCollider
         [Persist] public float FallbackCapsuleRadius { get; set; } = 0.35f;
         [Persist] public float FallbackCapsuleHeight { get; set; } = 1.8f;
 
-        [Persist] public bool UnstickIgnoreHuge = true;
-        [Persist] public float UnstickMaxExtent = 25f; // meters per axis
-        [Persist] public bool UnstickSkipIfInside = true;
+        // AABB unstick filters
+        [Persist] public bool UnstickIgnoreHuge { get; set; } = true;
+        [Persist] public float UnstickMaxExtent { get; set; } = 5f;
+        [Persist] public bool UnstickSkipIfInside { get; set; } = true;
 
-        // ---------- Runtime (read-only to others) ----------
+        // ---------------- Runtime (read-only) ----------------
         public bool IsGrounded { get; private set; }
         public SN.Vector3 GroundNormal { get; private set; } = SN.Vector3.UnitY;
         public float VerticalVelocity { get; private set; }  // +up
         public float CapsuleRadius { get; private set; }
         public float CapsuleHalfCylinder { get; private set; }
 
-        CapsuleCollider _capsule;
+        float _coyoteTimer = 0f;
+        float _lastHitY = float.NegativeInfinity;
+        SN.Vector3 _lastHitN = SN.Vector3.UnitY;
 
-        public override void Awake()
+        CapsuleCollider? _capsule;
+
+        public override void Awake() => RefreshCapsule();
+        public override void OnEnable() => RefreshCapsule();
+
+        void RefreshCapsule()
         {
             _capsule = GetComponent<CapsuleCollider>();
-            CacheCapsuleDims();
-        }
-
-        public override void OnEnable()
-        {
-            _capsule = GetComponent<CapsuleCollider>();
-            CacheCapsuleDims();
-        }
-
-        void CacheCapsuleDims()
-        {
-            if (_capsule != null)
-            {
-                var rr = Math.Max(0.0001f, _capsule.Radius);
-                var hh = Math.Max(2f * rr, _capsule.Height);
-                CapsuleRadius = rr;
-                CapsuleHalfCylinder = 0.5f * (hh - 2f * rr);
-            }
-            else
-            {
-                var rr = Math.Max(0.0001f, FallbackCapsuleRadius);
-                var hh = Math.Max(2f * rr, FallbackCapsuleHeight);
-                CapsuleRadius = rr;
-                CapsuleHalfCylinder = 0.5f * (hh - 2f * rr);
-            }
+            float rr = Math.Max(0.0001f, _capsule?.Radius ?? FallbackCapsuleRadius);
+            float hh = Math.Max(2f * rr, _capsule?.Height ?? FallbackCapsuleHeight);
+            CapsuleRadius = rr;
+            CapsuleHalfCylinder = 0.5f * (hh - 2f * rr);
         }
 
         /// <summary>
-        /// Main entry point:
-        /// desiredHorizontalDelta: world-space XZ motion for this frame (meters), Y will be ignored.
-        /// jump: set true to attempt a jump this frame (only works when grounded).
+        /// Call from FixedUpdate. desiredHorizontalDelta is world XZ (meters) built using fixedDeltaTime.
+        /// jump=true to attempt jump this step.
         /// </summary>
         public void Simulate(SN.Vector3 desiredHorizontalDelta, bool jump)
         {
             var tr = Transform;
-            var dt = Math.Max(0.0001f, Time.deltaTime);
+            float dt = Math.Max(0.0001f, Time.fixedDeltaTime);
 
-            // current position
             var pos = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
 
-            // ---- Grounding ----
-            var minGroundY = MathF.Cos(MaxSlopeAngleDeg * (float)(Math.PI / 180.0)); // >= this Y counts as ground
-            var rayStart = pos + new SN.Vector3(0, Math.Max(StepUpMax, 0.2f) + 0.001f, 0);
-            var rayDir = new SN.Vector3(0, -1, 0);
+            // ---------- Ground probe ----------
+            float minGroundY = MathF.Cos(MaxSlopeAngleDeg * (float)(Math.PI / 180.0));
+            var rayStart = pos + new SN.Vector3(0, Math.Max(StepUpMax, 0.2f) + 0.002f, 0);
 
-            bool groundHit = RaycastGround(rayStart, rayDir, Math.Max(GroundSnapDistance * 2f, 2f),
+            bool groundHit = RaycastGround(rayStart, new SN.Vector3(0, -1, 0),
+                                           GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
                                            out float hitY, out SN.Vector3 hitN);
 
-            // feet altitude
             float feetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
             float diff = feetY - hitY;
-            IsGrounded = groundHit && diff >= -0.02f && diff <= StepUpMax + 0.02f && hitN.Y >= minGroundY;
+            bool slopeOk = groundHit && hitN.Y >= minGroundY;
+
+            IsGrounded = slopeOk && diff >= -0.02f && diff <= StepUpMax + 0.02f;
             GroundNormal = IsGrounded ? hitN : SN.Vector3.UnitY;
 
-            // ---- Horizontal (XZ) move; project onto ground if grounded ----
+            if (groundHit) { _lastHitY = hitY; _lastHitN = hitN; }
+
+            // Maintain coyote window so jump survives ground flicker
+            if (IsGrounded) _coyoteTimer = CoyoteTimeSeconds;
+            else _coyoteTimer = Math.Max(0f, _coyoteTimer - dt);
+
+            // ---------- Horizontal (project along ground if grounded) ----------
             var deltaXZ = desiredHorizontalDelta; deltaXZ.Y = 0f;
             if (IsGrounded)
             {
                 var n = SN.Vector3.Normalize(GroundNormal);
-                deltaXZ -= n * SN.Vector3.Dot(deltaXZ, n); // remove normal component to avoid "climbing" up
+                deltaXZ -= n * SN.Vector3.Dot(deltaXZ, n);
             }
 
-            // conservative micro-steps + slide
             float moveLen = new SN.Vector2(deltaXZ.X, deltaXZ.Z).Length();
             if (moveLen > 0f)
             {
@@ -128,55 +122,98 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            // ---- Gravity / Jump ----
+            // Re-probe quickly after horizontal move (helps big steps)
+            rayStart = pos + new SN.Vector3(0, Math.Max(StepUpMax, 0.2f) + 0.002f, 0);
+            groundHit = RaycastGround(rayStart, new SN.Vector3(0, -1, 0),
+                                      GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
+                                      out hitY, out hitN);
+            feetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
+            diff = feetY - hitY;
+            slopeOk = groundHit && hitN.Y >= minGroundY;
+            IsGrounded = slopeOk && diff >= -0.02f && diff <= StepUpMax + 0.02f;
+            if (groundHit) { _lastHitY = hitY; _lastHitN = hitN; }
+
+            // ---------- Gravity / Jump / Ceiling ----------
             if (UseGravity)
             {
-                if (IsGrounded && VerticalVelocity <= 0f)
+                // Jump allowed when grounded or within coyote time
+                if (jump && _coyoteTimer > 0f)
                 {
-                    // snap to ground, and allow jump
-                    pos.Y = hitY + (CapsuleHalfCylinder + CapsuleRadius);
-                    VerticalVelocity = 0f;
-                    if (jump) VerticalVelocity = _capsule != null ? Math.Max(0.1f, _capsule.Height * 0.55f) : 5.5f; // sensible default
+                    float g = Math.Max(0.0001f, Gravity);
+                    float h = Math.Max(0.01f, JumpHeight);
+                    VerticalVelocity = MathF.Sqrt(2f * g * h); // kinematic takeoff speed
+
+                    // Slight lift so we don't re-snap this frame
+                    if (groundHit)
+                        pos.Y = Math.Max(pos.Y, hitY + (CapsuleHalfCylinder + CapsuleRadius) + 0.002f);
+
+                    IsGrounded = false;
+                    _coyoteTimer = 0f;
+                }
+                else
+                {
+                    // Stick to ground when grounded and not already going up
+                    if (IsGrounded && VerticalVelocity <= 0f)
+                    {
+                        if (groundHit)
+                            pos.Y = hitY + (CapsuleHalfCylinder + CapsuleRadius);
+
+                        VerticalVelocity = 0f;
+                    }
                 }
 
-                // integrate
+                // Integrate velocity
                 VerticalVelocity -= Gravity * dt;
+
+                // Ceiling clamp (if moving up)
+                if (VerticalVelocity > 0f)
+                {
+                    float headY = pos.Y + (CapsuleHalfCylinder + CapsuleRadius);
+                    float travel = VerticalVelocity * dt + 0.02f; // small skin
+                    if (RaycastCeiling(new SN.Vector3(pos.X, headY, pos.Z), SN.Vector3.UnitY, travel, out float ceilY))
+                    {
+                        pos.Y = ceilY - (CapsuleHalfCylinder + CapsuleRadius);
+                        VerticalVelocity = 0f;
+                    }
+                }
+
+                // Apply vertical displacement
                 pos.Y += VerticalVelocity * dt;
 
-                // prevent pushing through ground
+                // Prevent sinking below ground on descent
                 if (groundHit)
                 {
-                    var newFeetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
+                    float newFeetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
                     if (newFeetY < hitY - 0.001f)
                     {
                         pos.Y = hitY + (CapsuleHalfCylinder + CapsuleRadius);
                         if (VerticalVelocity < 0f) VerticalVelocity = 0f;
+                        IsGrounded = slopeOk;
                     }
                 }
             }
 
-            // write back to Transform
+            // ---------- write back ----------
             var p3 = tr.Position;
             p3.X = pos.X; p3.Y = pos.Y; p3.Z = pos.Z;
             tr.Position = p3;
+
+            GroundNormal = IsGrounded ? (slopeOk ? hitN : _lastHitN) : SN.Vector3.UnitY;
         }
 
-        /// <summary>Instantly set vertical velocity (e.g., external jump tuning).</summary>
+        // ---------- External helpers ----------
         public void SetVerticalVelocity(float vy) => VerticalVelocity = vy;
-
-        /// <summary>Zero all vertical motion (e.g., when teleporting or landing hard).</summary>
         public void ResetVertical() => VerticalVelocity = 0f;
 
-        // ---------- Collision helpers (unchanged core math, trimmed to motor use) ----------
+        // ================= Grounding / collision helpers =================
 
         bool RaycastGround(SN.Vector3 start, SN.Vector3 dir, float maxDist, out float groundY, out SN.Vector3 groundN)
         {
-            if (maxDist < 5f) maxDist = 500f;
-
             if (dir.LengthSquared() < 1e-8f) dir = new SN.Vector3(0, -1, 0);
             dir = SN.Vector3.Normalize(dir);
             if (dir.Y >= -1e-5f) dir = new SN.Vector3(dir.X, -MathF.Abs(dir.Y) - 1e-3f, dir.Z);
 
+            // 5-sample ring so we don’t “fall through” triangle edges
             var ring = MathF.Max(0.05f, CapsuleRadius * 0.6f);
             var starts = new[]
             {
@@ -195,19 +232,18 @@ namespace Game_Engine.Core.Component
             {
                 if (t < 0f || t > maxDist) return;
                 var p = s + dir * t;
-                if (p.Y > s.Y + 1e-4f) return; // must be below
+                if (p.Y > s.Y + 1e-4f) return; // must be below start
                 if (p.Y > bestY) { bestY = p.Y; bestN = n; anyHit = true; }
             }
 
-            // Triangles from MeshColliders
-            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>().Where(m => m.Enabled && !m.IsTrigger))
+            // Triangle ground (all MeshColliders except self)
+            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>()
+                     .Where(m => m.Enabled && !m.IsTrigger && m.gameObject != this.gameObject))
             {
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
-
-                    var vtx = mesh.Vertices;
-                    var tri = mesh.TriIndices;
+                    var vtx = mesh.Vertices; var tri = mesh.TriIndices;
 
                     for (int i = 0; i < tri.Length; i += 3)
                     {
@@ -216,30 +252,23 @@ namespace Game_Engine.Core.Component
                         var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
 
                         var n = SN.Vector3.Cross(b - a, c - a);
-                        var len2 = n.LengthSquared();
-                        if (len2 < 1e-12f) continue;
+                        var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
                         n /= MathF.Sqrt(len2);
 
                         for (int r = 0; r < starts.Length; r++)
-                        {
                             if (RayTri_TwoSided(starts[r], dir, a, b, c, out float t))
                                 Consider(starts[r], t, n);
-                        }
                     }
                 }
             }
 
-            // AABB tops from other colliders
-            var cols = SceneQuery.FindBehaviors<Collider>()
-                                 .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject);
-
+            // AABB tops (non-mesh colliders)
             if (dir.Y < -1e-6f)
             {
-                foreach (var col in cols)
+                foreach (var col in SceneQuery.FindBehaviors<Collider>()
+                         .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider))
                 {
-                    if (col is MeshCollider) continue;
                     var aabb = col.GetWorldAABB();
-
                     for (int r = 0; r < starts.Length; r++)
                     {
                         var s = starts[r];
@@ -249,9 +278,7 @@ namespace Game_Engine.Core.Component
                             var p = s + dir * t;
                             if (p.X >= aabb.Min.X && p.X <= aabb.Max.X &&
                                 p.Z >= aabb.Min.Z && p.Z <= aabb.Max.Z)
-                            {
                                 Consider(s, t, SN.Vector3.UnitY);
-                            }
                         }
                     }
                 }
@@ -262,22 +289,93 @@ namespace Game_Engine.Core.Component
             return anyHit;
         }
 
+        bool RaycastCeiling(SN.Vector3 start, SN.Vector3 dir, float maxDist, out float ceilY)
+        {
+            if (dir.LengthSquared() < 1e-8f) dir = new SN.Vector3(0, +1, 0);
+            dir = SN.Vector3.Normalize(dir);
+            if (dir.Y <= 1e-5f) dir = new SN.Vector3(dir.X, MathF.Abs(dir.Y) + 1e-3f, dir.Z);
+
+            var ring = MathF.Max(0.05f, CapsuleRadius * 0.6f);
+            var starts = new[]
+            {
+                start,
+                start + new SN.Vector3(+ring, 0, 0),
+                start + new SN.Vector3(-ring, 0, 0),
+                start + new SN.Vector3(0, 0, +ring),
+                start + new SN.Vector3(0, 0, -ring),
+            };
+
+            float bestY = float.PositiveInfinity;
+            bool anyHit = false;
+
+            void Consider(in SN.Vector3 s, float t)
+            {
+                if (t < 0f || t > maxDist) return;
+                var p = s + dir * t;
+                if (p.Y < s.Y - 1e-4f) return; // must be above start
+                if (p.Y < bestY) { bestY = p.Y; anyHit = true; }
+            }
+
+            // Mesh triangles
+            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>()
+                     .Where(m => m.Enabled && !m.IsTrigger && m.gameObject != this.gameObject))
+            {
+                foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
+                {
+                    if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
+                    var vtx = mesh.Vertices; var tri = mesh.TriIndices;
+
+                    for (int i = 0; i < tri.Length; i += 3)
+                    {
+                        var a = SN.Vector3.Transform(vtx[tri[i]], W);
+                        var b = SN.Vector3.Transform(vtx[tri[i + 1]], W);
+                        var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
+
+                        for (int r = 0; r < starts.Length; r++)
+                            if (RayTri_TwoSided(starts[r], dir, a, b, c, out float t))
+                                Consider(starts[r], t);
+                    }
+                }
+            }
+
+            // AABB bottoms (ceilings)
+            if (dir.Y > 1e-6f)
+            {
+                foreach (var col in SceneQuery.FindBehaviors<Collider>()
+                         .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider))
+                {
+                    var aabb = col.GetWorldAABB();
+                    for (int r = 0; r < starts.Length; r++)
+                    {
+                        var s = starts[r];
+                        float t = (aabb.Min.Y - s.Y) / dir.Y; // bottom plane (ceiling)
+                        if (t >= 0f && t <= maxDist)
+                        {
+                            var p = s + dir * t;
+                            if (p.X >= aabb.Min.X && p.X <= aabb.Max.X &&
+                                p.Z >= aabb.Min.Z && p.Z <= aabb.Max.Z)
+                                Consider(s, t);
+                        }
+                    }
+                }
+            }
+
+            ceilY = bestY;
+            return anyHit;
+        }
+
         static bool RayTri_TwoSided(SN.Vector3 ro, SN.Vector3 rd, SN.Vector3 a, SN.Vector3 b, SN.Vector3 c, out float t)
         {
             const float EPS = 1e-8f;
-            var ab = b - a;
-            var ac = c - a;
-
+            var ab = b - a; var ac = c - a;
             var pvec = SN.Vector3.Cross(rd, ac);
             float det = SN.Vector3.Dot(ab, pvec);
             if (MathF.Abs(det) < EPS) { t = 0f; return false; }
-
             float invDet = 1f / det;
             var tvec = ro - a;
             float u = SN.Vector3.Dot(tvec, pvec) * invDet; if (u < 0f || u > 1f) { t = 0f; return false; }
             var qvec = SN.Vector3.Cross(tvec, ab);
             float v = SN.Vector3.Dot(rd, qvec) * invDet; if (v < 0f || u + v > 1f) { t = 0f; return false; }
-
             t = SN.Vector3.Dot(ac, qvec) * invDet;
             return t >= 0f;
         }
@@ -294,7 +392,7 @@ namespace Game_Engine.Core.Component
             // ray origin at “waist”
             var originBase = pos + new SN.Vector3(0, 0.5f * (halfCyl + radius), 0);
 
-            for (int iter = 0; iter < 2 && remainLen > 1e-5f; iter++)
+            for (int iter = 0; iter < 4 && remainLen > 1e-5f; iter++)
             {
                 float probe = remainLen + radius + skin;
 
@@ -320,7 +418,7 @@ namespace Game_Engine.Core.Component
                         nH /= nLen;
                         var rem = dir * remainLen;
                         float into = SN.Vector3.Dot(rem, nH);
-                        if (into <= 0f) rem -= nH * into; // slide
+                        if (into <= 0f) rem -= nH * into; // slide along wall
                         remainLen = new SN.Vector3(rem.X, 0, rem.Z).Length();
                         if (remainLen > 1e-6f) dir = new SN.Vector3(rem.X, 0, rem.Z) / remainLen;
                         else break;
@@ -352,7 +450,7 @@ namespace Game_Engine.Core.Component
             {
                 var aabb = col.GetWorldAABB();
 
-                //  skip "world-sized" colliders (environment shells)
+                // ignore “world hulls”
                 if (UnstickIgnoreHuge)
                 {
                     var sx = aabb.Max.X - aabb.Min.X;
@@ -362,7 +460,7 @@ namespace Game_Engine.Core.Component
                         continue;
                 }
 
-                //  if we're fully inside the box (typical of an interior container), skip
+                // skip if fully inside
                 if (UnstickSkipIfInside &&
                     pos.X > aabb.Min.X && pos.X < aabb.Max.X &&
                     pos.Y > aabb.Min.Y && pos.Y < aabb.Max.Y &&
@@ -371,12 +469,12 @@ namespace Game_Engine.Core.Component
                     continue;
                 }
 
-                // vertical overlap? (use capsule full extent)
+                // vertical overlap?
                 var bodyMinY = pos.Y - (halfCyl + radius);
                 var bodyMaxY = pos.Y + (halfCyl + radius);
                 if (bodyMaxY < aabb.Min.Y || bodyMinY > aabb.Max.Y) continue;
 
-                // Closest point on AABB to capsule center (XZ)
+                // closest pt on AABB in XZ
                 float cx = Math.Clamp(pos.X, aabb.Min.X, aabb.Max.X);
                 float cz = Math.Clamp(pos.Z, aabb.Min.Z, aabb.Max.Z);
 
@@ -390,7 +488,7 @@ namespace Game_Engine.Core.Component
                     float d = (float)Math.Sqrt(Math.Max(d2, 1e-12f));
                     if (d < EPS)
                     {
-                        // On an edge or corner: push along least-penetration axis
+                        // push along least-penetration axis (corner/edge)
                         float dl = Math.Abs(pos.X - aabb.Min.X);
                         float dr = Math.Abs(aabb.Max.X - pos.X);
                         float dn = Math.Abs(pos.Z - aabb.Min.Z);
@@ -410,7 +508,6 @@ namespace Game_Engine.Core.Component
             }
         }
 
-
         bool RaycastWallForward(SN.Vector3 start, SN.Vector3 dir, float maxDist, out float tHit, out SN.Vector3 nHit)
         {
             float bestT = float.PositiveInfinity;
@@ -420,14 +517,14 @@ namespace Game_Engine.Core.Component
             float bandMinY = start.Y - (0.5f * (CapsuleHalfCylinder + CapsuleRadius));
             float bandMaxY = start.Y + (0.5f * (CapsuleHalfCylinder + CapsuleRadius));
 
-            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>().Where(m => m.Enabled && !m.IsTrigger))
+            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>()
+                     .Where(m => m.Enabled && !m.IsTrigger && m.gameObject != this.gameObject))
             {
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
 
-                    var vtx = mesh.Vertices;
-                    var tri = mesh.TriIndices;
+                    var vtx = mesh.Vertices; var tri = mesh.TriIndices;
 
                     for (int i = 0; i < tri.Length; i += 3)
                     {
@@ -436,35 +533,33 @@ namespace Game_Engine.Core.Component
                         var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
 
                         var n = SN.Vector3.Cross(b - a, c - a);
-                        var len2 = n.LengthSquared();
-                        if (len2 < 1e-12f) continue;
+                        var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
                         n /= MathF.Sqrt(len2);
 
-                        // ignore floors/ceilings
+                        // ignore floors & ceilings here
                         if (MathF.Abs(n.Y) > 0.45f) continue;
 
                         if (RayTri_TwoSided(start, dir, a, b, c, out float t) && t >= 0f && t <= maxDist)
                         {
                             var p = start + dir * t;
                             if (p.Y >= bandMinY && p.Y <= bandMaxY)
-                            {
                                 if (t < bestT) { bestT = t; bestN = n; any = true; }
-                            }
                         }
                     }
                 }
             }
 
+            // simple planes of AABBs
             foreach (var c in SceneQuery.FindBehaviors<Collider>()
                      .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider))
             {
                 var a = c.GetWorldAABB();
                 if (a.Max.Y < bandMinY || a.Min.Y > bandMaxY) continue;
 
-                TestSide(a.Min.X, new SN.Vector3(-1, 0, 0)); // left
-                TestSide(a.Max.X, new SN.Vector3(+1, 0, 0)); // right
-                TestFront(a.Min.Z, new SN.Vector3(0, 0, -1)); // near
-                TestFront(a.Max.Z, new SN.Vector3(0, 0, +1)); // far
+                TestSide(a.Min.X, new SN.Vector3(-1, 0, 0));
+                TestSide(a.Max.X, new SN.Vector3(+1, 0, 0));
+                TestFront(a.Min.Z, new SN.Vector3(0, 0, -1));
+                TestFront(a.Max.Z, new SN.Vector3(0, 0, +1));
 
                 void TestSide(float xPlane, SN.Vector3 n)
                 {

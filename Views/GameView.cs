@@ -37,6 +37,26 @@ namespace Game_Engine.Views
         readonly Stopwatch _updateWatch = new Stopwatch();
         readonly Stopwatch _fixedWatch = new Stopwatch();
 
+        // --- dynamic resolution (software raster) ---
+        float _resScale = 1.0f;                 // internal render scale vs screen
+        const double TargetMs = 50/16.6;           
+        const float ResMin = 0.55f, ResMax = 1.0f;
+        double _lastRenderScale = 1.0; // track HiDPI scaling used by the backbuffer
+
+
+        void TuneResolution(double opaqueMs, double transpMs)
+        {
+            double ms = opaqueMs + transpMs;
+
+            // Simple hysteresis so it doesn't flap
+            if (ms > TargetMs * 1.15) _resScale *= 0.92f;   // slow → shrink
+            else if (ms < TargetMs * 0.85) _resScale *= 1.03f;   // fast → grow
+
+            if (_resScale < ResMin) _resScale = ResMin;
+            if (_resScale > ResMax) _resScale = ResMax;
+        }
+
+
         bool _awakened, _started;
         bool _collidersWarm;
         bool _needsWarm;
@@ -152,18 +172,21 @@ namespace Game_Engine.Views
         {
             ClipToBounds = true;
 
-            // UI/update timer
+            // UI/update timer (keeps ~60 FPS cadence and repaints)
             _updateTimer.Interval = TimeSpan.FromMilliseconds(16.666);
-            _updateTimer.Tick += (_, __) => { TickUpdate(); InvalidateVisual(); };
-
-            // Driver (kept same cadence you have)
-            _fixedTimer.Interval = TimeSpan.FromMilliseconds(8);
-            _fixedTimer.Tick += (_, __) =>
+            _updateTimer.Tick += (_, __) =>
             {
-                TickFixedUpdate();
                 TickUpdate();
                 InvalidateVisual();
             };
+
+            // Physics driver 
+            _fixedTimer.Interval = TimeSpan.FromMilliseconds(8);  // fast driver; accumulator holds 60 Hz
+            _fixedTimer.Tick += (_, __) =>
+            {
+                TickFixedUpdate();
+            };
+
 
             // Scene changes: rebuild **scene caches** once, then invalidate render cache
             SceneService.Changed += () =>
@@ -207,19 +230,33 @@ namespace Game_Engine.Views
         }
 
         // ---------- backbuffer ----------
-        void EnsureBackbuffers(int w, int h)
+        void EnsureBackbuffers(int w, int h, double renderScale)
         {
             w = Math.Max(1, w);
             h = Math.Max(1, h);
-            if (_bbWB != null && _bbW == w && _bbH == h && _bbColor != null && _bbZ != null) return;
+
+            bool needNew =
+                _bbWB == null || _bbW != w || _bbH != h ||
+                _bbColor == null || _bbZ == null ||
+                Math.Abs(_lastRenderScale - renderScale) > 0.0001;
+
+            if (!needNew) return;
 
             _bbW = w; _bbH = h;
             _bbColor = new uint[w * h];
             _bbZ = new float[w * h];
-            _bbWB = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
-                                           PixelFormat.Bgra8888, AlphaFormat.Premul);
-            _cacheValid = false; // res change invalidates cached frame
+
+            // IMPORTANT: DPI matches the visual root scaling so DIP→pixel is correct
+            _bbWB = new WriteableBitmap(
+                new PixelSize(w, h),
+                new Vector(96 * renderScale, 96 * renderScale),
+                PixelFormat.Bgra8888,
+                AlphaFormat.Premul);
+
+            _lastRenderScale = renderScale;
+            _cacheValid = false; // res/DPI change invalidates cached frame
         }
+
 
         // ---------- input ----------
         static KeyCode MapKey(Key k) => k switch
@@ -324,8 +361,10 @@ namespace Game_Engine.Views
                     _fixedWatch.Restart();
                     Input.ClearAll();
 
-                    _updateTimer.Stop();
-                    _fixedTimer.Interval = TimeSpan.FromMilliseconds(50); 
+                    _updateTimer.Interval = TimeSpan.FromMilliseconds(16.666);
+                    _updateTimer.Start();
+
+                    _fixedTimer.Interval = TimeSpan.FromMilliseconds(8);   // keep it fast
                     _fixedTimer.Start();
 
                     _fpsTick.Restart(); _fpsWindow.Restart();
@@ -334,7 +373,7 @@ namespace Game_Engine.Views
                     _msOpaqueLast = _msTranspLast = 0;
 
                     _cacheValid = false;
-                    RebuildSceneCaches(); // make sure caches are fresh at play
+                    RebuildSceneCaches();
                     break;
 
                 case GamePanel.GameState.Paused:
@@ -440,6 +479,10 @@ namespace Game_Engine.Views
 
             var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
             _updateWatch.Restart();
+
+            // Clamp huge spikes so controllers don’t “jump”
+            if (dt > 0.05) dt = 0.05;  // ~20 FPS floor for Update
+
             Core.Time.BeginUpdate(dt);
 
             Input.NewFrame((float)dt);
@@ -447,6 +490,7 @@ namespace Game_Engine.Views
             ForEachBehavior(b => b.__LateUpdate());
             Input.EndFrame();
         }
+
 
         void TickFixedUpdate()
         {
@@ -486,14 +530,29 @@ namespace Game_Engine.Views
             double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
             _fpsTick.Restart(); UpdateFps(dt);
 
-            int W = Math.Max(1, (int)Bounds.Width);
-            int H = Math.Max(1, (int)Bounds.Height);
-            EnsureBackbuffers(W, H);
+            // Device-independent size we *display* at (DIPs)
+            double Wdip = Math.Max(1.0, Bounds.Width);
+            double Hdip = Math.Max(1.0, Bounds.Height);
+
+            // HiDPI device pixel scale
+            var top = TopLevel.GetTopLevel(this);
+            double rs = top?.RenderScaling ?? 1.0;
+
+            // Device-pixel size of the control
+            int Wpx = Math.Max(1, (int)Math.Round(Wdip * rs));
+            int Hpx = Math.Max(1, (int)Math.Round(Hdip * rs));
+
+            // Internal render size (in device pixels)
+            int RW = Math.Max(1, (int)Math.Round(Wpx * _resScale));
+            int RH = Math.Max(1, (int)Math.Round(Hpx * _resScale));
+            
+
+            EnsureBackbuffers(RW, RH, rs);
             var color = _bbColor!; var zbuf = _bbZ!;
 
             if (State != GamePanel.GameState.Playing)
             {
-                ctx.FillRectangle(new SolidColorBrush(Color.FromRgb(0x12, 0x14, 0x17)), new Rect(0, 0, W, H));
+                ctx.FillRectangle(new SolidColorBrush(Color.FromRgb(0x12, 0x14, 0x17)), new Rect(0, 0, Wdip, Hdip));
                 DrawFpsHud(ctx);
                 return;
             }
@@ -546,17 +605,20 @@ namespace Game_Engine.Views
             }
 
             // ---------- Cameras (from cache) ----------
-            var cams = _cams; // already materialized
+            var cams = _cams;
 
             // Fast path: one full-screen camera + render-on-change cache
             if (cams.Count == 1)
             {
                 var cam = cams[0];
-                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, W, H);
-                if (vx == 0 && vy == 0 && vw == W && vh == H)
+                // Viewport in *internal* render (device pixel) space
+                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, RW, RH);
+                if (vx == 0 && vy == 0 && vw == RW && vh == RH)
                 {
                     var vView = cam.GetViewMatrix();
-                    var vProj = cam.GetProjectionMatrix(new Size(W, H));
+
+                    // Build projection from the *displayed* DIP size so aspect is stable
+                    var vProj = cam.GetProjectionMatrix(new Size(Wdip, Hdip));
 
                     // ---- change detection ----
                     var lightKey = BuildLightKey(lightIsPoint, L, lightPosW, lightRange, DiffuseK, Ambient);
@@ -564,7 +626,7 @@ namespace Game_Engine.Views
 
                     bool changed =
                         !_cacheValid ||
-                        _lastWKey != W || _lastHKey != H ||
+                        _lastWKey != RW || _lastHKey != RH ||
                         !MatNearEqual(vView, _lastView) ||
                         !MatNearEqual(vProj, _lastProj) ||
                         !_lastLightKey.Equals(lightKey) ||
@@ -573,13 +635,13 @@ namespace Game_Engine.Views
 
                     if (!changed)
                     {
-                        BlitToScreen(ctx, _bbWB!, color, W, H);
+                        BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
                         DrawFpsHud(ctx);
                         return;
                     }
 
                     // ---- clear & draw ----
-                    CameraClear.ClearForCamera(cam, color, zbuf, W, H,
+                    CameraClear.ClearForCamera(cam, color, zbuf, RW, RH,
                         vView, vProj,
                         skyTop, skyBot, sunDir,
                         skyTex, skyBlend,
@@ -590,7 +652,7 @@ namespace Game_Engine.Views
                     _passWatch.Restart();
                     foreach (var root in SceneService.Root)
                         SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
-                            color, zbuf, W, H,
+                            color, zbuf, RW, RH,
                             L, DiffuseK, Ambient,
                             lightIsPoint, lightPosW, lightRange,
                             shadow: null);
@@ -605,7 +667,7 @@ namespace Game_Engine.Views
                         _passWatch.Restart();
                         foreach (var root in SceneService.Root)
                             SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
-                                color, zbuf, W, H,
+                                color, zbuf, RW, RH,
                                 L, DiffuseK, Ambient,
                                 lightIsPoint, lightPosW, lightRange,
                                 shadow: null);
@@ -619,24 +681,33 @@ namespace Game_Engine.Views
                     _lastProj = vProj;
                     _lastLightKey = lightKey;
                     _lastSkyKey = skyKey;
-                    _lastWKey = W; _lastHKey = H;
+                    _lastWKey = RW; _lastHKey = RH;
                     _cacheValid = true;
 
-                    BlitToScreen(ctx, _bbWB!, color, W, H);
+                    BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
                     DrawFpsHud(ctx);
+
+                    // adapt resolution for next frame
+                    TuneResolution(_msOpaqueEma, _msTranspEma);
                     return;
                 }
             }
 
-            // Multi-camera: cheap master background, then per-camera clears
-            FillVerticalGradient(color, W, H, skyTop, skyBot);
+            // Multi-camera: cheap master background, then per-camera clears into internal buffer
+            FillVerticalGradient(color, RW, RH, skyTop, skyBot);
 
             double totalOpaqueMs = 0, totalTranspMs = 0;
 
             for (int i = 0; i < cams.Count; i++)
             {
                 var cam = cams[i];
-                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, W, H);
+
+                // Pixel viewport (for raster)
+                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, RW, RH);
+
+                // DIP viewport size for aspect/projection
+                int vwD = Math.Max(1, (int)Math.Round(vw / rs));
+                int vhD = Math.Max(1, (int)Math.Round(vh / rs));
 
                 var vColor = ArrayPool<uint>.Shared.Rent(vw * vh);
                 var vZ = ArrayPool<float>.Shared.Rent(vw * vh);
@@ -644,7 +715,7 @@ namespace Game_Engine.Views
                 try
                 {
                     var vView = cam.GetViewMatrix();
-                    var vProj = cam.GetProjectionMatrix(new Size(vw, vh));
+                    var vProj = cam.GetProjectionMatrix(new Size(vwD, vhD));
 
                     CameraClear.ClearForCamera(cam, vColor, vZ, vw, vh,
                         vView, vProj,
@@ -676,7 +747,7 @@ namespace Game_Engine.Views
                         totalTranspMs += _passWatch.Elapsed.TotalMilliseconds;
                     }
 
-                    ImageUtil.Blit(vColor, vw, vh, color, W, H, vx, vy);
+                    ImageUtil.Blit(vColor, vw, vh, color, RW, RH, vx, vy);
                 }
                 finally
                 {
@@ -690,9 +761,14 @@ namespace Game_Engine.Views
             Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
             Ema(ref _msTranspEma, _msTranspLast, 0.18);
 
-            BlitToScreen(ctx, _bbWB!, color, W, H);
+            BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
             DrawFpsHud(ctx);
+
+            // adapt resolution for next frame
+            TuneResolution(_msOpaqueEma, _msTranspEma);
         }
+
+
 
         // ---------- helpers ----------
         static void Ema(ref double acc, double sample, double a)
@@ -740,7 +816,9 @@ namespace Game_Engine.Views
             l2.Draw(ctx, new Point(x, y));
         }
 
-        static unsafe void BlitToScreen(DrawingContext ctx, WriteableBitmap wb, uint[] color, int W, int H)
+        static unsafe void BlitToScreen(
+    DrawingContext ctx, WriteableBitmap wb, uint[] color,
+    int srcW, int srcH, double dstWdip, double dstHdip)
         {
             using (var fb = wb.Lock())
             {
@@ -748,21 +826,28 @@ namespace Game_Engine.Views
                 int rowB = fb.RowBytes;
                 fixed (uint* src = color)
                 {
-                    int bytesW = W * 4;
+                    int bytesW = srcW * 4;
                     if (rowB == bytesW)
                     {
-                        // single bulk copy when stride matches
-                        Buffer.MemoryCopy(src, dst, (long)rowB * H, (long)bytesW * H);
+                        Buffer.MemoryCopy(src, dst, (long)rowB * srcH, (long)bytesW * srcH);
                     }
                     else
                     {
-                        for (int y = 0; y < H; y++)
-                            Buffer.MemoryCopy(src + y * W, dst + y * rowB, rowB, bytesW);
+                        for (int y = 0; y < srcH; y++)
+                            Buffer.MemoryCopy(src + y * srcW, dst + y * rowB, rowB, bytesW);
                     }
                 }
             }
-            ctx.DrawImage(wb, new Rect(0, 0, W, H));
+
+            // Source rect is in device pixels of the WriteableBitmap;
+            // Dest rect is in DIPs (control size).
+            var srcRect = new Rect(0, 0, wb.PixelSize.Width, wb.PixelSize.Height);
+            var dstRect = new Rect(0, 0, dstWdip, dstHdip);
+            ctx.DrawImage(wb, srcRect, dstRect);
         }
+
+
+
 
         private static void FillVerticalGradient(uint[] dst, int W, int H, Color top, Color bot)
         {

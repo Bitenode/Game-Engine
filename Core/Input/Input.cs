@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Input
@@ -139,6 +140,8 @@ namespace Game_Engine.Core.Input
             if (key == KeyCode.None) return;
             if (!sHeldKeys.Contains(key)) sDownKeys.Add(key);
             sHeldKeys.Add(key);
+          //  if (key == KeyCode.Space)
+           //     Debug.WriteLine($"[Input] FeedKeyDown Space  held={(sHeldKeys.Contains(key))} downEdge={(sDownKeys.Contains(key))}");
         }
 
         public static void FeedKeyUp(KeyCode key)
@@ -146,6 +149,8 @@ namespace Game_Engine.Core.Input
             if (key == KeyCode.None) return;
             if (sHeldKeys.Contains(key)) sUpKeys.Add(key);
             sHeldKeys.Remove(key);
+          //  if (key == KeyCode.Space)
+           //     Debug.WriteLine($"[Input] FeedKeyUp   Space  upEdge={(sUpKeys.Contains(key))}");
         }
 
         public static void FeedMouseButtonDown(MouseButton btn)
@@ -196,9 +201,12 @@ namespace Game_Engine.Core.Input
             ActionBinding b;
             if (!sActions.TryGetValue(name, out b)) return false;
 
-            for (int i = 0; i < b.Keys.Count; i++) if (sDownKeys.Contains(b.Keys[i])) return true;
-            for (int i = 0; i < b.MouseButtons.Count; i++) if (sDownMouse.Contains(b.MouseButtons[i])) return true;
-            return false;
+            bool hit = false;
+            for (int i = 0; i < b.Keys.Count; i++) if (sDownKeys.Contains(b.Keys[i])) hit = true;
+            for (int i = 0; i < b.MouseButtons.Count; i++) if (sDownMouse.Contains(b.MouseButtons[i])) hit = true;
+
+           // if (hit) Debug.WriteLine($"[Input] GetActionDown \"{name}\" TRUE (frame={sFrameId})");
+            return hit;
         }
 
         public static bool GetActionUp(string name)
