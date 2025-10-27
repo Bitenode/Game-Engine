@@ -258,22 +258,7 @@ namespace Game_Engine.Views
         }
 
 
-        // ---------- input ----------
-        static KeyCode MapKey(Key k) => k switch
-        {
-            Key.W => KeyCode.W,
-            Key.A => KeyCode.A,
-            Key.S => KeyCode.S,
-            Key.D => KeyCode.D,
-            Key.Up => KeyCode.UpArrow,
-            Key.Down => KeyCode.DownArrow,
-            Key.Left => KeyCode.LeftArrow,
-            Key.Right => KeyCode.RightArrow,
-            Key.Space => KeyCode.Space,
-            Key.LeftShift => KeyCode.LeftShift,
-            Key.Escape => KeyCode.Escape,
-            _ => KeyCode.None
-        };
+        
 
         void ExitLookAndClear()
         {
@@ -286,7 +271,7 @@ namespace Game_Engine.Views
         void OnKeyDown(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            var code = MapKey(e.Key);
+            var code = KeyMap.FromAvalonia(e.Key);   
             Input.FeedKeyDown(code);
 
             if (code == KeyCode.Escape && _mouseLook)
@@ -297,11 +282,13 @@ namespace Game_Engine.Views
                 Input.FeedMouseDelta(0, 0);
             }
         }
+
         void OnKeyUp(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            Input.FeedKeyUp(MapKey(e.Key));
+            Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));  
         }
+
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;

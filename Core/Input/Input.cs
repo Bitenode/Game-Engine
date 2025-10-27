@@ -1,26 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Input
-{
-    //  enums small & focused for now
-    public enum KeyCode
-    {
-        None = 0,
-        W, A, S, D,
-        UpArrow, DownArrow, LeftArrow, RightArrow,
-        Space, LeftShift, Escape,
-        F5, F6, F7
-    }
-
-    public enum MouseButton
-    {
-        Left = 0,
-        Right = 1,
-        Middle = 2,
-    }
+{ 
 
     sealed class AxisBinding
     {
@@ -98,6 +84,8 @@ namespace Game_Engine.Core.Input
             var sprint = new ActionBinding("Sprint"); sprint.Keys.Add(KeyCode.LeftShift);
             var fire = new ActionBinding("Fire1"); fire.MouseButtons.Add(MouseButton.Left);
             sActions[jump.Name] = jump; sActions[sprint.Name] = sprint; sActions[fire.Name] = fire;
+
+            s_json.Converters.Add(new JsonStringEnumConverter());
         }
 
         // ------------ Frame lifecycle ------------
@@ -288,7 +276,7 @@ namespace Game_Engine.Core.Input
             }
         }
 
-        //WIP LATER DOWN THE ROADMAP
+       
         // ------------ Remapping API  ------------
         public static void SetAxis(string name, IEnumerable<KeyCode> positive, IEnumerable<KeyCode> negative,
                                    float sensitivity = 6f, float gravity = 12f, bool snap = true)
@@ -309,5 +297,194 @@ namespace Game_Engine.Core.Input
             if (keys != null) b.Keys.AddRange(keys);
             if (mouse != null) b.MouseButtons.AddRange(mouse);
         }
+
+        // Public, read-only snapshots for UI
+        public sealed class AxisBindingInfo
+        {
+            public string Name;
+            public List<KeyCode> Positive = new List<KeyCode>();
+            public List<KeyCode> Negative = new List<KeyCode>();
+            public float Sensitivity;
+            public float Gravity;
+            public bool Snap;
+            public bool IsMouseX;
+            public bool IsMouseY;
+        }
+
+        public sealed class ActionBindingInfo
+        {
+            public string Name;
+            public List<KeyCode> Keys = new List<KeyCode>();
+            public List<MouseButton> MouseButtons = new List<MouseButton>();
+        }
+
+        // ----- Read current bindings (snapshots) -----
+        public static List<string> GetAxisNames()
+        {
+            // copy keys to avoid exposing internal dictionary
+            var list = new List<string>();
+            foreach (var kv in sAxes) list.Add(kv.Key);
+            list.Sort(StringComparer.Ordinal);
+            return list;
+        }
+
+        public static AxisBindingInfo GetAxisInfo(string name)
+        {
+            AxisBinding a;
+            if (!sAxes.TryGetValue(name, out a)) return null;
+            var info = new AxisBindingInfo();
+            info.Name = a.Name;
+            info.Positive.AddRange(a.Positive);
+            info.Negative.AddRange(a.Negative);
+            info.Sensitivity = a.Sensitivity;
+            info.Gravity = a.Gravity;
+            info.Snap = a.Snap;
+            info.IsMouseX = a.IsMouseX;
+            info.IsMouseY = a.IsMouseY;
+            return info;
+        }
+
+        public static List<string> GetActionNames()
+        {
+            var list = new List<string>();
+            foreach (var kv in sActions) list.Add(kv.Key);
+            list.Sort(StringComparer.Ordinal);
+            return list;
+        }
+
+        public static ActionBindingInfo GetActionInfo(string name)
+        {
+            ActionBinding b;
+            if (!sActions.TryGetValue(name, out b)) return null;
+            var info = new ActionBindingInfo();
+            info.Name = b.Name;
+            info.Keys.AddRange(b.Keys);
+            info.MouseButtons.AddRange(b.MouseButtons);
+            return info;
+        }
+
+        // ---------- Persistence (save/load to project) ----------
+
+        class AxisDTO
+        {
+            public string Name { get; set; }
+            public List<KeyCode> Positive { get; set; }
+            public List<KeyCode> Negative { get; set; }
+            public float Sensitivity { get; set; }
+            public float Gravity { get; set; }
+            public bool Snap { get; set; }
+            public bool IsMouseX { get; set; }
+            public bool IsMouseY { get; set; }
+        }
+
+        class ActionDTO
+        {
+            public string Name { get; set; }
+            public List<KeyCode> Keys { get; set; }
+            public List<MouseButton> MouseButtons { get; set; }
+        }
+
+        class BindingsFile
+        {
+            public float MouseSensitivity { get; set; }
+            public List<AxisDTO> Axes { get; set; }
+            public List<ActionDTO> Actions { get; set; }
+        }
+
+        static readonly JsonSerializerOptions s_json = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+
+        /// <summary>Return the default bindings path for the current project, or null if no project open.</summary>
+        public static string GetBindingsPathForCurrentProject()
+        {
+            var cur = ProjectService.Current;
+            if (cur == null) return null;
+            var dir = Path.Combine(cur.RootPath, "ProjectSettings");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "input.bindings.json");
+        }
+
+        /// <summary>Save current axes/actions to project JSON. Returns the written path.</summary>
+        public static string SaveBindingsToProject()
+        {
+            var path = GetBindingsPathForCurrentProject();
+            if (path == null)
+                Core.Log.Error("No project is open. Cannot save input bindings.");
+
+            var bf = new BindingsFile
+            {
+                MouseSensitivity = MouseSensitivity,
+                Axes = new List<AxisDTO>(),
+                Actions = new List<ActionDTO>()
+            };
+
+            foreach (var kv in sAxes)
+            {
+                var a = kv.Value;
+                bf.Axes.Add(new AxisDTO
+                {
+                    Name = a.Name,
+                    Positive = new List<KeyCode>(a.Positive),
+                    Negative = new List<KeyCode>(a.Negative),
+                    Sensitivity = a.Sensitivity,
+                    Gravity = a.Gravity,
+                    Snap = a.Snap,
+                    IsMouseX = a.IsMouseX,
+                    IsMouseY = a.IsMouseY
+                });
+            }
+
+            foreach (var kv in sActions)
+            {
+                var b = kv.Value;
+                bf.Actions.Add(new ActionDTO
+                {
+                    Name = b.Name,
+                    Keys = new List<KeyCode>(b.Keys),
+                    MouseButtons = new List<MouseButton>(b.MouseButtons)
+                });
+            }
+
+            var json = JsonSerializer.Serialize(bf, s_json);
+            if (path != null)
+                File.WriteAllText(path, json);
+                Core.Log.Success("Saved input bindings.");
+            return path;
+        }
+
+        /// <summary>Load bindings from project JSON if it exists. Returns true if loaded.</summary>
+        public static bool TryLoadBindingsFromProject()
+        {
+            var path = GetBindingsPathForCurrentProject();
+            if (path == null || !File.Exists(path)) return false;
+
+            var text = File.ReadAllText(path);
+            var bf = JsonSerializer.Deserialize<BindingsFile>(text, s_json);
+            if (bf == null) return false;
+
+            MouseSensitivity = bf.MouseSensitivity;
+
+            if (bf.Axes != null)
+                for (int i = 0; i < bf.Axes.Count; i++)
+                {
+                    var a = bf.Axes[i];
+                    SetAxis(a.Name, a.Positive ?? new List<KeyCode>(), a.Negative ?? new List<KeyCode>(),
+                            a.Sensitivity, a.Gravity, a.Snap);
+                }
+
+            if (bf.Actions != null)
+                for (int j = 0; j < bf.Actions.Count; j++)
+                {
+                    var b = bf.Actions[j];
+                    SetAction(b.Name, b.Keys ?? new List<KeyCode>(), b.MouseButtons ?? new List<MouseButton>());
+                }
+
+            return true;
+        }
+
+
     }
 }

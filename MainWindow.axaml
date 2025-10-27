@@ -36,6 +36,11 @@
 					<MenuItem Header="New Console Tab"   x:Name="NewConsoleTab"/>
 				</MenuItem>
 			</MenuItem>
+
+			<MenuItem Header="_Settings" x:Name="MI_SettingsRoot">
+				<MenuItem Header="Input Remapping" x:Name="InputRemappingMenu"/>
+				
+			</MenuItem>
 		</Menu>
 
 

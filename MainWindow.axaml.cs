@@ -1,16 +1,17 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Extensibility;
+using Game_Engine.Core.Input;
 using Game_Engine.Docking;
 using Game_Engine.Views;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 
 namespace Game_Engine;
 
@@ -52,6 +53,7 @@ public partial class MainWindow : Window
         AddTabMenus(BottomLeftTabs);
         AddTabMenus(BottomTabs);
 
+
         // Window ▸ Reset Layout
         if (this.FindControl<MenuItem>("ResetLayoutMenu") is { } reset)
             reset.Click += (_, __) => ResetLayout();
@@ -68,6 +70,9 @@ public partial class MainWindow : Window
         BindNew("NewProjectTab", typeof(ProjectPanel), DockRegion.BottomLeft);
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
         BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
+
+        if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
+            settings.Click += (_, __) => InputRemappingAsync();
 
         // ----- Project menu (items are named in XAML) -----
         MI_NewProject.Click += OnNewProject;
@@ -122,12 +127,14 @@ public partial class MainWindow : Window
 
         var projectRoot = this.FindControl<MenuItem>("MI_ProjectRoot");
         var windowRoot = this.FindControl<MenuItem>("MI_WindowRoot");
+        var SettingsRoot = this.FindControl<MenuItem>("MI_SettingsRoot");
 
-      //  Log.Info($"[UI] RebuildExtensionMenus: clearing old menu (was count={host.Items?.Count ?? 0})");
+        //  Log.Info($"[UI] RebuildExtensionMenus: clearing old menu (was count={host.Items?.Count ?? 0})");
         host.Items.Clear();
 
         if (projectRoot != null) host.Items.Add(projectRoot);
         if (windowRoot != null) host.Items.Add(windowRoot);
+        if (SettingsRoot != null) host.Items.Add(SettingsRoot);
 
         var customs = ExtensionService.BuildAvaloniaMenus();
         for (int i = 0; i < customs.Count; i++) host.Items.Add(customs[i]);
@@ -208,6 +215,12 @@ public partial class MainWindow : Window
         return DockRegion.Bottom;
     }
 
+    private async Task InputRemappingAsync()
+    {
+        var dlg = new InputRemappingWindow();
+        await dlg.ShowDialog(this);
+    }
+
     private void ResetLayout()
     {
         if (_dock is null) return;
@@ -273,6 +286,7 @@ public partial class MainWindow : Window
     public void RefreshProjectUI()
     {
         var has = ProjectService.Current is not null;
+        ProjectService.ProjectOpened += () => Input.TryLoadBindingsFromProject();
 
         MI_CloseProject.IsEnabled = has;
         MI_RevealInExplorer.IsEnabled = has;

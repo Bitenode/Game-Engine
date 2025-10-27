@@ -1,0 +1,63 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Game_Engine.Views.InputRemappingWindow"
+        Title="Input Remapping"
+        Width="560" Height="500"
+        CanResize="False">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="10">
+    <!-- Title / instructions -->
+    <StackPanel Orientation="Vertical" Spacing="6">
+      <TextBlock Text="Input Remapping" FontSize="18" FontWeight="SemiBold"/>
+      <TextBlock Text="Click a Rebind button, then press a key (Esc to cancel)."
+                 Opacity="0.8"/>
+    </StackPanel>
+
+    <TabControl Grid.Row="1" Margin="0,10,0,10">
+      <!-- Axes -->
+      <TabItem Header="Axes">
+        <ScrollViewer>
+          <StackPanel x:Name="AxesHost" Spacing="8" Margin="4"/>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- Actions -->
+      <TabItem Header="Actions">
+        <DockPanel>
+          <!-- Add custom action -->
+          <Border DockPanel.Dock="Top" Padding="6" Margin="0,0,0,6" CornerRadius="4" Background="#1AFFFFFF">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="New action:" VerticalAlignment="Center"/>
+              <TextBox x:Name="NewActionNameBox" Width="200" Watermark="e.g. Interact"/>
+              <Button x:Name="AddActionBtn" Content="Add" Padding="10,6"/>
+              <TextBlock x:Name="AddActionHint"
+                         Text="(letters/digits/_/-)"
+                         Opacity="0.7"
+                         VerticalAlignment="Center"/>
+            </StackPanel>
+          </Border>
+
+          <ScrollViewer>
+            <StackPanel x:Name="ActionsHost" Spacing="8" Margin="4"/>
+          </ScrollViewer>
+        </DockPanel>
+      </TabItem>
+    </TabControl>
+
+    <!-- Bottom bar -->
+    <DockPanel Grid.Row="2">
+      <Button x:Name="BtnReset"
+              Content="Reset to Defaults"
+              HorizontalAlignment="Left"
+              Padding="10,6"
+              Margin="0,0,8,0"/>
+      <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Spacing="8">
+        <Button x:Name="BtnSave"
+                Content="Save"
+                Padding="14,6"/>
+        <Button x:Name="BtnClose"
+                Content="Close"
+                Padding="14,6"/>
+      </StackPanel>
+    </DockPanel>
+  </Grid>
+</Window>

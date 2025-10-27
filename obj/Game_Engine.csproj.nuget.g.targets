@@ -7,7 +7,7 @@
     <Import Project="$(NuGetPackageRoot)computesharp.core\3.2.0\buildTransitive\ComputeSharp.Core.targets" Condition="Exists('$(NuGetPackageRoot)computesharp.core\3.2.0\buildTransitive\ComputeSharp.Core.targets')" />
     <Import Project="$(NuGetPackageRoot)computesharp\3.2.0\buildTransitive\ComputeSharp.targets" Condition="Exists('$(NuGetPackageRoot)computesharp\3.2.0\buildTransitive\ComputeSharp.targets')" />
     <Import Project="$(NuGetPackageRoot)avalonia.buildservices\11.3.1\buildTransitive\Avalonia.BuildServices.targets" Condition="Exists('$(NuGetPackageRoot)avalonia.buildservices\11.3.1\buildTransitive\Avalonia.BuildServices.targets')" />
-    <Import Project="$(NuGetPackageRoot)avalonia\11.3.7\buildTransitive\Avalonia.targets" Condition="Exists('$(NuGetPackageRoot)avalonia\11.3.7\buildTransitive\Avalonia.targets')" />
+    <Import Project="$(NuGetPackageRoot)avalonia\11.3.8\buildTransitive\Avalonia.targets" Condition="Exists('$(NuGetPackageRoot)avalonia\11.3.8\buildTransitive\Avalonia.targets')" />
     <Import Project="$(NuGetPackageRoot)assimpnet\4.1.0\build\AssimpNet.targets" Condition="Exists('$(NuGetPackageRoot)assimpnet\4.1.0\build\AssimpNet.targets')" />
   </ImportGroup>
 </Project>
