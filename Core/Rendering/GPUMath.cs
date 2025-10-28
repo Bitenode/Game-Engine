@@ -1,9 +1,5 @@
-﻿using ComputeSharp;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System;
+using ComputeSharp;
 
 namespace Game_Engine.Core
 {
@@ -37,11 +33,10 @@ namespace Game_Engine.Core
     }
 
     // Clears the packed 24-bit z buffer to "far"
-    [AutoConstructor]
-    [ThreadGroupSize(256, 1, 1)]
-    internal readonly partial struct ClearKernel : IComputeShader
+    [ThreadGroupSize(DefaultThreadGroupSizes.X)]
+    [GeneratedComputeShaderDescriptor]
+    public readonly partial struct ClearKernel(ReadWriteBuffer<uint> zb) : IComputeShader
     {
-        public readonly ReadWriteBuffer<uint> zb;
         public void Execute()
         {
             int i = ThreadIds.X;
@@ -50,21 +45,22 @@ namespace Game_Engine.Core
         }
     }
 
-    // Per-triangle, bbox raster; atomic min into packed z
-    [AutoConstructor]
+    // Per-triangle, bbox raster; atomic min into packed z (24-bit)
     [ThreadGroupSize(64, 1, 1)]
-    internal readonly partial struct ZOnlyKernel : IComputeShader
+    [GeneratedComputeShaderDescriptor]
+    public readonly partial struct ZOnlyKernel(
+        ReadOnlyBuffer<TriSS> tris,
+        ReadWriteBuffer<uint> zb,
+        int W,
+        int H) : IComputeShader
     {
-        public readonly ReadOnlyBuffer<TriSS> tris;
-        public readonly ReadWriteBuffer<uint> zb;
-        public readonly int W, H;
-
         public void Execute()
         {
             int i = ThreadIds.X;
             if ((uint)i >= (uint)tris.Length) return;
 
-            var t = tris[i];
+            TriSS t = tris[i];
+
             int minX = Hlsl.Clamp(t.minX, 0, W - 1);
             int maxX = Hlsl.Clamp(t.maxX, 0, W - 1);
             int minY = Hlsl.Clamp(t.minY, 0, H - 1);
@@ -94,6 +90,7 @@ namespace Game_Engine.Core
                     float b1 = w1 * t.invArea;
                     float z01 = b0 * t.az + b1 * t.bz + (1f - b0 - b1) * t.cz;
 
+                    // pack to 24-bit and Interlocked min
                     uint dz = (uint)Hlsl.Clamp(z01 * 16777215.0f + 0.5f, 0.0f, 16777215.0f);
                     Hlsl.InterlockedMin(ref zb[idx], dz);
                 }
@@ -101,4 +98,3 @@ namespace Game_Engine.Core
         }
     }
 }
-

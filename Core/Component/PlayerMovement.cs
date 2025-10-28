@@ -13,6 +13,7 @@ namespace Game_Engine.Core.Component
     /// - Update(): collect input, update look, drive camera
     /// - __FixedUpdate(): call CharacterController.Simulate(...) with FixedDeltaTime
     /// </summary>
+    [Require(typeof(CharacterController), typeof(CapsuleCollider))]
     public sealed class PlayerMovement : Behavior
     {
         // ---- Movement tunables ----

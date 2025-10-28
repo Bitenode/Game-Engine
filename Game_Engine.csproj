@@ -5,26 +5,42 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<DefineConstants>$(DefineConstants)</DefineConstants>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+
+  <!-- Debug: turn on the GPU pre-Z path -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <DefineConstants>DEBUG;TRACE;COMPUTE_PREZ</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Release: keep symbols minimal -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="AssimpNet" Version="4.1.0" />
+    <!-- This is your own general AutoConstructor SG (ok to keep) -->
     <PackageReference Include="AutoConstructor" Version="5.6.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+
     <PackageReference Include="Avalonia" Version="11.*" />
     <PackageReference Include="Avalonia.Desktop" Version="11.*" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
+
+    <!-- ComputeSharp v3 API (no Descriptors package!) -->
     <PackageReference Include="ComputeSharp" Version="3.2.0" />
+
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
     <PackageReference Include="SkiaSharp" Version="2.88.9" />
     <PackageReference Include="System.Reactive" Version="6.1.0" />
   </ItemGroup>
+
   <ItemGroup>
     <Folder Include="Standard Assets\Code Examples\Custom Menu%27s\" />
     <Folder Include="Standard Assets\Code Examples\Inspector\" />
-  </ItemGroup>	
+  </ItemGroup>
 </Project>

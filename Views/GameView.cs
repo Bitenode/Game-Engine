@@ -37,11 +37,25 @@ namespace Game_Engine.Views
         readonly Stopwatch _updateWatch = new Stopwatch();
         readonly Stopwatch _fixedWatch = new Stopwatch();
 
+        readonly Stopwatch _frameWatch = new Stopwatch();
+        double _msFrameLast, _msFrameEma;
+        double _msUploadLast, _msUploadEma;
+        int _fpsFrames;
+        double _fpsDisplay; // rolling FPS (windowed counter)
+
         // --- dynamic resolution (software raster) ---
         float _resScale = 1.0f;                 // internal render scale vs screen
-        const double TargetMs = 50/16.6;           
+        const double TargetMs = 16.6;
         const float ResMin = 0.55f, ResMax = 1.0f;
         double _lastRenderScale = 1.0; // track HiDPI scaling used by the backbuffer
+
+        // Sky clear cache (single-cam fullscreen fast path)
+        uint[] _skyCacheColor = null;
+        int _skyCacheW, _skyCacheH;
+        SkyKey _skyCacheKey;
+        bool _skyCacheValid;
+        // also track the camera yaw used to build the cache
+        int _skyCacheViewYawKey;
 
 
         void TuneResolution(double opaqueMs, double transpMs)
@@ -95,7 +109,7 @@ namespace Game_Engine.Views
         SN.Matrix4x4 _lastView, _lastProj;
         int _lastWKey, _lastHKey;
 
-        // ---------- scene caches (NEW) ----------
+        // ---------- scene caches ----------
         Skybox? _sky;
         Light? _light;
         readonly List<Camera> _cams = new(4);
@@ -258,7 +272,7 @@ namespace Game_Engine.Views
         }
 
 
-        
+
 
         void ExitLookAndClear()
         {
@@ -271,7 +285,7 @@ namespace Game_Engine.Views
         void OnKeyDown(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            var code = KeyMap.FromAvalonia(e.Key);   
+            var code = KeyMap.FromAvalonia(e.Key);
             Input.FeedKeyDown(code);
 
             if (code == KeyCode.Escape && _mouseLook)
@@ -286,7 +300,7 @@ namespace Game_Engine.Views
         void OnKeyUp(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));  
+            Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));
         }
 
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
@@ -509,30 +523,46 @@ namespace Game_Engine.Views
         }
 
         // ---------- render ----------
+
+        static int ViewYawKey(in SN.Matrix4x4 view)
+        {
+            // camera world matrix
+            if (!SN.Matrix4x4.Invert(view, out var inv)) return 0;
+            // forward in world space
+            var f = SN.Vector3.Normalize(new SN.Vector3(inv.M13, inv.M23, inv.M33));
+            float yaw = MathF.Atan2(f.X, f.Z); // [-π, π]
+            return (int)MathF.Round(yaw * 2048f); // quantize to ~0.003 rad (~0.17°)
+        }
+
+
         public override void Render(DrawingContext ctx)
         {
             base.Render(ctx);
 
-            // FPS integrate
-            double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
-            _fpsTick.Restart(); UpdateFps(dt);
+            _frameWatch.Restart();
 
-            // Device-independent size we *display* at (DIPs)
+            double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
+            _fpsTick.Restart();
+            UpdateFps(dt);
+
+            void EndFrame()
+            {
+                _frameWatch.Stop();
+                _msFrameLast = _frameWatch.Elapsed.TotalMilliseconds;
+                Ema(ref _msFrameEma, _msFrameLast, 0.18);
+            }
+
             double Wdip = Math.Max(1.0, Bounds.Width);
             double Hdip = Math.Max(1.0, Bounds.Height);
 
-            // HiDPI device pixel scale
             var top = TopLevel.GetTopLevel(this);
             double rs = top?.RenderScaling ?? 1.0;
 
-            // Device-pixel size of the control
             int Wpx = Math.Max(1, (int)Math.Round(Wdip * rs));
             int Hpx = Math.Max(1, (int)Math.Round(Hdip * rs));
 
-            // Internal render size (in device pixels)
             int RW = Math.Max(1, (int)Math.Round(Wpx * _resScale));
             int RH = Math.Max(1, (int)Math.Round(Hpx * _resScale));
-            
 
             EnsureBackbuffers(RW, RH, rs);
             var color = _bbColor!; var zbuf = _bbZ!;
@@ -541,6 +571,7 @@ namespace Game_Engine.Views
             {
                 ctx.FillRectangle(new SolidColorBrush(Color.FromRgb(0x12, 0x14, 0x17)), new Rect(0, 0, Wdip, Hdip));
                 DrawFpsHud(ctx);
+                EndFrame();
                 return;
             }
 
@@ -559,10 +590,10 @@ namespace Game_Engine.Views
                 sunDir = SN.Vector3.Normalize(SN.Vector3.Transform(baseSun, rotY));
             }
 
-            // ---------- Lighting (from cache) ----------
+            // ---------- Lighting ----------
             float Ambient = Math.Clamp(sky != null ? sky.Ambient : 0f, 0f, 1f);
 
-            var light = _light; // may be null
+            var light = _light;
             SN.Vector3 L = SN.Vector3.UnitY;
             float DiffuseK = 0f;
             bool lightIsPoint = false;
@@ -591,25 +622,25 @@ namespace Game_Engine.Views
                 }
             }
 
-            // ---------- Cameras (from cache) ----------
             var cams = _cams;
 
-            // Fast path: one full-screen camera + render-on-change cache
+            // ---------- FULLSCREEN SINGLE-CAMERA FAST PATH + SKY CACHE ----------
             if (cams.Count == 1)
             {
                 var cam = cams[0];
-                // Viewport in *internal* render (device pixel) space
-                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, RW, RH);
+                var vp = SceneGraphUtil.ViewportPx(cam, RW, RH);
+                int vx = vp.Item1, vy = vp.Item2, vw = vp.Item3, vh = vp.Item4;
+
                 if (vx == 0 && vy == 0 && vw == RW && vh == RH)
                 {
                     var vView = cam.GetViewMatrix();
-
-                    // Build projection from the *displayed* DIP size so aspect is stable
                     var vProj = cam.GetProjectionMatrix(new Size(Wdip, Hdip));
 
-                    // ---- change detection ----
                     var lightKey = BuildLightKey(lightIsPoint, L, lightPosW, lightRange, DiffuseK, Ambient);
-                    var skyKey = BuildSkyKey(skyTop, skyBot, sky != null ? sky.Yaw : 0f, skyBlend, skyTex);
+                    var curSkyKey = BuildSkyKey(skyTop, skyBot, sky != null ? sky.Yaw : 0f, skyBlend, skyTex);
+
+                    //  include camera yaw in sky-cache key
+                    int curViewYawKey = ViewYawKey(vView);
 
                     bool changed =
                         !_cacheValid ||
@@ -617,23 +648,52 @@ namespace Game_Engine.Views
                         !MatNearEqual(vView, _lastView) ||
                         !MatNearEqual(vProj, _lastProj) ||
                         !_lastLightKey.Equals(lightKey) ||
-                        !_lastSkyKey.Equals(skyKey) ||
+                        !_lastSkyKey.Equals(curSkyKey) ||
                         _needsWarm;
+
+                    // ---- update sky cache if needed ----
+                    bool needSky =
+                        !_skyCacheValid ||
+                        _skyCacheW != RW || _skyCacheH != RH ||
+                        !_skyCacheKey.Equals(curSkyKey) ||
+                        _skyCacheViewYawKey != curViewYawKey;   // rebuild when camera yaw changes
+
+                    if (needSky)
+                    {
+                        _skyCacheW = RW; _skyCacheH = RH;
+                        _skyCacheKey = curSkyKey;
+                        _skyCacheViewYawKey = curViewYawKey;
+                        _skyCacheColor = new uint[RW * RH];
+                        _skyCacheValid = true;
+
+                        CameraClear.ClearForCamera(cam, _skyCacheColor, zbuf, RW, RH,
+                            vView, vProj,
+                            skyTop, skyBot, sunDir,
+                            skyTex, skyBlend,
+                            sky != null ? sky.Yaw : 0f, sky != null ? sky.SeamFeather : 0.01f,
+                            sky != null ? sky.KeyOutNearBlack : false, sky != null ? sky.KeyLuma : 0.08f);
+                    }
 
                     if (!changed)
                     {
+                        // copy cached sky to frame, reset Z to far
+                        Array.Copy(_skyCacheColor, color, color.Length);
+                        Array.Fill<float>(zbuf, 1f);
+
+                        _passWatch.Restart();
                         BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
+                        _passWatch.Stop();
+                        _msUploadLast = _passWatch.Elapsed.TotalMilliseconds;
+                        Ema(ref _msUploadEma, _msUploadLast, 0.18);
+
                         DrawFpsHud(ctx);
+                        EndFrame();
                         return;
                     }
 
-                    // ---- clear & draw ----
-                    CameraClear.ClearForCamera(cam, color, zbuf, RW, RH,
-                        vView, vProj,
-                        skyTop, skyBot, sunDir,
-                        skyTex, skyBlend,
-                        sky != null ? sky.Yaw : 0f, sky != null ? sky.SeamFeather : 0.01f,
-                        sky != null ? sky.KeyOutNearBlack : false, sky != null ? sky.KeyLuma : 0.08f);
+                    // start from cached sky
+                    Array.Copy(_skyCacheColor, color, color.Length);
+                    Array.Fill<float>(zbuf, 1f);
 
                     // Opaque pass
                     _passWatch.Restart();
@@ -647,7 +707,7 @@ namespace Game_Engine.Views
                     _msOpaqueLast = _passWatch.Elapsed.TotalMilliseconds;
                     Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
 
-                    // Transparent pass (gated)
+                    // Transparent pass (optional)
                     _msTranspLast = 0;
                     if (_sceneHasTransparent)
                     {
@@ -664,23 +724,25 @@ namespace Game_Engine.Views
                     }
 
                     // update cache keys
-                    _lastView = vView;
-                    _lastProj = vProj;
-                    _lastLightKey = lightKey;
-                    _lastSkyKey = skyKey;
+                    _lastView = vView; _lastProj = vProj;
+                    _lastLightKey = lightKey; _lastSkyKey = curSkyKey;
                     _lastWKey = RW; _lastHKey = RH;
                     _cacheValid = true;
 
+                    _passWatch.Restart();
                     BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
-                    DrawFpsHud(ctx);
+                    _passWatch.Stop();
+                    _msUploadLast = _passWatch.Elapsed.TotalMilliseconds;
+                    Ema(ref _msUploadEma, _msUploadLast, 0.18);
 
-                    // adapt resolution for next frame
+                    DrawFpsHud(ctx);
                     TuneResolution(_msOpaqueEma, _msTranspEma);
+                    EndFrame();
                     return;
                 }
             }
 
-            // Multi-camera: cheap master background, then per-camera clears into internal buffer
+            // ---------- Multi-camera path ----------
             FillVerticalGradient(color, RW, RH, skyTop, skyBot);
 
             double totalOpaqueMs = 0, totalTranspMs = 0;
@@ -689,10 +751,9 @@ namespace Game_Engine.Views
             {
                 var cam = cams[i];
 
-                // Pixel viewport (for raster)
-                var (vx, vy, vw, vh) = SceneGraphUtil.ViewportPx(cam, RW, RH);
+                var vp = SceneGraphUtil.ViewportPx(cam, RW, RH);
+                int vx = vp.Item1, vy = vp.Item2, vw = vp.Item3, vh = vp.Item4;
 
-                // DIP viewport size for aspect/projection
                 int vwD = Math.Max(1, (int)Math.Round(vw / rs));
                 int vhD = Math.Max(1, (int)Math.Round(vh / rs));
 
@@ -748,13 +809,16 @@ namespace Game_Engine.Views
             Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
             Ema(ref _msTranspEma, _msTranspLast, 0.18);
 
+            _passWatch.Restart();
             BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
+            _passWatch.Stop();
+            _msUploadLast = _passWatch.Elapsed.TotalMilliseconds;
+            Ema(ref _msUploadEma, _msUploadLast, 0.18);
+
             DrawFpsHud(ctx);
-
-            // adapt resolution for next frame
             TuneResolution(_msOpaqueEma, _msTranspEma);
+            EndFrame();
         }
-
 
 
         // ---------- helpers ----------
@@ -765,17 +829,21 @@ namespace Game_Engine.Views
 
         void UpdateFps(double dt)
         {
-            const double a = 0.12;
-            double inst = dt > 1e-6 ? 1.0 / dt : 0.0;
-            if (!_fpsPrimed) { _fpsEma = inst; _fpsPrimed = true; }
-            else _fpsEma = (1 - a) * _fpsEma + a * inst;
-
-            if (_fpsWindow.ElapsedMilliseconds >= 1000) _fpsWindow.Restart();
+            // count frames and recompute FPS every 0.5s for stability
+            _fpsFrames++;
+            if (!_fpsWindow.IsRunning) _fpsWindow.Restart();
+            if (_fpsWindow.ElapsedMilliseconds >= 500)
+            {
+                _fpsDisplay = _fpsFrames / _fpsWindow.Elapsed.TotalSeconds;
+                _fpsFrames = 0;
+                _fpsWindow.Restart();
+            }
         }
+
 
         void DrawFpsHud(DrawingContext ctx)
         {
-            string line1 = $"FPS: {_fpsEma:F1}";
+            string line1 = $"FPS: {_fpsDisplay:F1}   Frame: {_msFrameEma:F2} ms   Upload: {_msUploadEma:F2} ms";
             string line2 = $"Opaque: {_msOpaqueLast:F2} ms (EMA {_msOpaqueEma:F2})   Transparent: {_msTranspLast:F2} ms (EMA {_msTranspEma:F2})";
 
             const double font = 12;
@@ -795,13 +863,11 @@ namespace Game_Engine.Views
             double x = bg.X + padX;
             double y = bg.Y + padY;
 
-            var l1 = new TextLayout(line1, HudTypeface, font, HudText);
-            l1.Draw(ctx, new Point(x, y));
-
+            new TextLayout(line1, HudTypeface, font, HudText).Draw(ctx, new Point(x, y));
             y += lineH + gapY;
-            var l2 = new TextLayout(line2, HudTypeface, font, HudText);
-            l2.Draw(ctx, new Point(x, y));
+            new TextLayout(line2, HudTypeface, font, HudText).Draw(ctx, new Point(x, y));
         }
+
 
         static unsafe void BlitToScreen(
     DrawingContext ctx, WriteableBitmap wb, uint[] color,

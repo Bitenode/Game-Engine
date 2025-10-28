@@ -119,7 +119,8 @@ namespace Game_Engine.Core
                 try { raw = p.GetValue(behavior); } catch { }
                 if (raw == null) { bag[n] = null; continue; }
 
-                var persisted = PersistValue(p, raw);
+                //  pass the declaring instance so PersistValue can see ModelPath etc.
+                var persisted = PersistValue(p, raw, behavior);
                 if (persisted is Skip) continue;
                 bag[n] = persisted is KeepNull ? null : persisted;
             }
@@ -283,13 +284,13 @@ namespace Game_Engine.Core
         sealed class Skip { public static readonly Skip Value = new(); }
         sealed class KeepNull { public static readonly KeepNull Value = new(); }
 
-        static object? PersistValue(PropertyInfo p, object? value)
+        static object? PersistValue(PropertyInfo p, object? value, object declaringInstance)
         {
             if (value is null) return KeepNull.Value;
 
             var t = p.PropertyType;
 
-            // Normalize any "*Path" style strings to project-relative for stable scenes.
+            // Normalize any "*Path"/ModelPath strings to project-relative for stable scenes.
             if (t == typeof(string))
             {
                 if (p.Name.EndsWith("Path", StringComparison.OrdinalIgnoreCase) ||
@@ -335,8 +336,11 @@ namespace Game_Engine.Core
                 return ToDto((Texture2D)value);
             }
 
-            // Mesh: if the declaring component exposes ModelPath (and optionally ModelPartIndex),
-            // we prefer to rebuild the mesh from disk on load; therefore skip geometry persistence.
+            // Mesh:
+            //   * If this component has a ModelPath AND it's non-empty on THIS INSTANCE,
+            //     we rebuild from disk on load -> SKIP persisting geometry.
+            //   * Otherwise (primitives, custom meshes, or empty ModelPath), we DO persist
+            //     preset/kind/geometry so primitives keep their shape.
             if (t == typeof(Mesh))
             {
                 var decl = p.DeclaringType;
@@ -344,10 +348,22 @@ namespace Game_Engine.Core
                 {
                     var modelPathProp = decl.GetProperty("ModelPath",
                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
                     if (modelPathProp != null && modelPathProp.PropertyType == typeof(string))
-                        return Skip.Value; // will rebuild from ModelPath(+ModelPartIndex)
+                    {
+                        try
+                        {
+                            var mp = (string?)modelPathProp.GetValue(declaringInstance);
+                            if (!string.IsNullOrWhiteSpace(mp))
+                                return Skip.Value; // rebuild from ModelPath at load
+                        }
+                        catch
+                        {
+                            // if reading ModelPath fails, fall through and persist mesh
+                        }
+                    }
                 }
-                // No ModelPath on this behavior -> persist full geometry as DTO.
+                // No (usable) ModelPath on this instance -> persist mesh data.
                 return ToDto((Mesh)value);
             }
 

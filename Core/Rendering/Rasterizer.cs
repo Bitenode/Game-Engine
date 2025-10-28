@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using SN = System.Numerics;
+using GFX = ComputeSharp.GraphicsDeviceExtensions; // alias the v3 extensions
 
 namespace Game_Engine.Core
 {
@@ -16,11 +17,11 @@ namespace Game_Engine.Core
         // Tunables
         // =========================================================
         private const bool USE_PARALLEL = true;
-        private const int BAND_HEIGHT = 192;
+        private const int BAND_HEIGHT = 256;
 
         // GPU pre-Z options
         private const bool USE_GPU_PREZ = true;                 
-        private const int GPU_PREZ_TRI_THRESHOLD = 512;          // offload only when enough clipped tris
+        private const int GPU_PREZ_TRI_THRESHOLD = 1024;          // offload only when enough clipped tris
         private const float PREZ_EPS = 1e-5f;                    // small epsilon on the z-compare
 
         // cached GPU temp z and sticky flag if device is unavailable
@@ -95,7 +96,7 @@ namespace Game_Engine.Core
         // ======================= GPU PRE-Z TYPES & KERNELS ==================
 
 
-        //not used
+        
         private static ReadWriteBuffer<uint> EnsureZTemp(GraphicsDevice device, int w, int h)
         {
             if (sZTemp is null || sZTempW != w || sZTempH != h)
@@ -729,42 +730,41 @@ namespace Game_Engine.Core
         private static bool TryBuildPreZGPU(List<TriSS> triSS, int W, int H, float[] preZ01)
         {
 #if !COMPUTE_PREZ
-            // GPU path not compiled in this build; always fall back.
-            return false;
+    return false;
 #else
-                if (sGpuUnavailable) return false;
+            if (sGpuUnavailable || triSS.Count == 0) return false;
 
-                try
-                {
-                    var device = GraphicsDevice.GetDefault();
-                    var zb = EnsureZTemp(device, W, H);
+            try
+            {
+                var device = GraphicsDevice.GetDefault();
+                using ReadWriteBuffer<uint> zb = EnsureZTemp(device, W, H);
 
-                    // clear to far
-                    device.For(zb.Length, new ClearKernel(zb));
+                // clear to far
+                device.For(zb.Length, new ClearKernel(zb));
 
-                    // upload triangles (already clipped, Z in [0,1])
-                    using var tbuf = device.AllocateReadOnlyBuffer<TriSS>(triSS.Count);
-                    tbuf.CopyFrom(CollectionsMarshal.AsSpan(triSS));
+                // upload triangles (already clipped, z in [0,1])
+                ReadOnlySpan<TriSS> span = CollectionsMarshal.AsSpan(triSS);
+                using ReadOnlyBuffer<TriSS> tbuf = device.AllocateReadOnlyBuffer<TriSS>(span);
 
-                    // dispatch: one thread per triangle
-                    device.For(triSS.Count, new ZOnlyKernel(tbuf, zb, W, H));
+                // one thread per triangle
+                device.For(triSS.Count, new ZOnlyKernel(tbuf, zb, W, H));
 
-                    // read back packed 24-bit depth -> float [0,1]
-                    var packed = new uint[W * H];
-                    zb.CopyTo(packed);
+                // read back packed 24-bit depth -> float [0,1]
+                var packed = new uint[W * H];
+                zb.CopyTo(packed);
 
-                    const float inv24 = 1.0f / 16777215.0f;
-                    for (int i = 0; i < packed.Length; i++)
-                        preZ01[i] = packed[i] * inv24;
+                const float inv24 = 1.0f / 16777215.0f;
+                for (int i = 0; i < packed.Length; i++)
+                    preZ01[i] = packed[i] * inv24;
 
-                    return true;
-                }
-                catch
-                {
-                    // Device missing or shader generator not available on this machine
-                    sGpuUnavailable = true;
-                    return false;
-                }
+                return true;
+            }
+            catch
+            {
+                // Device missing / WARP fallback unsupported / generator issue
+                sGpuUnavailable = true;
+                return false;
+            }
 #endif
         }
 
