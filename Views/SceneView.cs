@@ -49,6 +49,35 @@ public class SceneView : Control
     private readonly System.Diagnostics.Stopwatch _windWatch = System.Diagnostics.Stopwatch.StartNew();
     private double _windPrev = 0.0;
 
+    // --- Terrain hover (for brush ring) -----------------------------------------
+    Terrain? _hoverTerrain;
+    SN.Vector3 _hoverPointW;
+    bool _hasHover;
+
+    // ===== Terrain gizmos + painting ===========================================
+    const int TerrainToolNone = -1;
+    public static Func<Terrain, int>? TerrainToolIndexProvider;
+    public static Func<Terrain, float> TerrainBrushRadiusProvider = _ => 8f;   // world units
+    public static Func<Terrain, float> TerrainBrushStrengthProvider = _ => 0.5f; // 0..1
+    public static Func<Terrain, float> TerrainBrushFalloffProvider = _ => 0.5f; // 0..1
+
+    int GetTerrainToolIndex(Terrain t)
+    => TerrainToolIndexProvider?.Invoke(t) ?? TerrainToolNone;
+
+    Terrain? _terrHover;
+    SN.Vector3 _terrHoverHitW;
+    bool _terrPainting;      // is LMB down on terrain?
+    bool _terrStrokeDirty;   // rebuild once per stroke
+
+    
+
+    // painting session state
+    bool _paintingTerrain;
+    Terrain? _paintTarget;
+    float _paintSign;                 // +1 raise, -1 lower
+    int _paintToolIndex;
+
+
 
 
     private (SN.Matrix4x4 View, SN.Matrix4x4 Proj, Camera? Cam, bool UsingComponent)
@@ -167,6 +196,16 @@ public class SceneView : Control
     AvaloniaProperty.Register<SceneView, bool>(nameof(GizmoLocal), true);
     public bool GizmoLocal { get => GetValue(GizmoLocalProperty); set => SetValue(GizmoLocalProperty, value); }
 
+    public static readonly StyledProperty<bool> ShowTerrainGizmosProperty =
+    AvaloniaProperty.Register<SceneView, bool>(nameof(ShowTerrainGizmos), true);
+
+    public bool ShowTerrainGizmos
+    {
+        get => GetValue(ShowTerrainGizmosProperty);
+        set => SetValue(ShowTerrainGizmosProperty, value);
+    }
+
+
     public static readonly StyledProperty<bool> ShowCamerasProperty =
     AvaloniaProperty.Register<SceneView, bool>(nameof(ShowCameras), true);
 
@@ -189,6 +228,8 @@ public class SceneView : Control
         Is2DProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
         Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
         ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
+        ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
+
 
     }
     #endregion
@@ -294,6 +335,626 @@ public class SceneView : Control
         InvalidateVisual();
     }
 
+    // --- Tools (Raise/Lower, Smooth, Flatten) -----------------------------------
+    
+
+    void PaintFlatten(Terrain t, SN.Vector3 hitW)
+    {
+        var world = TransformUtil.WorldFromTransform(t.gameObject.Transform);
+        SN.Matrix4x4.Invert(world, out var invW);
+        var pL = SN.Vector3.Transform(hitW, invW);
+
+        float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
+        float u = (pL.X + hx) / t.SizeX;
+        float v = (pL.Z + hz) / t.SizeZ;
+        int cx = (int)Math.Round(u * (t.ResX - 1));
+        int cz = (int)Math.Round(v * (t.ResZ - 1));
+        cx = Math.Clamp(cx, 0, t.ResX - 1);
+        cz = Math.Clamp(cz, 0, t.ResZ - 1);
+        float target = t.GetHeight(cx, cz); // flatten to center height
+
+        float rWorld = TerrainBrushRadiusProvider(t);
+        float fall = TerrainBrushFalloffProvider(t);
+        float str = TerrainBrushStrengthProvider(t);
+
+        float r = rWorld;
+        int rx = (int)Math.Ceiling(r * (t.ResX - 1) / Math.Max(1e-6f, t.SizeX));
+        int rz = (int)Math.Ceiling(r * (t.ResZ - 1) / Math.Max(1e-6f, t.SizeZ));
+
+        for (int z = Math.Max(0, cz - rz); z <= Math.Min(t.ResZ - 1, cz + rz); z++)
+        {
+            float sz = -hz + (float)z / (t.ResZ - 1) * t.SizeZ;
+            for (int x = Math.Max(0, cx - rx); x <= Math.Min(t.ResX - 1, cx + rx); x++)
+            {
+                float sx = -hx + (float)x / (t.ResX - 1) * t.SizeX;
+                float dist = (float)Math.Sqrt((sx - pL.X) * (sx - pL.X) + (sz - pL.Z) * (sz - pL.Z));
+                if (dist > r) continue;
+
+                float inner = r * Math.Max(0f, 1f - fall);
+                float w = dist <= inner
+                            ? 1f
+                            : (r <= inner ? 0f : (r - dist) / (r - inner));
+
+                int i = z * t.ResX + x;
+                float h = t.Heights[i];
+                t.Heights[i] = Clamp01(h + (target - h) * (str * Smooth01(w)));
+            }
+        }
+    }
+
+    void PaintSmooth(Terrain t, SN.Vector3 hitW)
+    {
+        var world = TransformUtil.WorldFromTransform(t.gameObject.Transform);
+        SN.Matrix4x4.Invert(world, out var invW);
+        var pL = SN.Vector3.Transform(hitW, invW);
+
+        float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
+        float u = (pL.X + hx) / t.SizeX;
+        float v = (pL.Z + hz) / t.SizeZ;
+        int cx = (int)Math.Round(u * (t.ResX - 1));
+        int cz = (int)Math.Round(v * (t.ResZ - 1));
+
+        float rWorld = TerrainBrushRadiusProvider(t);
+        float fall = TerrainBrushFalloffProvider(t);
+        float str = TerrainBrushStrengthProvider(t);
+
+        float r = rWorld;
+        int rx = (int)Math.Ceiling(r * (t.ResX - 1) / Math.Max(1e-6f, t.SizeX));
+        int rz = (int)Math.Ceiling(r * (t.ResZ - 1) / Math.Max(1e-6f, t.SizeZ));
+
+        // temp copy
+        var copy = (float[])t.Heights.Clone();
+
+        for (int z = Math.Max(0, cz - rz); z <= Math.Min(t.ResZ - 1, cz + rz); z++)
+        {
+            float sz = -hz + (float)z / (t.ResZ - 1) * t.SizeZ;
+            for (int x = Math.Max(0, cx - rx); x <= Math.Min(t.ResX - 1, cx + rx); x++)
+            {
+                float sx = -hx + (float)x / (t.ResX - 1) * t.SizeX;
+                float dist = (float)Math.Sqrt((sx - pL.X) * (sx - pL.X) + (sz - pL.Z) * (sz - pL.Z));
+                if (dist > r) continue;
+
+                float inner = r * Math.Max(0f, 1f - fall);
+                float w = dist <= inner
+                            ? 1f
+                            : (r <= inner ? 0f : (r - dist) / (r - inner));
+
+                // simple 3x3 average
+                float sum = 0f; int cnt = 0;
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        int xx = x + dx, zz = z + dz;
+                        if (xx < 0 || zz < 0 || xx >= t.ResX || zz >= t.ResZ) continue;
+                        sum += copy[zz * t.ResX + xx];
+                        cnt++;
+                    }
+                float avg = (cnt > 0) ? (sum / cnt) : copy[z * t.ResX + x];
+                int i = z * t.ResX + x;
+                t.Heights[i] = Clamp01(copy[i] + (avg - copy[i]) * (str * Smooth01(w)));
+            }
+        }
+    }
+
+    void ApplyRaiseLowerBrush(Terrain t, SN.Vector3 centerW, float sign)
+    {
+        if (t == null || t.Heights == null || t.ResX <= 1 || t.ResZ <= 1) return;
+
+        // Brush params from Inspector (with safe defaults)
+        float radiusW = TerrainBrushRadiusProvider != null ? Math.Max(0.001f, TerrainBrushRadiusProvider(t)) : 5f;
+        float strength = TerrainBrushStrengthProvider != null ? Math.Clamp(TerrainBrushStrengthProvider(t), 0f, 1f) : 0.5f;
+        float falloff = TerrainBrushFalloffProvider != null ? Math.Clamp(TerrainBrushFalloffProvider(t), 0f, 1f) : 0.5f;
+
+        // World->Local (terrain space)
+        var W = TransformUtil.WorldFromTransform(t.gameObject!.Transform);
+        if (!SN.Matrix4x4.Invert(W, out var invW)) return;
+
+        var cL = SN.Vector3.Transform(centerW, invW);  // local center
+        float hx = t.SizeX * 0.5f;
+        float hz = t.SizeZ * 0.5f;
+
+        // Account for non-uniform scale: convert world radius to local X/Z radii
+        float sx = new SN.Vector3(W.M11, W.M21, W.M31).Length();
+        float sz = new SN.Vector3(W.M13, W.M23, W.M33).Length();
+        float rLx = radiusW / Math.Max(1e-6f, sx);
+        float rLz = radiusW / Math.Max(1e-6f, sz);
+
+        // Grid spacing in local units
+        int nx = t.ResX, nz = t.ResZ;
+        float dx = t.SizeX / (nx - 1);
+        float dz = t.SizeZ / (nz - 1);
+
+        // Center sample indices
+        float tx = (cL.X + hx) / t.SizeX;   // 0..1
+        float tz = (cL.Z + hz) / t.SizeZ;   // 0..1
+        int cx = (int)Math.Round(tx * (nx - 1));
+        int cz = (int)Math.Round(tz * (nz - 1));
+
+        // Brush radius in samples (bounds)
+        int rx = (int)Math.Ceiling(rLx / dx);
+        int rz = (int)Math.Ceiling(rLz / dz);
+
+        // Strength -> height delta in 0..1 units per dab/step
+        // (t.HeightScale converts 0..1 to world meters when the mesh is rebuilt)
+        float baseDelta01 = 0.02f * strength;  // tweak to taste
+        float innerBand = Math.Max(0f, 1f - falloff); // full-strength core (normalized)
+
+        // Iterate affected samples
+        int x0 = Math.Max(0, cx - rx), x1 = Math.Min(nx - 1, cx + rx);
+        int z0 = Math.Max(0, cz - rz), z1 = Math.Min(nz - 1, cz + rz);
+
+        for (int z = z0; z <= z1; z++)
+        {
+            float zL = -hz + z * dz;
+            for (int x = x0; x <= x1; x++)
+            {
+                float xL = -hx + x * dx;
+
+                // Elliptical distance in local-space radii
+                float nxr = (xL - cL.X) / Math.Max(1e-6f, rLx);
+                float nzr = (zL - cL.Z) / Math.Max(1e-6f, rLz);
+                float rNorm = MathF.Sqrt(nxr * nxr + nzr * nzr); // 0 at center, 1 at outer ring
+
+                if (rNorm > 1f) continue;
+
+                // Falloff: 1 inside inner core, then smooth to 0 towards the edge
+                float w;
+                if (rNorm <= innerBand) w = 1f;
+                else
+                {
+                    float tEdge = (rNorm - innerBand) / Math.Max(1e-6f, 1f - innerBand);
+                    tEdge = Math.Clamp(tEdge, 0f, 1f);
+                    // smoothstep(1 - tEdge)
+                    float s = tEdge * tEdge * (3f - 2f * tEdge);
+                    w = 1f - s;
+                }
+
+                int idx = z * nx + x;
+                float h = t.Heights[idx];
+                h += sign * baseDelta01 * w;
+                // clamp 0..1
+                if (h < 0f) h = 0f; else if (h > 1f) h = 1f;
+                t.Heights[idx] = h;
+            }
+        }
+
+        // Rebuild the mesh from updated heights and notify
+        t.RebuildMesh(); // also calls SceneService.NotifyChanged()
+    }
+
+    // Compute grid window and per-sample weight inside a round brush in LOCAL space.
+    struct BrushWindow
+    {
+        public int x0, x1, z0, z1;
+        public float hx, hz, dx, dz, r, inner;
+    }
+
+    BrushWindow MakeBrushWindow(Terrain t, in SN.Vector3 hitW, out SN.Vector3 hitL)
+    {
+        var W = TransformUtil.WorldFromTransform(t.gameObject.Transform);
+        SN.Matrix4x4.Invert(W, out var invW);
+        hitL = SN.Vector3.Transform(hitW, invW);
+
+        float rWorld = TerrainBrushRadiusProvider(t);
+        float fall = Clamp01(TerrainBrushFalloffProvider(t));
+
+        // world->local scale on XZ
+        float sx = new SN.Vector3(W.M11, W.M21, W.M31).Length();
+        float sz = new SN.Vector3(W.M13, W.M23, W.M33).Length();
+        float rLx = rWorld / Math.Max(1e-6f, sx);
+        float rLz = rWorld / Math.Max(1e-6f, sz);
+
+        float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
+        int nx = t.ResX, nz = t.ResZ;
+        float dx = t.SizeX / (nx - 1), dz = t.SizeZ / (nz - 1);
+
+        int cx = (int)Math.Round(((hitL.X + hx) / t.SizeX) * (nx - 1));
+        int cz = (int)Math.Round(((hitL.Z + hz) / t.SizeZ) * (nz - 1));
+
+        int rx = (int)Math.Ceiling(rLx / dx);
+        int rz = (int)Math.Ceiling(rLz / dz);
+
+        return new BrushWindow
+        {
+            x0 = Math.Max(0, cx - rx),
+            x1 = Math.Min(nx - 1, cx + rx),
+            z0 = Math.Max(0, cz - rz),
+            z1 = Math.Min(nz - 1, cz + rz),
+            hx = hx,
+            hz = hz,
+            dx = dx,
+            dz = dz,
+            r = MathF.Sqrt(rLx * rLx + rLz * rLz) * 0.70710678f, // isotropic radius used for weight
+            inner = Math.Max(0f, 1f - fall)                       // normalized inner band
+        };
+    }
+
+    float BrushWeight(in BrushWindow bw, float xL, float zL, in SN.Vector3 cL)
+    {
+        // isotropic radial distance for smooth, pleasant falloff
+        float rNorm = MathF.Sqrt((xL - cL.X) * (xL - cL.X) + (zL - cL.Z) * (zL - cL.Z)) / Math.Max(1e-6f, bw.r);
+        if (rNorm > 1f) return 0f;
+        if (rNorm <= bw.inner) return 1f;
+        float t = (rNorm - bw.inner) / Math.Max(1e-6f, 1f - bw.inner);
+        float s = t * t * (3f - 2f * t);
+        return 1f - s;
+    }
+
+    // --- Noise (ridged-ish Perlin-lite) ------------------------------------------
+
+    static int Hash(int x, int y)
+    {
+        uint h = (uint)(x * 374761393 + y * 668265263);
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return (int)(h ^ (h >> 16));
+    }
+    static float Val(int x, int y) => (Hash(x, y) & 1023) / 1023f; // 0..1
+
+    static float ValueNoise(float x, float y)
+    {
+        int xi = (int)MathF.Floor(x), yi = (int)MathF.Floor(y);
+        float tx = x - xi, ty = y - yi;
+        // cosine/smoothstep blend
+        float sx = tx * tx * (3f - 2f * tx);
+        float sy = ty * ty * (3f - 2f * ty);
+        float v00 = Val(xi, yi), v10 = Val(xi + 1, yi);
+        float v01 = Val(xi, yi + 1), v11 = Val(xi + 1, yi + 1);
+        float a = v00 + (v10 - v00) * sx;
+        float b = v01 + (v11 - v01) * sx;
+        return a + (b - a) * sy;
+    }
+
+    void PaintNoise(Terrain t, SN.Vector3 hitW)
+    {
+        var bw = MakeBrushWindow(t, hitW, out var cL);
+        var H = t.Heights;
+        int nx = t.ResX, nz = t.ResZ;
+
+        float strength = Clamp01(TerrainBrushStrengthProvider(t));
+        // freq tied to brush size; higher strength → more amplitude
+        float freq = 0.35f / Math.Max(1e-4f, TerrainBrushRadiusProvider(t)); // cycles per local unit
+        float amp = 0.06f * strength; // 0..~0.06 in height units (0..1 scale)
+
+        for (int z = bw.z0; z <= bw.z1; z++)
+        {
+            float zL = -bw.hz + z * bw.dz;
+            for (int x = bw.x0; x <= bw.x1; x++)
+            {
+                float xL = -bw.hx + x * bw.dx;
+                float w = BrushWeight(bw, xL, zL, cL);
+                if (w <= 0f) continue;
+
+                // 3-octave value noise (ridged look by folding around 0.5)
+                float u = (xL + 1000f) * freq;
+                float v = (zL + 1000f) * freq;
+                float n = 0f, a = 1f, f = 1f;
+                for (int o = 0; o < 3; o++)
+                {
+                    float s = ValueNoise(u * f, v * f);
+                    s = 1f - MathF.Abs(2f * s - 1f); // ridged fold
+                    n += s * a;
+                    a *= 0.5f;
+                    f *= 2f;
+                }
+                n = Clamp01(n / 1.5f);              // normalize a bit
+                int i = z * nx + x;
+                H[i] = Clamp01(H[i] + (n - 0.5f) * amp * Smooth01(w));
+            }
+        }
+    }
+
+    // --- Sculpt (peak/pit) --------------------------------------------------------
+
+    void PaintSculpt(Terrain t, SN.Vector3 hitW, float sign)
+    {
+        var bw = MakeBrushWindow(t, hitW, out var cL);
+        var H = t.Heights;
+        int nx = t.ResX, nz = t.ResZ;
+
+        float strength = Clamp01(TerrainBrushStrengthProvider(t));
+        // cone-like profile with tight center; sign controls up/down
+        float k = 0.06f * strength; // step size in 0..1 units
+
+        for (int z = bw.z0; z <= bw.z1; z++)
+        {
+            float zL = -bw.hz + z * bw.dz;
+            for (int x = bw.x0; x <= bw.x1; x++)
+            {
+                float xL = -bw.hx + x * bw.dx;
+                float w = BrushWeight(bw, xL, zL, cL);
+                if (w <= 0f) continue;
+
+                float r = MathF.Sqrt((xL - cL.X) * (xL - cL.X) + (zL - cL.Z) * (zL - cL.Z)) / Math.Max(1e-6f, bw.r);
+                float profile = (1f - r);          // linear cone
+                profile = profile * profile;        // tighter center
+                int i = z * nx + x;
+                H[i] = Clamp01(H[i] + sign * k * Smooth01(w) * profile);
+            }
+        }
+    }
+
+    // --- Thermal erosion (very light & stable) ------------------------------------
+
+    void PaintErodeThermal(Terrain t, SN.Vector3 hitW)
+    {
+        var bw = MakeBrushWindow(t, hitW, out var cL);
+        int nx = t.ResX, nz = t.ResZ;
+        var H = t.Heights;
+        var src = (float[])H.Clone();      // work from a snapshot
+        var delta = new float[nx * nz];    // accumulate transfers
+
+        float strength = Clamp01(TerrainBrushStrengthProvider(t));
+        // talus angle in height-units (0..1). Larger → fewer slides.
+        float talus = 0.01f;                       // ~1% of full height
+        float rate = 0.25f * strength;            // how much to move if over talus
+
+        for (int z = bw.z0; z <= bw.z1; z++)
+        {
+            float zL = -bw.hz + z * bw.dz;
+            for (int x = bw.x0; x <= bw.x1; x++)
+            {
+                float xL = -bw.hx + x * bw.dx;
+                float w = BrushWeight(bw, xL, zL, cL);
+                if (w <= 0f) continue;
+
+                int i = z * nx + x;
+                float h = src[i];
+
+                // 4-neighborhood (fast & stable)
+                void TryNeighbor(int xx, int zz)
+                {
+                    if (xx < 0 || xx >= nx || zz < 0 || zz >= nz) return;
+                    int j = zz * nx + xx;
+                    float diff = h - src[j];
+                    if (diff > talus)
+                    {
+                        float move = (diff - talus) * rate * Smooth01(w) * 0.5f;
+                        delta[i] -= move;
+                        delta[j] += move;
+                    }
+                }
+
+                TryNeighbor(x + 1, z);
+                TryNeighbor(x - 1, z);
+                TryNeighbor(x, z + 1);
+                TryNeighbor(x, z - 1);
+            }
+        }
+
+        for (int z = bw.z0; z <= bw.z1; z++)
+            for (int x = bw.x0; x <= bw.x1; x++)
+            {
+                int i = z * nx + x;
+                H[i] = Clamp01(src[i] + delta[i]);
+            }
+    }
+
+    void ApplyTerrainToolUnified(Terrain t, SN.Vector3 hitW, int toolIndex, float sign)
+    {
+        if (toolIndex == TerrainToolNone) return;
+
+        switch (toolIndex)
+        {
+            case 0: // Raise/Lower (LMB raise, RMB/Shift lower)
+                ApplyRaiseLowerBrush(t, hitW, sign);
+                _terrStrokeDirty = false; // already rebuilds
+                break;
+
+            case 2: // Noise
+                PaintNoise(t, hitW);
+                _terrStrokeDirty = true;
+                SceneService.NotifyChanged();
+                break;
+
+            case 4: // Sculpt (peak/pit with tight falloff; sign controls direction)
+                PaintSculpt(t, hitW, sign);
+                _terrStrokeDirty = true;
+                SceneService.NotifyChanged();
+                break;
+
+            case 5: // Flatten
+                PaintFlatten(t, hitW);
+                _terrStrokeDirty = true;
+                SceneService.NotifyChanged();
+                break;
+
+            case 6: // Erode (simple thermal erosion)
+                PaintErodeThermal(t, hitW);
+                _terrStrokeDirty = true;
+                SceneService.NotifyChanged();
+                break;
+
+            case 8: // Smooth
+                PaintSmooth(t, hitW);
+                _terrStrokeDirty = true;
+                SceneService.NotifyChanged();
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    // --- Helpers for all brush tools ---------------------------------------------
+
+    static float Smooth01(float x) => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3f - 2f * x);
+    static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+
+
+    void UpdateTerrainHover(Point mouse)
+    {
+        var size = Bounds.Size;
+        var (view, proj, _, _) = GetActiveViewProj(size);
+        Picking.BuildPickRay(mouse, view, proj, size, out var ro, out var rd);
+
+        _hasHover = TryFindClosestTerrainHit(ro, rd, out _hoverTerrain, out _hoverPointW);
+    }
+
+    bool TryFindClosestTerrainHit(in SN.Vector3 ro, in SN.Vector3 rd,
+                              out Terrain terrain, out SN.Vector3 hitW)
+    {
+        // Copy 'in' params to regular locals so a local function can use them
+        var roLocal = ro;
+        var rdLocal = rd;
+
+        // "best so far" accumulators (locals, not out-params)
+        Terrain bestTerrain = null;
+        SN.Vector3 bestHit = default(SN.Vector3);
+        float bestDist = float.PositiveInfinity;
+
+        // Walk the scene graph
+        foreach (var root in SceneService.Root)
+            Walk(root);
+
+        // assign the out-params once, after traversal
+        terrain = bestTerrain;
+        hitW = bestHit;
+        return terrain != null;
+
+        void Walk(GameObject go)
+        {
+            Terrain t = null;
+            MeshFilter mf = null;
+            foreach (var b in go.Behaviors)
+            {
+                if (t == null && b is Terrain tt) t = tt;
+                if (mf == null && b is MeshFilter mm) mf = mm;
+                if (t != null && mf != null) break;
+            }
+
+            if (t != null && mf != null && mf.Mesh != null)
+            {
+                var W = TransformUtil.WorldFromTransform(go.Transform);
+
+                // quick AABB reject in world space
+                var aabb = SceneGraphUtil.ComputeWorldAABB(go);
+                var bbMin = aabb.Item1;
+                var bbMax = aabb.Item2;
+                float _;
+                if (!RayAabb(roLocal, rdLocal, bbMin, bbMax, out _))
+                    goto NEXT;
+
+                // triangle test (ray in world, mesh transformed)
+                float tHit;
+                SN.Vector3 hit;
+                if (RaycastMesh_World(roLocal, rdLocal, mf.Mesh, W, out tHit, out hit))
+                {
+                    if (tHit < bestDist)
+                    {
+                        bestDist = tHit;
+                        bestTerrain = t;
+                        bestHit = hit;
+                    }
+                }
+            }
+
+        NEXT:
+            foreach (var c in go.Children) Walk(c);
+        }
+    }
+
+    // Robust slab test; returns near distance along ray if hit
+    static bool RayAabb(in SN.Vector3 ro, in SN.Vector3 rd,
+                        in SN.Vector3 bmin, in SN.Vector3 bmax,
+                        out float tmin)
+    {
+        tmin = 0f;
+        float tmax = float.PositiveInfinity;
+
+        for (int i = 0; i < 3; i++)
+        {
+            float roi = i == 0 ? ro.X : i == 1 ? ro.Y : ro.Z;
+            float rdi = i == 0 ? rd.X : i == 1 ? rd.Y : rd.Z;
+            float min = i == 0 ? bmin.X : i == 1 ? bmin.Y : bmin.Z;
+            float max = i == 0 ? bmax.X : i == 1 ? bmax.Y : bmax.Z;
+
+            if (Math.Abs(rdi) < 1e-8f)
+            {
+                if (roi < min || roi > max) return false;
+            }
+            else
+            {
+                float ood = 1f / rdi;
+                float t1 = (min - roi) * ood;
+                float t2 = (max - roi) * ood;
+                if (t1 > t2) (t1, t2) = (t2, t1);
+                tmin = Math.Max(tmin, t1);
+                tmax = Math.Min(tmax, t2);
+                if (tmin > tmax) return false;
+            }
+        }
+        return true;
+    }
+
+    // Ray vs mesh triangles (mesh in LOCAL space, W gives local->world).
+    // Returns distance in world units from 'ro' to the hit point.
+    static bool RaycastMesh_World(in SN.Vector3 roW, in SN.Vector3 rdW, Mesh mesh, in SN.Matrix4x4 W,
+                                  out float distW, out SN.Vector3 hitW)
+    {
+        distW = float.PositiveInfinity;
+        hitW = default;
+
+        if (!SN.Matrix4x4.Invert(W, out var invW))
+            return false;
+
+        // Transform ray to LOCAL space for cheap triangle tests
+        var roL = SN.Vector3.Transform(roW, invW);
+        var rdL = SN.Vector3.Normalize(SN.Vector3.TransformNormal(rdW, invW)); // ignore scale
+
+        bool hit = false;
+        var v = mesh.Vertices;
+        var tri = mesh.TriIndices;
+
+        float bestTL = float.PositiveInfinity;
+        SN.Vector3 bestLocal = default;
+
+        for (int i = 0; i < tri.Length; i += 3)
+        {
+            var a = v[tri[i]];
+            var b = v[tri[i + 1]];
+            var c = v[tri[i + 2]];
+
+            if (RayTriangle_MollerTrumbore(roL, rdL, a, b, c, out float t))
+            {
+                if (t > 1e-6f && t < bestTL)
+                {
+                    bestTL = t;
+                    bestLocal = roL + rdL * t;
+                    hit = true;
+                }
+            }
+        }
+
+        if (!hit) return false;
+
+        hitW = SN.Vector3.Transform(bestLocal, W);
+        distW = (hitW - roW).Length();
+        return true;
+    }
+
+    static bool RayTriangle_MollerTrumbore(in SN.Vector3 ro, in SN.Vector3 rd,
+                                           in SN.Vector3 v0, in SN.Vector3 v1, in SN.Vector3 v2,
+                                           out float t)
+    {
+        t = 0f;
+        const float EPS = 1e-7f;
+
+        var e1 = v1 - v0;
+        var e2 = v2 - v0;
+        var p = SN.Vector3.Cross(rd, e2);
+        float det = SN.Vector3.Dot(e1, p);
+        if (det > -EPS && det < EPS) return false;
+        float invDet = 1f / det;
+        var tv = ro - v0;
+        float u = SN.Vector3.Dot(tv, p) * invDet;
+        if (u < 0 || u > 1) return false;
+        var q = SN.Vector3.Cross(tv, e1);
+        float v = SN.Vector3.Dot(rd, q) * invDet;
+        if (v < 0 || u + v > 1) return false;
+        t = SN.Vector3.Dot(e2, q) * invDet;
+        return t > EPS;
+    }
+
     #endregion
 
 
@@ -327,6 +988,8 @@ public class SceneView : Control
         AddHandler(PointerWheelChangedEvent, OnWheel, RoutingStrategies.Tunnel);
         _flyTimer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
         _flyTimer.Tick += (_, __) => StepFly();
+
+        
     }
     #endregion
 
@@ -384,6 +1047,32 @@ public class SceneView : Control
     {
         Focus();
         _last = e.GetPosition(this);
+        UpdateTerrainHover(_last);
+
+        // --- Terrain paint start --------------------------------
+        var props = e.GetCurrentPoint(this).Properties;
+
+        if (ShowTerrainGizmos && _hasHover && _hoverTerrain != null &&
+            (props.IsLeftButtonPressed || props.IsRightButtonPressed))
+        {
+            int toolIndex = GetTerrainToolIndex(_hoverTerrain);
+            if (toolIndex != TerrainToolNone)
+            {
+                _paintingTerrain = true;
+                _paintTarget = _hoverTerrain;
+                _paintToolIndex = toolIndex;
+                _paintSign = (props.IsRightButtonPressed || e.KeyModifiers.HasFlag(KeyModifiers.Shift)) ? -1f : +1f;
+
+                ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign);
+
+                e.Pointer.Capture(this);
+                e.Handled = true;
+                return; // don't start orbit/gizmo when painting
+            }
+        }
+        // --- Terrain paint end -----------------------------------
+
+
         var p = e.GetCurrentPoint(this).Properties;
         // Try translate gizmo first when in Move/Rotate/Scale
         if (Tool != ToolMode.Hand && _selected != null)
@@ -406,6 +1095,16 @@ public class SceneView : Control
     void OnPointerMoved(object? s, PointerEventArgs e)
     {
         var pos = e.GetPosition(this);
+        // Always update the terrain hover for brush ring
+        UpdateTerrainHover(e.GetPosition(this));
+
+        if (_paintingTerrain && _paintTarget != null && _hasHover && ReferenceEquals(_hoverTerrain, _paintTarget))
+        {
+            ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign);
+            e.Handled = true;
+            return;
+        }
+
         // Continue gizmo drag
         if (_isDragging && _dragAxis != Axis.None && _selected != null)
         {
@@ -438,6 +1137,24 @@ public class SceneView : Control
 
     void OnPointerReleased(object? s, PointerReleasedEventArgs e)
     {
+        // stop terrain painting
+        if (_paintingTerrain)
+        {
+            _paintingTerrain = false;
+
+            if (_terrStrokeDirty && _paintTarget != null)
+            {
+                _paintTarget.RebuildMesh();
+                _terrStrokeDirty = false;
+                SceneService.NotifyChanged();
+            }
+
+            _paintTarget = null;
+            if (e.Pointer.Captured == this) e.Pointer.Capture(null);
+            e.Handled = true;
+            return;
+        }
+
         _orbiting = _panning = false;
         if (_isDragging)
         {
@@ -459,6 +1176,7 @@ public class SceneView : Control
     {
         _distance *= (float)Math.Pow(1.1, -e.Delta.Y);
         _distance = Math.Clamp(_distance, 1.5f, 200f);
+        UpdateTerrainHover(_last);
         InvalidateVisual();
     }
     #endregion
@@ -968,6 +1686,42 @@ public class SceneView : Control
                 DrawCollidersRecursive(ctx, viewProj, sz, child);
         }
 
+        void DrawTerrainRecursive(DrawingContext ctx, in SN.Matrix4x4 viewProj, Size sz, GameObject go)
+        {
+            // draw a terrain gizmo for each Terrain on this node
+            foreach (var t in go.Behaviors.OfType<Game_Engine.Core.Component.Terrain>())
+            {
+                var W = TransformUtil.WorldFromTransform(go.Transform);
+                bool highlight = ReferenceEquals(_selected, go);
+                Game_Engine.Core.TerrainGizmos.Draw(ctx, viewProj, sz, W, t, highlight);
+            }
+
+            // then recurse into children
+            foreach (var child in go.Children)
+                DrawTerrainRecursive(ctx, viewProj, sz, child);
+        }
+
+        if (ShowTerrainGizmos && _hasHover && _hoverTerrain != null)
+        {
+            float radius = TerrainBrushRadiusProvider != null ? TerrainBrushRadiusProvider(_hoverTerrain) : 5f;
+            float strength = TerrainBrushStrengthProvider != null ? Clamp01(TerrainBrushStrengthProvider(_hoverTerrain)) : 0.5f;
+            float falloff = TerrainBrushFalloffProvider != null ? Clamp01(TerrainBrushFalloffProvider(_hoverTerrain)) : 0.5f;
+
+            // visualize: outer ring alpha follows strength; inner ring shows falloff width
+            byte aOuter = (byte)(80 + 160 * strength);            // 80..240
+            var outer = Color.FromArgb(aOuter, 255, 255, 255);
+            var inner = Color.FromArgb((byte)Math.Max(40, aOuter / 2), 255, 255, 255);
+
+            TerrainGizmos.DrawBrushWithFalloff(ctx, vp, size, _hoverPointW, radius, falloff, strength, outer, inner, 64);
+        }
+
+        if (ShowTerrainGizmos && _hasHover && _hoverTerrain != null &&
+    (SceneView.TerrainToolIndexProvider?.Invoke(_hoverTerrain) ?? -1) >= 0)
+        {
+            foreach (var root in Core.SceneService.Root)
+                DrawTerrainRecursive(ctx, vp, size, root);
+
+        }
 
         if (GizmoLocal)
             DrawTranslateGizmo(ctx, view, proj, size);

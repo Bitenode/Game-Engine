@@ -946,6 +946,14 @@ public partial class InspectorPanel : UserControl
         if (b is MeshCollider mc)
             outer.Children.Add(MeshColliderTargetRow(owner, mc));
 
+        // Terrain extra UI (tools + brush masks)
+        if (b is Terrain terr)
+        {
+            outer.Children.Add(TerrainToolsRow(owner, terr));
+            outer.Children.Add(TerrainBrushMasks(terr));
+        }
+
+
         // --------- BODY: custom inspector first, else default ----------
         Control body = TryBuildCustomInspectorUI(b, out var custom) && custom != null
             ? custom
@@ -1700,6 +1708,217 @@ public partial class InspectorPanel : UserControl
         };
     }
 
+    // --- Terrain editor state (UI-only, not persisted to scene) -------------------
+    static readonly ConditionalWeakTable<Terrain, TerrainEditorState> _terrainUi
+        = new ConditionalWeakTable<Terrain, TerrainEditorState>();
+
+    sealed class TerrainEditorState
+    {
+        public int ToolIndex = -1;           // which tool button is active
+        public int BrushIndex;         // which brush mask is active
+        public double BrushSize = 8;   // logical scene units
+        public double Strength = 0.5; // 0..1
+        public double Falloff = 0.5; // 0..1
+    }
+
+    static TerrainEditorState GetTerrainState(Terrain t)
+        => _terrainUi.GetOrCreateValue(t);
+
+    // Small styled label for section titles
+    TextBlock SectionTitle(string text) =>
+        new TextBlock { Text = text, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 0, 0, 4) };
+
+    // Neutral panel gray 
+    static readonly IBrush PanelBg = new SolidColorBrush(Color.Parse("#3A3D45")); // ≈ gray
+
+
+    // Pill-ish toolbar container for the tools row
+    Border ToolbarShell(Control inner)
+    {
+        var box = new Border
+        {
+            Background = PanelBg,                    
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(6),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true                       // prevent visual spill
+        };
+        box.Child = inner;
+        return box;
+    }
+
+    // --- Terrain: Tools row (icons are unicode; swap to real icons WIP) ----
+    Control TerrainToolsRow(GameObject owner, Terrain t)
+    {
+        var state = GetTerrainState(t);
+
+        // Providers  assigned here; they read from the per-terrain state
+        SceneView.TerrainToolIndexProvider = tt => GetTerrainState(tt).ToolIndex;
+        SceneView.TerrainBrushRadiusProvider = tt => (float)GetTerrainState(tt).BrushSize;
+        SceneView.TerrainBrushStrengthProvider = tt => (float)GetTerrainState(tt).Strength;
+        SceneView.TerrainBrushFalloffProvider = tt => (float)GetTerrainState(tt).Falloff;
+
+        var tools = new (int id, string tip, string glyph)[]
+        {
+        (0,"Raise/Lower","⛰"), (1,"Paint Holes","◯"), (2,"Noise","⋯"),
+        (3,"Stitch/Blend","∞"), (4,"Sculpt","🖌"), (5,"Flatten","▭"),
+        (6,"Erode","⛏"), (7,"Paint Layers","👤"), (8,"Smooth","〰")
+        };
+
+        var bar = new WrapPanel { Orientation = Orientation.Horizontal };
+
+        // Helper to commit selection and keep buttons in sync
+        void SetTool(int id)
+        {
+            state.ToolIndex = id; // id >= 0 selects, -1 clears
+            foreach (var tb in bar.Children.OfType<ToggleButton>())
+                tb.IsChecked = (id >= 0) && (int)tb.Tag! == id;
+            Game_Engine.Core.SceneService.NotifyChanged(); // so SceneView refreshes hover ring, etc.
+        }
+
+        foreach (var tool in tools)
+        {
+            var b = new ToggleButton
+            {
+                Content = new TextBlock { Text = tool.glyph, FontSize = 16, VerticalAlignment = VerticalAlignment.Center },
+                MinWidth = 32,
+                MinHeight = 28,
+                Margin = new Thickness(3, 0, 3, 0),
+                Tag = tool.id,
+                IsChecked = (tool.id == state.ToolIndex)
+            };
+            ToolTip.SetTip(b, tool.tip);
+
+            // When this button is turned on, it's the only one on
+            b.Checked += (_, __) => SetTool(tool.id);
+
+            // If user clicks the already-checked button, it becomes unchecked.
+            // Only set -1 if no other tool is currently checked.
+            b.Unchecked += (_, __) =>
+            {
+                if (!bar.Children.OfType<ToggleButton>().Any(x => x.IsChecked == true))
+                    SetTool(-1); // OFF
+            };
+
+            bar.Children.Add(b);
+        }
+
+
+
+        // Brush sliders (size / strength / falloff)
+        Control SliderRow(string label, double min, double max, Func<double> getter, Action<double> setter)
+        {
+            var grid = new Avalonia.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto)); // label
+            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star)); // slider
+            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto)); // value
+
+            var lb = new TextBlock { Text = label, Width = 80, VerticalAlignment = VerticalAlignment.Center, Opacity = .8 };
+            Avalonia.Controls.Grid.SetColumn(lb, 0);
+
+            var sl = new Slider { Minimum = min, Maximum = max, Value = getter() };
+            Avalonia.Controls.Grid.SetColumn(sl, 1);
+
+            var val = new TextBlock { Text = getter().ToString(max <= 1.0 ? "0.00" : "0"), Width = 44, HorizontalAlignment = HorizontalAlignment.Right };
+            Avalonia.Controls.Grid.SetColumn(val, 2);
+
+            sl.PropertyChanged += (_, e) =>
+            {
+                if (e.Property == RangeBase.ValueProperty)
+                {
+                    var v = (double)sl.Value;
+                    setter(v);
+                    val.Text = v.ToString(max <= 1.0 ? "0.00" : "0");
+
+                    // tell the scene to repaint so the ring updates live
+                    Game_Engine.Core.SceneService.NotifyChanged();
+                }
+            };
+
+
+            grid.Children.Add(lb);
+            grid.Children.Add(sl);
+            grid.Children.Add(val);
+            return grid;
+        }
+
+
+        // Stack: [Tools wrap] + [Sliders block]
+        var content = new StackPanel { Spacing = 6 };
+        content.Children.Add(bar);
+
+        var sliders = new StackPanel { Spacing = 4, Margin = new Thickness(2, 4, 2, 0) };
+        sliders.Children.Add(SliderRow("Size", 1, 128, () => state.BrushSize, v => state.BrushSize = v));
+        sliders.Children.Add(SliderRow("Strength", 0, 1, () => state.Strength, v => state.Strength = v));
+        sliders.Children.Add(SliderRow("Falloff", 0, 1, () => state.Falloff, v => state.Falloff = v));
+
+        content.Children.Add(sliders);
+
+        var shell = new StackPanel { Spacing = 6 };
+        shell.Children.Add(SectionTitle("Terrain Tools"));
+        shell.Children.Add(ToolbarShell(content));
+        return shell;
+    }
+
+    // --- Terrain: Brush mask selector --------------------------------------------
+    Control TerrainBrushMasks(Terrain t)
+    {
+        var state = GetTerrainState(t);
+
+        Border BrushButton(string glyph, int idx)
+        {
+            var tb = new ToggleButton
+            {
+                Content = new TextBlock { Text = glyph, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center },
+                MinWidth = 36,
+                MinHeight = 36,
+                Margin = new Thickness(2)
+            };
+            tb.IsChecked = idx == state.BrushIndex;
+            tb.Checked += (_, __) => { state.BrushIndex = idx; };
+            tb.Checked += (_, __) =>
+            {
+                var parent = tb.Parent as Panel;
+                if (parent != null)
+                    foreach (var sib in parent.Children.OfType<Border>().Select(b => b.Child).OfType<ToggleButton>())
+                        if (!ReferenceEquals(sib, tb)) sib.IsChecked = false;
+            };
+            return new Border
+            {
+                Background = PanelBg,               
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(2),
+                Child = tb
+            };
+        }
+
+        // Use a WrapPanel so brush chips wrap instead of running off
+        var row = new WrapPanel { Orientation = Orientation.Horizontal };
+        string[] glyphs = { "●", "○", "⬤", "◐", "⬡", "☆", "✦", "✳" };
+        for (int i = 0; i < glyphs.Length; i++)
+            row.Children.Add(BrushButton(glyphs[i], i));
+
+        var top = new StackPanel { Spacing = 6 };
+        top.Children.Add(SectionTitle("Brush Masks"));
+
+        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        headerRow.Children.Add(new TextBlock { Text = "Brushes", VerticalAlignment = VerticalAlignment.Center });
+        var newBrush = new Button { Content = "New Brush…" };
+        headerRow.Children.Add(newBrush);
+        top.Children.Add(headerRow);
+        top.Children.Add(ToolbarShell(row)); // wrap row inside same gray shell
+
+        var info = new Border
+        {
+            Background = PanelBg,                  // match gray
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8),
+            Child = new TextBlock { Text = "The Custom brushs are Not Setup Yet.", Opacity = 1 }
+        };
+        top.Children.Add(info);
+
+        return top;
+    }
 
 
     // BGRA WriteableBitmap for Avalonia preview from RGBA bytes

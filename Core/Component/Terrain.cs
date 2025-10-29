@@ -17,7 +17,7 @@ namespace Game_Engine.Core.Component
     public sealed class Terrain : Behavior
     {
         // ------ Core Terrain Parameters ----------------------------
-        
+
         private int _resX = 257;   // pow2+1 typical
         private int _resZ = 257;
         private float _sizeX = 100f;  // world width (X)
@@ -317,22 +317,31 @@ namespace Game_Engine.Core.Component
                 var data = JsonSerializer.Deserialize<TerrainData>(text);
                 if (data == null || data.Heights == null) return;
 
-                ResX = Math.Max(2, data.ResX);
-                ResZ = Math.Max(2, data.ResZ);
-                SizeX = data.SizeX;
-                SizeZ = data.SizeZ;
-                HeightScale = data.HeightScale;
+                // apply without triggering intermediate rebuilds
+                _resX = Math.Max(2, data.ResX);
+                _resZ = Math.Max(2, data.ResZ);
+                _sizeX = data.SizeX;
+                _sizeZ = data.SizeZ;
+                _heightScale = data.HeightScale;
 
-                int need = ResX * ResZ;
+                int need = _resX * _resZ;
                 Heights = (data.Heights.Length == need) ? data.Heights : new float[need];
-
-                LogInfo("Terrain loaded: " + TerrainAssetPath);
             }
-            catch (Exception ex)
+            finally
             {
-                LogError(ex, "Load");
+                EnsureHeightsArray();
             }
+
+            // build with the loaded data
+            RebuildMesh();
+            Game_Engine.Core.SceneService.NotifyChanged();
+
+            // force project-wide refresh so views rebind immediately on load
+            ProjectService.TouchModified();
+
+            LogInfo("Terrain loaded: " + TerrainAssetPath);
         }
+
 
         // ------ Helpers --------------------------------------------------------
 
