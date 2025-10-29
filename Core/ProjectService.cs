@@ -30,7 +30,7 @@ namespace Game_Engine.Core
     }
 
     /// <summary>Handles creating/opening/closing projects and writing the manifest.</summary>
-    public static class ProjectService
+    public static partial class ProjectService
     {
         public const string EngineVersion = "0.0.1"; 
 

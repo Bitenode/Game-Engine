@@ -1,5 +1,4 @@
-﻿#nullable enable
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
 using Avalonia.Media;
 
@@ -7,7 +6,7 @@ namespace Game_Engine.Core
 {
     public static class ColorUtil
     {
-        // ----------------------------- Packing -----------------------------
+        // ---------- Packing ----------
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint PackBGRA(Color c) => (uint)(c.B | (c.G << 8) | (c.R << 16) | (c.A << 24));
 
@@ -21,24 +20,42 @@ namespace Game_Engine.Core
             return Color.FromArgb(a, r, g, b);
         }
 
-        // --------------------- Core integer helpers (fast) -----------------
-        /// Exact, correctly-rounded (x * k) / 255 for 0..255.
-        /// Ref: (a*b + 128) * 257 >> 16  ==  (t + (t>>8)) >> 8 with t=a*b+128
+        // ---------- Convenience creators  ----------
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int Mul255Int(int x, int k)
+        public static Color FromRGBA(byte r, byte g, byte b, byte a = 255) => Color.FromArgb(a, r, g, b);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Color FromRGBA(float r, float g, float b, float a = 1f)
         {
-            int t = x * k + 128;
-            return (t + (t >> 8)) >> 8;
+            // clamp to 0..1 then map to bytes
+            if (r < 0f) r = 0f; else if (r > 1f) r = 1f;
+            if (g < 0f) g = 0f; else if (g > 1f) g = 1f;
+            if (b < 0f) b = 0f; else if (b > 1f) b = 1f;
+            if (a < 0f) a = 0f; else if (a > 1f) a = 1f;
+            return Color.FromArgb(
+                (byte)(a * 255f + 0.5f),
+                (byte)(r * 255f + 0.5f),
+                (byte)(g * 255f + 0.5f),
+                (byte)(b * 255f + 0.5f));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static byte Mul255Byte(byte x, int k) => (byte)Mul255Int(x, k);
+        public static Color FromBGRA(byte b, byte g, byte r, byte a = 255) => Color.FromArgb(a, r, g, b);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static byte ClampByte(int v) => (byte)(v < 0 ? 0 : (v > 255 ? 255 : v));
+        public static Color WithAlpha(Color c, byte a) => Color.FromArgb(a, c.R, c.G, c.B);
 
-        // --------------------- Fast shading / multiply ---------------------
-        
+        // ---------- Integer helpers ----------
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int Mul255Int(int x, int k)
+        {
+            int t = x * k + 128;        // exact, correctly rounded (x*k)/255
+            return (t + (t >> 8)) >> 8;
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static byte Mul255Byte(byte x, int k) => (byte)Mul255Int(x, k);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static byte ClampByte(int v) => (byte)(v < 0 ? 0 : (v > 255 ? 255 : v));
+
+        // ---------- Fast shading / multiply ----------
         public static Color ShadeColor(Color c, float s)
         {
             int k = (int)(s <= 0f ? 0 : (s >= 1f ? 255 : (s * 255f + 0.5f)));
@@ -48,7 +65,6 @@ namespace Game_Engine.Core
             return Color.FromArgb(c.A, r, g, b);
         }
 
-        // Packed variant (avoid Color in hot loops)
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint ShadeBGRA(uint bgra, byte k /*0..255*/)
         {
@@ -62,22 +78,19 @@ namespace Game_Engine.Core
 
         public static Color MulColor(Color a, Color b)
         {
-            // (a*b)/255 per channel with exact integer rounding
             byte r = Mul255Byte(a.R, b.R);
             byte g = Mul255Byte(a.G, b.G);
             byte bb = Mul255Byte(a.B, b.B);
             return Color.FromArgb(255, r, g, bb);
         }
 
-        // --------------------------- Lerp ----------------------------------
-        // API (float); converts once to byte and uses integer lerp
+        // ---------- Lerp ----------
         public static uint LerpBGRA(uint a, uint b, float t)
         {
             int ti = (int)(t <= 0f ? 0 : (t >= 1f ? 255 : (t * 255f + 0.5f)));
             return LerpBGRA(a, b, (byte)ti);
         }
 
-        // Fast byte lerp (recommended in hot loops)
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint LerpBGRA(uint a, uint b, byte t /*0..255*/)
         {
@@ -94,9 +107,7 @@ namespace Game_Engine.Core
             return (uint)(rb | (rg << 8) | (rr << 16) | (ra << 24));
         }
 
-        // ------------------------- Blending --------------------------------
-        /// “Over” blend of a non-premultiplied source over an opaque dst (A=255).
-        /// Original API (float alpha), now using integer core.
+        // ---------- Blending ----------
         public static uint BlendOver(uint dstBGRA, Color src, float a /*0..1*/)
         {
             if (a <= 0f) return dstBGRA;
@@ -106,7 +117,6 @@ namespace Game_Engine.Core
             return BlendOverBGRA(dstBGRA, srcBGRA, ai);
         }
 
-        // Fast packed variant; a in 0..255
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint BlendOverBGRA(uint dstBGRA, uint srcBGRA, byte a /*0..255*/)
         {
@@ -118,7 +128,6 @@ namespace Game_Engine.Core
             int db = (int)(dstBGRA & 0xFF);
             int dg = (int)((dstBGRA >> 8) & 0xFF);
             int dr = (int)((dstBGRA >> 16) & 0xFF);
-            // dst A is ignored (opaque buffer)
 
             int sb = (int)(srcBGRA & 0xFF);
             int sg = (int)((srcBGRA >> 8) & 0xFF);
@@ -131,7 +140,7 @@ namespace Game_Engine.Core
             return (uint)(rb | (rg << 8) | (rr << 16) | (0xFF << 24));
         }
 
-        // ----------------------- Misc utilities ----------------------------
+        // ---------- Misc ----------
         public static Color AddColor(Color a, Color b) => Color.FromRgb(
             ClampByte(a.R + b.R),
             ClampByte(a.G + b.G),
@@ -139,12 +148,9 @@ namespace Game_Engine.Core
 
         public static float Luma(Color c) => (0.2126f * c.R + 0.7152f * c.G + 0.0722f * c.B) / 255f;
 
-        // Equivalent to BlendOver(under, over, over.A/255f) without float math
         public static Color AlphaOver(Color under, Color over)
         {
-            int a = over.A;
-            int inv = 255 - a;
-
+            int a = over.A, inv = 255 - a;
             byte r = ClampByte(Mul255Int(over.R, a) + Mul255Int(under.R, inv));
             byte g = ClampByte(Mul255Int(over.G, a) + Mul255Int(under.G, inv));
             byte b = ClampByte(Mul255Int(over.B, a) + Mul255Int(under.B, inv));

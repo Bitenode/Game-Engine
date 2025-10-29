@@ -1,9 +1,3 @@
-using System;
-using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -11,6 +5,13 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
+using System;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace Game_Engine.Views;
 
@@ -78,6 +79,7 @@ public sealed partial class ProjectPanel : UserControl
                 MakeMenu("_New Folder",    async (_, __) => await NewFolder()),
                 MakeMenu("New _C# Script", async (_, __) => await NewScript()),
                 MakeMenu("New _Scene",     async (_, __) => await NewScene()),
+                MakeMenu("New _Material",  async (_, __) => await NewMaterial()),
                 new Separator(),
                 MakeMenu("_Import Files…", async (_, __) => await ImportFiles()),
             }
@@ -325,6 +327,64 @@ public sealed partial class ProjectPanel : UserControl
         Refresh();
     }
 
+    private async Task NewMaterial()
+    {
+        var p = ProjectService.Current;
+        if (p is null) return;
+
+        var baseDir = CurrentDirOrFallback(p.AssetsPath);
+
+        var name = await AskText("New Material", "Enter material file name:", "NewMaterial.material");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        name = name.Trim();
+        if (!name.EndsWith(".material", StringComparison.OrdinalIgnoreCase))
+            name += ".material";
+
+        name = MakeSafeName(name);
+        var path = UniquePath(Path.Combine(baseDir, name), isFolder: false);
+
+        // Use the filename as the material "name" field
+        var matName = Path.GetFileNameWithoutExtension(path);
+
+        
+        string json =
+        $@"{{
+          ""name"": ""{matName}"",
+          ""type"": ""Material"",
+          ""version"": 1,
+          ""shader"": """", 
+          ""parameters"": {{
+            ""Tint"": ""#FFFFFFFF"",
+            ""Metallic"": 0,
+            ""Roughness"": 0.5,
+            ""Transparent"": false,
+            ""AlphaCutoff"": 0.5
+          }},
+          ""textures"": {{
+            ""Albedo"": null,
+            ""Normal"": null,
+            ""Metallic"": null,
+            ""Roughness"": null,
+            ""AmbientOcclusion"": null,
+            ""Emissive"": null,
+            ""Opacity"": null
+          }}
+        }}";
+
+        try
+        {
+            File.WriteAllText(path, json);
+            ProjectService.TouchModified(); // make the project know something changed
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Failed to create material:\n{ex.Message}");
+        }
+
+        Refresh();
+    }
+
     private async Task ImportFiles()
     {
         var p = ProjectService.Current;
@@ -353,6 +413,8 @@ public sealed partial class ProjectPanel : UserControl
         ProjectService.TouchModified();
         Refresh();
     }
+
+    
 
     // ---------------- Selection / reveal / open ----------------
 
