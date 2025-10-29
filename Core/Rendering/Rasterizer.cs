@@ -24,16 +24,54 @@ namespace Game_Engine.Core
         private const int GPU_PREZ_TRI_THRESHOLD = 1024;          // offload only when enough clipped tris
         private const float PREZ_EPS = 1e-5f;                    // small epsilon on the z-compare
 
-        // cached GPU temp z and sticky flag if device is unavailable
+        // cached GPU temp z and sticky flag if device is unavailable not used yet
         private static ReadWriteBuffer<uint>? sZTemp;
         private static int sZTempW, sZTempH;
-        private static bool sGpuUnavailable;
 
         // quality toggles
         private const bool ENABLE_SPECULAR = true;
         private const bool ENABLE_AO = true;
         private const bool ENABLE_DETAIL = true;
         private const bool ENABLE_EMISSIVE = true;
+
+        // --- PreZ diagnostics/status ---
+        static bool sGpuUnavailable;
+        static string sPreZError = null;
+        static int sLastPreZTris = 0;
+
+        // Disable object-level occlusion (bounding-sphere/triSS early-outs).
+        // We'll only use scene-level pre-Z seeded by GameView when enabled.
+        const bool ENABLE_OBJECT_OCCLUSION = false;
+
+        public static string PreZStatusText
+        {
+            get
+            {
+#if COMPUTE_PREZ
+                if (sGpuUnavailable) return "OFF (GPU unavailable" + (sPreZError != null ? $": {sPreZError}" : "") + ")";
+                return "GPU";
+#else
+        return "OFF (COMPUTE_PREZ not defined)";
+#endif
+            }
+        }
+
+        public static int PreZLastTriangleCount => sLastPreZTris;
+
+        // External guard used by SceneRenderer
+        public static bool CanUseGpuPreZ
+        {
+            get
+            {
+#if COMPUTE_PREZ
+                return !sGpuUnavailable;
+#else
+        return false;
+#endif
+            }
+        }
+
+
 
         // --------------------- tiny packed-pixel helpers --------------------
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -96,16 +134,28 @@ namespace Game_Engine.Core
         // ======================= GPU PRE-Z TYPES & KERNELS ==================
 
 
-        
-        private static ReadWriteBuffer<uint> EnsureZTemp(GraphicsDevice device, int w, int h)
+
+        static ReadWriteBuffer<uint> EnsureZTemp(GraphicsDevice device, int W, int H)
         {
-            if (sZTemp is null || sZTempW != w || sZTempH != h)
+            
+            if (sPreZBuf == null || sPreZ_W != W || sPreZ_H != H)
             {
-                sZTemp?.Dispose();
-                sZTemp = device.AllocateReadWriteBuffer<uint>(w * h);
-                sZTempW = w; sZTempH = h;
+                if (sPreZBuf != null) sPreZBuf.Dispose();   // release old size (if any)
+                sPreZBuf = device.AllocateReadWriteBuffer<uint>(W * H);
+                sPreZ_W = W; sPreZ_H = H;
             }
-            return sZTemp;
+            return sPreZBuf;
+        }
+
+
+        // --- Persistent GPU pre-Z buffer (shared across frames) ---
+        static ReadWriteBuffer<uint> sPreZBuf;
+        static int sPreZ_W, sPreZ_H;
+
+        public static void ResetPreZState()
+        {
+            sGpuUnavailable = false;
+            sPreZError = null;
         }
 
         // ----------------------- thread-local scratch -----------------------
@@ -161,7 +211,7 @@ namespace Game_Engine.Core
                 if (minX > maxX || minY > maxY) continue;
 
                 float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-                if (area == 0f) continue;
+                if (MathF.Abs(area) < 1e-8f) continue;
                 float invArea = 1f / area;
 
                 float A01 = ay - by, B01 = bx - ax, C01 = -(A01 * ax + B01 * ay);
@@ -224,32 +274,40 @@ namespace Game_Engine.Core
             bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
             ShadowMap? shadow, bool receiveShadows, bool doubleSided,
             bool invertFrontFace,
-            bool transparentPass)
+            bool transparentPass,
+            bool forceUsePreZ = false)
         {
             var Vtx = m.Vertices; if (Vtx == null || Vtx.Length == 0) return;
             var Idx = m.TriIndices; if (Idx == null || Idx.Length == 0) return;
             var Nor = m.Normals;
 
-            // ---------- PRE-Z (GPU) ----------
+            // ---------- PRE-Z (GPU or CPU via TryBuildPreZ) ----------
             bool usePreZ = false;
-            if (USE_GPU_PREZ && !transparentPass && !sGpuUnavailable)
+
+            /*if (forceUsePreZ && !transparentPass)
             {
-                // Build a light screen-space tri list for the GPU pass
+                // Scene pre-Z already built into zbuf by caller
+                usePreZ = true;
+            }
+            else if (USE_GPU_PREZ && !transparentPass && !sGpuUnavailable)
+            {
+                // Build a light screen-space tri list and try pre-Z (GPU preferred, CPU fallback)
                 var triSS = BuildPreZTris(m, world, view, proj, W, H, doubleSided, invertFrontFace);
                 if (triSS.Count >= GPU_PREZ_TRI_THRESHOLD)
                 {
-                    usePreZ = TryBuildPreZGPU(triSS, W, H, zbuf);
-                    if (!usePreZ) sGpuUnavailable = true; // sticky
+                    usePreZ = TryBuildPreZ(triSS, W, H, zbuf);  // <- no sticky 'unavailable' here
+                                                                // NOTE: TryBuildPreZ handles GPU errors internally and falls back to CPU;
+                                                                // it will set sGpuUnavailable only if the GPU truly throws.
                 }
-            }
+            }*/
 
             // object AABB (for planar-UV fallback)
             SN.Vector3 bbMin = new SN.Vector3(float.MaxValue), bbMax = new SN.Vector3(float.MinValue);
             for (int v = 0; v < Vtx.Length; v++)
             {
                 var p = Vtx[v];
-                if (p.X < bbMin.X) bbMin.X = p.X; if (p.Y < bbMin.Y) bbMin.Y = p.Y; if (p.Z < bbMin.Z) bbMin.Z = p.Z;
-                if (p.X > bbMax.X) bbMax.X = p.X; if (p.Y > bbMax.Y) bbMax.Y = p.Y; if (p.Z > bbMax.Z) bbMax.Z = p.Z;
+                bbMin = new SN.Vector3(MathF.Min(bbMin.X, p.X), MathF.Min(bbMin.Y, p.Y), MathF.Min(bbMin.Z, p.Z));
+                bbMax = new SN.Vector3(MathF.Max(bbMax.X, p.X), MathF.Max(bbMax.Y, p.Y), MathF.Max(bbMax.Z, p.Z));
             }
             var bbSize = new SN.Vector3(
                 bbMax.X == bbMin.X ? 1f : (bbMax.X - bbMin.X),
@@ -437,23 +495,25 @@ namespace Game_Engine.Core
                                 float z = b0 * az + b1 * bz + b2 * cz;
 
                                 // ---------- PRE-Z TEST ----------
+                                
+                                const float Z_EPS = 1e-5f;
+
                                 if (usePreZ)
                                 {
                                     float z01 = z * 0.5f + 0.5f;
-                                    float preZ = zbuf[idx];                    // [0,1]
-                                    if (z01 > preZ + PREZ_EPS) continue;       // farther than recorded min
+                                    float preZ = zbuf[idx];                  // [0..1]
+                                    if (z01 > preZ + PREZ_EPS) continue;
                                 }
                                 else
                                 {
-                                    // Legacy CPU zbuffer path (stores NDC z)
                                     if (transparentPass)
                                     {
-                                        if (z >= zbuf[idx] - 1e-4f) continue;
+                                        if (z > zbuf[idx] - Z_EPS) continue; 
                                     }
                                     else
                                     {
-                                        if (z >= zbuf[idx]) continue;
-                                        zbuf[idx] = z; // early write
+                                        if (z > zbuf[idx] - Z_EPS) continue; 
+                                        zbuf[idx] = z;                       // keep early write
                                     }
                                 }
 
@@ -727,150 +787,211 @@ namespace Game_Engine.Core
 
         // ====================== PRE-Z BUILD HELPERS =========================
 
-        private static bool TryBuildPreZGPU(List<TriSS> triSS, int W, int H, float[] preZ01)
+        public static bool TryBuildPreZGPU(List<TriSS> triSS, int W, int H, float[] preZ01)
         {
 #if !COMPUTE_PREZ
     return false;
 #else
-            if (sGpuUnavailable || triSS.Count == 0) return false;
+            if (sGpuUnavailable || triSS == null || triSS.Count == 0) return false;
 
             try
             {
                 var device = GraphicsDevice.GetDefault();
-                using ReadWriteBuffer<uint> zb = EnsureZTemp(device, W, H);
+
+                // persistent buffer; do NOT wrap in using
+                var zb = EnsureZTemp(device, W, H);
 
                 // clear to far
                 device.For(zb.Length, new ClearKernel(zb));
 
                 // upload triangles (already clipped, z in [0,1])
-                ReadOnlySpan<TriSS> span = CollectionsMarshal.AsSpan(triSS);
-                using ReadOnlyBuffer<TriSS> tbuf = device.AllocateReadOnlyBuffer<TriSS>(span);
+                var triArr = triSS.ToArray();
+                using (ReadOnlyBuffer<TriSS> tbuf = device.AllocateReadOnlyBuffer(triArr))
+                {
+                    device.For(triArr.Length, new ZOnlyKernel(tbuf, zb, W, H));
+                }
 
-                // one thread per triangle
-                device.For(triSS.Count, new ZOnlyKernel(tbuf, zb, W, H));
-
-                // read back packed 24-bit depth -> float [0,1]
+                // read back packed 24-bit -> float [0..1]
                 var packed = new uint[W * H];
                 zb.CopyTo(packed);
 
-                const float inv24 = 1.0f / 16777215.0f;
+                const float inv24 = 1f / 16777215f;
                 for (int i = 0; i < packed.Length; i++)
                     preZ01[i] = packed[i] * inv24;
 
+                // success: clear sticky flag
+                sGpuUnavailable = false;
+                sPreZError = null;
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
-                // Device missing / WARP fallback unsupported / generator issue
                 sGpuUnavailable = true;
-                return false;
+                sPreZError = ex.GetType().Name + (string.IsNullOrEmpty(ex.Message) ? "" : (": " + ex.Message));
+                return false; // CPU fallback will run
             }
 #endif
         }
 
 
+
+
+
+        // CPU fallback pre-Z: uses TriSS fields (ax, ay, az, ... minX/minY/maxX/maxY, Axx/Bxx/Cxx, invArea)
+        static bool TryBuildPreZCPU(List<TriSS> tris, int W, int H, float[] preZ01)
+        {
+            if (tris == null || tris.Count == 0) return false;
+
+            // Clear to far (1.0 in [0..1])
+            int N = W * H;
+            for (int i = 0; i < N; i++) preZ01[i] = 1f;
+
+            const float EPS = 1e-3f;
+
+            for (int t = 0; t < tris.Count; t++)
+            {
+                var tri = tris[t];
+
+                // Clamp bbox to viewport
+                int minX = tri.minX < 0 ? 0 : (tri.minX > W - 1 ? W - 1 : tri.minX);
+                int maxX = tri.maxX < 0 ? 0 : (tri.maxX > W - 1 ? W - 1 : tri.maxX);
+                int minY = tri.minY < 0 ? 0 : (tri.minY > H - 1 ? H - 1 : tri.minY);
+                int maxY = tri.maxY < 0 ? 0 : (tri.maxY > H - 1 ? H - 1 : tri.maxY);
+                if (minX > maxX || minY > maxY) continue;
+
+                for (int y = minY; y <= maxY; y++)
+                {
+                    float py = y + 0.5f;
+                    float px = minX + 0.5f;
+
+                    // Edge functions at (minX+0.5, y+0.5)
+                    float w0 = tri.A12 * px + tri.B12 * py + tri.C12;
+                    float w1 = tri.A20 * px + tri.B20 * py + tri.C20;
+                    float w2 = tri.A01 * px + tri.B01 * py + tri.C01;
+
+                    int idx = y * W + minX;
+
+                    for (int x = minX; x <= maxX; x++, idx++, px += 1f, w0 += tri.A12, w1 += tri.A20, w2 += tri.A01)
+                    {
+                        bool insidePos = (w0 >= -EPS && w1 >= -EPS && w2 >= -EPS);
+                        bool insideNeg = (w0 <= EPS && w1 <= EPS && w2 <= EPS);
+                        if (!(insidePos || insideNeg)) continue;
+
+                        // Barycentrics scaled by area
+                        float b0 = w0 * tri.invArea;
+                        float b1 = w1 * tri.invArea;
+
+                        // Interpolate z in [0..1]
+                        float z = b0 * tri.az + b1 * tri.bz + (1f - b0 - b1) * tri.cz;
+
+                        if (z < preZ01[idx]) preZ01[idx] = z;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+
+        public static bool TryBuildPreZ(List<TriSS> triSS, int W, int H, float[] preZ01)
+        {
+            sLastPreZTris = triSS != null ? triSS.Count : 0;
+
+#if COMPUTE_PREZ
+            if (!sGpuUnavailable && triSS != null && triSS.Count > 0)
+            {
+                try
+                {
+                    if (TryBuildPreZGPU(triSS, W, H, preZ01))
+                    {
+                        sPreZError = null;
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sGpuUnavailable = true;
+                    sPreZError = ex.GetType().Name;
+                    // fall through to CPU
+                }
+            }
+#endif
+
+            // CPU fallback
+            return TryBuildPreZCPU(triSS, W, H, preZ01);
+        }
+
+
+
         // Build clipped screen-space triangles with z in [0,1] for the GPU pre-Z pass
-        private static List<TriSS> BuildPreZTris(
+        public static List<TriSS> BuildPreZTris(
     Mesh m,
     in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
     int W, int H, bool doubleSided, bool invertFrontFace)
         {
-            var Vtx = m.Vertices!;
-            var Idx = m.TriIndices!;
+            var Vtx = m.Vertices;
+            var Idx = m.TriIndices;
+            if (Vtx == null || Idx == null || Vtx.Length == 0 || Idx.Length == 0)
+                return new List<TriSS>(0);
 
-            // Matrices
             SN.Matrix4x4 mv = world * view;
             SN.Matrix4x4 mvp = mv * proj;
 
-            // Winding like the shaded pass
-            float winding = world.GetDeterminant() >= 0 ? 1f : -1f;
+            float windingSign = invertFrontFace ? -1f : 1f;
 
-            const float near = 0.1f;
             var outTris = new List<TriSS>(Idx.Length / 3);
 
             for (int i = 0; i < Idx.Length; i += 3)
             {
                 int ia = Idx[i], ib = Idx[i + 1], ic = Idx[i + 2];
 
-                // Original object-space
-                var Pa = Vtx[ia]; var Pb = Vtx[ib]; var Pc = Vtx[ic];
+                var a = Vtx[ia];
+                var b = Vtx[ib];
+                var c = Vtx[ic];
 
-                // Clip-space
-                var A = SN.Vector4.Transform(new SN.Vector4(Pa, 1f), mvp);
-                var B = SN.Vector4.Transform(new SN.Vector4(Pb, 1f), mvp);
-                var C = SN.Vector4.Transform(new SN.Vector4(Pc, 1f), mvp);
+                var Ac = SN.Vector4.Transform(new SN.Vector4(a, 1f), mvp);
+                var Bc = SN.Vector4.Transform(new SN.Vector4(b, 1f), mvp);
+                var Cc = SN.Vector4.Transform(new SN.Vector4(c, 1f), mvp);
 
-                // View-space (needed to match shaded-pass backface test)
-                var Va = SN.Vector3.Transform(Pa, mv);
-                var Vb = SN.Vector3.Transform(Pb, mv);
-                var Vc = SN.Vector3.Transform(Pc, mv);
+                if (Ac.W <= 0f || Bc.W <= 0f || Cc.W <= 0f) continue;
 
-                // Seed clip verts with BOTH clip and view positions so clipping
-                // keeps view positions coherent for the culling test.
-                var cv0 = new ClipVertex { ClipPos = A, ViewPos = Va };
-                var cv1 = new ClipVertex { ClipPos = B, ViewPos = Vb };
-                var cv2 = new ClipVertex { ClipPos = C, ViewPos = Vc };
+                float iaW = 1f / Ac.W, ibW = 1f / Bc.W, icW = 1f / Cc.W;
 
-                var poly = ClipTriangle(cv0, cv1, cv2, near);
-                if (poly.Count < 3) continue;
+                float ax = (Ac.X * iaW * 0.5f + 0.5f) * W;
+                float ay = (1f - (Ac.Y * iaW * 0.5f + 0.5f)) * H;
+                float bx = (Bc.X * ibW * 0.5f + 0.5f) * W;
+                float by = (1f - (Bc.Y * ibW * 0.5f + 0.5f)) * H;
+                float cx = (Cc.X * icW * 0.5f + 0.5f) * W;
+                float cy = (1f - (Cc.Y * icW * 0.5f + 0.5f)) * H;
 
-                // Fan triangulation of the clipped polygon
-                for (int k = 0; k < poly.Count - 2; k++)
-                {
-                    var c0 = poly[0];
-                    var c1 = poly[k + 1];
-                    var c2 = poly[k + 2];
+                float az01 = Ac.Z * iaW * 0.5f + 0.5f;
+                float bz01 = Bc.Z * ibW * 0.5f + 0.5f;
+                float cz01 = Cc.Z * icW * 0.5f + 0.5f;
 
-                    // --- Backface test in VIEW space (same as shaded pass) ---
-                    float facing = SN.Vector3.Cross(c1.ViewPos - c0.ViewPos, c2.ViewPos - c0.ViewPos).Z * winding;
-                    if (invertFrontFace) facing = -facing;
-                    bool backfacing = (facing >= 0f);
-                    if (!doubleSided && backfacing) continue;
+                float twiceArea = (cx - ax) * (by - ay) - (cy - ay) * (bx - ax);
+                if (!doubleSided && twiceArea * windingSign <= 0f)
+                    continue;
 
-                    // Perspective divide
-                    float aInvW = 1f / c0.ClipPos.W;
-                    float bInvW = 1f / c1.ClipPos.W;
-                    float cInvW = 1f / c2.ClipPos.W;
+                float minXf = MathF.Max(0, MathF.Min(ax, MathF.Min(bx, cx)));
+                float maxXf = MathF.Min(W - 1, MathF.Max(ax, MathF.Max(bx, cx)));
+                float minYf = MathF.Max(0, MathF.Min(ay, MathF.Min(by, cy)));
+                float maxYf = MathF.Min(H - 1, MathF.Max(ay, MathF.Max(by, cy)));
 
-                    // Screen coords
-                    float ax = (c0.ClipPos.X * aInvW * 0.5f + 0.5f) * W;
-                    float ay = (1f - (c0.ClipPos.Y * aInvW * 0.5f + 0.5f)) * H;
+                int minXi = (int)MathF.Floor(minXf);
+                int maxXi = (int)MathF.Ceiling(maxXf);
+                int minYi = (int)MathF.Floor(minYf);
+                int maxYi = (int)MathF.Ceiling(maxYf);
 
-                    float bx = (c1.ClipPos.X * bInvW * 0.5f + 0.5f) * W;
-                    float by = (1f - (c1.ClipPos.Y * bInvW * 0.5f + 0.5f)) * H;
-
-                    float cx = (c2.ClipPos.X * cInvW * 0.5f + 0.5f) * W;
-                    float cy = (1f - (c2.ClipPos.Y * cInvW * 0.5f + 0.5f)) * H;
-
-                    // Depth in [0,1] (REQUIRED by the GPU kernel)
-                    float az01 = c0.ClipPos.Z * aInvW * 0.5f + 0.5f;
-                    float bz01 = c1.ClipPos.Z * bInvW * 0.5f + 0.5f;
-                    float cz01 = c2.ClipPos.Z * cInvW * 0.5f + 0.5f;
-
-                    // All behind far plane? (early-out)
-                    if (az01 >= 1f && bz01 >= 1f && cz01 >= 1f) continue;
-
-                    // Pixel-space bbox (inclusive). The GPU kernel will clamp.
-                    float minXf = MathF.Min(ax, MathF.Min(bx, cx));
-                    float maxXf = MathF.Max(ax, MathF.Max(bx, cx));
-                    float minYf = MathF.Min(ay, MathF.Min(by, cy));
-                    float maxYf = MathF.Max(ay, MathF.Max(by, cy));
-
-                    int minXi = (int)MathF.Floor(minXf);
-                    int maxXi = (int)MathF.Ceiling(maxXf);
-                    int minYi = (int)MathF.Floor(minYf);
-                    int maxYi = (int)MathF.Ceiling(maxYf);
-
-                    outTris.Add(new TriSS(
-                        ax, ay, az01,
-                        bx, by, bz01,
-                        cx, cy, cz01,
-                        minXi, minYi, maxXi, maxYi));
-                }
+                outTris.Add(new TriSS(
+                    ax, ay, az01,
+                    bx, by, bz01,
+                    cx, cy, cz01,
+                    minXi, minYi, maxXi, maxYi));
             }
 
             return outTris;
         }
+
 
 
         // ============================ CLIPPING ==============================

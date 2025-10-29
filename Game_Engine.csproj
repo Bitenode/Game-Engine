@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
+	<DefineConstants>$(DefineConstants);COMPUTE_PREZ</DefineConstants>
   </PropertyGroup>
 
   <!-- Debug: turn on the GPU pre-Z path -->

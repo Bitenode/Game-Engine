@@ -42,11 +42,12 @@ namespace Game_Engine.Views
         double _msUploadLast, _msUploadEma;
         int _fpsFrames;
         double _fpsDisplay; // rolling FPS (windowed counter)
+        double _msPreZLast, _msPreZEma;
 
         // --- dynamic resolution (software raster) ---
         float _resScale = 1.0f;                 // internal render scale vs screen
         const double TargetMs = 16.6;
-        const float ResMin = 0.55f, ResMax = 1.0f;
+        const float ResMin = 0.40f, ResMax = 1.0f;
         double _lastRenderScale = 1.0; // track HiDPI scaling used by the backbuffer
 
         // Sky clear cache (single-cam fullscreen fast path)
@@ -103,6 +104,7 @@ namespace Game_Engine.Views
         float[]? _bbZ;
         WriteableBitmap? _bbWB;
         int _bbW, _bbH;
+        int _prevRW, _prevRH;
 
         // ---------- render-on-change cache keys ----------
         bool _cacheValid;
@@ -535,6 +537,8 @@ namespace Game_Engine.Views
         }
 
 
+
+
         public override void Render(DrawingContext ctx)
         {
             base.Render(ctx);
@@ -565,7 +569,15 @@ namespace Game_Engine.Views
             int RH = Math.Max(1, (int)Math.Round(Hpx * _resScale));
 
             EnsureBackbuffers(RW, RH, rs);
-            var color = _bbColor!; var zbuf = _bbZ!;
+
+            if (_prevRW != RW || _prevRH != RH)
+            {
+                Rasterizer.ResetPreZState();   // reset GPU/CPU pre-Z kernels on size change
+                _prevRW = RW; _prevRH = RH;
+            }
+
+            var color = _bbColor!;
+            var zbuf = _bbZ!;
 
             if (State != GamePanel.GameState.Playing)
             {
@@ -575,12 +587,12 @@ namespace Game_Engine.Views
                 return;
             }
 
-            // ---------- Sky (from cache) ----------
+            // ---------- Sky ----------
             var sky = _sky;
             var skyTop = sky != null ? sky.Top : FallbackSkyTop;
             var skyBot = sky != null ? sky.Bottom : FallbackSkyBot;
-            Texture2D? skyTex = sky != null ? sky.Texture : null;
-            float skyBlend = Math.Clamp(sky != null ? sky.TextureBlend : 0f, 0f, 1f);
+            var skyTex = sky != null ? sky.Texture : null;
+            float skyMix = Math.Clamp(sky != null ? sky.TextureBlend : 0f, 0f, 1f);
 
             SN.Vector3? sunDir = null;
             if (sky != null)
@@ -624,7 +636,11 @@ namespace Game_Engine.Views
 
             var cams = _cams;
 
-            // ---------- FULLSCREEN SINGLE-CAMERA FAST PATH + SKY CACHE ----------
+            // Do NOT seed with pre-Z when scene has any transparent (prevents window panes
+            // from occluding walls). Opaque-only pre-Z otherwise.
+            bool allowScenePreZ = !_sceneHasTransparent;
+
+            // ---------- Single-camera fullscreen fast path ----------
             if (cams.Count == 1)
             {
                 var cam = cams[0];
@@ -637,9 +653,7 @@ namespace Game_Engine.Views
                     var vProj = cam.GetProjectionMatrix(new Size(Wdip, Hdip));
 
                     var lightKey = BuildLightKey(lightIsPoint, L, lightPosW, lightRange, DiffuseK, Ambient);
-                    var curSkyKey = BuildSkyKey(skyTop, skyBot, sky != null ? sky.Yaw : 0f, skyBlend, skyTex);
-
-                    //  include camera yaw in sky-cache key
+                    var curSkyKey = BuildSkyKey(skyTop, skyBot, sky != null ? sky.Yaw : 0f, skyMix, skyTex);
                     int curViewYawKey = ViewYawKey(vView);
 
                     bool changed =
@@ -651,12 +665,11 @@ namespace Game_Engine.Views
                         !_lastSkyKey.Equals(curSkyKey) ||
                         _needsWarm;
 
-                    // ---- update sky cache if needed ----
                     bool needSky =
                         !_skyCacheValid ||
                         _skyCacheW != RW || _skyCacheH != RH ||
                         !_skyCacheKey.Equals(curSkyKey) ||
-                        _skyCacheViewYawKey != curViewYawKey;   // rebuild when camera yaw changes
+                        _skyCacheViewYawKey != curViewYawKey;
 
                     if (needSky)
                     {
@@ -666,17 +679,19 @@ namespace Game_Engine.Views
                         _skyCacheColor = new uint[RW * RH];
                         _skyCacheValid = true;
 
-                        CameraClear.ClearForCamera(cam, _skyCacheColor, zbuf, RW, RH,
+                        CameraClear.ClearForCamera(
+                            cam, _skyCacheColor, zbuf, RW, RH,
                             vView, vProj,
                             skyTop, skyBot, sunDir,
-                            skyTex, skyBlend,
-                            sky != null ? sky.Yaw : 0f, sky != null ? sky.SeamFeather : 0.01f,
-                            sky != null ? sky.KeyOutNearBlack : false, sky != null ? sky.KeyLuma : 0.08f);
+                            skyTex, skyMix,
+                            sky != null ? sky.Yaw : 0f,
+                            sky != null ? sky.SeamFeather : 0.01f,
+                            sky != null ? sky.KeyOutNearBlack : false,
+                            sky != null ? sky.KeyLuma : 0.08f);
                     }
 
                     if (!changed)
                     {
-                        // copy cached sky to frame, reset Z to far
                         Array.Copy(_skyCacheColor, color, color.Length);
                         Array.Fill<float>(zbuf, 1f);
 
@@ -691,39 +706,68 @@ namespace Game_Engine.Views
                         return;
                     }
 
-                    // start from cached sky
+                    // Start from cached sky, clear depth
                     Array.Copy(_skyCacheColor, color, color.Length);
                     Array.Fill<float>(zbuf, 1f);
 
-                    // Opaque pass
+                    // ---- Build scene pre-Z once (opaque only) and convert to NDC depth once
+                    bool scenePreZReady = false;
+                    if (allowScenePreZ)
+                    {
+                        _passWatch.Restart();
+                        scenePreZReady = SceneRenderer.BuildScenePreZAll(vView, vProj, RW, RH, zbuf);
+                        _passWatch.Stop();
+                        _msPreZLast = _passWatch.Elapsed.TotalMilliseconds;
+                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
+
+                        if (scenePreZReady)
+                        {
+                            for (int j = 0; j < zbuf.Length; j++)
+                                zbuf[j] = zbuf[j] * 2f - 1f; // [0..1] → NDC [-1..1]
+                        }
+                    }
+                    else
+                    {
+                        _msPreZLast = 0;
+                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
+                    }
+
+                    // ---- Opaque
                     _passWatch.Restart();
                     foreach (var root in SceneService.Root)
-                        SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
+                    {
+                        SceneRenderer.DrawNodeSolidZ(
+                            root, vView, vProj, SN.Matrix4x4.Identity,
                             color, zbuf, RW, RH,
                             L, DiffuseK, Ambient,
                             lightIsPoint, lightPosW, lightRange,
-                            shadow: null);
+                            shadow: null,
+                            scenePreZReady: scenePreZReady);
+                    }
                     _passWatch.Stop();
                     _msOpaqueLast = _passWatch.Elapsed.TotalMilliseconds;
                     Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
 
-                    // Transparent pass (optional)
+                    // ---- Transparent (zbuf already NDC)
                     _msTranspLast = 0;
                     if (_sceneHasTransparent)
                     {
                         _passWatch.Restart();
                         foreach (var root in SceneService.Root)
-                            SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
+                        {
+                            SceneRenderer.DrawNodeSolidZ_QueueTransparent(
+                                root, vView, vProj, SN.Matrix4x4.Identity,
                                 color, zbuf, RW, RH,
                                 L, DiffuseK, Ambient,
                                 lightIsPoint, lightPosW, lightRange,
                                 shadow: null);
+                        }
                         _passWatch.Stop();
                         _msTranspLast = _passWatch.Elapsed.TotalMilliseconds;
                         Ema(ref _msTranspEma, _msTranspLast, 0.18);
                     }
 
-                    // update cache keys
+                    // Update cache keys
                     _lastView = vView; _lastProj = vProj;
                     _lastLightKey = lightKey; _lastSkyKey = curSkyKey;
                     _lastWKey = RW; _lastHKey = RH;
@@ -747,10 +791,9 @@ namespace Game_Engine.Views
 
             double totalOpaqueMs = 0, totalTranspMs = 0;
 
-            for (int i = 0; i < cams.Count; i++)
+            for (int camIdx = 0; camIdx < cams.Count; camIdx++)
             {
-                var cam = cams[i];
-
+                var cam = cams[camIdx];
                 var vp = SceneGraphUtil.ViewportPx(cam, RW, RH);
                 int vx = vp.Item1, vy = vp.Item2, vw = vp.Item3, vh = vp.Item4;
 
@@ -765,20 +808,48 @@ namespace Game_Engine.Views
                     var vView = cam.GetViewMatrix();
                     var vProj = cam.GetProjectionMatrix(new Size(vwD, vhD));
 
-                    CameraClear.ClearForCamera(cam, vColor, vZ, vw, vh,
+                    CameraClear.ClearForCamera(
+                        cam, vColor, vZ, vw, vh,
                         vView, vProj,
                         skyTop, skyBot, sunDir,
-                        skyTex, skyBlend,
-                        sky != null ? sky.Yaw : 0f, sky != null ? sky.SeamFeather : 0.01f,
-                        sky != null ? sky.KeyOutNearBlack : false, sky != null ? sky.KeyLuma : 0.08f);
+                        skyTex, skyMix,
+                        sky != null ? sky.Yaw : 0f,
+                        sky != null ? sky.SeamFeather : 0.01f,
+                        sky != null ? sky.KeyOutNearBlack : false,
+                        sky != null ? sky.KeyLuma : 0.08f);
+
+                    bool camPreZReady = false;
+                    if (allowScenePreZ)
+                    {
+                        _passWatch.Restart();
+                        camPreZReady = SceneRenderer.BuildScenePreZAll(vView, vProj, vw, vh, vZ);
+                        _passWatch.Stop();
+                        _msPreZLast = _passWatch.Elapsed.TotalMilliseconds;
+                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
+
+                        if (camPreZReady)
+                        {
+                            for (int j = 0; j < vZ.Length; j++)
+                                vZ[j] = vZ[j] * 2f - 1f; // [0..1] → NDC
+                        }
+                    }
+                    else
+                    {
+                        _msPreZLast = 0;
+                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
+                    }
 
                     _passWatch.Restart();
                     foreach (var root in SceneService.Root)
-                        SceneRenderer.DrawNodeSolidZ(root, vView, vProj, SN.Matrix4x4.Identity,
+                    {
+                        SceneRenderer.DrawNodeSolidZ(
+                            root, vView, vProj, SN.Matrix4x4.Identity,
                             vColor, vZ, vw, vh,
                             L, DiffuseK, Ambient,
                             lightIsPoint, lightPosW, lightRange,
-                            shadow: null);
+                            shadow: null,
+                            scenePreZReady: camPreZReady);
+                    }
                     _passWatch.Stop();
                     totalOpaqueMs += _passWatch.Elapsed.TotalMilliseconds;
 
@@ -786,11 +857,14 @@ namespace Game_Engine.Views
                     {
                         _passWatch.Restart();
                         foreach (var root in SceneService.Root)
-                            SceneRenderer.DrawNodeSolidZ_QueueTransparent(root, vView, vProj, SN.Matrix4x4.Identity,
+                        {
+                            SceneRenderer.DrawNodeSolidZ_QueueTransparent(
+                                root, vView, vProj, SN.Matrix4x4.Identity,
                                 vColor, vZ, vw, vh,
                                 L, DiffuseK, Ambient,
                                 lightIsPoint, lightPosW, lightRange,
                                 shadow: null);
+                        }
                         _passWatch.Stop();
                         totalTranspMs += _passWatch.Elapsed.TotalMilliseconds;
                     }
@@ -821,6 +895,11 @@ namespace Game_Engine.Views
         }
 
 
+
+
+
+
+
         // ---------- helpers ----------
         static void Ema(ref double acc, double sample, double a)
         {
@@ -844,7 +923,11 @@ namespace Game_Engine.Views
         void DrawFpsHud(DrawingContext ctx)
         {
             string line1 = $"FPS: {_fpsDisplay:F1}   Frame: {_msFrameEma:F2} ms   Upload: {_msUploadEma:F2} ms";
-            string line2 = $"Opaque: {_msOpaqueLast:F2} ms (EMA {_msOpaqueEma:F2})   Transparent: {_msTranspLast:F2} ms (EMA {_msTranspEma:F2})";
+            string line2 =
+                $"Opaque: {_msOpaqueLast:F2} ms (EMA {_msOpaqueEma:F2})   " +
+                $"Transparent: {_msTranspLast:F2} ms (EMA {_msTranspEma:F2})   " +
+                $"PreZ: {_msPreZEma:F2} ms [{Rasterizer.PreZStatusText}]";
+
 
             const double font = 12;
             const double padX = 8, padY = 6;
