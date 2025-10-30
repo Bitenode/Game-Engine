@@ -128,6 +128,7 @@ public partial class InspectorPanel : UserControl
                          p.Name != nameof(MeshCollider.TargetPaths) &&
                          p.Name != nameof(MeshCollider.BindToTargetTransform) &&
                          p.Name != nameof(MeshCollider.Mesh)));
+            
     }
 
     // Default property panel (what we previously inlined)
@@ -1616,106 +1617,722 @@ public partial class InspectorPanel : UserControl
         };
     }
 
-
+    // UI-only cache so material path doesn't disappear if there's no sibling path or inner path slot
+    static readonly ConditionalWeakTable<object, Dictionary<string, string>> _matPathCache = new();
+    static string? GetCachedMatPath(object owner, string propName)
+    {
+        return _matPathCache.TryGetValue(owner, out var map) && map.TryGetValue(propName, out var v) ? v : null;
+    }
+    static void SetCachedMatPath(object owner, string propName, string? relPath)
+    {
+        var map = _matPathCache.GetOrCreateValue(owner);
+        if (string.IsNullOrWhiteSpace(relPath)) map.Remove(propName);
+        else map[propName] = relPath!;
+    }
 
     Control MaterialEditor(object owner, PropertyInfo prop)
     {
-        // Best-effort: project-relative if possible, otherwise absolute.
-        // SceneView never reads this; it's only for serialization.
-        static string NormalizePathForSave(string path)
+        // ---------- helpers ----------
+        static string MakeProjectRelative(string fullPath)
         {
-            if (string.IsNullOrWhiteSpace(path)) return path;
+            if (string.IsNullOrWhiteSpace(fullPath)) return null;
             try
             {
-                var abs = Path.GetFullPath(path);
+                var abs = System.IO.Path.GetFullPath(fullPath);
                 var proj = ProjectService.Current;
                 if (proj != null)
                 {
-                    var root = Path.GetFullPath(proj.RootPath);
+                    var root = System.IO.Path.GetFullPath(proj.RootPath);
                     if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                        return Path.GetRelativePath(root, abs);
+                        return System.IO.Path.GetRelativePath(root, abs).Replace('\\', '/');
                 }
-                return abs; // ok to save absolute if not under project
+                return abs.Replace('\\', '/');
             }
-            catch { return path; }
+            catch { return fullPath.Replace('\\', '/'); }
         }
-        var mat = (Material?)prop.GetValue(owner);
-        if (mat is null) { mat = new Material(); prop.SetValue(owner, mat); }
 
-        // --- helper (only used to store a nicer path; does NOT change loading) ---
-        string MakeProjectRelative(string path)
+        static string EnsureInProject(string fullPath, string preferredFolderName)
         {
-            if (string.IsNullOrWhiteSpace(path)) return null;
             try
             {
-                var abs = Path.GetFullPath(path);
                 var proj = ProjectService.Current;
-                if (proj != null)
+                if (proj == null) return fullPath;
+
+                var abs = System.IO.Path.GetFullPath(fullPath);
+                var root = System.IO.Path.GetFullPath(proj.RootPath);
+                if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return abs;
+
+                var baseRoot = string.IsNullOrWhiteSpace(proj.AssetsPath) ? proj.RootPath : proj.AssetsPath;
+                var importDir = System.IO.Path.Combine(baseRoot, preferredFolderName);
+                Directory.CreateDirectory(importDir);
+
+                var dst = System.IO.Path.Combine(importDir, System.IO.Path.GetFileName(fullPath));
+                if (File.Exists(dst))
                 {
-                    var root = Path.GetFullPath(proj.RootPath);
-                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                        return Path.GetRelativePath(root, abs);
+                    var name = System.IO.Path.GetFileNameWithoutExtension(dst);
+                    var ext = System.IO.Path.GetExtension(dst);
+                    int i = 1;
+                    while (File.Exists(dst = System.IO.Path.Combine(importDir, name + " (" + (i++) + ")" + ext))) ;
                 }
-                return abs; // fallback: absolute is fine
+                File.Copy(fullPath, dst, false);
+                return dst;
             }
-            catch { return path; }
+            catch { return fullPath; }
         }
 
-        var previews = new Dictionary<MaterialTexture, IImage>();
+        static Material TryCreateMaterialFromPath(string path)
+        {
+            var t = typeof(Material);
 
+            var m = t.GetMethod("FromFile", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                                null, new[] { typeof(string) }, null);
+            if (m != null) { try { return (Material)m.Invoke(null, new object[] { path }); } catch { } }
+
+            m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            null, new[] { typeof(string) }, null);
+            if (m != null) { try { return (Material)m.Invoke(null, new object[] { path }); } catch { } }
+
+            var ctor = t.GetConstructor(new[] { typeof(string) });
+            if (ctor != null) { try { return (Material)ctor.Invoke(new object[] { path }); } catch { } }
+
+            try { return (Material)Activator.CreateInstance(t); } catch { return new Material(); }
+        }
+
+        static string ReadInnerPathFromMaterial(Material mat)
+        {
+            if (mat == null) return null;
+            var t = mat.GetType();
+            // include RelPath first; then common names
+            var names = new[] { "RelPath", "Path", "FilePath", "SourcePath", "AssetPath", "MaterialPath" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                var p = t.GetProperty(names[i], BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (p != null && p.PropertyType == typeof(string) && p.CanRead)
+                {
+                    var s = p.GetValue(mat) as string;
+                    if (!string.IsNullOrWhiteSpace(s)) return s;
+                }
+            }
+            return null;
+        }
+
+        static void WriteInnerPathToMaterial(Material mat, string projectRelPath)
+        {
+            if (mat == null) return;
+            var t = mat.GetType();
+            var names = new[] { "RelPath", "Path", "FilePath", "SourcePath", "AssetPath", "MaterialPath" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                var p = t.GetProperty(names[i], BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (p != null && p.PropertyType == typeof(string) && p.CanWrite)
+                {
+                    try { p.SetValue(mat, projectRelPath); } catch { }
+                    return;
+                }
+            }
+        }
+
+        static string TryGetSiblingPath(object target, PropertyInfo matProp)
+        {
+            try
+            {
+                var pp = target.GetType().GetProperty(matProp.Name + "Path",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (pp != null && pp.PropertyType == typeof(string) && pp.CanRead)
+                {
+                    var v = pp.GetValue(target) as string;
+                    return string.IsNullOrWhiteSpace(v) ? null : v;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        static void TrySetSiblingPath(object target, PropertyInfo matProp, string projectRelPath)
+        {
+            try
+            {
+                var pp = target.GetType().GetProperty(matProp.Name + "Path",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (pp != null && pp.PropertyType == typeof(string) && pp.CanWrite)
+                    pp.SetValue(target, projectRelPath);
+            }
+            catch { }
+        }
+
+        static (string name, string shader, bool transp, float metallic, float rough, string error) ReadMaterialSummary(string absPath)
+        {
+            try
+            {
+                var txt = File.ReadAllText(absPath);
+                using (var doc = System.Text.Json.JsonDocument.Parse(txt))
+                {
+                    var root = doc.RootElement;
+                    var name = root.TryGetProperty("name", out var n) ? (n.GetString() ?? "Material") : "Material";
+                    var shader = root.TryGetProperty("shader", out var s) ? (s.GetString() ?? "") : "";
+
+                    bool transp = false; float met = 0f; float rgh = 0.5f;
+                    System.Text.Json.JsonElement p;
+                    if (root.TryGetProperty("parameters", out p) && p.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        System.Text.Json.JsonElement vT, vM, vR;
+                        if (p.TryGetProperty("Transparent", out vT)) transp = vT.ValueKind == System.Text.Json.JsonValueKind.True;
+                        if (p.TryGetProperty("Metallic", out vM)) { double md; if (vM.TryGetDouble(out md)) met = (float)md; }
+                        if (p.TryGetProperty("Roughness", out vR)) { double rd; if (vR.TryGetDouble(out rd)) rgh = (float)rd; }
+                    }
+                    return (name, shader, transp, met, rgh, null);
+                }
+            }
+            catch (Exception ex) { return (null, null, false, 0f, 0.5f, ex.Message); }
+        }
+
+        // ---------- face constants ----------
+        const int S_All = -1;
+        const int S_Right = 1, S_Left = 2, S_Top = 4, S_Bottom = 8, S_Back = 16, S_Front = 32;
+
+        static string FaceLabel(int s)
+        {
+            if (s == S_Right) return "Right (+X)";
+            if (s == S_Left) return "Left (-X)";
+            if (s == S_Top) return "Top (+Y)";
+            if (s == S_Bottom) return "Bottom (-Y)";
+            if (s == S_Back) return "Back (+Z)";
+            if (s == S_Front) return "Front (-Z)";
+            return "All";
+        }
+        static string FaceKey(int s)
+        {
+            if (s == S_Right) return "Right";
+            if (s == S_Left) return "Left";
+            if (s == S_Top) return "Top";
+            if (s == S_Bottom) return "Bottom";
+            if (s == S_Back) return "Back";
+            if (s == S_Front) return "Front";
+            return "All";
+        }
+
+        // ---------- container ----------
         var box = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8) };
-        var root = new StackPanel { Spacing = 8 };
+        var root = new StackPanel { Spacing = 10 };
         box.Child = root;
 
-        var slotsPanel = new StackPanel { Spacing = 4 };
+        void BeginEdit() => BeginPropertyEdit(owner, prop);
+        void CommitEdit() => CommitPropertyEdit(owner, prop);
 
-        // ---------------- Header ----------------
-        var hdr = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        hdr.Children.Add(new TextBlock { Text = "Material", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center });
+        // ---------- top: single material selector  ----------
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        header.Children.Add(new TextBlock { Text = "Material (asset)", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center });
+        root.Children.Add(header);
 
-        var btnImport = new Button { Content = "Import…" };
-        btnImport.Click += async (_, __) =>
-        {
-            var dlg = new OpenFileDialog
-            {
-                Title = "Import textures",
-                AllowMultiple = true,
-                Filters =
-                {
-                    new FileDialogFilter { Name = "Images", Extensions = { "png","jpg","jpeg","bmp","tga","dds","tif","tiff" } },
-                    new FileDialogFilter { Name = "All files", Extensions = { "*" } }
-                }
-            };
-            var files = await dlg.ShowAsync(OwnerWindow);
-            if (files is { Length: > 0 }) AddFiles(files);
-        };
-        hdr.Children.Add(btnImport);
-
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var tbPath = new TextBox { Width = 360, IsReadOnly = true };
+        var btnBrowse = new Button { Content = "Choose…" };
+        var btnNew = new Button { Content = "New…" };
+        var btnEdit = new Button { Content = "Edit…" };
         var btnClear = new Button { Content = "Clear" };
-        btnClear.Click += (_, __) =>
-        {
-            foreach (var img in previews.Values)
-                (img as IDisposable)?.Dispose();
-            previews.Clear();
+        row.Children.Add(tbPath);
+        row.Children.Add(btnBrowse);
+        row.Children.Add(btnNew);
+        row.Children.Add(btnEdit);
+        row.Children.Add(btnClear);
+        root.Children.Add(row);
 
-            mat.Textures.Clear();
-            SceneService.NotifyChanged();
-            Rebuild();
-        };
-        hdr.Children.Add(btnClear);
-
-        root.Children.Add(hdr);
-
-        // ---------------- Drop area ----------------
         var drop = new Border
         {
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6),
             Background = Brushes.Transparent,
-            Child = new TextBlock { Text = "Drop textures here (png/jpg/bmp/tga/dds)…", Opacity = .7 }
+            Child = new TextBlock { Text = "Drop .material here…", Opacity = .7 }
         };
         DragDrop.SetAllowDrop(drop, true);
+        root.Children.Add(drop);
+
+        var summary = new StackPanel { Spacing = 2 };
+        root.Children.Add(summary);
+
+        // ---------- per-side list ----------
+        root.Children.Add(new TextBlock { Text = "Per-side materials", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
+        var slotsPanel = new StackPanel { Spacing = 6 };
+        root.Children.Add(slotsPanel);
+
+        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var btnAdd = new Button { Content = "Add from file…" };
+        var btnAddNew = new Button { Content = "New material…" };
+        //var btnClearAll = new Button { Content = "Clear all" };
+        toolbar.Children.Add(btnAdd);
+        toolbar.Children.Add(btnAddNew);
+        //toolbar.Children.Add(btnClearAll);
+        root.Children.Add(toolbar);
+
+        // internal model: (Material Mat, string RelPath, int Side)
+        var slots = new List<(Material Mat, string RelPath, int Side)>();
+
+        // seed from bound property
+        var cur = prop.GetValue(owner) as Material;
+        if (cur != null)
+        {
+            var rel = ReadInnerPathFromMaterial(cur);
+            if (string.IsNullOrWhiteSpace(rel))
+            {
+                var s = TryGetSiblingPath(owner, prop);
+                if (!string.IsNullOrWhiteSpace(s)) rel = s;
+            }
+            if (cur != null || !string.IsNullOrWhiteSpace(rel))
+                slots.Add((cur, rel, S_All));
+        }
+
+        // seed from optional lists (MaterialPaths / MaterialSides / MaterialSlots)
+        try
+        {
+            var tOwner = owner.GetType();
+            var pPaths = tOwner.GetProperty("MaterialPaths", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var pSides = tOwner.GetProperty("MaterialSides", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var pSlots = tOwner.GetProperty("MaterialSlots", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+            var paths = pPaths != null ? pPaths.GetValue(owner) as System.Collections.IList : null;
+            var sides = pSides != null ? pSides.GetValue(owner) as System.Collections.IList : null;
+            var mats = pSlots != null ? pSlots.GetValue(owner) as System.Collections.IList : null;
+
+            if (paths != null && sides != null && mats != null)
+            {
+                int n = Math.Min(paths.Count, Math.Min(sides.Count, mats.Count));
+                if (n > 0) slots.Clear();
+                for (int i = 0; i < n; i++)
+                {
+                    var m = mats[i] as Material;
+                    var rel = paths[i] as string;
+                    int s = S_All; try { s = Convert.ToInt32(sides[i]); } catch { s = S_All; }
+                    if (m == null && string.IsNullOrWhiteSpace(rel)) continue; // skip bogus empty rows
+                    slots.Add((m, rel, s));
+                }
+            }
+        }
+        catch { }
+
+        void UpdateSummary(string projectRelOrAbs)
+        {
+            summary.Children.Clear();
+            if (string.IsNullOrWhiteSpace(projectRelOrAbs) || projectRelOrAbs == "(none)")
+            {
+                summary.Children.Add(new TextBlock { Text = "No material assigned.", Opacity = .7 });
+                return;
+            }
+
+            string abs = projectRelOrAbs;
+            try
+            {
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var rootPath = System.IO.Path.GetFullPath(proj.RootPath);
+                    var p = System.IO.Path.GetFullPath(System.IO.Path.Combine(rootPath, projectRelOrAbs));
+                    if (File.Exists(p)) abs = p;
+                }
+            }
+            catch { }
+
+            var info = ReadMaterialSummary(abs);
+            if (info.error != null)
+            {
+                summary.Children.Add(new TextBlock { Text = "Failed to read material: " + info.error, Foreground = Brushes.OrangeRed });
+                return;
+            }
+
+            summary.Children.Add(new TextBlock { Text = "Name: " + (info.name ?? "(unnamed)") });
+            summary.Children.Add(new TextBlock { Text = "Shader: " + (string.IsNullOrWhiteSpace(info.shader) ? "(none)" : info.shader) });
+            summary.Children.Add(new TextBlock { Text = "Transparent: " + (info.transp ? "Yes" : "No") });
+            summary.Children.Add(new TextBlock { Text = "Metallic: " + info.metallic.ToString("0.00") + "   Roughness: " + info.rough.ToString("0.00") });
+        }
+
+        // Write back everything to owner (prop + sibling + lists + dicts). Header path is handled separately.
+        void WriteBackToOwner()
+        {
+            try
+            {
+                var tOwner = owner.GetType();
+
+                // bound prop = first All (or first slot)
+                Material first = null;
+                for (int i = 0; i < slots.Count; i++) if (slots[i].Side == S_All) { first = slots[i].Mat; break; }
+                if (first == null && slots.Count > 0) first = slots[0].Mat;
+
+                if (prop.CanWrite) { try { prop.SetValue(owner, first); } catch { } }
+
+                string firstRel = first != null ? ReadInnerPathFromMaterial(first) : null;
+
+                // sibling "*Path"
+                try
+                {
+                    var pp = tOwner.GetProperty(prop.Name + "Path", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (pp != null && pp.PropertyType == typeof(string) && pp.CanWrite)
+                        pp.SetValue(owner, firstRel);
+                }
+                catch { }
+
+                // cache fallback
+                SetCachedMatPath(owner, prop.Name, firstRel);
+
+                // lists: MaterialPaths / MaterialSides / MaterialSlots / Materials
+                Action<PropertyInfo, Func<int, object>> writeList = (pInfo, getter) =>
+                {
+                    if (pInfo == null) return;
+                    var curVal = pInfo.GetValue(owner);
+                    var il = curVal as System.Collections.IList;
+                    if (il == null)
+                    {
+                        try
+                        {
+                            if (typeof(System.Collections.IList).IsAssignableFrom(pInfo.PropertyType))
+                            {
+                                curVal = Activator.CreateInstance(pInfo.PropertyType);
+                                il = curVal as System.Collections.IList;
+                            }
+                        }
+                        catch { il = null; }
+                    }
+                    if (il == null) return;
+
+                    il.Clear();
+                    for (int i = 0; i < slots.Count; i++) il.Add(getter(i));
+                    try { pInfo.SetValue(owner, il); } catch { }
+                };
+
+                var pPaths = tOwner.GetProperty("MaterialPaths", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var pSides = tOwner.GetProperty("MaterialSides", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var pSlots = tOwner.GetProperty("MaterialSlots", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var pMats = tOwner.GetProperty("Materials", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                writeList(pPaths, i => (object)slots[i].RelPath);
+                writeList(pSides, i => (object)slots[i].Side);
+                writeList(pSlots, i => (object)slots[i].Mat);
+                writeList(pMats, i => (object)slots[i].Mat);
+
+                // dicts: MaterialByFace / FaceMaterials  (skip "All")
+                foreach (var dictName in new[] { "MaterialByFace", "FaceMaterials" })
+                {
+                    var pDict = tOwner.GetProperty(dictName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (pDict == null) continue;
+
+                    object dictObj = pDict.GetValue(owner);
+                    var dict = dictObj as System.Collections.IDictionary;
+                    if (dict == null)
+                    {
+                        try { dict = Activator.CreateInstance(pDict.PropertyType) as System.Collections.IDictionary; } catch { dict = null; }
+                    }
+                    if (dict == null) continue;
+
+                    dict.Clear();
+                    for (int i = 0; i < slots.Count; i++)
+                    {
+                        if (slots[i].Side == S_All) continue;
+                        var key = FaceKey(slots[i].Side);
+                        if (dict.Contains(key)) dict[key] = slots[i].Mat;
+                        else dict.Add(key, slots[i].Mat);
+                    }
+                    try { pDict.SetValue(owner, dict); } catch { }
+                }
+            }
+            catch { }
+        }
+
+        void RebuildListUI()
+        {
+            slotsPanel.Children.Clear();
+
+            int[] sideVals = new[] { S_All, S_Right, S_Left, S_Top, S_Bottom, S_Back, S_Front };
+            string[] sideLabels = new[] { FaceLabel(S_All), FaceLabel(S_Right), FaceLabel(S_Left), FaceLabel(S_Top), FaceLabel(S_Bottom), FaceLabel(S_Back), FaceLabel(S_Front) };
+
+            for (int i = 0; i < slots.Count; i++)
+            {
+                var slot = slots[i];
+                var rowSlot = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+
+                var tb = new TextBox { Width = 300, IsReadOnly = true, Text = string.IsNullOrWhiteSpace(slot.RelPath) ? "(unsaved)" : slot.RelPath };
+                rowSlot.Children.Add(tb);
+
+                var sideBox = new ComboBox { Width = 140, ItemsSource = sideLabels };
+                int sel = Array.IndexOf(sideVals, slot.Side);
+                if (sel < 0) sel = 0;
+                sideBox.SelectedIndex = sel;
+
+                int rowIndex = i; // capture once per row
+                sideBox.SelectionChanged += (_, __) =>
+                {
+                    int idx = sideBox.SelectedIndex;
+                    if (idx < 0 || idx >= sideVals.Length) return;
+
+                    var curTuple = slots[rowIndex];
+                    slots[rowIndex] = (curTuple.Mat, curTuple.RelPath, sideVals[idx]);
+
+                    BeginEdit();
+                    WriteBackToOwner();
+                    SceneService.NotifyChanged();
+                    CommitEdit();
+                };
+                rowSlot.Children.Add(sideBox);
+
+                var btnUp = new Button { Content = "↑" };
+                btnUp.Click += (__, ___) =>
+                {
+                    if (rowIndex > 0)
+                    {
+                        var tmp = slots[rowIndex - 1];
+                        slots[rowIndex - 1] = slots[rowIndex];
+                        slots[rowIndex] = tmp;
+                        BeginEdit();
+                        WriteBackToOwner();
+                        SceneService.NotifyChanged();
+                        CommitEdit();
+                        RebuildListUI();
+                    }
+                };
+                rowSlot.Children.Add(btnUp);
+
+                var btnDown = new Button { Content = "↓" };
+                btnDown.Click += (__, ___) =>
+                {
+                    if (rowIndex >= 0 && rowIndex < slots.Count - 1)
+                    {
+                        var tmp = slots[rowIndex + 1];
+                        slots[rowIndex + 1] = slots[rowIndex];
+                        slots[rowIndex] = tmp;
+                        BeginEdit();
+                        WriteBackToOwner();
+                        SceneService.NotifyChanged();
+                        CommitEdit();
+                        RebuildListUI();
+                    }
+                };
+                rowSlot.Children.Add(btnDown);
+
+                var btnRemove = new Button { Content = "Remove" };
+                btnRemove.Click += (__, ___) =>
+                {
+                    if (rowIndex >= 0 && rowIndex < slots.Count)
+                    {
+                        slots.RemoveAt(rowIndex);
+                        BeginEdit();
+                        WriteBackToOwner();
+                        SceneService.NotifyChanged();
+                        CommitEdit();
+                        RebuildListUI();
+                    }
+                };
+                rowSlot.Children.Add(btnRemove);
+
+                slotsPanel.Children.Add(rowSlot);
+            }
+        }
+
+        // ---------- assigners ----------
+        // top-level assignment
+        Action<string> AssignFromPathTop = (pickedAbs) =>
+        {
+            var abs = EnsureInProject(pickedAbs, "Materials");
+            var rel = MakeProjectRelative(abs);
+
+            BeginEdit();
+
+            var loaded = TryCreateMaterialFromPath(abs);
+            prop.SetValue(owner, loaded); // <— first build direct set
+
+            bool wroteSibling = false;
+            try
+            {
+                var before = TryGetSiblingPath(owner, prop);
+                TrySetSiblingPath(owner, prop, rel);
+                wroteSibling = TryGetSiblingPath(owner, prop) != null || before != null;
+            }
+            catch { }
+
+            if (!wroteSibling)
+            {
+                try { WriteInnerPathToMaterial(loaded, rel); } catch { }
+                SetCachedMatPath(owner, prop.Name, rel);
+            }
+
+            // keep per-side list in sync: update/insert the All slot
+            int idxAll = -1;
+            for (int k = 0; k < slots.Count; k++) if (slots[k].Side == S_All) { idxAll = k; break; }
+            var s = (loaded, rel, S_All);
+            if (idxAll >= 0) slots[idxAll] = s; else slots.Insert(0, s);
+
+            SceneService.NotifyChanged();
+            CommitEdit();
+
+            tbPath.Text = rel ?? abs;
+            UpdateSummary(tbPath.Text);
+            RebuildListUI();
+        };
+
+        Action<string, int> AddExtraSlot = (pickedAbs, side) =>
+        {
+            var abs = EnsureInProject(pickedAbs, "Materials");
+            var rel = MakeProjectRelative(abs);
+            var loaded = TryCreateMaterialFromPath(abs);
+            if (!string.IsNullOrWhiteSpace(rel)) WriteInnerPathToMaterial(loaded, rel);
+
+            slots.Add((loaded, rel, side));
+
+            BeginEdit();
+            WriteBackToOwner();
+            SceneService.NotifyChanged();
+            CommitEdit();
+            RebuildListUI();
+        };
+
+        // ---------- wire up top row (load header text robustly) ----------
+        {
+            string initialRel = null;
+
+            //  sibling "*Path"
+            if (string.IsNullOrWhiteSpace(initialRel))
+                initialRel = TryGetSiblingPath(owner, prop);
+
+            //  inner path of bound prop
+            if (string.IsNullOrWhiteSpace(initialRel))
+                initialRel = ReadInnerPathFromMaterial(prop.GetValue(owner) as Material);
+
+            // UI cache
+            if (string.IsNullOrWhiteSpace(initialRel))
+                initialRel = GetCachedMatPath(owner, prop.Name);
+
+            // from per-side slots (prefer All)
+            if (string.IsNullOrWhiteSpace(initialRel))
+            {
+                string fromSlots = null;
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    if (slots[i].Side == S_All && !string.IsNullOrWhiteSpace(slots[i].RelPath))
+                    { fromSlots = slots[i].RelPath; break; }
+                }
+                if (string.IsNullOrWhiteSpace(fromSlots))
+                {
+                    for (int i = 0; i < slots.Count; i++)
+                        if (!string.IsNullOrWhiteSpace(slots[i].RelPath))
+                        { fromSlots = slots[i].RelPath; break; }
+                }
+                initialRel = fromSlots;
+            }
+
+            tbPath.Text = string.IsNullOrWhiteSpace(initialRel) ? "(none)" : initialRel;
+            UpdateSummary(tbPath.Text);
+        }
+
+        // --- events ---
+        btnBrowse.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            var dlg = new OpenFileDialog
+            {
+                Title = "Select Material",
+                AllowMultiple = false,
+                Filters =
+        {
+            new FileDialogFilter { Name = "Material", Extensions = { "material" } },
+            new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+        }
+            };
+            var files = await dlg.ShowAsync(win);
+            if (files != null && files.Length > 0 && File.Exists(files[0]))
+                AssignFromPathTop(files[0]);
+        };
+
+        btnNew.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            string defaultDir =
+                (ProjectService.Current != null && !string.IsNullOrWhiteSpace(ProjectService.Current.AssetsPath))
+                ? System.IO.Path.Combine(ProjectService.Current.AssetsPath, "Materials")
+                : (ProjectService.Current != null
+                    ? System.IO.Path.Combine(ProjectService.Current.RootPath, "Assets", "Materials")
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+            try { Directory.CreateDirectory(defaultDir); } catch { }
+
+            var sfd = new SaveFileDialog
+            {
+                Title = "Create Material",
+                InitialFileName = "NewMaterial.material",
+                Directory = defaultDir,
+                Filters = { new FileDialogFilter { Name = "Material", Extensions = { "material" } } }
+            };
+
+            var dest = await sfd.ShowAsync(win);
+            if (string.IsNullOrWhiteSpace(dest)) return;
+
+            try
+            {
+                var json =
+    @"{
+  ""name"": ""New Material"",
+  ""type"": ""Material"",
+  ""version"": 1,
+  ""shader"": """",
+  ""parameters"": {
+    ""Tint"": ""#FFFFFFFF"",
+    ""Metallic"": 0.00,
+    ""Roughness"": 0.50,
+    ""Transparent"": false,
+    ""AlphaCutoff"": 0.50
+  },
+  ""textures"": { }
+}";
+                File.WriteAllText(dest, json);
+            }
+            catch (Exception ex)
+            {
+                summary.Children.Clear();
+                summary.Children.Add(new TextBlock { Text = "Failed to create: " + ex.Message, Foreground = Brushes.OrangeRed });
+                return;
+            }
+
+            AssignFromPathTop(dest);
+        };
+
+        btnEdit.Click += (_, __) =>
+        {
+            if (string.IsNullOrWhiteSpace(tbPath.Text) || tbPath.Text == "(none)") return;
+
+            string abs = tbPath.Text;
+            try
+            {
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var rootPath = System.IO.Path.GetFullPath(proj.RootPath);
+                    var p = System.IO.Path.GetFullPath(System.IO.Path.Combine(rootPath, tbPath.Text));
+                    if (File.Exists(p)) abs = p;
+                }
+            }
+            catch { }
+
+            try
+            {
+                _assetInspectorActive = true; // reuse asset inspector
+                OnAssetSelected(abs);
+            }
+            catch { }
+        };
+
+        btnClear.Click += (_, __) =>
+        {
+            BeginEdit();
+            prop.SetValue(owner, null);
+            TrySetSiblingPath(owner, prop, null);
+            SetCachedMatPath(owner, prop.Name, null);
+            SceneService.NotifyChanged();
+            CommitEdit();
+
+            tbPath.Text = "(none)";
+            summary.Children.Clear();
+            slots.Clear();              // also clear per-side list
+            RebuildListUI();
+        };
 
         drop.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
@@ -1725,307 +2342,138 @@ public partial class InspectorPanel : UserControl
                 e.Handled = true;
             }
         });
-
         drop.AddHandler(DragDrop.DropEvent, async (s, e) =>
         {
-            var paths = new List<string>();
+            string picked = null;
 
             if (e.Data.Contains(DataFormats.FileNames))
-            {
-                var names = e.Data.GetFileNames();
-                if (names != null) paths.AddRange(names);
-            }
+                picked = e.Data.GetFileNames()?.FirstOrDefault();
 
-            if (e.Data.Contains(DataFormats.Files) && e.Data.Get(DataFormats.Files) is IEnumerable<IStorageItem> items)
+            if (picked == null && e.Data.Contains(DataFormats.Files))
             {
-                foreach (var it in items)
+                var items = e.Data.Get(DataFormats.Files) as IEnumerable<IStorageItem>;
+                var it = items != null ? items.FirstOrDefault() as IStorageFile : null;
+                if (it != null)
                 {
-                    if (it is IStorageFile f)
+                    var local = it.TryGetLocalPath();
+                    if (!string.IsNullOrWhiteSpace(local)) picked = local;
+                    else
                     {
-                        var local = f.TryGetLocalPath();
-                        if (!string.IsNullOrWhiteSpace(local))
+                        var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), it.Name);
+                        try
                         {
-                            paths.Add(local!);
+                            using (var src = await it.OpenReadAsync())
+                            using (var dst = File.Create(tmp))
+                                await src.CopyToAsync(dst);
+                            picked = tmp;
                         }
-                        else
-                        {
-                            // only RECORD the path for save
-                            var tmpDir = ProjectService.Current?.TempPath ?? Path.GetTempPath();
-                            Directory.CreateDirectory(tmpDir);
-                            var dst = Path.Combine(tmpDir, f.Name);
-                            await using var src = await f.OpenReadAsync();
-                            await using var outFs = File.Create(dst);
-                            await src.CopyToAsync(outFs);
-                            paths.Add(dst);
-                        }
+                        catch { picked = null; }
                     }
                 }
             }
 
-            if (paths.Count > 0)
+            if (!string.IsNullOrWhiteSpace(picked) &&
+                string.Equals(System.IO.Path.GetExtension(picked), ".material", StringComparison.OrdinalIgnoreCase))
             {
-                AddFiles(paths.Where(File.Exists));
+                AssignFromPathTop(picked);
                 e.Handled = true;
             }
         });
 
-        root.Children.Add(drop);
-
-        // slots list
-        root.Children.Add(slotsPanel);
-
-        // ---------------- helpers for face mask UI ----------------
-        const int FaceRight = 1;   // +X
-        const int FaceLeft = 2;   // -X
-        const int FaceTop = 4;     // +Y
-        const int FaceBottom = 8;  // -Y
-        const int FaceBack = 16;   // +Z
-        const int FaceFront = 32;  // -Z
-        const int FaceAll = FaceRight | FaceLeft | FaceTop | FaceBottom | FaceBack | FaceFront;
-
-        static int GuessFaceMaskFromName(string nameNoExtLower)
+        // per-side toolbar
+        btnAdd.Click += async (_, __) =>
         {
-            if (nameNoExtLower.EndsWith("_px") || nameNoExtLower.Contains("right")) return FaceRight;
-            if (nameNoExtLower.EndsWith("_nx") || nameNoExtLower.Contains("left")) return FaceLeft;
-            if (nameNoExtLower.EndsWith("_py") || nameNoExtLower.Contains("top") || nameNoExtLower.Contains("up"))
-                return FaceTop;
-            if (nameNoExtLower.EndsWith("_ny") || nameNoExtLower.Contains("bottom") || nameNoExtLower.Contains("down"))
-                return FaceBottom;
-            if (nameNoExtLower.EndsWith("_pz") || nameNoExtLower.Contains("back")) return FaceBack;
-            if (nameNoExtLower.EndsWith("_nz") || nameNoExtLower.Contains("front")) return FaceFront;
-            return -1; // all
-        }
+            var win = OwnerWindow;
+            if (win == null) return;
 
-        // -------- Row builder -------------------------------------------------------
-        Control SlotRow(MaterialTexture slot)
+            var ofd = new OpenFileDialog
+            {
+                Title = "Add Material(s)",
+                AllowMultiple = true,
+                Filters = { new FileDialogFilter { Name = "Material", Extensions = { "material" } } }
+            };
+            var files = await ofd.ShowAsync(win);
+            if (files == null || files.Length == 0) return;
+
+            for (int i = 0; i < files.Length; i++)
+            {
+                if (string.Equals(System.IO.Path.GetExtension(files[i]), ".material", StringComparison.OrdinalIgnoreCase))
+                    AddExtraSlot(files[i], S_Right); // default side; user can change
+            }
+        };
+
+        btnAddNew.Click += async (_, __) =>
         {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+            var win = OwnerWindow;
+            if (win == null) return;
 
-            if (previews.TryGetValue(slot, out var img))
-                row.Children.Add(new Image { Source = img, Width = 32, Height = 32, Stretch = Stretch.UniformToFill });
-            else
-                row.Children.Add(new Border { Width = 32, Height = 32, Background = Brushes.Gray, Opacity = .25, CornerRadius = new CornerRadius(4) });
+            string defaultDir =
+                (ProjectService.Current != null && !string.IsNullOrWhiteSpace(ProjectService.Current.AssetsPath))
+                ? System.IO.Path.Combine(ProjectService.Current.AssetsPath, "Materials")
+                : (ProjectService.Current != null
+                    ? System.IO.Path.Combine(ProjectService.Current.RootPath, "Assets", "Materials")
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+            try { Directory.CreateDirectory(defaultDir); } catch { }
 
-            // filename with tooltip containing the stored path
-            var nameBlock = new TextBlock { Text = slot.Name ?? "(texture)", VerticalAlignment = VerticalAlignment.Center };
-            ToolTip.SetTip(nameBlock, string.IsNullOrWhiteSpace(slot.SourcePath) ? "(no path set)" : slot.SourcePath);
-            row.Children.Add(nameBlock);
-
-            // Usage
-            var usageBox = new ComboBox
+            var sfd = new SaveFileDialog
             {
-                Width = 120,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                ItemsSource = Enum.GetValues(typeof(MaterialTexture.TexUsage))
-                                 .Cast<MaterialTexture.TexUsage>()
-                                 .ToArray(),
-                SelectedItem = slot.Usage
+                Title = "Create Material",
+                InitialFileName = "NewMaterial.material",
+                Directory = defaultDir,
+                Filters = { new FileDialogFilter { Name = "Material", Extensions = { "material" } } }
             };
-            ToolTip.SetTip(usageBox, "How this texture should be used (Albedo, AO, Normal, Specular, …)");
-            usageBox.SelectionChanged += (_, __) =>
+            var dest = await sfd.ShowAsync(win);
+            if (string.IsNullOrWhiteSpace(dest)) return;
+
+            try
             {
-                if (usageBox.SelectedItem is MaterialTexture.TexUsage u && u != slot.Usage)
-                {
-                    slot.Usage = u;
-                    SceneService.NotifyChanged();
-                    Rebuild();
-                }
-            };
-            row.Children.Add(usageBox);
-
-            // Faces (per-face mask UI)
-            var facesWrap = new WrapPanel { ItemSpacing = 4, VerticalAlignment = VerticalAlignment.Center };
-            row.Children.Add(new TextBlock { Text = "Faces:", VerticalAlignment = VerticalAlignment.Center, Opacity = .7 });
-            row.Children.Add(facesWrap);
-
-            var cbAll = new CheckBox { Content = "All" };
-            var cbR = new CheckBox { Content = "Right" };
-            var cbL = new CheckBox { Content = "Left" };
-            var cbT = new CheckBox { Content = "Top" };
-            var cbB = new CheckBox { Content = "Bottom" };
-            var cbBack = new CheckBox { Content = "Back" };
-            var cbFront = new CheckBox { Content = "Front" };
-            facesWrap.Children.Add(cbAll);
-            facesWrap.Children.Add(cbR);
-            facesWrap.Children.Add(cbL);
-            facesWrap.Children.Add(cbT);
-            facesWrap.Children.Add(cbB);
-            facesWrap.Children.Add(cbBack);
-            facesWrap.Children.Add(cbFront);
-
-            bool updating = false;
-
-            void RefreshFaceChecks()
+                var json =
+                    @"{
+                  ""name"": ""New Material"",
+                  ""type"": ""Material"",
+                  ""version"": 1,
+                  ""shader"": """",
+                  ""parameters"": {
+                    ""Tint"": ""#FFFFFFFF"",
+                    ""Metallic"": 0.00,
+                    ""Roughness"": 0.50,
+                    ""Transparent"": false,
+                    ""AlphaCutoff"": 0.50
+                  },
+                  ""textures"": { }
+                }";
+                File.WriteAllText(dest, json);
+            }
+            catch (Exception ex)
             {
-                updating = true;
-                int m = (int)slot.FaceMask;
-                bool all = (m < 0) || ((m & FaceAll) == FaceAll);
-                cbAll.IsChecked = all;
-                cbR.IsChecked = all || ((m & FaceRight) != 0);
-                cbL.IsChecked = all || ((m & FaceLeft) != 0);
-                cbT.IsChecked = all || ((m & FaceTop) != 0);
-                cbB.IsChecked = all || ((m & FaceBottom) != 0);
-                cbBack.IsChecked = all || ((m & FaceBack) != 0);
-                cbFront.IsChecked = all || ((m & FaceFront) != 0);
-
-                bool lockOthers = all;
-                cbR.IsEnabled = cbL.IsEnabled = cbT.IsEnabled = cbB.IsEnabled = cbBack.IsEnabled = cbFront.IsEnabled = !lockOthers;
-                updating = false;
+                summary.Children.Clear();
+                summary.Children.Add(new TextBlock { Text = "" + ex.Message, Foreground = Brushes.OrangeRed });
+                return;
             }
 
-            void WriteMaskFromChecks()
-            {
-                if (updating) return;
+            AddExtraSlot(dest, S_Right);
+        };
 
-                if (cbAll.IsChecked == true)
-                {
-                    slot.FaceMask = (MaterialTexture.CubeFaceMask)(-1);
-                }
-                else
-                {
-                    int m = 0;
-                    if (cbR.IsChecked == true) m |= FaceRight;
-                    if (cbL.IsChecked == true) m |= FaceLeft;
-                    if (cbT.IsChecked == true) m |= FaceTop;
-                    if (cbB.IsChecked == true) m |= FaceBottom;
-                    if (cbBack.IsChecked == true) m |= FaceBack;
-                    if (cbFront.IsChecked == true) m |= FaceFront;
-
-                    // normalize: all faces -> -1; otherwise keep explicit mask (incl. 0)
-                    slot.FaceMask = (MaterialTexture.CubeFaceMask)((m == FaceAll) ? -1 : m);
-                }
-                SceneService.NotifyChanged();
-                Rebuild();
-
-                RefreshFaceChecks();
-            }
-
-            // All handlers — IMPORTANT: don’t refresh before writing mask
-            cbAll.Checked += (_, __) =>
-            {
-                if (updating) return;
-                slot.FaceMask = (MaterialTexture.CubeFaceMask)(-1);
-                SceneService.NotifyChanged();
-                Rebuild();
-                RefreshFaceChecks();
-            };
-            cbAll.Unchecked += (_, __) =>
-            {
-                if (updating) return;
-                // Start with "none" so user can pick faces; enables the six boxes.
-                slot.FaceMask = (MaterialTexture.CubeFaceMask)0;
-                SceneService.NotifyChanged();
-                Rebuild();
-                RefreshFaceChecks();
-            };
-
-            foreach (var cb in new[] { cbR, cbL, cbT, cbB, cbBack, cbFront })
-            {
-                cb.Checked += (_, __) => WriteMaskFromChecks();
-                cb.Unchecked += (_, __) => WriteMaskFromChecks();
-            }
-
-            RefreshFaceChecks();
-
-            // Reorder / Remove
-            var up = new Button { Content = "↑" };
-            up.Click += (_, __) =>
-            {
-                int i = mat.Textures.IndexOf(slot);
-                if (i > 0)
-                {
-                    (mat.Textures[i - 1], mat.Textures[i]) = (mat.Textures[i], mat.Textures[i - 1]);
-                    SceneService.NotifyChanged();
-                    Rebuild();
-                }
-            };
-            row.Children.Add(up);
-
-            var down = new Button { Content = "↓" };
-            down.Click += (_, __) =>
-            {
-                int i = mat.Textures.IndexOf(slot);
-                if (i >= 0 && i < mat.Textures.Count - 1)
-                {
-                    (mat.Textures[i + 1], mat.Textures[i]) = (mat.Textures[i], mat.Textures[i + 1]);
-                    SceneService.NotifyChanged();
-                    Rebuild();
-                }
-            };
-            row.Children.Add(down);
-
-            var remove = new Button { Content = "Remove" };
-            remove.Click += (_, __) =>
-            {
-                if (previews.TryGetValue(slot, out var p))
-                {
-                    (p as IDisposable)?.Dispose();
-                    previews.Remove(slot);
-                }
-                mat.Textures.Remove(slot);
-                SceneService.NotifyChanged();
-                Rebuild();
-            };
-            row.Children.Add(remove);
-
-            return row;
-        }
-
-        void Rebuild()
+        /*btnClearAll.Click += (_, __) =>
         {
-            slotsPanel.Children.Clear();
-            foreach (var s in mat.Textures)
-                slotsPanel.Children.Add(SlotRow(s));
-        }
-
-        void AddFiles(IEnumerable<string> files)
-        {
-            foreach (var f in files)
-            {
-                var ext = Path.GetExtension(f).ToLowerInvariant();
-                if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp" or ".tga" or ".dds")) continue;
-
-                var (tex, previewBmp) = TryLoadTexture2D(f);
-                var name = Path.GetFileName(f);
-                var nameNoExtLower = Path.GetFileNameWithoutExtension(f).ToLowerInvariant();
-
-                var slot = new MaterialTexture
-                {
-                    Name = name,
-                    Texture = tex, // may be null if load failed; path still saved
-                    Usage = GuessUsageFromName(Path.GetFileNameWithoutExtension(f)),
-                    FaceMask = (MaterialTexture.CubeFaceMask)GuessFaceMaskFromName(nameNoExtLower),
-                    SourcePath = /* keep your helper */ MakeProjectRelative(f)
-                };
-
-                mat.Textures.Add(slot);
-                if (previewBmp is not null) previews[slot] = previewBmp;
-            }
-
+            slots.Clear();
+            BeginEdit();
+            WriteBackToOwner();
             SceneService.NotifyChanged();
-            Rebuild();
-        }
+            CommitEdit();
+            RebuildListUI();
+        };*/
 
+        // ---------- initial render ----------
+        RebuildListUI();
 
-        static MaterialTexture.TexUsage GuessUsageFromName(string nameRaw)
+        // If header still empty, show first slot’s relpath (defensive).
+        if (tbPath.Text == "(none)" && slots.Count > 0 && !string.IsNullOrWhiteSpace(slots[0].RelPath))
         {
-            var n = nameRaw.ToLowerInvariant();
-
-            if (n.Contains("ao") || n.Contains("_ao") || n.Contains("ambientocclusion")) return MaterialTexture.TexUsage.AmbientOcclusion;
-            if (n.Contains("nrm") || n.Contains("_n") || n.Contains("normal")) return MaterialTexture.TexUsage.Normal;
-            if (n.Contains("spec") || n.Contains("_s") || n.Contains("gloss")) return MaterialTexture.TexUsage.Specular;
-            if (n.Contains("rough") || n.Contains("rgh")) return MaterialTexture.TexUsage.Roughness;
-            if (n.Contains("metal") || n.Contains("mtl")) return MaterialTexture.TexUsage.Metallic;
-            if (n.Contains("emit") || n.Contains("emiss")) return MaterialTexture.TexUsage.Emissive;
-            if (n.Contains("detail") || n.Contains("dirt") || n.Contains("grunge")) return MaterialTexture.TexUsage.Detail;
-
-            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("base") || n.Contains("diff") || n.EndsWith("_c"))
-                return MaterialTexture.TexUsage.Albedo;
-
-            return MaterialTexture.TexUsage.Albedo;
+            tbPath.Text = slots[0].RelPath;
+            UpdateSummary(tbPath.Text);
         }
 
-        Rebuild();
         return box;
     }
 

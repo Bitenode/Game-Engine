@@ -129,7 +129,7 @@ namespace Game_Engine.Core
 
         /// <summary>
         /// Smoothness in [0..1] (Unity-style). Alias of 1 - Roughness.
-        /// Many builder paths use `m.Smoothness = x;`
+        ///  builder paths use `m.Smoothness = x;`
         /// </summary>
         public float Smoothness
         {
