@@ -14,7 +14,7 @@ namespace Game_Engine.Core.Component
         [Persist] public bool InvertFrontFace { get; set; } = false;
 
         // Persisted: one per submesh
-        [Persist] public List<string> MaterialPaths = new List<string>(); // project-relative .material.json files
+        [Persist] public List<string> MaterialPaths = new List<string>(); // project-relative .material files
 
         // Runtime cache (not persisted)
         public List<Material> ResolvedMaterials = new List<Material>();
@@ -50,7 +50,7 @@ namespace Game_Engine.Core.Component
         {
             if (string.IsNullOrWhiteSpace(rel)) return null;
 
-            var matAsset = ProjectService.LoadMaterialAsset(rel);      // new helper below
+            var matAsset = ProjectService.LoadMaterialAsset(rel);      
             if (matAsset == null) return null;
 
             var shader = ProjectService.LoadShaderAsset(matAsset.ShaderPath);

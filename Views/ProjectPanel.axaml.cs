@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -50,6 +51,8 @@ public sealed partial class ProjectPanel : UserControl
 
         // Tree interactions
         Tree.DoubleTapped += OnTreeDoubleTapped;
+        Tree.SelectionChanged += OnTreeSelectionChanged;
+        
 
         // Start internal drag
         Tree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel);
@@ -448,20 +451,43 @@ public sealed partial class ProjectPanel : UserControl
         catch { /* ignore */ }
     }
 
+    private void OnTreeSelectionChanged(object? s, SelectionChangedEventArgs e)
+    {
+        var node = SelectedNode;
+        if (node is null || node.IsFolder) return;
+
+        var ext = Path.GetExtension(node.FullPath);
+        if (ext.Equals(".material", StringComparison.OrdinalIgnoreCase))
+        {
+            // send absolute path to inspector
+            ProjectService.SelectAssetForInspector(node.FullPath);
+        }
+    }
+
     private void OnTreeDoubleTapped(object? s, RoutedEventArgs e)
     {
         var node = NodeFromObject(e.Source) ?? SelectedNode;
         if (node is null) return;
 
-        if (!node.IsFolder && string.Equals(Path.GetExtension(node.FullPath), ".cs", StringComparison.OrdinalIgnoreCase))
+        if (!node.IsFolder)
         {
-            ScriptEditorWindow.Open(OwnerWindow, node.FullPath);
+            var ext = Path.GetExtension(node.FullPath);
+            if (ext.Equals(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                ScriptEditorWindow.Open(OwnerWindow, node.FullPath);
+                return;
+            }
+            if (ext.Equals(".material", StringComparison.OrdinalIgnoreCase))
+            {
+                ProjectService.SelectAssetForInspector(node.FullPath);
+                return;
+            }
         }
-        else
-        {
-            Reveal(node);
-        }
+
+        Reveal(node);
     }
+
+    
 
     // ---------------- Internal drag & drop ----------------
 

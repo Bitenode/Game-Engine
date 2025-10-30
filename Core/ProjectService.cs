@@ -29,16 +29,42 @@ namespace Game_Engine.Core
         public string ManifestPath => Path.Combine(RootPath, "project.json");
     }
 
+    public delegate void AssetSelectedHandler(object sender, string absolutePath);
     /// <summary>Handles creating/opening/closing projects and writing the manifest.</summary>
     public static partial class ProjectService
     {
         public const string EngineVersion = "0.0.1"; 
+
 
         public static Project? Current { get; private set; }
 
         public static event Action? ProjectOpened;
         public static event Action? ProjectClosed;
         public static event Action? Changed; // generic "something about the project changed"
+
+        public static event AssetSelectedHandler AssetSelected; // fired with absolute path
+
+        public static string SelectedAssetPath { get; private set; }
+
+        public static void SelectAssetForInspector(string absolutePath)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(absolutePath)) return;
+                SelectedAssetPath = absolutePath;
+
+                var handler = AssetSelected;
+                if (handler != null)
+                    handler(null, absolutePath); // sender not used
+
+                var ch = Changed; // optional: keep your generic “project changed” ping
+                if (ch != null) ch();
+            }
+            catch
+            {
+                // swallow; inspector is best-effort
+            }
+        }
 
         static readonly JsonSerializerOptions _json = new()
         {

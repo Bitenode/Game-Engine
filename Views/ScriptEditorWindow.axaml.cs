@@ -50,7 +50,7 @@ public partial class ScriptEditorWindow : Window
         //  file tree wiring 
         FileTree.ItemsSource = _treeItems;
         FileTree.DoubleTapped += OnTreeDoubleTapped; // open on double-click
-        FileTree.SelectionChanged += OnTreeSelectionChanged; // just to show selection path in status (optional)
+        FileTree.SelectionChanged += OnTreeSelectionChanged; // just to show selection path in status 
 
         // Build initial tree (uses project paths)
         RebuildScriptTree();
@@ -316,6 +316,8 @@ public partial class ScriptEditorWindow : Window
         var tag = tvi?.Tag as NodeTag;
         if (tag != null) StatusText(tag.FullPath);
     }
+
+
 
     private void TryOpenScriptPath(string fullPath)
     {

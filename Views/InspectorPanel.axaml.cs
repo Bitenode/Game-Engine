@@ -1,31 +1,32 @@
-﻿using System;
-using System.Linq;
-using System.Reflection;
-using System.Collections.Generic;
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Data;
-using Avalonia.Layout;
-using Avalonia.Media;
 using Avalonia.Data.Converters;
-using System.Globalization;
-using Game_Engine.Core;
-using CoreTransform = Game_Engine.Core.Component.Transform;
-using CoreVector3 = Game_Engine.Core.Vector3;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Layout;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
-using Avalonia.VisualTree;
-using System.Runtime.InteropServices;
-using System.IO;
 using Avalonia.Platform.Storage;
-using System.Runtime.CompilerServices;
+using Avalonia.VisualTree;
+using Game_Engine.Core;
 using Game_Engine.Core.Component;
-using static Assimp.Metadata;
-using System.Text.RegularExpressions;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using static Assimp.Metadata;
+using CoreTransform = Game_Engine.Core.Component.Transform;
+using CoreVector3 = Game_Engine.Core.Vector3;
 
 namespace Game_Engine.Views;
 
@@ -107,6 +108,13 @@ public partial class InspectorPanel : UserControl
     private GameObject? _target;   // what THIS inspector is showing
     private bool _isLocked;        // lock state for THIS inspector
     private Window? OwnerWindow => this.GetVisualRoot() as Window;
+
+    private bool _assetInspectorActive;
+
+    // Use the custom delegate type
+    private AssetSelectedHandler _onAssetSelected;
+
+    private Action _onSelChanged, _onProjOpened, _onProjClosed, _onProjChanged;
 
     // Build the list of default/inspectable properties for a Behavior
     IEnumerable<PropertyInfo> InspectableProps(Behavior b)
@@ -388,7 +396,6 @@ public partial class InspectorPanel : UserControl
         return new List<ScriptInfo>(_scriptCache);
     }
 
-
     static Type? TryResolveLoadedType(string fullName)
     {
         Type? best = null;
@@ -663,43 +670,96 @@ public partial class InspectorPanel : UserControl
     {
         InitializeComponent();
 
-        // start with whatever is currently selected
         _target = SelectionService.Current;
 
-        // Rebuild the UI when global selection changes (unless locked)
-        SelectionService.Changed += () =>
+        // Build the delegate with the correct signature
+        _onAssetSelected = (sender, absPath) =>
         {
             if (_isLocked) return;
-            _target = SelectionService.Current;
-            BuildUI(_target);
+            if (string.IsNullOrWhiteSpace(absPath)) return;
+
+            _assetInspectorActive = true;
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => OnAssetSelected(absPath));
         };
+
+        // Subscribe once
+        ProjectService.AssetSelected += _onAssetSelected;
+
+        _onSelChanged = () =>
+        {
+            if (_isLocked) return;
+
+            if (_assetInspectorActive)
+            {
+                // leave material inspector when the user picks a GameObject
+                Avalonia.Threading.Dispatcher.UIThread.Post(ExitAssetInspector);
+                return;
+            }
+
+            _target = SelectionService.Current;
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildUI(_target));
+        };
+
+        SelectionService.Changed += _onSelChanged;
+
+        _onProjOpened = () => { s_triedLoadPersisted = false; EnsurePersistedEditorScriptsLoaded(); InvalidateScriptCache(); };
+        _onProjClosed = InvalidateScriptCache;
+        _onProjChanged = InvalidateScriptCache;
+
+        ProjectService.ProjectOpened += _onProjOpened;
+        ProjectService.ProjectClosed += _onProjClosed;
+        ProjectService.Changed += _onProjChanged;
+
+        // Single tidy cleanup block
+        this.Unloaded += (_, __) =>
+        {
+            if (_onAssetSelected != null) ProjectService.AssetSelected -= _onAssetSelected;
+            if (_onSelChanged != null) SelectionService.Changed -= _onSelChanged;
+            if (_onProjOpened != null) ProjectService.ProjectOpened -= _onProjOpened;
+            if (_onProjClosed != null) ProjectService.ProjectClosed -= _onProjClosed;
+            if (_onProjChanged != null) ProjectService.Changed -= _onProjChanged;
+        };
+
+        // Prefer showing currently selected asset (if any), else show selection inspector
+        if (!string.IsNullOrWhiteSpace(ProjectService.SelectedAssetPath))
+        {
+            _assetInspectorActive = true;
+            OnAssetSelected(ProjectService.SelectedAssetPath);
+        }
+        else
+        {
+            BuildUI(_target);
+        }
 
         // Lock toggle wiring
         if (this.FindControl<ToggleButton>("LockToggle") is { } lockBtn)
         {
             lockBtn.IsChecked = false;
-
             lockBtn.Checked += (_, __) =>
             {
-                _isLocked = true;
-                if (_target is null) _target = SelectionService.Current;
-                BuildUI(_target);
+                _isLocked = true;    // freeze current view (either asset inspector or selection inspector)
             };
-
             lockBtn.Unchecked += (_, __) =>
             {
                 _isLocked = false;
-                _target = SelectionService.Current;
-                BuildUI(_target);
+                if (_assetInspectorActive)
+                {
+                    // stay in asset mode unless selection changes explicitly; do nothing
+                }
+                else
+                {
+                    _target = SelectionService.Current;
+                    BuildUI(_target);
+                }
             };
         }
-        // Load persisted editor script dlls when a project opens and on first run
-        ProjectService.ProjectOpened += () => { s_triedLoadPersisted = false; EnsurePersistedEditorScriptsLoaded(); InvalidateScriptCache(); };
-        EnsurePersistedEditorScriptsLoaded(); // first-time (app just launched)
+    }
 
-        ProjectService.ProjectClosed += InvalidateScriptCache;
-        ProjectService.Changed += InvalidateScriptCache;
-
+    private void ExitAssetInspector()
+    {
+        _assetInspectorActive = false;
+        _target = SelectionService.Current;
+        Host.Children.Clear();
         BuildUI(_target);
     }
 
@@ -809,6 +869,58 @@ public partial class InspectorPanel : UserControl
             Host.Children.Add(EditorForBehavior(go, b));
     }
 
+    private void OnAssetSelected(string absPath)
+    {
+        // If it’s not a .material, leave asset mode and go back to normal inspector.
+        if (!absPath.EndsWith(".material", StringComparison.OrdinalIgnoreCase))
+        {
+            _assetInspectorActive = false;
+            _target = SelectionService.Current;
+            BuildUI(_target);
+            return;
+        }
+
+        _assetInspectorActive = true;
+
+        try
+        {
+            var text = File.ReadAllText(absPath);
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            var root = doc.RootElement;
+
+            string name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "Material" : "Material";
+            string shader = root.TryGetProperty("shader", out var s) ? s.GetString() ?? "" : "";
+            var p = root.TryGetProperty("parameters", out var pp) ? pp : default;
+            string tintHex = (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("Tint", out var tEl))
+                             ? (tEl.GetString() ?? "#FFFFFFFF") : "#FFFFFFFF";
+            float metallic = ReadF(p, "Metallic", 0f);
+            float roughness = ReadF(p, "Roughness", 0.5f);
+            bool transparent = ReadB(p, "Transparent", false);
+            float cutoff = ReadF(p, "AlphaCutoff", 0.5f);
+
+            // Build into the existing Host container
+            Host.Children.Clear();
+            var props = new StackPanel { Spacing = 6 };
+            Host.Children.Add(props);
+
+            BuildMaterialInspectorUI(props, absPath, name, shader, tintHex, metallic, roughness, transparent, cutoff);
+        }
+        catch (Exception ex)
+        {
+            Host.Children.Clear();
+            Host.Children.Add(new TextBlock { Text = "Failed to open material: " + ex.Message });
+        }
+
+        static float ReadF(JsonElement e, string k, float d)
+            => (e.ValueKind == JsonValueKind.Object && e.TryGetProperty(k, out var v) && v.TryGetDouble(out var x)) ? (float)x : d;
+
+        static bool ReadB(JsonElement e, string k, bool d)
+        {
+            if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(k, out var v)) return d;
+            return v.ValueKind == JsonValueKind.True ? true :
+                   v.ValueKind == JsonValueKind.False ? false : d;
+        }
+    }
 
     private static IEnumerable<Type> LoadableTypes(Assembly a)
     {
@@ -1016,6 +1128,494 @@ public partial class InspectorPanel : UserControl
             for (int i = 0; i < n.Children.Count; i++) stack.Push(n.Children[i]);
         }
     }
+
+
+    private void BuildMaterialInspectorUI(
+    StackPanel props,
+    string path,
+    string name,
+    string shader,
+    string tintHex,
+    float metallic,
+    float rough,
+    bool transparent,
+    float cutoff)
+    {
+        props.Children.Clear();
+
+        // ---------- helpers ----------
+        var owner = this.GetVisualRoot() as Window;
+        var fileName = Path.GetFileName(path);
+        var fileDir = Path.GetDirectoryName(path) ?? "";
+        var projRoot = ProjectService.Current != null ? ProjectService.Current.RootPath : "";
+
+        Func<string, Color> parseHex = hex =>
+        {
+            if (string.IsNullOrWhiteSpace(hex)) return Colors.White;
+            var h = hex.Trim();
+            if (h.StartsWith("#")) h = h.Substring(1);
+            if (h.Length == 6) h += "FF";
+            byte r = 255, g = 255, b = 255, a = 255;
+            try
+            {
+                r = Convert.ToByte(h.Substring(0, 2), 16);
+                g = Convert.ToByte(h.Substring(2, 2), 16);
+                b = Convert.ToByte(h.Substring(4, 2), 16);
+                a = Convert.ToByte(h.Substring(6, 2), 16);
+            }
+            catch { /* ignore */ }
+            return Color.FromArgb(a, r, g, b);
+        };
+        Func<Color, string> toHex = c =>
+            "#" + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2") + c.A.ToString("X2");
+
+        Func<string, bool> isUnderProject = abs =>
+        {
+            if (string.IsNullOrWhiteSpace(projRoot)) return false;
+            try
+            {
+                var A = Path.GetFullPath(abs);
+                var R = Path.GetFullPath(projRoot);
+                return A.StartsWith(R + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(A, R, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        };
+
+        Func<string, string> absToProjectRel = abs =>
+        {
+            if (string.IsNullOrWhiteSpace(projRoot)) return abs.Replace('\\', '/');
+            try
+            {
+                var rel = Path.GetRelativePath(projRoot, Path.GetFullPath(abs));
+                return rel.Replace('\\', '/');
+            }
+            catch { return abs.Replace('\\', '/'); }
+        };
+
+        // Load current textures -> show existing values
+        var texturesOrder = new[] { "Albedo", "Normal", "Metallic", "Roughness", "AmbientOcclusion", "Emissive", "Opacity" };
+        var texMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var raw = File.ReadAllText(path);
+            using (var doc = System.Text.Json.JsonDocument.Parse(raw))
+            {
+                var root = doc.RootElement;
+                System.Text.Json.JsonElement t;
+                if (root.TryGetProperty("textures", out t) && t.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    foreach (var k in texturesOrder)
+                    {
+                        System.Text.Json.JsonElement v;
+                        if (t.TryGetProperty(k, out v) && v.ValueKind == System.Text.Json.JsonValueKind.String)
+                            texMap[k] = v.GetString();
+                        else
+                            texMap[k] = null;
+                    }
+                }
+                else
+                {
+                    foreach (var k in texturesOrder) texMap[k] = null;
+                }
+            }
+        }
+        catch
+        {
+            foreach (var k in texturesOrder) texMap[k] = null;
+        }
+
+        // ---------- UI ----------
+        var headerGrid = new Avalonia.Controls.Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+
+        var headerLeft = new StackPanel { Spacing = 0 };
+        headerLeft.Children.Add(new TextBlock { Text = "Material", FontWeight = FontWeight.Bold });
+        headerLeft.Children.Add(new TextBlock { Text = fileName, Opacity = 0.7, Margin = new Thickness(0, 2, 0, 0) });
+        headerGrid.Children.Add(headerLeft.Place(0, 0));
+
+        var btnClose = new Button
+        {
+            Content = "Back to Selection",
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        btnClose.Click += (_, __) =>
+        {
+            if (_isLocked)
+            {
+                ShowInfo("Inspector is locked. Unlock to leave material view.");
+                return;
+            }
+            ExitAssetInspector();
+        };
+        headerGrid.Children.Add(btnClose.Place(1, 0));
+
+        props.Children.Add(headerGrid);
+
+        Func<string, Control, Control> Labeled = (label, input) =>
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 4) };
+            var lab = new TextBlock { Text = label, Width = 120, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.85 };
+            input.HorizontalAlignment = HorizontalAlignment.Stretch;
+            row.Children.Add(lab);
+            row.Children.Add(input);
+            return row;
+        };
+
+        // Name
+        var tbName = new TextBox { Text = name ?? "", Width = 240 };
+        props.Children.Add(Labeled("Name", tbName));
+
+        // Shader 
+        var tbShader = new TextBox { Text = shader ?? "", Width = 240, Watermark = "Shader asset path (.shader)" };
+        var btnPickShader = new Button { Content = "Browse…" };
+        var btnClearShader = new Button { Content = "Clear" };
+        var shaderRowInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        shaderRowInner.Children.Add(tbShader);
+        shaderRowInner.Children.Add(btnPickShader);
+        shaderRowInner.Children.Add(btnClearShader);
+        props.Children.Add(Labeled("Shader", shaderRowInner));
+
+        btnPickShader.Click += async (_, __) =>
+        {
+            if (owner == null) return;
+            var dlg = new OpenFileDialog
+            {
+                Title = "Select Shader",
+                AllowMultiple = false,
+                Filters = new List<FileDialogFilter>
+            {
+                new FileDialogFilter { Name = "Shader", Extensions = new List<string>{ "shader" } },
+                new FileDialogFilter { Name = "All Files", Extensions = new List<string>{ "*" } },
+            }
+            };
+            var files = await dlg.ShowAsync(owner);
+            if (files != null && files.Length > 0)
+            {
+                var picked = files[0];
+                tbShader.Text = isUnderProject(picked) ? absToProjectRel(picked) : picked;
+            }
+        };
+        btnClearShader.Click += (_, __) => tbShader.Text = "";
+
+        // Tint
+        var tbTint = new TextBox { Text = string.IsNullOrWhiteSpace(tintHex) ? "#FFFFFFFF" : tintHex.Trim(), Width = 120 };
+        var swatch = new Border
+        {
+            Width = 28,
+            Height = 20,
+            Background = new SolidColorBrush(parseHex(tbTint.Text)),
+            BorderBrush = Brushes.Black,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Margin = new Thickness(6, 0, 0, 0)
+        };
+        tbTint.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == TextBox.TextProperty)
+            {
+                try
+                {
+                    var b = swatch.Background as SolidColorBrush;
+                    if (b != null) b.Color = parseHex(tbTint.Text);
+                }
+                catch { }
+            }
+        };
+        var tintRowInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        tintRowInner.Children.Add(tbTint);
+        tintRowInner.Children.Add(swatch);
+        props.Children.Add(Labeled("Tint", tintRowInner));
+
+        // Metallic / Roughness
+        Func<double, Control> MakeValueLabel = v => new TextBlock { Text = v.ToString("0.00"), Width = 44, HorizontalAlignment = HorizontalAlignment.Right };
+
+        var sMetal = new Slider { Minimum = 0, Maximum = 1, Value = metallic, Width = 180 };
+        var lblMetal = (TextBlock)MakeValueLabel(sMetal.Value);
+        sMetal.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) lblMetal.Text = sMetal.Value.ToString("0.00"); };
+        var metalRowInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        metalRowInner.Children.Add(sMetal);
+        metalRowInner.Children.Add(lblMetal);
+        props.Children.Add(Labeled("Metallic", metalRowInner));
+
+        var sRough = new Slider { Minimum = 0, Maximum = 1, Value = rough, Width = 180 };
+        var lblRough = (TextBlock)MakeValueLabel(sRough.Value);
+        sRough.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) lblRough.Text = sRough.Value.ToString("0.00"); };
+        var roughRowInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        roughRowInner.Children.Add(sRough);
+        roughRowInner.Children.Add(lblRough);
+        props.Children.Add(Labeled("Roughness", roughRowInner));
+
+        // Transparent + cutoff
+        var chkTransparent = new CheckBox { Content = "Transparent", IsChecked = transparent };
+        props.Children.Add(chkTransparent);
+        var sCutoff = new Slider { Minimum = 0, Maximum = 1, Value = cutoff, Width = 180, IsEnabled = (chkTransparent.IsChecked == true) };
+        var lblCut = (TextBlock)MakeValueLabel(sCutoff.Value);
+        sCutoff.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) lblCut.Text = sCutoff.Value.ToString("0.00"); };
+        chkTransparent.Checked += (_, __) => sCutoff.IsEnabled = true;
+        chkTransparent.Unchecked += (_, __) => sCutoff.IsEnabled = false;
+        var cutRowInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        cutRowInner.Children.Add(sCutoff);
+        cutRowInner.Children.Add(lblCut);
+        props.Children.Add(Labeled("Alpha Cutoff", cutRowInner));
+
+        // ---------- Textures ----------
+        props.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 6) });
+        props.Children.Add(new TextBlock { Text = "Textures", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
+
+        Action<string> ensureKey = k => { if (!texMap.ContainsKey(k)) texMap[k] = null; };
+
+        Action<string> addTextureRow = slot =>
+        {
+            ensureKey(slot);
+            var initial = texMap[slot] ?? "";
+
+            var tbPath = new TextBox { Text = initial, Width = 240, Watermark = "(none)" };
+            var btnPick = new Button { Content = "Browse…" };
+            var btnClear = new Button { Content = "Clear" };
+
+            var drop = new Border
+            {
+                Padding = new Thickness(6, 2, 6, 2),
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Background = Brushes.Transparent,
+                Child = new TextBlock { Text = "Drop file here", Opacity = 0.7 }
+            };
+            DragDrop.SetAllowDrop(drop, true);
+
+            // Accept: Explorer/File tree via FileNames; also Files (IStorageItem) from other sources
+            drop.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+            {
+                if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+                    e.DragEffects = DragDropEffects.Copy;
+                else
+                    e.DragEffects = DragDropEffects.None;
+                e.Handled = true;
+            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+            drop.AddHandler(DragDrop.DropEvent, async (s, e) =>
+            {
+                string pickedPath = null;
+
+                // Plain filenames (also set by our ProjectPanel when dragging files)
+                if (e.Data.Contains(DataFormats.FileNames))
+                {
+                    var names = e.Data.GetFileNames();
+                    if (names != null) pickedPath = names.FirstOrDefault();
+                }
+
+                // Storage items (other apps / some OS paths)
+                if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+                {
+                    var asEnum = e.Data.Get(DataFormats.Files) as IEnumerable<IStorageItem>;
+                    if (asEnum != null)
+                    {
+                        var it = asEnum.FirstOrDefault();
+                        var f = it as IStorageFile;
+                        if (f != null)
+                        {
+                            var local = f.TryGetLocalPath();
+                            if (!string.IsNullOrWhiteSpace(local))
+                            {
+                                pickedPath = local;
+                            }
+                            else
+                            {
+                                // Copy stream beside the .material
+                                try
+                                {
+                                    Directory.CreateDirectory(fileDir);
+                                    var dst = Path.Combine(fileDir, f.Name);
+
+                                    var dir = Path.GetDirectoryName(dst) ?? fileDir;
+                                    var baseNoExt = Path.GetFileNameWithoutExtension(dst);
+                                    var ext = Path.GetExtension(dst);
+                                    var i = 1;
+                                    while (File.Exists(dst))
+                                        dst = Path.Combine(dir, baseNoExt + " (" + (i++) + ")" + ext);
+
+                                    using (var inS = await f.OpenReadAsync())
+                                    using (var outS = File.Create(dst))
+                                    {
+                                        await inS.CopyToAsync(outS);
+                                    }
+                                    pickedPath = dst;
+                                }
+                                catch { pickedPath = null; }
+                            }
+                        }
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(pickedPath)) return;
+
+                // image filter (match your MaterialEditor)
+                var ok = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".png",".jpg",".jpeg",".bmp",".tga",".dds",".tif",".tiff",".webp" };
+                if (!ok.Contains(Path.GetExtension(pickedPath))) return;
+
+                // If outside project, copy beside the .material
+                var target = pickedPath;
+                if (!isUnderProject(target))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(fileDir);
+                        var dst = Path.Combine(fileDir, Path.GetFileName(target));
+
+                        var dir = Path.GetDirectoryName(dst) ?? fileDir;
+                        var baseNoExt = Path.GetFileNameWithoutExtension(dst);
+                        var ext = Path.GetExtension(dst);
+                        var i = 1;
+                        while (File.Exists(dst))
+                            dst = Path.Combine(dir, baseNoExt + " (" + (i++) + ")" + ext);
+
+                        File.Copy(target, dst);
+                        target = dst;
+                    }
+                    catch { return; }
+                }
+
+                tbPath.Text = absToProjectRel(target);
+                texMap[slot] = tbPath.Text;
+                e.Handled = true;
+            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+            btnPick.Click += async (_, __) =>
+            {
+                if (owner == null) return;
+                var dlg = new OpenFileDialog
+                {
+                    Title = "Select " + slot + " Texture",
+                    AllowMultiple = false,
+                    Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "Images", Extensions = new List<string>{ "png","jpg","jpeg","tga","bmp","tif","tiff","webp","dds" } },
+                    new FileDialogFilter { Name = "All Files", Extensions = new List<string>{ "*" } },
+                }
+                };
+                var files = await dlg.ShowAsync(owner);
+                if (files != null && files.Length > 0)
+                {
+                    var picked = files[0];
+                    if (!isUnderProject(picked))
+                    {
+                        try
+                        {
+                            Directory.CreateDirectory(fileDir);
+                            var dst = Path.Combine(fileDir, Path.GetFileName(picked));
+                            var dir = Path.GetDirectoryName(dst) ?? fileDir;
+                            var baseNoExt = Path.GetFileNameWithoutExtension(dst);
+                            var ext = Path.GetExtension(dst);
+                            var i = 1;
+                            while (File.Exists(dst))
+                                dst = Path.Combine(dir, baseNoExt + " (" + (i++) + ")" + ext);
+                            File.Copy(picked, dst);
+                            picked = dst;
+                        }
+                        catch { return; }
+                    }
+                    tbPath.Text = absToProjectRel(picked);
+                    texMap[slot] = tbPath.Text;
+                }
+            };
+
+            btnClear.Click += (_, __) => { tbPath.Text = ""; texMap[slot] = null; };
+
+            var inner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            inner.Children.Add(tbPath);
+            inner.Children.Add(btnPick);
+            inner.Children.Add(btnClear);
+            inner.Children.Add(drop);
+
+            props.Children.Add(Labeled(slot, inner));
+        };
+
+        for (var i = 0; i < texturesOrder.Length; i++)
+            addTextureRow(texturesOrder[i]);
+
+        // ---------- Save / Revert ----------
+        props.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 6) });
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        var btnRevert = new Button { Content = "Revert" };
+        var btnSave = new Button { Content = "Save" };
+        buttons.Children.Add(btnRevert);
+        buttons.Children.Add(btnSave);
+        props.Children.Add(buttons);
+
+        btnRevert.Click += (_, __) => { try { OnAssetSelected(path); } catch { } };
+
+        btnSave.Click += (_, __) =>
+        {
+            var finalName = string.IsNullOrWhiteSpace(tbName.Text) ? "Material" : tbName.Text.Trim();
+            var finalShader = tbShader.Text != null ? tbShader.Text.Trim() : "";
+            var finalTint = toHex(parseHex(tbTint.Text));
+            var m = Math.Max(0, Math.Min(1, sMetal.Value));
+            var r = Math.Max(0, Math.Min(1, sRough.Value));
+            var tr = chkTransparent.IsChecked == true;
+            var ac = Math.Max(0, Math.Min(1, sCutoff.Value));
+
+            var writerOptions = new System.Text.Json.JsonWriterOptions { Indented = true };
+            using (var ms = new MemoryStream())
+            {
+                using (var jw = new System.Text.Json.Utf8JsonWriter(ms, writerOptions))
+                {
+                    jw.WriteStartObject();
+                    jw.WriteString("name", finalName);
+                    jw.WriteString("type", "Material");
+                    jw.WriteNumber("version", 1);
+                    jw.WriteString("shader", finalShader);
+
+                    jw.WritePropertyName("parameters");
+                    jw.WriteStartObject();
+                    jw.WriteString("Tint", finalTint);
+                    jw.WriteNumber("Metallic", m);
+                    jw.WriteNumber("Roughness", r);
+                    jw.WriteBoolean("Transparent", tr);
+                    jw.WriteNumber("AlphaCutoff", ac);
+                    jw.WriteEndObject();
+
+                    jw.WritePropertyName("textures");
+                    jw.WriteStartObject();
+                    for (var i = 0; i < texturesOrder.Length; i++)
+                    {
+                        var key = texturesOrder[i];
+                        var val = texMap.ContainsKey(key) ? texMap[key] : null;
+                        if (string.IsNullOrWhiteSpace(val)) jw.WriteNull(key);
+                        else jw.WriteString(key, val);
+                    }
+                    jw.WriteEndObject();
+
+                    jw.WriteEndObject();
+                    jw.Flush();
+                }
+
+                var json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
+                try
+                {
+                    File.WriteAllText(path, json);
+                    ProjectService.TouchModified();
+                    Game_Engine.Core.SceneService.NotifyChanged();
+                }
+                catch (Exception ex)
+                {
+                    props.Children.Add(new TextBlock
+                    {
+                        Text = "Save failed: " + ex.Message,
+                        Foreground = Brushes.OrangeRed,
+                        Margin = new Thickness(0, 6, 0, 0)
+                    });
+                }
+            }
+        };
+    }
+
 
 
     Control MaterialEditor(object owner, PropertyInfo prop)
