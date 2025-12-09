@@ -1523,7 +1523,6 @@ public class SceneView : Control
         if (_logNextRender)
         {
             _logNextRender = false;
-            DumpSelectedMaterialDebug();
             if (ShowWire)
                 Debug.WriteLine("[SceneView] ShowWire is enabled — solid pass is skipped.");
         }
@@ -1727,119 +1726,6 @@ public class SceneView : Control
             DrawTranslateGizmo(ctx, view, proj, size);
             
     }
-
-
-
-    void DumpSelectedMaterialDebug()
-    {
-        try
-        {
-            var go = _selected;
-            if (go == null)
-            {
-                Debug.WriteLine("[SceneView] No selection.");
-                return;
-            }
-
-            // All enabled filters/renderers on this GO
-            var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
-            var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
-            int pairs = Math.Min(filters.Count, renderers.Count);
-
-            Debug.WriteLine($"[SceneView] '{go.Name}' meshPairs={pairs} (filters={filters.Count}, renderers={renderers.Count})");
-            if (pairs == 0)
-            {
-                Debug.WriteLine("[SceneView] No enabled MeshFilter+MeshRenderer pairs.");
-                return;
-            }
-
-            // --- helpers ----------------------------------------------------------
-            static System.Numerics.Vector2[]? TryGetUVs(Mesh m)
-            {
-                var t = m.GetType();
-                string[] candidates = { "UVs", "UV", "TexCoords", "TexCoord", "UV0", "UV1" };
-                foreach (var n in candidates)
-                {
-                    var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (p != null && p.PropertyType == typeof(System.Numerics.Vector2[]))
-                        return (System.Numerics.Vector2[]?)p.GetValue(m);
-
-                    var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (f != null && f.FieldType == typeof(System.Numerics.Vector2[]))
-                        return (System.Numerics.Vector2[]?)f.GetValue(m);
-                }
-                return null;
-            }
-
-            static string GetTexUsage(object slot)
-            {
-                var prop = slot.GetType().GetProperty("Usage", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var v = prop?.GetValue(slot);
-                return v?.ToString() ?? "Albedo";
-            }
-
-            static int GetFaceMask(object slot)
-            {
-                var prop = slot.GetType().GetProperty("FaceMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop == null) return -1;
-                var v = prop.GetValue(slot);
-                if (v is int i) return i;
-                if (v != null && v.GetType().IsEnum) return Convert.ToInt32(v);
-                return -1;
-            }
-
-            // ----------------------------------------------------------------------
-
-            for (int i = 0; i < pairs; i++)
-            {
-                var mf = filters[i];
-                var mr = renderers[i];
-
-                var mesh = mf.Mesh;
-                var verts = mesh?.Vertices?.Length ?? 0;
-                var tris = (mesh?.TriIndices?.Length ?? 0) / 3;
-                var uvs = mesh != null ? TryGetUVs(mesh) : null;
-
-                Debug.WriteLine($"[SceneView]  Pair[{i}]  wire={mr.Wireframe}, castShadows={mr.CastShadows}, recvShadows={mr.ReceiveShadows}, color={mr.Color}");
-                Debug.WriteLine($"[SceneView]    Mesh    : verts={verts}, tris={tris}, hasUVs={(uvs != null)}, uvLen={(uvs?.Length ?? 0)}");
-
-                // Material (via reflection to work with non-public property)
-                var matProp = mr.GetType().GetProperty("Material",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var mat = matProp?.GetValue(mr) as Material;
-
-                if (mat == null)
-                {
-                    Debug.WriteLine($"[SceneView]    Material: <null>");
-                    continue;
-                }
-
-                int texCount = mat.Textures?.Count ?? 0;
-                Debug.WriteLine($"[SceneView]    Material: textures={texCount}");
-
-                if (texCount > 0 && mat.Textures != null)
-                {
-                    for (int ti = 0; ti < mat.Textures.Count; ti++)
-                    {
-                        var slot = mat.Textures[ti];
-                        var tex = slot.Texture;
-                        string size = tex != null ? $"{tex.Width}x{tex.Height}" : "null";
-                        string usage = GetTexUsage(slot);
-                        int mask = GetFaceMask(slot);
-                        string maskStr = mask == -1 ? "all" : $"0x{mask:X}";
-                        string name = slot.Name ?? "(unnamed)";
-
-                        Debug.WriteLine($"[SceneView]      [{ti}] name='{name}', usage={usage}, faceMask={maskStr}, tex={size}");
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine("[SceneView] Debug dump error: " + ex);
-        }
-    }
-
    
 
     void DrawNodeWire(DrawingContext ctx, in SN.Matrix4x4 vp, Size sz,

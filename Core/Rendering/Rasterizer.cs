@@ -47,31 +47,14 @@ namespace Game_Engine.Core
         {
             get
             {
-#if COMPUTE_PREZ
-                if (sGpuUnavailable) return "OFF (GPU unavailable" + (sPreZError != null ? $": {sPreZError}" : "") + ")";
-                return "GPU";
-#else
-        return "OFF (COMPUTE_PREZ not defined)";
-#endif
+                #if COMPUTE_PREZ
+                                if (sGpuUnavailable) return "OFF (GPU unavailable" + (sPreZError != null ? $": {sPreZError}" : "") + ")";
+                                return "GPU";
+                #else
+                        return "OFF (COMPUTE_PREZ not defined)";
+                #endif
             }
         }
-
-        public static int PreZLastTriangleCount => sLastPreZTris;
-
-        // External guard used by SceneRenderer
-        public static bool CanUseGpuPreZ
-        {
-            get
-            {
-#if COMPUTE_PREZ
-                return !sGpuUnavailable;
-#else
-        return false;
-#endif
-            }
-        }
-
-
 
         // --------------------- tiny packed-pixel helpers --------------------
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -266,40 +249,24 @@ namespace Game_Engine.Core
 
         // ========================= SHADED PASS ==============================
         public static void RasterizeMeshSolidZ(
-            Mesh m,
-            in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-            uint[] color, float[] zbuf, int W, int H,
-            Color tint, Material? mat,
-            SN.Vector3 L, float DiffuseK, float Ambient,
-            bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
-            ShadowMap? shadow, bool receiveShadows, bool doubleSided,
-            bool invertFrontFace,
-            bool transparentPass,
-            bool forceUsePreZ = false)
+    Mesh m,
+    in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+    uint[] color, float[] zbuf, int W, int H,
+    Color tint, Material? mat,
+    SN.Vector3 L, float DiffuseK, float Ambient,
+    bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
+    ShadowMap? shadow, bool receiveShadows, bool doubleSided,
+    bool invertFrontFace,
+    bool transparentPass,
+    bool forceUsePreZ = false)
         {
             var Vtx = m.Vertices; if (Vtx == null || Vtx.Length == 0) return;
             var Idx = m.TriIndices; if (Idx == null || Idx.Length == 0) return;
             var Nor = m.Normals;
 
-            // ---------- PRE-Z (GPU or CPU via TryBuildPreZ) ----------
+            // ---------- PRE-Z (disabled here; keep zbuf owner-controlled) ----------
             bool usePreZ = false;
-
-            /*if (forceUsePreZ && !transparentPass)
-            {
-                // Scene pre-Z already built into zbuf by caller
-                usePreZ = true;
-            }
-            else if (USE_GPU_PREZ && !transparentPass && !sGpuUnavailable)
-            {
-                // Build a light screen-space tri list and try pre-Z (GPU preferred, CPU fallback)
-                var triSS = BuildPreZTris(m, world, view, proj, W, H, doubleSided, invertFrontFace);
-                if (triSS.Count >= GPU_PREZ_TRI_THRESHOLD)
-                {
-                    usePreZ = TryBuildPreZ(triSS, W, H, zbuf);  // <- no sticky 'unavailable' here
-                                                                // NOTE: TryBuildPreZ handles GPU errors internally and falls back to CPU;
-                                                                // it will set sGpuUnavailable only if the GPU truly throws.
-                }
-            }*/
+            // (left intentionally off; scene pre-Z can seed zbuf before this call)
 
             // object AABB (for planar-UV fallback)
             SN.Vector3 bbMin = new SN.Vector3(float.MaxValue), bbMax = new SN.Vector3(float.MinValue);
@@ -330,6 +297,7 @@ namespace Game_Engine.Core
             SN.Vector3 LdirW = lightIsPoint ? SN.Vector3.Zero : SN.Vector3.Normalize(-L);
             const float near = 0.1f;
             const float INSIDE_EPS = 1e-3f;
+            const float Z_EPS = 1e-5f;
 
             // material constants
             float matOpacity = 1f;
@@ -351,7 +319,7 @@ namespace Game_Engine.Core
             // UV array (cached reflection once per type)
             var UVMesh = GetMeshUVs(m);
 
-            // “safe” tint
+            // “safe” tint (keep white when RGB==0 to avoid killing shaded color)
             uint tintPacked = ((uint)tint.A << 24) | ((uint)tint.R << 16) | ((uint)tint.G << 8) | tint.B;
             uint safeTintPacked = ((tint.R | tint.G | tint.B) == 0) ? 0xFFFFFFFFu : tintPacked;
 
@@ -467,7 +435,6 @@ namespace Game_Engine.Core
                     float dNvx = gx0 * v0p + gx1 * v1p + gx2 * v2p;
                     float dNvy = gy0 * v0p + gy1 * v1p + gy2 * v2p;
 
-                    // Row drawer
                     void DrawRows(int y0, int y1)
                     {
                         float py = y0 + 0.5f;
@@ -494,34 +461,31 @@ namespace Game_Engine.Core
 
                                 float z = b0 * az + b1 * bz + b2 * cz;
 
-                                // ---------- PRE-Z TEST ----------
-                                
-                                const float Z_EPS = 1e-5f;
-
+                                // z-test / write
                                 if (usePreZ)
                                 {
                                     float z01 = z * 0.5f + 0.5f;
-                                    float preZ = zbuf[idx];                  // [0..1]
+                                    float preZ = zbuf[idx]; // [0..1]
                                     if (z01 > preZ + PREZ_EPS) continue;
                                 }
                                 else
                                 {
                                     if (transparentPass)
                                     {
-                                        if (z > zbuf[idx] - Z_EPS) continue; 
+                                        if (z > zbuf[idx] - Z_EPS) continue; // keep nearest transparency
                                     }
                                     else
                                     {
-                                        if (z > zbuf[idx] - Z_EPS) continue; 
-                                        zbuf[idx] = z;                       // keep early write
+                                        if (z > zbuf[idx] - Z_EPS) continue;
+                                        zbuf[idx] = z; // early write for opaque
                                     }
                                 }
 
-                                // common denom once (for attrs)
+                                // perspective-correct denom
                                 float denom = b0 * aInvW + b1 * bInvW + b2 * cInvW;
                                 if (denom <= 0f) continue;
 
-                                // world-space normal (renorm if needed)
+                                // world normal
                                 var nW = (b0 * NaW * aInvW + b1 * NbW * bInvW + b2 * NcW * cInvW) / denom;
                                 float nWlen2 = nW.X * nW.X + nW.Y * nW.Y + nW.Z * nW.Z;
                                 if (nWlen2 < 0.85f || nWlen2 > 1.21f)
@@ -561,7 +525,7 @@ namespace Game_Engine.Core
 
                                 float dir01 = ndl * atten; if (dir01 > 1f) dir01 = 1f;
 
-                                // ---------- UVs + analytic derivatives ----------
+                                // UVs + derivatives (for mips)
                                 float Nu = b0 * u0p + b1 * u1p + b2 * u2p;
                                 float Nv = b0 * v0p + b1 * v1p + b2 * v2p;
                                 float u = Nu / denom;
@@ -573,7 +537,7 @@ namespace Game_Engine.Core
                                 float dvdx = (denom * dNvx - Nv * dDx) * invD2;
                                 float dvdy = (denom * dNvy - Nv * dDy) * invD2;
 
-                                // ---------- MATERIAL ----------
+                                // MATERIAL
                                 uint albedoPacked = 0xFFFFFFFFu;
                                 uint detailMulPacked = 0xFFFFFFFFu;
                                 uint emissivePacked = 0xFF000000u;
@@ -712,7 +676,7 @@ namespace Game_Engine.Core
                                     }
                                 }
 
-                                // ==== lighting combine ====
+                                // lighting combine
                                 float metallic = metalFromMap >= 0f ? metalFromMap : (mat?.Metallic ?? 0f);
                                 metallic = Math.Clamp(metallic, 0f, 1f);
 
@@ -751,6 +715,7 @@ namespace Game_Engine.Core
 
                                 if (transparentPass)
                                 {
+                                    // IMPORTANT: albedo-alpha fallback preserved
                                     float baseAlpha = (groups.HasAny && hadOpacity) ? opacityMul
                                                     : ((groups.HasAny && sawAlbedo && albedoAlpha > 0f) ? albedoAlpha : 1f);
                                     float aEff = Math.Clamp(baseAlpha * matOpacity * tintA, 0f, 1f);
@@ -764,7 +729,6 @@ namespace Game_Engine.Core
                             }
                         }
                     }
-                    ;
 
                     if (USE_PARALLEL && maxY - minY + 1 >= BAND_HEIGHT * 2)
                     {
@@ -785,13 +749,16 @@ namespace Game_Engine.Core
             }
         }
 
+
+
+
         // ====================== PRE-Z BUILD HELPERS =========================
 
         public static bool TryBuildPreZGPU(List<TriSS> triSS, int W, int H, float[] preZ01)
         {
-#if !COMPUTE_PREZ
-    return false;
-#else
+            #if !COMPUTE_PREZ
+                return false;
+            #else
             if (sGpuUnavailable || triSS == null || triSS.Count == 0) return false;
 
             try
@@ -830,7 +797,7 @@ namespace Game_Engine.Core
                 sPreZError = ex.GetType().Name + (string.IsNullOrEmpty(ex.Message) ? "" : (": " + ex.Message));
                 return false; // CPU fallback will run
             }
-#endif
+            #endif
         }
 
 
@@ -897,25 +864,25 @@ namespace Game_Engine.Core
         {
             sLastPreZTris = triSS != null ? triSS.Count : 0;
 
-#if COMPUTE_PREZ
-            if (!sGpuUnavailable && triSS != null && triSS.Count > 0)
-            {
-                try
+            #if COMPUTE_PREZ
+                if (!sGpuUnavailable && triSS != null && triSS.Count > 0)
                 {
-                    if (TryBuildPreZGPU(triSS, W, H, preZ01))
+                    try
                     {
-                        sPreZError = null;
-                        return true;
+                        if (TryBuildPreZGPU(triSS, W, H, preZ01))
+                        {
+                            sPreZError = null;
+                            return true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        sGpuUnavailable = true;
+                        sPreZError = ex.GetType().Name;
+                        // fall through to CPU
                     }
                 }
-                catch (Exception ex)
-                {
-                    sGpuUnavailable = true;
-                    sPreZError = ex.GetType().Name;
-                    // fall through to CPU
-                }
-            }
-#endif
+            #endif
 
             // CPU fallback
             return TryBuildPreZCPU(triSS, W, H, preZ01);
@@ -925,9 +892,9 @@ namespace Game_Engine.Core
 
         // Build clipped screen-space triangles with z in [0,1] for the GPU pre-Z pass
         public static List<TriSS> BuildPreZTris(
-    Mesh m,
-    in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-    int W, int H, bool doubleSided, bool invertFrontFace)
+            Mesh m,
+            in SN.Matrix4x4 world, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+            int W, int H, bool doubleSided, bool invertFrontFace)
         {
             var Vtx = m.Vertices;
             var Idx = m.TriIndices;
@@ -1323,91 +1290,9 @@ namespace Game_Engine.Core
         private static readonly Dictionary<Type, Func<object, string>> _getterUsage = new();
         private static readonly Dictionary<Type, Func<object, int>> _getterMask = new();
         private static readonly Dictionary<Type, Func<object, bool>> _getterNoFlipV = new();
-        private static readonly Dictionary<Type, (Func<object, float> su, Func<object, float> sv, Func<object, float> ou, Func<object, float> ov, Func<object, float> rot)>
-            _getterUV = new();
+        private static readonly Dictionary<Type, (Func<object, float> su, Func<object, float> sv, Func<object, float> ou, Func<object, float> ov, Func<object, float> rot)> _getterUV = new();
 
-        private static Texture2D? GetTextureFast(object slot)
-        {
-            var t = slot.GetType();
-            if (!_getterTexture.TryGetValue(t, out var g))
-            {
-                var p = t.GetProperty("Texture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                g = p == null ? (_ => null) : (object s) =>
-                {
-                    var raw = p.GetValue(s);
-                    return raw as Texture2D ?? TextureBridge.EnsureEngineTexture2D(raw);
-                };
-                _getterTexture[t] = g;
-            }
-            return g(slot);
-        }
-
-        private static string GetUsageFast(object slot)
-        {
-            var t = slot.GetType();
-            if (!_getterUsage.TryGetValue(t, out var g))
-            {
-                var p = t.GetProperty("Usage", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                g = p == null ? (_ => "Albedo") : (object s) => p.GetValue(s)?.ToString() ?? "Albedo";
-                _getterUsage[t] = g;
-            }
-            return g(slot);
-        }
-
-        private static int GetMaskFast(object slot)
-        {
-            var t = slot.GetType();
-            if (!_getterMask.TryGetValue(t, out var g))
-            {
-                var p = t.GetProperty("FaceMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                g = p == null ? (_ => -1) : (object s) =>
-                {
-                    var v = p.GetValue(s);
-                    if (v is int i) return i;
-                    return v != null && v.GetType().IsEnum ? Convert.ToInt32(v) : -1;
-                };
-                _getterMask[t] = g;
-            }
-            return g(slot);
-        }
-
-        private static bool GetNoFlipVFast(object slot)
-        {
-            var t = slot.GetType();
-            if (!_getterNoFlipV.TryGetValue(t, out var g))
-            {
-                var p = t.GetProperty("NoFlipV", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                g = p == null ? (_ => false) : (object s) => p.GetValue(s) is bool b && b;
-                _getterNoFlipV[t] = g;
-            }
-            return g(slot);
-        }
-
-        private static (float su, float sv, float ou, float ov, float cs, float sn) GetUVXformFast(object slot)
-        {
-            var t = slot.GetType();
-            if (!_getterUV.TryGetValue(t, out var g))
-            {
-                Func<object, float> gf(string name, float def)
-                {
-                    var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    return p == null ? (_ => def) : (object s) =>
-                    {
-                        var v = p.GetValue(s);
-                        if (v is float f) return f;
-                        if (v is double d) return (float)d;
-                        return def;
-                    };
-                }
-                g = (gf("ScaleU", 1f), gf("ScaleV", 1f), gf("OffsetU", 0f), gf("OffsetV", 0f), gf("RotateUV", 0f));
-                _getterUV[t] = g;
-            }
-            float su = g.su(slot), sv = g.sv(slot), ou = g.ou(slot), ov = g.ov(slot);
-            float rot = g.rot(slot) * (MathF.PI / 180f);
-            float cs = MathF.Abs(rot) < 1e-6f ? 1f : MathF.Cos(rot);
-            float sn = MathF.Abs(rot) < 1e-6f ? 0f : MathF.Sin(rot);
-            return (su, sv, ou, ov, cs, sn);
-        }
+       
 
         private static SlotUsage ParseUsage(string u)
         {
@@ -1423,57 +1308,303 @@ namespace Game_Engine.Core
             return SlotUsage.Albedo;
         }
 
+        // Tiny cache for texture files
+        private static readonly Dictionary<string, Texture2D> s_TexCache =
+            new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
 
-        private static MatGroups BuildGroups(Material? mat)
+
+        static MatGroups BuildGroups(Material? mat)
         {
             var g = new MatGroups();
-            if (mat?.Textures == null || mat.Textures.Count == 0) return g;
+            if (mat == null) return g;
 
-            var alb = new List<ResolvedSlot>(4);
-            var emi = new List<ResolvedSlot>(2);
-            var opa = new List<ResolvedSlot>(2);
-            var occ = new List<ResolvedSlot>(2);
-            var det = new List<ResolvedSlot>(2);
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            // ---------------- helpers ----------------
+            string GetStringMemberIgnoreCase(object obj, params string[] candidates)
+            {
+                if (obj == null) return null;
+                var t = obj.GetType();
+
+                // properties first
+                var props = t.GetProperties(BF);
+                for (int i = 0; i < candidates.Length; i++)
+                {
+                    string want = candidates[i];
+                    for (int j = 0; j < props.Length; j++)
+                    {
+                        var p = props[j];
+                        if (!string.Equals(p.Name, want, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (p.PropertyType != typeof(string)) break;
+                        try { return p.GetValue(obj) as string; } catch { }
+                        break;
+                    }
+                }
+
+                // fields fallback
+                var fields = t.GetFields(BF);
+                for (int i = 0; i < candidates.Length; i++)
+                {
+                    string want = candidates[i];
+                    for (int j = 0; j < fields.Length; j++)
+                    {
+                        var f = fields[j];
+                        if (!string.Equals(f.Name, want, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (f.FieldType != typeof(string)) break;
+                        try { return f.GetValue(obj) as string; } catch { }
+                        break;
+                    }
+                }
+                return null;
+            }
+
+            string ResolveToAbs(string relOrAbs)
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(relOrAbs)) return null;
+                    if (Path.IsPathRooted(relOrAbs)) return Path.GetFullPath(relOrAbs);
+                    var root = ProjectService.Current != null ? ProjectService.Current.RootPath : null;
+                    return Path.GetFullPath(Path.Combine(root ?? "", relOrAbs));
+                }
+                catch { return relOrAbs; }
+            }
+
+            Texture2D TryLoadTex(string relOrAbs)
+            {
+                try
+                {
+                    var abs = ResolveToAbs(relOrAbs);
+                    if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs)) return null;
+                    if (s_TexCache != null && s_TexCache.TryGetValue(abs, out var t) && t != null) return t;
+                    var tex = Texture2D.FromFile(abs);
+                    if (s_TexCache != null) s_TexCache[abs] = tex;
+                    return tex;
+                }
+                catch { return null; }
+            }
+
+            void AddIf(List<ResolvedSlot> list, string path, SlotUsage usage)
+            {
+                if (string.IsNullOrWhiteSpace(path)) return;
+                var tex = TryLoadTex(path);
+                if (tex == null) return;
+                // No UV transform; FaceMask = -1
+                list.Add(new ResolvedSlot(tex, usage, -1, false, 1f, 1f, 0f, 0f, 1f, 0f));
+            }
+
+            // ---------------- buckets ----------------
+            var alb = new List<ResolvedSlot>(2);
+            var emi = new List<ResolvedSlot>(1);
+            var opa = new List<ResolvedSlot>(1);
+            var occ = new List<ResolvedSlot>(1);
+            var det = new List<ResolvedSlot>(0); // not used yet
             var spc = new List<ResolvedSlot>(1);
             var rgh = new List<ResolvedSlot>(1);
             var met = new List<ResolvedSlot>(1);
 
-            for (int i = 0; i < mat.Textures.Count; i++)
+            // ----------------  Runtime list first (mat.Textures) ----------------
+            int listA = 0, listR = 0, listM = 0, listAO = 0, listE = 0, listO = 0, listS = 0;
+            try
             {
-                var slot = mat.Textures[i];
-                if (slot == null) continue;
-                var tex = GetTextureFast(slot);
-                if (tex == null) continue;
-
-                var (su, sv, ou, ov, cs, sn) = GetUVXformFast(slot);
-                bool noFlipV = GetNoFlipVFast(slot);
-                var rs = new ResolvedSlot(tex, ParseUsage(GetUsageFast(slot)), GetMaskFast(slot), noFlipV, su, sv, ou, ov, cs, sn);
-
-                switch (rs.Usage)
+                var list = (mat as Material)?.Textures; // public List<object> Textures
+                if (list != null && list.Count > 0)
                 {
-                    case SlotUsage.Emissive: emi.Add(rs); break;
-                    case SlotUsage.Opacity: opa.Add(rs); break;
-                    case SlotUsage.Occlusion: occ.Add(rs); break;
-                    case SlotUsage.Detail: det.Add(rs); break;
-                    case SlotUsage.Specular: spc.Add(rs); break;
-                    case SlotUsage.Roughness: rgh.Add(rs); break;
-                    case SlotUsage.Metallic: met.Add(rs); break;
-                    default: alb.Add(rs); break;
-                }
-            }
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        var sObj = list[i];
+                        if (sObj == null) continue;
 
-            g.Albedo = alb.Count > 0 ? alb.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Emissive = emi.Count > 0 ? emi.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Opacity = opa.Count > 0 ? opa.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Occlusion = occ.Count > 0 ? occ.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Detail = det.Count > 0 ? det.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Specular = spc.Count > 0 ? spc.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Roughness = rgh.Count > 0 ? rgh.ToArray() : Array.Empty<ResolvedSlot>();
-            g.Metallic = met.Count > 0 ? met.ToArray() : Array.Empty<ResolvedSlot>();
-            g.HasAny = alb.Count + emi.Count + opa.Count + occ.Count + det.Count + spc.Count + rgh.Count + met.Count > 0;
+                        // Extract fields from RuntimeTexSlot or any lookalike via reflection
+                        Texture2D tex = null;
+                        string usageStr = "Albedo";
+                        int faceMask = -1;
+                        bool noFlipV = false;
+                        float su = 1f, sv = 1f, ou = 0f, ov = 0f, rotDeg = 0f;
+
+                        // Fast path: RuntimeTexSlot
+                        if (sObj is RuntimeTexSlot rts)
+                        {
+                            tex = rts.Texture;
+                            usageStr = rts.Usage ?? "Albedo";
+                            faceMask = rts.FaceMask;
+                            noFlipV = rts.NoFlipV;
+                            su = rts.ScaleU; sv = rts.ScaleV; ou = rts.OffsetU; ov = rts.OffsetV; rotDeg = rts.RotateUV;
+                        }
+                        else
+                        {
+                            // Reflection path
+                            var t = sObj.GetType();
+
+                            Texture2D TryGetTex(object o)
+                            {
+                                try
+                                {
+                                    var p = t.GetProperty("Texture", BF);
+                                    var v = p?.GetValue(o);
+                                    return v as Texture2D;
+                                }
+                                catch { return null; }
+                            }
+                            float GetF(string name, float def)
+                            {
+                                try
+                                {
+                                    var p = t.GetProperty(name, BF);
+                                    if (p != null)
+                                    {
+                                        var v = p.GetValue(sObj);
+                                        if (v is float f) return f;
+                                        if (v is double d) return (float)d;
+                                    }
+                                }
+                                catch { }
+                                return def;
+                            }
+                            int GetI(string name, int def)
+                            {
+                                try
+                                {
+                                    var p = t.GetProperty(name, BF);
+                                    if (p != null)
+                                    {
+                                        var v = p.GetValue(sObj);
+                                        if (v is int i) return i;
+                                        if (v != null && v.GetType().IsEnum) return Convert.ToInt32(v);
+                                    }
+                                }
+                                catch { }
+                                return def;
+                            }
+                            bool GetB(string name, bool def)
+                            {
+                                try
+                                {
+                                    var p = t.GetProperty(name, BF);
+                                    if (p != null)
+                                    {
+                                        var v = p.GetValue(sObj);
+                                        if (v is bool b) return b;
+                                    }
+                                }
+                                catch { }
+                                return def;
+                            }
+                            string GetS(string name, string def)
+                            {
+                                try
+                                {
+                                    var p = t.GetProperty(name, BF);
+                                    if (p != null)
+                                    {
+                                        var v = p.GetValue(sObj) as string;
+                                        if (!string.IsNullOrWhiteSpace(v)) return v;
+                                    }
+                                }
+                                catch { }
+                                return def;
+                            }
+
+                            tex = TryGetTex(sObj);
+                            usageStr = GetS("Usage", "Albedo");
+                            faceMask = GetI("FaceMask", -1);
+                            noFlipV = GetB("NoFlipV", false);
+                            su = GetF("ScaleU", 1f);
+                            sv = GetF("ScaleV", 1f);
+                            ou = GetF("OffsetU", 0f);
+                            ov = GetF("OffsetV", 0f);
+                            rotDeg = GetF("RotateUV", 0f);
+                        }
+
+                        if (tex == null) continue;
+
+                        float rot = rotDeg * (MathF.PI / 180f);
+                        float cs = MathF.Abs(rot) < 1e-6f ? 1f : MathF.Cos(rot);
+                        float sn = MathF.Abs(rot) < 1e-6f ? 0f : MathF.Sin(rot);
+
+                        var rs = new ResolvedSlot(tex, ParseUsage(usageStr), faceMask, noFlipV, su, sv, ou, ov, cs, sn);
+
+                        switch (rs.Usage)
+                        {
+                            case SlotUsage.Albedo: alb.Add(rs); listA++; break;
+                            case SlotUsage.Roughness: rgh.Add(rs); listR++; break;
+                            case SlotUsage.Metallic: met.Add(rs); listM++; break;
+                            case SlotUsage.Occlusion: occ.Add(rs); listAO++; break;
+                            case SlotUsage.Emissive: emi.Add(rs); listE++; break;
+                            case SlotUsage.Opacity: opa.Add(rs); listO++; break;
+                            case SlotUsage.Specular: spc.Add(rs); listS++; break;
+                            default: /* Detail/Normal ignored here */ break;
+                        }
+                    }
+                }
+
+                // Debug list counts
+                System.Diagnostics.Debug.WriteLine($"[MatTrace:Groups(list)] -> A={listA} R={listR} M={listM} AO={listAO} E={listE} O={listO} S={listS}");
+            }
+            catch { }
+
+            // ----------------Flat string paths on Material (fallback/augment) ----------------
+            // Albedo
+            string albedo = GetStringMemberIgnoreCase(mat, "Albedo", "AlbedoPath", "AlbedoTexturePath", "BaseColor", "BaseColorPath", "BaseTexturePath", "BaseColorTexturePath");
+            // Metallic
+            string metallic = GetStringMemberIgnoreCase(mat, "Metallic", "MetallicPath", "MetallicTexturePath");
+            // Roughness or Smoothness texture path
+            string roughness = GetStringMemberIgnoreCase(mat, "Roughness", "RoughnessPath", "RoughnessTexturePath", "SmoothnessPath", "SmoothnessTexturePath");
+            // Ambient Occlusion
+            string ao = GetStringMemberIgnoreCase(mat, "AmbientOcclusion", "AO", "AOPath", "AOTexturePath", "AmbientOcclusionPath", "AmbientOcclusionTexturePath");
+            // Emissive
+            string emissive = GetStringMemberIgnoreCase(mat, "Emissive", "Emission", "EmissivePath", "EmissionPath", "EmissiveTexturePath", "EmissionTexturePath");
+            // Opacity / Alpha
+            string opacity = GetStringMemberIgnoreCase(mat, "Opacity", "Alpha", "OpacityPath", "AlphaPath", "OpacityTexturePath", "AlphaTexturePath");
+            // Specular (optional)
+            string specular = GetStringMemberIgnoreCase(mat, "Specular", "SpecularPath", "SpecularTexturePath");
+            // Normal is parsed but not used in current shading
+
+            int flatA = 0, flatR = 0, flatM = 0, flatAO = 0, flatE = 0, flatO = 0, flatS = 0;
+            if (!string.IsNullOrWhiteSpace(albedo)) { AddIf(alb, albedo, SlotUsage.Albedo); if (alb.Count > listA) flatA++; }
+            if (!string.IsNullOrWhiteSpace(roughness)) { AddIf(rgh, roughness, SlotUsage.Roughness); if (rgh.Count > listR) flatR++; }
+            if (!string.IsNullOrWhiteSpace(metallic)) { AddIf(met, metallic, SlotUsage.Metallic); if (met.Count > listM) flatM++; }
+            if (!string.IsNullOrWhiteSpace(ao)) { AddIf(occ, ao, SlotUsage.Occlusion); if (occ.Count > listAO) flatAO++; }
+            if (!string.IsNullOrWhiteSpace(emissive)) { AddIf(emi, emissive, SlotUsage.Emissive); if (emi.Count > listE) flatE++; }
+            if (!string.IsNullOrWhiteSpace(opacity)) { AddIf(opa, opacity, SlotUsage.Opacity); if (opa.Count > listO) flatO++; }
+            if (!string.IsNullOrWhiteSpace(specular)) { AddIf(spc, specular, SlotUsage.Specular); if (spc.Count > listS) flatS++; }
+
+            try
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[MatTrace:Groups(flat)] -> A={(string.IsNullOrWhiteSpace(albedo) ? 0 : 1)} R={(string.IsNullOrWhiteSpace(roughness) ? 0 : 1)} " +
+                    $"M={(string.IsNullOrWhiteSpace(metallic) ? 0 : 1)} AO={(string.IsNullOrWhiteSpace(ao) ? 0 : 1)} E={(string.IsNullOrWhiteSpace(emissive) ? 0 : 1)} " +
+                    $"O={(string.IsNullOrWhiteSpace(opacity) ? 0 : 1)} S={(string.IsNullOrWhiteSpace(specular) ? 0 : 1)}");
+            }
+            catch { }
+
+            // ---------------- finalize ----------------
+            g.Albedo = alb.ToArray();
+            g.Emissive = emi.ToArray();
+            g.Opacity = opa.ToArray();
+            g.Occlusion = occ.ToArray();
+            g.Detail = det.ToArray();
+            g.Specular = spc.ToArray();
+            g.Roughness = rgh.ToArray();
+            g.Metallic = met.ToArray();
+            g.HasAny = (alb.Count + emi.Count + opa.Count + occ.Count + det.Count + spc.Count + rgh.Count + met.Count) > 0;
             g.HasOpacity = opa.Count > 0;
+
+            try
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[MatTrace:Groups] Albedo={g.Albedo.Length} Emi={g.Emissive.Length} Op={g.Opacity.Length} AO={g.Occlusion.Length} " +
+                    $"Det={g.Detail.Length} Spec={g.Specular.Length} Rough={g.Roughness.Length} Met={g.Metallic.Length}");
+                System.Diagnostics.Debug.WriteLine(
+                    $"[MatTrace:GroupsUsed] A={alb.Count} R={rgh.Count} M={met.Count} AO={occ.Count} E={emi.Count} O={opa.Count} D={det.Count}");
+            }
+            catch { }
+
             return g;
         }
+
+
+
 
         // APPLY SLOT UV TRANSFORM 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

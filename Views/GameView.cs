@@ -1,9 +1,4 @@
 ﻿#nullable enable
-using System;
-using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -12,10 +7,16 @@ using Avalonia.Media.Imaging;
 using Avalonia.Media.TextFormatting;
 using Avalonia.Platform;
 using Avalonia.Threading;
-using SN = System.Numerics;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
+using System;
+using System.Buffers;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Reflection;
+using SN = System.Numerics;
 
 namespace Game_Engine.Views
 {
@@ -355,6 +356,7 @@ namespace Game_Engine.Views
             switch (State)
             {
                 case GamePanel.GameState.Playing:
+                    Rasterizer.ResetPreZState(); // clear pre-Z kernels/buffers at play start
                     EnsurePlaySnapshot();
                     EnsureAwakeStart();
                     _needsWarm = true;
@@ -410,6 +412,7 @@ namespace Game_Engine.Views
                 $"GE_PlaySnapshot_{Guid.NewGuid():N}.scene");
             SceneService.SaveToFile(tmp);
             _playSnapshotPath = tmp;
+
         }
         void RestorePlaySnapshot()
         {
@@ -536,13 +539,14 @@ namespace Game_Engine.Views
             return (int)MathF.Round(yaw * 2048f); // quantize to ~0.003 rad (~0.17°)
         }
 
-
-
+        // --- Forces transparent redraw every frame ---
+        private bool _firstFrame = true;
 
         public override void Render(DrawingContext ctx)
         {
             base.Render(ctx);
 
+            MaterialRebind.RepairScene();
             _frameWatch.Restart();
 
             double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
@@ -556,6 +560,9 @@ namespace Game_Engine.Views
                 Ema(ref _msFrameEma, _msFrameLast, 0.18);
             }
 
+            // --------------------------------------------------------------------
+            // DISPLAY + INTERNAL RESOLUTION
+            // --------------------------------------------------------------------
             double Wdip = Math.Max(1.0, Bounds.Width);
             double Hdip = Math.Max(1.0, Bounds.Height);
 
@@ -572,27 +579,35 @@ namespace Game_Engine.Views
 
             if (_prevRW != RW || _prevRH != RH)
             {
-                Rasterizer.ResetPreZState();   // reset GPU/CPU pre-Z kernels on size change
-                _prevRW = RW; _prevRH = RH;
+                Rasterizer.ResetPreZState();
+                _prevRW = RW;
+                _prevRH = RH;
+                _firstFrame = true;
             }
 
             var color = _bbColor!;
             var zbuf = _bbZ!;
 
+            // --------------------------------------------------------------------
+            // EDITOR MODE: draw blank screen
+            // --------------------------------------------------------------------
             if (State != GamePanel.GameState.Playing)
             {
-                ctx.FillRectangle(new SolidColorBrush(Color.FromRgb(0x12, 0x14, 0x17)), new Rect(0, 0, Wdip, Hdip));
+                ctx.FillRectangle(new SolidColorBrush(Color.FromRgb(0x12, 0x14, 0x17)),
+                    new Rect(0, 0, Wdip, Hdip));
                 DrawFpsHud(ctx);
                 EndFrame();
                 return;
             }
 
-            // ---------- Sky ----------
+            // --------------------------------------------------------------------
+            // SCENE SKY / LIGHT SETUP
+            // --------------------------------------------------------------------
             var sky = _sky;
             var skyTop = sky != null ? sky.Top : FallbackSkyTop;
             var skyBot = sky != null ? sky.Bottom : FallbackSkyBot;
-            var skyTex = sky != null ? sky.Texture : null;
-            float skyMix = Math.Clamp(sky != null ? sky.TextureBlend : 0f, 0f, 1f);
+            var skyTex = sky?.Texture;
+            float skyMix = sky != null ? Math.Clamp(sky.TextureBlend, 0f, 1f) : 0f;
 
             SN.Vector3? sunDir = null;
             if (sky != null)
@@ -602,8 +617,8 @@ namespace Game_Engine.Views
                 sunDir = SN.Vector3.Normalize(SN.Vector3.Transform(baseSun, rotY));
             }
 
-            // ---------- Lighting ----------
-            float Ambient = Math.Clamp(sky != null ? sky.Ambient : 0f, 0f, 1f);
+            // LIGHTING
+            float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
 
             var light = _light;
             SN.Vector3 L = SN.Vector3.UnitY;
@@ -614,126 +629,106 @@ namespace Game_Engine.Views
 
             if (light != null && light.gameObject != null)
             {
-                float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
-                float baseK = light.Intensity * (lum > 0f ? lum : 0.001f);
-                DiffuseK = baseK > 0.001f ? baseK : 0.001f;
+                float lum = (light.Color.R * 0.2126f
+                            + light.Color.G * 0.7152f
+                            + light.Color.B * 0.0722f) / 255f;
+
+                float baseK = light.Intensity * Math.Max(lum, 0.001f);
+                DiffuseK = Math.Max(baseK, 0.001f);
+
+                var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
 
                 if (light.Type == LightType.Directional)
                 {
-                    var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
                     var fwd = SN.Vector3.Normalize(new SN.Vector3(m.M13, m.M23, m.M33));
                     L = -fwd;
-                    lightIsPoint = false;
                 }
-                else if (light.Type == LightType.Point)
+                else
                 {
                     lightIsPoint = true;
-                    var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
                     lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, m);
                     lightRange = Math.Max(0.001f, light.Range);
                 }
             }
 
+            // --------------------------------------------------------------------
+            // PRE-Z: Enable only when opaque dominates
+            // --------------------------------------------------------------------
+            bool allowPreZ = (!_sceneHasTransparent); // DO NOT pre-z transparent scenes
+
             var cams = _cams;
 
-            // Do NOT seed with pre-Z when scene has any transparent (prevents window panes
-            // from occluding walls). Opaque-only pre-Z otherwise.
-            bool allowScenePreZ = !_sceneHasTransparent;
-
-            // ---------- Single-camera fullscreen fast path ----------
+            // --------------------------------------------------------------------
+            // SINGLE CAMERA FAST PATH
+            // --------------------------------------------------------------------
             if (cams.Count == 1)
             {
                 var cam = cams[0];
                 var vp = SceneGraphUtil.ViewportPx(cam, RW, RH);
                 int vx = vp.Item1, vy = vp.Item2, vw = vp.Item3, vh = vp.Item4;
 
+                // FULL SCREEN
                 if (vx == 0 && vy == 0 && vw == RW && vh == RH)
                 {
                     var vView = cam.GetViewMatrix();
                     var vProj = cam.GetProjectionMatrix(new Size(Wdip, Hdip));
 
-                    var lightKey = BuildLightKey(lightIsPoint, L, lightPosW, lightRange, DiffuseK, Ambient);
-                    var curSkyKey = BuildSkyKey(skyTop, skyBot, sky != null ? sky.Yaw : 0f, skyMix, skyTex);
-                    int curViewYawKey = ViewYawKey(vView);
+                    // ------------------------------------------------------------
+                    //  SKY CACHE OPTIMIZATION
+                    // ------------------------------------------------------------
+                    int yawKey = ViewYawKey(vView);
+                    var curSkyKey = BuildSkyKey(skyTop, skyBot, sky?.Yaw ?? 0, skyMix, skyTex);
 
-                    bool changed =
-                        !_cacheValid ||
-                        _lastWKey != RW || _lastHKey != RH ||
-                        !MatNearEqual(vView, _lastView) ||
-                        !MatNearEqual(vProj, _lastProj) ||
-                        !_lastLightKey.Equals(lightKey) ||
-                        !_lastSkyKey.Equals(curSkyKey) ||
-                        _needsWarm;
-
-                    bool needSky =
+                    bool rebuildSky =
                         !_skyCacheValid ||
                         _skyCacheW != RW || _skyCacheH != RH ||
-                        !_skyCacheKey.Equals(curSkyKey) ||
-                        _skyCacheViewYawKey != curViewYawKey;
+                        _skyCacheViewYawKey != yawKey ||
+                        !_skyCacheKey.Equals(curSkyKey);
 
-                    if (needSky)
+                    if (rebuildSky)
                     {
-                        _skyCacheW = RW; _skyCacheH = RH;
-                        _skyCacheKey = curSkyKey;
-                        _skyCacheViewYawKey = curViewYawKey;
-                        _skyCacheColor = new uint[RW * RH];
-                        _skyCacheValid = true;
-
+                        Array.Fill(zbuf, 1f);
                         CameraClear.ClearForCamera(
-                            cam, _skyCacheColor, zbuf, RW, RH,
+                            cam, _skyCacheColor = new uint[RW * RH], zbuf, RW, RH,
                             vView, vProj,
                             skyTop, skyBot, sunDir,
                             skyTex, skyMix,
-                            sky != null ? sky.Yaw : 0f,
-                            sky != null ? sky.SeamFeather : 0.01f,
-                            sky != null ? sky.KeyOutNearBlack : false,
-                            sky != null ? sky.KeyLuma : 0.08f);
+                            sky?.Yaw ?? 0f,
+                            sky?.SeamFeather ?? 0.01f,
+                            sky?.KeyOutNearBlack ?? false,
+                            sky?.KeyLuma ?? 0.08f);
+
+                        _skyCacheValid = true;
+                        _skyCacheW = RW;
+                        _skyCacheH = RH;
+                        _skyCacheViewYawKey = yawKey;
+                        _skyCacheKey = curSkyKey;
                     }
 
-                    if (!changed)
-                    {
-                        Array.Copy(_skyCacheColor, color, color.Length);
-                        Array.Fill<float>(zbuf, 1f);
-
-                        _passWatch.Restart();
-                        BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
-                        _passWatch.Stop();
-                        _msUploadLast = _passWatch.Elapsed.TotalMilliseconds;
-                        Ema(ref _msUploadEma, _msUploadLast, 0.18);
-
-                        DrawFpsHud(ctx);
-                        EndFrame();
-                        return;
-                    }
-
-                    // Start from cached sky, clear depth
+                    // copy cached sky to framebuffer
                     Array.Copy(_skyCacheColor, color, color.Length);
-                    Array.Fill<float>(zbuf, 1f);
+                    Array.Fill(zbuf, 1f);
 
-                    // ---- Build scene pre-Z once (opaque only) and convert to NDC depth once
-                    bool scenePreZReady = false;
-                    if (allowScenePreZ)
+                    // ------------------------------------------------------------
+                    //  PRE-Z PASS (if enabled)
+                    // ------------------------------------------------------------
+                    bool preZReady = false;
+
+                    if (allowPreZ)
                     {
                         _passWatch.Restart();
-                        scenePreZReady = SceneRenderer.BuildScenePreZAll(vView, vProj, RW, RH, zbuf);
+                        preZReady = SceneRenderer.BuildScenePreZAll(vView, vProj, RW, RH, zbuf);
                         _passWatch.Stop();
+
                         _msPreZLast = _passWatch.Elapsed.TotalMilliseconds;
                         Ema(ref _msPreZEma, _msPreZLast, 0.18);
-
-                        if (scenePreZReady)
-                        {
-                            for (int j = 0; j < zbuf.Length; j++)
-                                zbuf[j] = zbuf[j] * 2f - 1f; // [0..1] → NDC [-1..1]
-                        }
-                    }
-                    else
-                    {
-                        _msPreZLast = 0;
-                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
                     }
 
-                    // ---- Opaque
+                    // ------------------------------------------------------------
+                    //  OPAQUE PASS
+                    // ------------------------------------------------------------
                     _passWatch.Restart();
+
                     foreach (var root in SceneService.Root)
                     {
                         SceneRenderer.DrawNodeSolidZ(
@@ -742,162 +737,64 @@ namespace Game_Engine.Views
                             L, DiffuseK, Ambient,
                             lightIsPoint, lightPosW, lightRange,
                             shadow: null,
-                            scenePreZReady: scenePreZReady);
+                            scenePreZReady: preZReady);
                     }
+
                     _passWatch.Stop();
                     _msOpaqueLast = _passWatch.Elapsed.TotalMilliseconds;
                     Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
 
-                    // ---- Transparent (zbuf already NDC)
+                    
                     _msTranspLast = 0;
-                    if (_sceneHasTransparent)
+
+                    // --- ALWAYS run transparent pass (temporary correctness fix) ---
+                    _passWatch.Restart();
+
+                    foreach (var root in SceneService.Root)
                     {
-                        _passWatch.Restart();
-                        foreach (var root in SceneService.Root)
-                        {
-                            SceneRenderer.DrawNodeSolidZ_QueueTransparent(
-                                root, vView, vProj, SN.Matrix4x4.Identity,
-                                color, zbuf, RW, RH,
-                                L, DiffuseK, Ambient,
-                                lightIsPoint, lightPosW, lightRange,
-                                shadow: null);
-                        }
-                        _passWatch.Stop();
-                        _msTranspLast = _passWatch.Elapsed.TotalMilliseconds;
-                        Ema(ref _msTranspEma, _msTranspLast, 0.18);
+                        SceneRenderer.DrawNodeSolidZ_QueueTransparent(
+                            root, vView, vProj, SN.Matrix4x4.Identity,
+                            color, zbuf, RW, RH,
+                            L, DiffuseK, Ambient,
+                            lightIsPoint, lightPosW, lightRange,
+                            shadow: null);
                     }
 
-                    // Update cache keys
-                    _lastView = vView; _lastProj = vProj;
-                    _lastLightKey = lightKey; _lastSkyKey = curSkyKey;
-                    _lastWKey = RW; _lastHKey = RH;
-                    _cacheValid = true;
+                    _passWatch.Stop();
+                    _msTranspLast = _passWatch.Elapsed.TotalMilliseconds;
+                    Ema(ref _msTranspEma, _msTranspLast, 0.18);
 
+
+                    // ------------------------------------------------------------
+                    // 5) DYNAMIC RESOLUTION (feeds back into next frame)
+                    // ------------------------------------------------------------
+                    TuneResolution(_msOpaqueLast, _msTranspLast);
+
+                    // ------------------------------------------------------------
+                    // 6) BLIT TO SCREEN
+                    // ------------------------------------------------------------
                     _passWatch.Restart();
                     BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
                     _passWatch.Stop();
+
                     _msUploadLast = _passWatch.Elapsed.TotalMilliseconds;
                     Ema(ref _msUploadEma, _msUploadLast, 0.18);
 
+                    // HUD
                     DrawFpsHud(ctx);
-                    TuneResolution(_msOpaqueEma, _msTranspEma);
                     EndFrame();
                     return;
                 }
             }
 
-            // ---------- Multi-camera path ----------
+            // --------------------------------------------------------------------
+            // MULTI-CAMERA FALLBACK (simple clear)
+            // --------------------------------------------------------------------
             FillVerticalGradient(color, RW, RH, skyTop, skyBot);
-
-            double totalOpaqueMs = 0, totalTranspMs = 0;
-
-            for (int camIdx = 0; camIdx < cams.Count; camIdx++)
-            {
-                var cam = cams[camIdx];
-                var vp = SceneGraphUtil.ViewportPx(cam, RW, RH);
-                int vx = vp.Item1, vy = vp.Item2, vw = vp.Item3, vh = vp.Item4;
-
-                int vwD = Math.Max(1, (int)Math.Round(vw / rs));
-                int vhD = Math.Max(1, (int)Math.Round(vh / rs));
-
-                var vColor = ArrayPool<uint>.Shared.Rent(vw * vh);
-                var vZ = ArrayPool<float>.Shared.Rent(vw * vh);
-
-                try
-                {
-                    var vView = cam.GetViewMatrix();
-                    var vProj = cam.GetProjectionMatrix(new Size(vwD, vhD));
-
-                    CameraClear.ClearForCamera(
-                        cam, vColor, vZ, vw, vh,
-                        vView, vProj,
-                        skyTop, skyBot, sunDir,
-                        skyTex, skyMix,
-                        sky != null ? sky.Yaw : 0f,
-                        sky != null ? sky.SeamFeather : 0.01f,
-                        sky != null ? sky.KeyOutNearBlack : false,
-                        sky != null ? sky.KeyLuma : 0.08f);
-
-                    bool camPreZReady = false;
-                    if (allowScenePreZ)
-                    {
-                        _passWatch.Restart();
-                        camPreZReady = SceneRenderer.BuildScenePreZAll(vView, vProj, vw, vh, vZ);
-                        _passWatch.Stop();
-                        _msPreZLast = _passWatch.Elapsed.TotalMilliseconds;
-                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
-
-                        if (camPreZReady)
-                        {
-                            for (int j = 0; j < vZ.Length; j++)
-                                vZ[j] = vZ[j] * 2f - 1f; // [0..1] → NDC
-                        }
-                    }
-                    else
-                    {
-                        _msPreZLast = 0;
-                        Ema(ref _msPreZEma, _msPreZLast, 0.18);
-                    }
-
-                    _passWatch.Restart();
-                    foreach (var root in SceneService.Root)
-                    {
-                        SceneRenderer.DrawNodeSolidZ(
-                            root, vView, vProj, SN.Matrix4x4.Identity,
-                            vColor, vZ, vw, vh,
-                            L, DiffuseK, Ambient,
-                            lightIsPoint, lightPosW, lightRange,
-                            shadow: null,
-                            scenePreZReady: camPreZReady);
-                    }
-                    _passWatch.Stop();
-                    totalOpaqueMs += _passWatch.Elapsed.TotalMilliseconds;
-
-                    if (_sceneHasTransparent)
-                    {
-                        _passWatch.Restart();
-                        foreach (var root in SceneService.Root)
-                        {
-                            SceneRenderer.DrawNodeSolidZ_QueueTransparent(
-                                root, vView, vProj, SN.Matrix4x4.Identity,
-                                vColor, vZ, vw, vh,
-                                L, DiffuseK, Ambient,
-                                lightIsPoint, lightPosW, lightRange,
-                                shadow: null);
-                        }
-                        _passWatch.Stop();
-                        totalTranspMs += _passWatch.Elapsed.TotalMilliseconds;
-                    }
-
-                    ImageUtil.Blit(vColor, vw, vh, color, RW, RH, vx, vy);
-                }
-                finally
-                {
-                    ArrayPool<uint>.Shared.Return(vColor, false);
-                    ArrayPool<float>.Shared.Return(vZ, false);
-                }
-            }
-
-            _msOpaqueLast = totalOpaqueMs;
-            _msTranspLast = totalTranspMs;
-            Ema(ref _msOpaqueEma, _msOpaqueLast, 0.18);
-            Ema(ref _msTranspEma, _msTranspLast, 0.18);
-
-            _passWatch.Restart();
             BlitToScreen(ctx, _bbWB!, color, RW, RH, Wdip, Hdip);
-            _passWatch.Stop();
-            _msUploadLast = _passWatch.Elapsed.TotalMilliseconds;
-            Ema(ref _msUploadEma, _msUploadLast, 0.18);
-
             DrawFpsHud(ctx);
-            TuneResolution(_msOpaqueEma, _msTranspEma);
             EndFrame();
         }
-
-
-
-
-
 
 
         // ---------- helpers ----------
@@ -1053,36 +950,61 @@ namespace Game_Engine.Views
         }
 
         // ---------- transparency estimator ----------
-        static bool MaterialHasTransparency(Material? m)
+        static bool MaterialHasTransparency(Material m)
         {
             if (m == null) return false;
 
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            // 1) Explicit Transparent flag (preferred)
             try
             {
-                var p = m.GetType().GetProperty("Opacity",
-                         System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (p != null && p.GetValue(m) is float f && f < 0.999f) return true;
+                var pT = m.GetType().GetProperty("Transparent", BF);
+                if (pT != null)
+                {
+                    var v = pT.GetValue(m);
+                    if (v is bool b && b) return true;
+                }
             }
             catch { }
 
+            // 2) Opacity property (0..1), if you kept it
             try
             {
-                var list = m.Textures;
-                if (list != null)
+                var pO = m.GetType().GetProperty("Opacity", BF);
+                if (pO != null)
                 {
-                    foreach (var slot in list)
+                    var v = pO.GetValue(m);
+                    if (v is float f && f < 0.999f) return true;
+                    if (v is double d && d < 0.999) return true;
+                }
+            }
+            catch { }
+
+            // 3) BaseColor alpha < 255 → needs blending
+            try
+            {
+                var pC = m.GetType().GetProperty("BaseColor", BF);
+                if (pC != null)
+                {
+                    var v = pC.GetValue(m);
+
+                    // Avalonia Color
+                    if (v is Color c) return c.A < 255;
+
+                    // Fallback: any struct/class with an 'A' byte/int property
+                    var pA = v?.GetType().GetProperty("A", BF);
+                    if (pA != null)
                     {
-                        if (slot == null) continue;
-                        var pu = slot.GetType().GetProperty("Usage",
-                                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                        var usage = pu?.GetValue(slot)?.ToString()?.ToLowerInvariant() ?? "";
-                        if (usage.Contains("opacity") || usage.Contains("alpha") || usage.Contains("transp"))
-                            return true;
+                        var av = pA.GetValue(v);
+                        if (av is byte ab) return ab < 255;
+                        if (av is int ai) return ai < 255;
                     }
                 }
             }
             catch { }
 
+            // No scalar indicator of transparency found
             return false;
         }
         static bool EstimateSceneHasTransparent()

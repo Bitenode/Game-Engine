@@ -1618,21 +1618,74 @@ public partial class InspectorPanel : UserControl
     }
 
     // UI-only cache so material path doesn't disappear if there's no sibling path or inner path slot
-    static readonly ConditionalWeakTable<object, Dictionary<string, string>> _matPathCache = new();
-    static string? GetCachedMatPath(object owner, string propName)
+    private static readonly ConditionalWeakTable<object, Dictionary<string, string>> _matPathCache
+        = new ConditionalWeakTable<object, Dictionary<string, string>>();
+
+    private static string GetCachedMatPath(object owner, string propName)
     {
-        return _matPathCache.TryGetValue(owner, out var map) && map.TryGetValue(propName, out var v) ? v : null;
+        Dictionary<string, string> map;
+        if (_matPathCache.TryGetValue(owner, out map))
+        {
+            string v;
+            if (map.TryGetValue(propName, out v)) return v;
+        }
+        return null;
     }
-    static void SetCachedMatPath(object owner, string propName, string? relPath)
+
+    private static void SetCachedMatPath(object owner, string propName, string relPath)
     {
         var map = _matPathCache.GetOrCreateValue(owner);
         if (string.IsNullOrWhiteSpace(relPath)) map.Remove(propName);
-        else map[propName] = relPath!;
+        else map[propName] = relPath;
     }
+
+
 
     Control MaterialEditor(object owner, PropertyInfo prop)
     {
         // ---------- helpers ----------
+        const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+
+        // Prefer operating on a MeshRenderer when present
+        object GetListTarget(object own, PropertyInfo pr)
+        {
+            var mr = own as Game_Engine.Core.Component.MeshRenderer;
+            if (mr != null) return mr;
+
+            var go = own as Game_Engine.Core.GameObject;
+            if (go != null)
+            {
+                var bs = go.Behaviors;
+                for (int i = 0; i < bs.Count; i++)
+                {
+                    var r = bs[i] as Game_Engine.Core.Component.MeshRenderer;
+                    if (r != null) return r;
+                }
+            }
+
+            var beh = own as Game_Engine.Core.Behavior;
+            if (beh != null && beh.gameObject != null)
+            {
+                var bs = beh.gameObject.Behaviors;
+                for (int i = 0; i < bs.Count; i++)
+                {
+                    var r = bs[i] as Game_Engine.Core.Component.MeshRenderer;
+                    if (r != null) return r;
+                }
+            }
+
+            try
+            {
+                var propObj = pr != null ? pr.GetValue(own) : null;
+                var r = propObj as Game_Engine.Core.Component.MeshRenderer;
+                if (r != null) return r;
+            }
+            catch { }
+
+            return own;
+        }
+
         static string MakeProjectRelative(string fullPath)
         {
             if (string.IsNullOrWhiteSpace(fullPath)) return null;
@@ -1642,9 +1695,9 @@ public partial class InspectorPanel : UserControl
                 var proj = ProjectService.Current;
                 if (proj != null)
                 {
-                    var root = System.IO.Path.GetFullPath(proj.RootPath);
-                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                        return System.IO.Path.GetRelativePath(root, abs).Replace('\\', '/');
+                    var rootDir = System.IO.Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(rootDir, StringComparison.OrdinalIgnoreCase))
+                        return System.IO.Path.GetRelativePath(rootDir, abs).Replace('\\', '/');
                 }
                 return abs.Replace('\\', '/');
             }
@@ -1659,8 +1712,8 @@ public partial class InspectorPanel : UserControl
                 if (proj == null) return fullPath;
 
                 var abs = System.IO.Path.GetFullPath(fullPath);
-                var root = System.IO.Path.GetFullPath(proj.RootPath);
-                if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return abs;
+                var rootDir = System.IO.Path.GetFullPath(proj.RootPath);
+                if (abs.StartsWith(rootDir, StringComparison.OrdinalIgnoreCase)) return abs;
 
                 var baseRoot = string.IsNullOrWhiteSpace(proj.AssetsPath) ? proj.RootPath : proj.AssetsPath;
                 var importDir = System.IO.Path.Combine(baseRoot, preferredFolderName);
@@ -1680,67 +1733,39 @@ public partial class InspectorPanel : UserControl
             catch { return fullPath; }
         }
 
-        static Material TryCreateMaterialFromPath(string path)
+        static Material TryCreateMaterialFromPath(string absOrRelPath)
         {
-            var t = typeof(Material);
-
-            var m = t.GetMethod("FromFile", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
-                                null, new[] { typeof(string) }, null);
-            if (m != null) { try { return (Material)m.Invoke(null, new object[] { path }); } catch { } }
-
-            m = t.GetMethod("Load", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
-                            null, new[] { typeof(string) }, null);
-            if (m != null) { try { return (Material)m.Invoke(null, new object[] { path }); } catch { } }
-
-            var ctor = t.GetConstructor(new[] { typeof(string) });
-            if (ctor != null) { try { return (Material)ctor.Invoke(new object[] { path }); } catch { } }
-
-            try { return (Material)Activator.CreateInstance(t); } catch { return new Material(); }
-        }
-
-        static string ReadInnerPathFromMaterial(Material mat)
-        {
-            if (mat == null) return null;
-            var t = mat.GetType();
-            // include RelPath first; then common names
-            var names = new[] { "RelPath", "Path", "FilePath", "SourcePath", "AssetPath", "MaterialPath" };
-            for (int i = 0; i < names.Length; i++)
+            try
             {
-                var p = t.GetProperty(names[i], BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (p != null && p.PropertyType == typeof(string) && p.CanRead)
-                {
-                    var s = p.GetValue(mat) as string;
-                    if (!string.IsNullOrWhiteSpace(s)) return s;
-                }
+                var rel = MakeProjectRelative(absOrRelPath);
+                var mat = ProjectService.MaterialsLoad(rel);
+                if (mat != null) return mat;
             }
-            return null;
-        }
+            catch { }
 
-        static void WriteInnerPathToMaterial(Material mat, string projectRelPath)
-        {
-            if (mat == null) return;
-            var t = mat.GetType();
-            var names = new[] { "RelPath", "Path", "FilePath", "SourcePath", "AssetPath", "MaterialPath" };
-            for (int i = 0; i < names.Length; i++)
-            {
-                var p = t.GetProperty(names[i], BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (p != null && p.PropertyType == typeof(string) && p.CanWrite)
-                {
-                    try { p.SetValue(mat, projectRelPath); } catch { }
-                    return;
-                }
-            }
+            try { return new Material(); }
+            catch { return null; }
         }
 
         static string TryGetSiblingPath(object target, PropertyInfo matProp)
         {
             try
             {
-                var pp = target.GetType().GetProperty(matProp.Name + "Path",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (pp != null && pp.PropertyType == typeof(string) && pp.CanRead)
+                var name = matProp.Name + "Path";
+                var pp = target.GetType().GetProperty(name, BF);
+                if (pp != null && pp.PropertyType == typeof(string))
                 {
-                    var v = pp.GetValue(target) as string;
+                    var get = pp.GetGetMethod(true);
+                    if (get != null)
+                    {
+                        var v = pp.GetValue(target) as string;
+                        return string.IsNullOrWhiteSpace(v) ? null : v;
+                    }
+                }
+                var ff = target.GetType().GetField(name, BF);
+                if (ff != null && ff.FieldType == typeof(string))
+                {
+                    var v = ff.GetValue(target) as string;
                     return string.IsNullOrWhiteSpace(v) ? null : v;
                 }
             }
@@ -1752,10 +1777,12 @@ public partial class InspectorPanel : UserControl
         {
             try
             {
-                var pp = target.GetType().GetProperty(matProp.Name + "Path",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (pp != null && pp.PropertyType == typeof(string) && pp.CanWrite)
-                    pp.SetValue(target, projectRelPath);
+                var pp = target.GetType().GetProperty(matProp.Name + "Path", BF);
+                if (pp != null && pp.PropertyType == typeof(string))
+                {
+                    var set = pp.GetSetMethod(true);
+                    if (set != null) pp.SetValue(target, projectRelPath);
+                }
             }
             catch { }
         }
@@ -1767,13 +1794,13 @@ public partial class InspectorPanel : UserControl
                 var txt = File.ReadAllText(absPath);
                 using (var doc = System.Text.Json.JsonDocument.Parse(txt))
                 {
-                    var root = doc.RootElement;
-                    var name = root.TryGetProperty("name", out var n) ? (n.GetString() ?? "Material") : "Material";
-                    var shader = root.TryGetProperty("shader", out var s) ? (s.GetString() ?? "") : "";
+                    var rootEl = doc.RootElement;
+                    var name = rootEl.TryGetProperty("name", out var n) ? (n.GetString() ?? "Material") : "Material";
+                    var shader = rootEl.TryGetProperty("shader", out var s) ? (s.GetString() ?? "") : "";
 
                     bool transp = false; float met = 0f; float rgh = 0.5f;
                     System.Text.Json.JsonElement p;
-                    if (root.TryGetProperty("parameters", out p) && p.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    if (rootEl.TryGetProperty("parameters", out p) && p.ValueKind == System.Text.Json.JsonValueKind.Object)
                     {
                         System.Text.Json.JsonElement vT, vM, vR;
                         if (p.TryGetProperty("Transparent", out vT)) transp = vT.ValueKind == System.Text.Json.JsonValueKind.True;
@@ -1800,29 +1827,212 @@ public partial class InspectorPanel : UserControl
             if (s == S_Front) return "Front (-Z)";
             return "All";
         }
-        static string FaceKey(int s)
+
+        // ====== NEW: auto-bind helpers ===========================================
+        static string GetPathFromMaterial(Material m)
         {
-            if (s == S_Right) return "Right";
-            if (s == S_Left) return "Left";
-            if (s == S_Top) return "Top";
-            if (s == S_Bottom) return "Bottom";
-            if (s == S_Back) return "Back";
-            if (s == S_Front) return "Front";
-            return "All";
+            try
+            {
+                var t = m.GetType();
+                var names = new[] { "AssetPath", "MaterialPath", "SourcePath", "Path", "FilePath" };
+                for (int i = 0; i < names.Length; i++)
+                {
+                    var pi = t.GetProperty(names[i], BF);
+                    if (pi != null && pi.PropertyType == typeof(string))
+                    {
+                        var v = pi.GetValue(m) as string;
+                        if (!string.IsNullOrWhiteSpace(v)) return v;
+                    }
+                    var fi = t.GetField(names[i], BF);
+                    if (fi != null && fi.FieldType == typeof(string))
+                    {
+                        var v = fi.GetValue(m) as string;
+                        if (!string.IsNullOrWhiteSpace(v)) return v;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        static string GetMaterialName(Material m)
+        {
+            try
+            {
+                var t = m.GetType();
+                var pi = t.GetProperty("Name", BF) ?? t.GetProperty("name", BF);
+                if (pi != null && pi.PropertyType == typeof(string))
+                {
+                    var v = pi.GetValue(m) as string;
+                    if (!string.IsNullOrWhiteSpace(v)) return v;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        static IEnumerable<string> EnumerateProjectMaterials()
+        {
+            var results = new List<string>();
+            try
+            {
+                var proj = ProjectService.Current;
+                if (proj == null) return results;
+
+                string rootDir = proj.RootPath;
+                string assets = string.IsNullOrWhiteSpace(proj.AssetsPath) ? Path.Combine(rootDir, "Assets") : proj.AssetsPath;
+
+                // common places first (ranked)
+                var likely = new List<string>();
+                var matsDir = Path.Combine(assets, "Materials");
+                if (Directory.Exists(matsDir)) likely.Add(matsDir);
+                if (Directory.Exists(assets)) likely.Add(assets);
+
+                // unique & walk
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < likely.Count; i++)
+                {
+                    var d = likely[i];
+                    if (!seen.Add(d)) continue;
+                    try { results.AddRange(Directory.GetFiles(d, "*.material", SearchOption.AllDirectories)); }
+                    catch { }
+                }
+            }
+            catch { }
+            return results;
+        }
+
+        static IEnumerable<string> TextureDirsFromMaterial(Material m)
+        {
+            var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var t = m.GetType();
+                var members = t.GetMembers(BF);
+                for (int i = 0; i < members.Length; i++)
+                {
+                    var mi = members[i];
+                    Type mt;
+                    object val = null;
+                    if (mi.MemberType == MemberTypes.Property)
+                    {
+                        var pi = (PropertyInfo)mi;
+                        if (!pi.CanRead) continue;
+                        mt = pi.PropertyType;
+                        try { val = pi.GetValue(m); } catch { val = null; }
+                    }
+                    else if (mi.MemberType == MemberTypes.Field)
+                    {
+                        var fi = (FieldInfo)mi;
+                        mt = fi.FieldType;
+                        try { val = fi.GetValue(m); } catch { val = null; }
+                    }
+                    else continue;
+
+                    // string "*Path"
+                    if (mt == typeof(string) && mi.Name.EndsWith("Path", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var s = val as string;
+                        if (!string.IsNullOrWhiteSpace(s))
+                        {
+                            var abs = s;
+                            try { abs = Path.GetFullPath(abs); } catch { }
+                            try
+                            {
+                                if (!Path.IsPathRooted(s))
+                                {
+                                    var proj = ProjectService.Current;
+                                    if (proj != null) abs = Path.GetFullPath(Path.Combine(proj.RootPath, s));
+                                }
+                            }
+                            catch { }
+                            try
+                            {
+                                var d = Path.GetDirectoryName(abs);
+                                if (!string.IsNullOrWhiteSpace(d)) dirs.Add(d);
+                            }
+                            catch { }
+                        }
+                    }
+
+                    // Texture2D with SourcePath/AssetPath
+                    if (typeof(Texture2D).IsAssignableFrom(mt) && val is Texture2D tex)
+                    {
+                        try
+                        {
+                            var tp = tex.GetType().GetProperty("SourcePath", BF) ?? tex.GetType().GetProperty("AssetPath", BF);
+                            var sp = tp != null ? tp.GetValue(tex) as string : null;
+                            if (!string.IsNullOrWhiteSpace(sp))
+                            {
+                                var d = Path.GetDirectoryName(sp);
+                                if (!string.IsNullOrWhiteSpace(d)) dirs.Add(d);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+            return dirs;
+        }
+
+        static string TryAutoFindMaterialAsset(Material mat)
+        {
+            if (mat == null) return null;
+
+            // If material already knows its path, use it.
+            var fromMat = GetPathFromMaterial(mat);
+            if (!string.IsNullOrWhiteSpace(fromMat)) return fromMat;
+
+            var name = GetMaterialName(mat);
+            var candidates = new List<string>();
+
+            // Look near textures used by this material
+            foreach (var d in TextureDirsFromMaterial(mat))
+            {
+                try
+                {
+                    var hits = Directory.GetFiles(d, "*.material", SearchOption.TopDirectoryOnly);
+                    for (int i = 0; i < hits.Length; i++) candidates.Add(hits[i]);
+                }
+                catch { }
+            }
+
+            // Look under Assets/Materials/** (ranked primary bucket)
+            foreach (var f in EnumerateProjectMaterials()) candidates.Add(f);
+
+            // De-dup
+            var uniq = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < candidates.Count; i++)
+                if (seen.Add(candidates[i])) uniq.Add(candidates[i]);
+
+            // Scoring: exact name match first, else first available
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                for (int i = 0; i < uniq.Count; i++)
+                {
+                    var fn = Path.GetFileNameWithoutExtension(uniq[i]);
+                    if (string.Equals(fn, name, StringComparison.OrdinalIgnoreCase))
+                        return uniq[i];
+                }
+            }
+
+            return uniq.Count > 0 ? uniq[0] : null;
         }
 
         // ---------- container ----------
         var box = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8) };
-        var root = new StackPanel { Spacing = 10 };
-        box.Child = root;
+        var panel = new StackPanel { Spacing = 10 };
+        box.Child = panel;
 
         void BeginEdit() => BeginPropertyEdit(owner, prop);
         void CommitEdit() => CommitPropertyEdit(owner, prop);
 
-        // ---------- top: single material selector  ----------
+        // ---------- header ----------
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         header.Children.Add(new TextBlock { Text = "Material (asset)", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center });
-        root.Children.Add(header);
+        panel.Children.Add(header);
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         var tbPath = new TextBox { Width = 360, IsReadOnly = true };
@@ -1835,7 +2045,7 @@ public partial class InspectorPanel : UserControl
         row.Children.Add(btnNew);
         row.Children.Add(btnEdit);
         row.Children.Add(btnClear);
-        root.Children.Add(row);
+        panel.Children.Add(row);
 
         var drop = new Border
         {
@@ -1846,64 +2056,65 @@ public partial class InspectorPanel : UserControl
             Child = new TextBlock { Text = "Drop .material here…", Opacity = .7 }
         };
         DragDrop.SetAllowDrop(drop, true);
-        root.Children.Add(drop);
+        panel.Children.Add(drop);
 
         var summary = new StackPanel { Spacing = 2 };
-        root.Children.Add(summary);
+        panel.Children.Add(summary);
 
         // ---------- per-side list ----------
-        root.Children.Add(new TextBlock { Text = "Per-side materials", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
-        var slotsPanel = new StackPanel { Spacing = 6 };
-        root.Children.Add(slotsPanel);
+        panel.Children.Add(new TextBlock { Text = "Per-side materials", FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 0) });
 
-        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        // Toolbar row: slots drop-down + side selector + arrows + remove
+        var slotsToolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        var slotsPanel = new StackPanel { Spacing = 6 };
+        panel.Children.Add(slotsPanel);
+
         var btnAdd = new Button { Content = "Add from file…" };
         var btnAddNew = new Button { Content = "New material…" };
-        //var btnClearAll = new Button { Content = "Clear all" };
-        toolbar.Children.Add(btnAdd);
-        toolbar.Children.Add(btnAddNew);
-        //toolbar.Children.Add(btnClearAll);
-        root.Children.Add(toolbar);
+        slotsToolbar.Children.Add(btnAdd);
+        slotsToolbar.Children.Add(btnAddNew);
+        panel.Children.Add(slotsToolbar);
 
         // internal model: (Material Mat, string RelPath, int Side)
         var slots = new List<(Material Mat, string RelPath, int Side)>();
 
-        // seed from bound property
-        var cur = prop.GetValue(owner) as Material;
-        if (cur != null)
-        {
-            var rel = ReadInnerPathFromMaterial(cur);
-            if (string.IsNullOrWhiteSpace(rel))
-            {
-                var s = TryGetSiblingPath(owner, prop);
-                if (!string.IsNullOrWhiteSpace(s)) rel = s;
-            }
-            if (cur != null || !string.IsNullOrWhiteSpace(rel))
-                slots.Add((cur, rel, S_All));
-        }
-
         // seed from optional lists (MaterialPaths / MaterialSides / MaterialSlots)
         try
         {
-            var tOwner = owner.GetType();
-            var pPaths = tOwner.GetProperty("MaterialPaths", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var pSides = tOwner.GetProperty("MaterialSides", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var pSlots = tOwner.GetProperty("MaterialSlots", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var listTarget = GetListTarget(owner, prop);
+            var tTarget = listTarget.GetType();
 
-            var paths = pPaths != null ? pPaths.GetValue(owner) as System.Collections.IList : null;
-            var sides = pSides != null ? pSides.GetValue(owner) as System.Collections.IList : null;
-            var mats = pSlots != null ? pSlots.GetValue(owner) as System.Collections.IList : null;
+            var pPaths = tTarget.GetProperty("MaterialPaths", BF);
+            var pSides = tTarget.GetProperty("MaterialSides", BF);
+            var pSlots = tTarget.GetProperty("MaterialSlots", BF);
+
+            var fPaths = tTarget.GetField("MaterialPaths", BF);
+            var fSides = tTarget.GetField("MaterialSides", BF);
+            var fSlots = tTarget.GetField("MaterialSlots", BF);
+
+            var paths = (pPaths != null ? pPaths.GetValue(listTarget) : (fPaths != null ? fPaths.GetValue(listTarget) : null)) as System.Collections.IList;
+            var sides = (pSides != null ? pSides.GetValue(listTarget) : (fSides != null ? fSides.GetValue(listTarget) : null)) as System.Collections.IList;
+            var mats = (pSlots != null ? pSlots.GetValue(listTarget) : (fSlots != null ? fSlots.GetValue(listTarget) : null)) as System.Collections.IList;
 
             if (paths != null && sides != null && mats != null)
             {
                 int n = Math.Min(paths.Count, Math.Min(sides.Count, mats.Count));
-                if (n > 0) slots.Clear();
                 for (int i = 0; i < n; i++)
                 {
                     var m = mats[i] as Material;
                     var rel = paths[i] as string;
-                    int s = S_All; try { s = Convert.ToInt32(sides[i]); } catch { s = S_All; }
-                    if (m == null && string.IsNullOrWhiteSpace(rel)) continue; // skip bogus empty rows
+                    int s = -1; try { s = Convert.ToInt32(sides[i]); } catch { s = -1; }
+                    if (m == null && string.IsNullOrWhiteSpace(rel)) continue;
+
+                    if (m == null && !string.IsNullOrWhiteSpace(rel))
+                    {
+                        try
+                        {
+                            var abs = ProjectService.Current != null ? Path.Combine(ProjectService.Current.RootPath, rel) : rel;
+                            if (File.Exists(abs)) m = TryCreateMaterialFromPath(abs);
+                        }
+                        catch { }
+                    }
                     slots.Add((m, rel, s));
                 }
             }
@@ -1913,9 +2124,9 @@ public partial class InspectorPanel : UserControl
         void UpdateSummary(string projectRelOrAbs)
         {
             summary.Children.Clear();
-            if (string.IsNullOrWhiteSpace(projectRelOrAbs) || projectRelOrAbs == "(none)")
+            if (string.IsNullOrWhiteSpace(projectRelOrAbs) || projectRelOrAbs == "(none)" || projectRelOrAbs == "(unsaved)")
             {
-                summary.Children.Add(new TextBlock { Text = "No material assigned.", Opacity = .7 });
+                summary.Children.Add(new TextBlock { Text = "Runtime material (not saved)\nUse New… or Choose… to create/assign a .material file.", Opacity = .7 });
                 return;
             }
 
@@ -1925,8 +2136,8 @@ public partial class InspectorPanel : UserControl
                 var proj = ProjectService.Current;
                 if (proj != null)
                 {
-                    var rootPath = System.IO.Path.GetFullPath(proj.RootPath);
-                    var p = System.IO.Path.GetFullPath(System.IO.Path.Combine(rootPath, projectRelOrAbs));
+                    var rootDir = System.IO.Path.GetFullPath(proj.RootPath);
+                    var p = System.IO.Path.GetFullPath(System.IO.Path.Combine(rootDir, projectRelOrAbs));
                     if (File.Exists(p)) abs = p;
                 }
             }
@@ -1945,93 +2156,148 @@ public partial class InspectorPanel : UserControl
             summary.Children.Add(new TextBlock { Text = "Metallic: " + info.metallic.ToString("0.00") + "   Roughness: " + info.rough.ToString("0.00") });
         }
 
-        // Write back everything to owner (prop + sibling + lists + dicts). Header path is handled separately.
         void WriteBackToOwner()
         {
             try
             {
-                var tOwner = owner.GetType();
+                var listTarget = GetListTarget(owner, prop);
+                var tTarget = listTarget.GetType();
 
-                // bound prop = first All (or first slot)
-                Material first = null;
-                for (int i = 0; i < slots.Count; i++) if (slots[i].Side == S_All) { first = slots[i].Mat; break; }
-                if (first == null && slots.Count > 0) first = slots[0].Mat;
+                void AssignList(PropertyInfo pInfo, FieldInfo fInfo, Func<int, object> getter)
+                {
+                    object curVal = null; Type listType = null; Action<object> assign = null; bool canAssign = false;
 
-                if (prop.CanWrite) { try { prop.SetValue(owner, first); } catch { } }
+                    if (pInfo != null)
+                    {
+                        listType = pInfo.PropertyType;
+                        canAssign = pInfo.CanWrite;
+                        if (canAssign) assign = v => { try { pInfo.SetValue(listTarget, v); } catch { } };
+                        else curVal = pInfo.GetValue(listTarget);
+                    }
+                    else if (fInfo != null)
+                    {
+                        listType = fInfo.FieldType;
+                        assign = v => { try { fInfo.SetValue(listTarget, v); } catch { } };
+                        curVal = fInfo.GetValue(listTarget);
+                    }
+                    else return;
 
-                string firstRel = first != null ? ReadInnerPathFromMaterial(first) : null;
+                    object newList = null;
+                    System.Collections.IList newIList = null;
+                    try
+                    {
+                        newList = Activator.CreateInstance(listType);
+                        newIList = newList as System.Collections.IList;
+                    }
+                    catch { newList = null; newIList = null; }
 
-                // sibling "*Path"
+                    if (newIList != null && assign != null)
+                    {
+                        for (int i = 0; i < slots.Count; i++) newIList.Add(getter(i));
+                        assign(newList);
+                        return;
+                    }
+
+                    var curIList = curVal as System.Collections.IList;
+                    if (curIList != null)
+                    {
+                        lock (curIList)
+                        {
+                            curIList.Clear();
+                            for (int i = 0; i < slots.Count; i++) curIList.Add(getter(i));
+                        }
+                    }
+                }
+
+                var pPathsProp = tTarget.GetProperty("MaterialPaths", BF);
+                var pSidesProp = tTarget.GetProperty("MaterialSides", BF);
+                var pSlotsProp = tTarget.GetProperty("MaterialSlots", BF);
+                var pMatsProp = tTarget.GetProperty("Materials", BF);
+
+                var pPathsField = tTarget.GetField("MaterialPaths", BF);
+                var pSidesField = tTarget.GetField("MaterialSides", BF);
+                var pSlotsField = tTarget.GetField("MaterialSlots", BF);
+                var pMatsField = tTarget.GetField("Materials", BF);
+
+                AssignList(pPathsProp, pPathsField, i => (object)slots[i].RelPath);
+                AssignList(pSidesProp, pSidesField, i => (object)slots[i].Side);
+                AssignList(pSlotsProp, pSlotsField, i => (object)slots[i].Mat);
+                AssignList(pMatsProp, pMatsField, i => (object)slots[i].Mat);
+
+                string firstRel = null;
+                Material primaryMat = null;
+                for (int i = 0; i < slots.Count; i++)
+                    if (slots[i].Side == S_All)
+                    { if (firstRel == null) firstRel = slots[i].RelPath; if (primaryMat == null) primaryMat = slots[i].Mat; }
+                if (firstRel == null && slots.Count > 0) firstRel = slots[0].RelPath;
+                if (primaryMat == null && slots.Count > 0) primaryMat = slots[0].Mat;
+
                 try
                 {
-                    var pp = tOwner.GetProperty(prop.Name + "Path", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (pp != null && pp.PropertyType == typeof(string) && pp.CanWrite)
-                        pp.SetValue(owner, firstRel);
+                    var name = prop.Name + "Path";
+                    var pp = tTarget.GetProperty(name, BF);
+                    if (pp != null && pp.PropertyType == typeof(string))
+                    {
+                        var set = pp.GetSetMethod(true);
+                        if (set != null) pp.SetValue(listTarget, firstRel);
+                    }
+                    else
+                    {
+                        var ff = tTarget.GetField(name, BF);
+                        if (ff != null && ff.FieldType == typeof(string))
+                            ff.SetValue(listTarget, firstRel);
+                    }
                 }
                 catch { }
 
-                // cache fallback
-                SetCachedMatPath(owner, prop.Name, firstRel);
-
-                // lists: MaterialPaths / MaterialSides / MaterialSlots / Materials
-                Action<PropertyInfo, Func<int, object>> writeList = (pInfo, getter) =>
+                try
                 {
-                    if (pInfo == null) return;
-                    var curVal = pInfo.GetValue(owner);
-                    var il = curVal as System.Collections.IList;
-                    if (il == null)
+                    if (primaryMat != null)
                     {
-                        try
+                        if (prop != null && prop.CanWrite && prop.PropertyType.IsAssignableFrom(typeof(Material)))
                         {
-                            if (typeof(System.Collections.IList).IsAssignableFrom(pInfo.PropertyType))
+                            object targetForProp = listTarget;
+                            if (!prop.DeclaringType.IsInstanceOfType(targetForProp) && prop.DeclaringType.IsInstanceOfType(owner))
+                                targetForProp = owner;
+                            prop.SetValue(targetForProp, primaryMat);
+                        }
+                        else
+                        {
+                            var mp = tTarget.GetProperty("Material", BF);
+                            if (mp != null && mp.CanWrite && mp.PropertyType.IsAssignableFrom(typeof(Material)))
+                                mp.SetValue(listTarget, primaryMat);
+                            else
                             {
-                                curVal = Activator.CreateInstance(pInfo.PropertyType);
-                                il = curVal as System.Collections.IList;
+                                var mf = tTarget.GetField("Material", BF);
+                                if (mf != null && typeof(Material).IsAssignableFrom(mf.FieldType))
+                                    mf.SetValue(listTarget, primaryMat);
                             }
                         }
-                        catch { il = null; }
                     }
-                    if (il == null) return;
-
-                    il.Clear();
-                    for (int i = 0; i < slots.Count; i++) il.Add(getter(i));
-                    try { pInfo.SetValue(owner, il); } catch { }
-                };
-
-                var pPaths = tOwner.GetProperty("MaterialPaths", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var pSides = tOwner.GetProperty("MaterialSides", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var pSlots = tOwner.GetProperty("MaterialSlots", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var pMats = tOwner.GetProperty("Materials", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                writeList(pPaths, i => (object)slots[i].RelPath);
-                writeList(pSides, i => (object)slots[i].Side);
-                writeList(pSlots, i => (object)slots[i].Mat);
-                writeList(pMats, i => (object)slots[i].Mat);
-
-                // dicts: MaterialByFace / FaceMaterials  (skip "All")
-                foreach (var dictName in new[] { "MaterialByFace", "FaceMaterials" })
-                {
-                    var pDict = tOwner.GetProperty(dictName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (pDict == null) continue;
-
-                    object dictObj = pDict.GetValue(owner);
-                    var dict = dictObj as System.Collections.IDictionary;
-                    if (dict == null)
-                    {
-                        try { dict = Activator.CreateInstance(pDict.PropertyType) as System.Collections.IDictionary; } catch { dict = null; }
-                    }
-                    if (dict == null) continue;
-
-                    dict.Clear();
-                    for (int i = 0; i < slots.Count; i++)
-                    {
-                        if (slots[i].Side == S_All) continue;
-                        var key = FaceKey(slots[i].Side);
-                        if (dict.Contains(key)) dict[key] = slots[i].Mat;
-                        else dict.Add(key, slots[i].Mat);
-                    }
-                    try { pDict.SetValue(owner, dict); } catch { }
                 }
+                catch { }
+
+                // keep UI cache
+                SetCachedMatPath(owner, prop.Name, firstRel);
+
+                // ensure renderer re-resolves
+                try
+                {
+                    var mr2 = listTarget as Game_Engine.Core.Component.MeshRenderer;
+                    if (mr2 != null) mr2.ResolveMaterials();
+                }
+                catch { }
+
+                SceneService.NotifyChanged();
+
+                try
+                {
+                    var il = (pPathsProp != null ? pPathsProp.GetValue(listTarget) :
+                             (pPathsField != null ? pPathsField.GetValue(listTarget) : null)) as System.Collections.IList;
+                    System.Diagnostics.Debug.WriteLine("[MatTrace:Inspector] Wrote MR lists: paths=" + (il != null ? il.Count : 0) +
+                                                       " slots=" + slots.Count + " sides=" + slots.Count);
+                }
+                catch { }
             }
             catch { }
         }
@@ -2056,7 +2322,7 @@ public partial class InspectorPanel : UserControl
                 if (sel < 0) sel = 0;
                 sideBox.SelectedIndex = sel;
 
-                int rowIndex = i; // capture once per row
+                int rowIndex = i;
                 sideBox.SelectionChanged += (_, __) =>
                 {
                     int idx = sideBox.SelectedIndex;
@@ -2067,7 +2333,6 @@ public partial class InspectorPanel : UserControl
 
                     BeginEdit();
                     WriteBackToOwner();
-                    SceneService.NotifyChanged();
                     CommitEdit();
                 };
                 rowSlot.Children.Add(sideBox);
@@ -2082,7 +2347,6 @@ public partial class InspectorPanel : UserControl
                         slots[rowIndex] = tmp;
                         BeginEdit();
                         WriteBackToOwner();
-                        SceneService.NotifyChanged();
                         CommitEdit();
                         RebuildListUI();
                     }
@@ -2099,7 +2363,6 @@ public partial class InspectorPanel : UserControl
                         slots[rowIndex] = tmp;
                         BeginEdit();
                         WriteBackToOwner();
-                        SceneService.NotifyChanged();
                         CommitEdit();
                         RebuildListUI();
                     }
@@ -2114,7 +2377,6 @@ public partial class InspectorPanel : UserControl
                         slots.RemoveAt(rowIndex);
                         BeginEdit();
                         WriteBackToOwner();
-                        SceneService.NotifyChanged();
                         CommitEdit();
                         RebuildListUI();
                     }
@@ -2126,7 +2388,6 @@ public partial class InspectorPanel : UserControl
         }
 
         // ---------- assigners ----------
-        // top-level assignment
         Action<string> AssignFromPathTop = (pickedAbs) =>
         {
             var abs = EnsureInProject(pickedAbs, "Materials");
@@ -2135,30 +2396,30 @@ public partial class InspectorPanel : UserControl
             BeginEdit();
 
             var loaded = TryCreateMaterialFromPath(abs);
-            prop.SetValue(owner, loaded); // <— first build direct set
 
-            bool wroteSibling = false;
             try
             {
-                var before = TryGetSiblingPath(owner, prop);
-                TrySetSiblingPath(owner, prop, rel);
-                wroteSibling = TryGetSiblingPath(owner, prop) != null || before != null;
+                var targetForProp = owner;
+                if (!prop.DeclaringType.IsInstanceOfType(targetForProp))
+                {
+                    var lt = GetListTarget(owner, prop);
+                    if (prop.DeclaringType.IsInstanceOfType(lt))
+                        targetForProp = lt;
+                }
+
+                if (prop.CanWrite && loaded != null && prop.PropertyType.IsAssignableFrom(typeof(Material)))
+                    prop.SetValue(targetForProp, loaded);
             }
             catch { }
 
-            if (!wroteSibling)
-            {
-                try { WriteInnerPathToMaterial(loaded, rel); } catch { }
-                SetCachedMatPath(owner, prop.Name, rel);
-            }
+            SceneService.NotifyChanged();
 
-            // keep per-side list in sync: update/insert the All slot
             int idxAll = -1;
             for (int k = 0; k < slots.Count; k++) if (slots[k].Side == S_All) { idxAll = k; break; }
             var s = (loaded, rel, S_All);
             if (idxAll >= 0) slots[idxAll] = s; else slots.Insert(0, s);
 
-            SceneService.NotifyChanged();
+            WriteBackToOwner();
             CommitEdit();
 
             tbPath.Text = rel ?? abs;
@@ -2171,34 +2432,64 @@ public partial class InspectorPanel : UserControl
             var abs = EnsureInProject(pickedAbs, "Materials");
             var rel = MakeProjectRelative(abs);
             var loaded = TryCreateMaterialFromPath(abs);
-            if (!string.IsNullOrWhiteSpace(rel)) WriteInnerPathToMaterial(loaded, rel);
 
             slots.Add((loaded, rel, side));
 
             BeginEdit();
             WriteBackToOwner();
-            SceneService.NotifyChanged();
             CommitEdit();
             RebuildListUI();
         };
 
-        // ---------- wire up top row (load header text robustly) ----------
+        // Find the primary Material on the MeshRenderer-ish target
+        static Material GetPrimaryMaterial(object listTarget, PropertyInfo propInfo)
+        {
+            Material mat = null;
+            try
+            {
+                if (propInfo != null && propInfo.CanRead && propInfo.DeclaringType.IsInstanceOfType(listTarget))
+                    mat = propInfo.GetValue(listTarget) as Material;
+            }
+            catch { }
+
+            if (mat == null)
+            {
+                try
+                {
+                    var mp = listTarget.GetType().GetProperty("Material", BF);
+                    if (mp != null && mp.PropertyType.IsAssignableFrom(typeof(Material)))
+                        mat = mp.GetValue(listTarget) as Material;
+                }
+                catch { }
+            }
+
+            if (mat == null)
+            {
+                try
+                {
+                    var matsObj = (listTarget.GetType().GetProperty("Materials", BF)?.GetValue(listTarget))
+                                  ?? (listTarget.GetType().GetField("Materials", BF)?.GetValue(listTarget));
+                    var matsIL = matsObj as System.Collections.IList;
+                    if (matsIL != null && matsIL.Count > 0)
+                        mat = matsIL[0] as Material;
+                }
+                catch { }
+            }
+
+            return mat;
+        }
+
+        // ---------- initial header text ----------
         {
             string initialRel = null;
 
-            //  sibling "*Path"
+            var listTargetHeader = GetListTarget(owner, prop);
             if (string.IsNullOrWhiteSpace(initialRel))
-                initialRel = TryGetSiblingPath(owner, prop);
+                initialRel = TryGetSiblingPath(listTargetHeader, prop);
 
-            //  inner path of bound prop
-            if (string.IsNullOrWhiteSpace(initialRel))
-                initialRel = ReadInnerPathFromMaterial(prop.GetValue(owner) as Material);
-
-            // UI cache
             if (string.IsNullOrWhiteSpace(initialRel))
                 initialRel = GetCachedMatPath(owner, prop.Name);
 
-            // from per-side slots (prefer All)
             if (string.IsNullOrWhiteSpace(initialRel))
             {
                 string fromSlots = null;
@@ -2216,7 +2507,24 @@ public partial class InspectorPanel : UserControl
                 initialRel = fromSlots;
             }
 
-            tbPath.Text = string.IsNullOrWhiteSpace(initialRel) ? "(none)" : initialRel;
+            // Final fallback — inspect the runtime material and try to auto-bind a .material file
+            if (string.IsNullOrWhiteSpace(initialRel))
+            {
+                var matForSeed = GetPrimaryMaterial(listTargetHeader, prop);
+                if (matForSeed != null)
+                {
+                    var guessAbs = TryAutoFindMaterialAsset(matForSeed);
+                    if (!string.IsNullOrWhiteSpace(guessAbs) && File.Exists(guessAbs))
+                    {
+                        System.Diagnostics.Debug.WriteLine("[MatTrace:Inspector] Auto-bound material asset: " + guessAbs);
+                        AssignFromPathTop(guessAbs); // this updates lists + tbPath + summary
+                                                     // AssignFromPathTop already set everything; stop further init header work
+                        return box;
+                    }
+                }
+            }
+
+            tbPath.Text = string.IsNullOrWhiteSpace(initialRel) ? "(unsaved)" : initialRel;
             UpdateSummary(tbPath.Text);
         }
 
@@ -2231,10 +2539,10 @@ public partial class InspectorPanel : UserControl
                 Title = "Select Material",
                 AllowMultiple = false,
                 Filters =
-        {
-            new FileDialogFilter { Name = "Material", Extensions = { "material" } },
-            new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
-        }
+            {
+                new FileDialogFilter { Name = "Material", Extensions = { "material" } },
+                new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+            }
             };
             var files = await dlg.ShowAsync(win);
             if (files != null && files.Length > 0 && File.Exists(files[0]))
@@ -2269,7 +2577,7 @@ public partial class InspectorPanel : UserControl
             {
                 var json =
     @"{
-  ""name"": ""New Material"",
+  ""name"": ""NewMaterial"",
   ""type"": ""Material"",
   ""version"": 1,
   ""shader"": """",
@@ -2296,7 +2604,7 @@ public partial class InspectorPanel : UserControl
 
         btnEdit.Click += (_, __) =>
         {
-            if (string.IsNullOrWhiteSpace(tbPath.Text) || tbPath.Text == "(none)") return;
+            if (string.IsNullOrWhiteSpace(tbPath.Text) || tbPath.Text == "(none)" || tbPath.Text == "(unsaved)") return;
 
             string abs = tbPath.Text;
             try
@@ -2304,8 +2612,8 @@ public partial class InspectorPanel : UserControl
                 var proj = ProjectService.Current;
                 if (proj != null)
                 {
-                    var rootPath = System.IO.Path.GetFullPath(proj.RootPath);
-                    var p = System.IO.Path.GetFullPath(System.IO.Path.Combine(rootPath, tbPath.Text));
+                    var rootDir = System.IO.Path.GetFullPath(proj.RootPath);
+                    var p = System.IO.Path.GetFullPath(System.IO.Path.Combine(rootDir, tbPath.Text));
                     if (File.Exists(p)) abs = p;
                 }
             }
@@ -2313,7 +2621,7 @@ public partial class InspectorPanel : UserControl
 
             try
             {
-                _assetInspectorActive = true; // reuse asset inspector
+                _assetInspectorActive = true;
                 OnAssetSelected(abs);
             }
             catch { }
@@ -2322,16 +2630,27 @@ public partial class InspectorPanel : UserControl
         btnClear.Click += (_, __) =>
         {
             BeginEdit();
-            prop.SetValue(owner, null);
-            TrySetSiblingPath(owner, prop, null);
-            SetCachedMatPath(owner, prop.Name, null);
-            SceneService.NotifyChanged();
+
+            slots.Clear();
+            WriteBackToOwner();
+
+            try
+            {
+                if (prop != null && prop.CanWrite &&
+                    prop.PropertyType.IsAssignableFrom(typeof(Material)))
+                    prop.SetValue(owner, null);
+
+                TrySetSiblingPath(GetListTarget(owner, prop), prop, null);
+                SetCachedMatPath(owner, prop.Name, null);
+            }
+            catch { }
+
             CommitEdit();
 
             tbPath.Text = "(none)";
             summary.Children.Clear();
-            slots.Clear();              // also clear per-side list
             RebuildListUI();
+            SceneService.NotifyChanged();
         };
 
         drop.AddHandler(DragDrop.DragOverEvent, (s, e) =>
@@ -2345,7 +2664,6 @@ public partial class InspectorPanel : UserControl
         drop.AddHandler(DragDrop.DropEvent, async (s, e) =>
         {
             string picked = null;
-
             if (e.Data.Contains(DataFormats.FileNames))
                 picked = e.Data.GetFileNames()?.FirstOrDefault();
 
@@ -2380,7 +2698,6 @@ public partial class InspectorPanel : UserControl
             }
         });
 
-        // per-side toolbar
         btnAdd.Click += async (_, __) =>
         {
             var win = OwnerWindow;
@@ -2398,7 +2715,7 @@ public partial class InspectorPanel : UserControl
             for (int i = 0; i < files.Length; i++)
             {
                 if (string.Equals(System.IO.Path.GetExtension(files[i]), ".material", StringComparison.OrdinalIgnoreCase))
-                    AddExtraSlot(files[i], S_Right); // default side; user can change
+                    AddExtraSlot(files[i], S_Right); // default side
             }
         };
 
@@ -2428,20 +2745,20 @@ public partial class InspectorPanel : UserControl
             try
             {
                 var json =
-                    @"{
-                  ""name"": ""New Material"",
-                  ""type"": ""Material"",
-                  ""version"": 1,
-                  ""shader"": """",
-                  ""parameters"": {
-                    ""Tint"": ""#FFFFFFFF"",
-                    ""Metallic"": 0.00,
-                    ""Roughness"": 0.50,
-                    ""Transparent"": false,
-                    ""AlphaCutoff"": 0.50
-                  },
-                  ""textures"": { }
-                }";
+    @"{
+  ""name"": ""NewMaterial"",
+  ""type"": ""Material"",
+  ""version"": 1,
+  ""shader"": """",
+  ""parameters"": {
+    ""Tint"": ""#FFFFFFFF"",
+    ""Metallic"": 0.00,
+    ""Roughness"": 0.50,
+    ""Transparent"": false,
+    ""AlphaCutoff"": 0.50
+  },
+  ""textures"": { }
+}";
                 File.WriteAllText(dest, json);
             }
             catch (Exception ex)
@@ -2454,21 +2771,10 @@ public partial class InspectorPanel : UserControl
             AddExtraSlot(dest, S_Right);
         };
 
-        /*btnClearAll.Click += (_, __) =>
-        {
-            slots.Clear();
-            BeginEdit();
-            WriteBackToOwner();
-            SceneService.NotifyChanged();
-            CommitEdit();
-            RebuildListUI();
-        };*/
-
         // ---------- initial render ----------
         RebuildListUI();
 
-        // If header still empty, show first slot’s relpath (defensive).
-        if (tbPath.Text == "(none)" && slots.Count > 0 && !string.IsNullOrWhiteSpace(slots[0].RelPath))
+        if ((tbPath.Text == "(none)" || tbPath.Text == "(unsaved)") && slots.Count > 0 && !string.IsNullOrWhiteSpace(slots[0].RelPath))
         {
             tbPath.Text = slots[0].RelPath;
             UpdateSummary(tbPath.Text);
@@ -2476,6 +2782,10 @@ public partial class InspectorPanel : UserControl
 
         return box;
     }
+
+
+
+
 
     Control Texture2DEditor(object owner, PropertyInfo prop)
     {

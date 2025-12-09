@@ -1,96 +1,75 @@
 ﻿using System;
-using System.IO;
-using System.Numerics; // for Vector4
-using Game_Engine.Core;               
-using Game_Engine.Core.Rendering;
+using System.Numerics; // Vector4
+using Avalonia.Media;
+using Game_Engine.Core;
 
 namespace Game_Engine.Core.Rendering
 {
     public static class MaterialRuntimeBuilder
     {
-        // Build the engine's runtime Material from MaterialAsset + ShaderAsset
+        // Build runtime Material from asset+shader
         public static Material Build(MaterialAsset src, ShaderAsset shader)
         {
-
             var m = new Material();
+            m.Name = string.IsNullOrWhiteSpace(src?.Name) ? "Material" : src.Name;
+            m.ShaderAssetPath = src != null ? src.ShaderPath : null;
 
-            if (string.Equals(shader.Technique, "Unlit/Color", StringComparison.OrdinalIgnoreCase))
-            {
-                // base properties: _BaseColor (Color), _MainTex (Texture2D)
-                var color = GetColor(src, "_BaseColor", 1f, 1f, 1f, 1f);
-                m.Tint = ColorUtil.FromRGBA(color.X, color.Y, color.Z, color.W);
+            // Lit/Unlit from shader technique prefix
+            var tech = (shader != null ? shader.Technique : null) ?? "";
+            m.Lit = tech.StartsWith("Lit", StringComparison.OrdinalIgnoreCase);
 
-                var mainTex = GetTexture(src, "_MainTex");
-                if (!string.IsNullOrEmpty(mainTex))
-                    m.AlbedoTexturePath = mainTex;
+            // Scalars
+            var baseCol = GetColor(src, "_BaseColor", 1f, 1f, 1f, 1f);
+            m.BaseColor = Color.FromArgb(
+                (byte)Math.Round(baseCol.W * 255f),
+                (byte)Math.Round(baseCol.X * 255f),
+                (byte)Math.Round(baseCol.Y * 255f),
+                (byte)Math.Round(baseCol.Z * 255f));
 
-                m.Lit = false; // unlit
-            }
-            else if (string.Equals(shader.Technique, "Lit/Standard", StringComparison.OrdinalIgnoreCase))
-            {
-                // Minimal PBR-ish pack for your current rasterizer params:
-                // _BaseColor (Color), _BaseMap (Texture2D)
-                // _Metallic (Range 0..1), _Smoothness (Range 0..1)
-                // _NormalMap (Texture2D), _AOMap (Texture2D)
-                var color = GetColor(src, "_BaseColor", 1f, 1f, 1f, 1f);
-                m.Tint = ColorUtil.FromRGBA(color.X, color.Y, color.Z, color.W);
+            // Either _Smoothness or _Roughness (if both missing, default 0.5 roughness)
+            var smooth = GetFloat(src, "_Smoothness", -1f);
+            var rough = GetFloat(src, "_Roughness", -1f);
+            if (smooth >= 0f) m.Smoothness = Clamp01(smooth);
+            else if (rough >= 0f) m.Roughness = Clamp01(rough);
+            else m.Roughness = 0.5f;
 
-                var baseMap = GetTexture(src, "_BaseMap");
-                if (!string.IsNullOrEmpty(baseMap))
-                    m.AlbedoTexturePath = baseMap;
+            m.Metallic = Clamp01(GetFloat(src, "_Metallic", 0f));
 
-                float metallic = GetFloat(src, "_Metallic", 0f);
-                float smooth = GetFloat(src, "_Smoothness", 0.5f);
-
-                m.Metallic = metallic;
-                m.Smoothness = smooth; // map to whatever  rasterizer uses for specular/roughness WIP FIX LATER
-
-                var nrm = GetTexture(src, "_NormalMap");
-                if (!string.IsNullOrEmpty(nrm))
-                    m.NormalTexturePath = nrm;
-
-                var ao = GetTexture(src, "_AOMap");
-                if (!string.IsNullOrEmpty(ao))
-                    m.AOTexturePath = ao;
-
-                m.Lit = true;
-            }
-            else
-            {
-                // Fallback: treat as unlit color
-                var color = GetColor(src, "_BaseColor", 1f, 1f, 1f, 1f);
-                m.Tint = ColorUtil.FromRGBA(color.X, color.Y, color.Z, color.W);
-                m.Lit = false;
-            }
+            // Transparency flags
+            var transp = GetBool(src, "Transparent", false) || GetBool(src, "_Transparent", false);
+            m.Transparent = transp;
+            m.AlphaCutoff = Clamp01(GetFloat(src, "_AlphaCutoff", m.AlphaCutoff));
 
             return m;
         }
 
+        private static float Clamp01(float v) { if (v < 0f) return 0f; if (v > 1f) return 1f; return v; }
+
         private static float GetFloat(MaterialAsset src, string name, float def)
         {
+            if (src == null || src.Properties == null) return def;
+            MaterialPropertyValue v;
+            if (src.Properties.TryGetValue(name, out v) && v != null && v.Floats != null && v.Floats.Length >= 1)
+                return (float)v.Floats[0];
+            return def;
+        }
+
+        private static bool GetBool(MaterialAsset src, string name, bool def)
+        {
+            if (src == null || src.Properties == null) return def;
             MaterialPropertyValue v;
             if (src.Properties.TryGetValue(name, out v) && v != null)
-            {
-                if ((v.Type == ShaderPropType.Float || v.Type == ShaderPropType.Range) && v.Floats != null && v.Floats.Length >= 1)
-                    return v.Floats[0];
-            }
+                return v.Bool;
             return def;
         }
 
         private static Vector4 GetColor(MaterialAsset src, string name, float r, float g, float b, float a)
         {
+            if (src == null || src.Properties == null) return new Vector4(r, g, b, a);
             MaterialPropertyValue v;
-            if (src.Properties.TryGetValue(name, out v) && v != null && v.Type == ShaderPropType.Color && v.Floats != null && v.Floats.Length >= 4)
+            if (src.Properties.TryGetValue(name, out v) && v != null && v.Floats != null && v.Floats.Length >= 4)
                 return new Vector4(v.Floats[0], v.Floats[1], v.Floats[2], v.Floats[3]);
             return new Vector4(r, g, b, a);
-        }
-
-        private static string GetTexture(MaterialAsset src, string name)
-        {
-            MaterialPropertyValue v;
-            if (src.Properties.TryGetValue(name, out v) && v != null && v.Type == ShaderPropType.Texture2D)
-                return v.TexturePath;
-            return null;
         }
     }
 }

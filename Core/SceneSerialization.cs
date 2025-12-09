@@ -1,11 +1,12 @@
-﻿using System;
+﻿using Avalonia.Media;
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Avalonia.Media;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core
@@ -59,7 +60,9 @@ namespace Game_Engine.Core
             var json = File.ReadAllText(path);
             var dto = JsonSerializer.Deserialize<SceneDTO>(json, _json);
             if (dto == null) throw new InvalidDataException("Scene file is empty or invalid.");
+
             return dto.Root.Select(FromDTO).ToList();
+
         }
 
         // ---------------- GameObject/Behavior mapping ----------------
@@ -137,13 +140,13 @@ namespace Game_Engine.Core
             if (!typeof(Behavior).IsAssignableFrom(type)) return;
             if (typeof(Component.Transform).IsAssignableFrom(type)) return;
 
-            Behavior? instance = null;
+            Behavior instance = null;
             try { instance = Activator.CreateInstance(type) as Behavior; } catch { }
             if (instance == null) return;
 
             go.AddBehavior(instance);
 
-            // Apply persisted properties ([Persist] + MeshFilter back-compat properties)
+            // ---------- Apply persisted [Persist] properties ----------
             var props = GetPersistableProps(type).ToDictionary(p => p.Name, p => p, StringComparer.Ordinal);
             if (dto.Properties != null)
             {
@@ -157,126 +160,189 @@ namespace Game_Engine.Core
                     }
                     catch
                     {
-                        // Ignore a single bad value so the rest can load
+                        // ignore a single bad property to keep the rest loading
                     }
                 }
             }
 
-            // Post-pass: for each Texture2D property with sibling "<Name>Path", try file reload
-            var allProps = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            for (int i = 0; i < allProps.Length; i++)
+            // ---------- Texture2D post-pass via "*Path" siblings ----------
             {
-                var texProp = allProps[i];
-                if (texProp.PropertyType != typeof(Texture2D)) continue;
-                if (!texProp.CanRead || !texProp.CanWrite) continue;
-
-                var pathProp = type.GetProperty(texProp.Name + "Path",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (pathProp == null || pathProp.PropertyType != typeof(string) || !pathProp.CanRead) continue;
-
-                string? rel = null;
-                try { rel = (string?)pathProp.GetValue(instance); } catch { rel = null; }
-
-                // fallback to raw dto map if property itself wasn't marked
-                if (string.IsNullOrWhiteSpace(rel) && dto.Properties != null &&
-                    dto.Properties.TryGetValue(texProp.Name + "Path", out var raw))
+                var allProps = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                for (int i = 0; i < allProps.Length; i++)
                 {
-                    try
-                    {
-                        if (raw is string sRaw) rel = sRaw;
-                        else if (raw is JsonElement je && je.ValueKind == JsonValueKind.String) rel = je.GetString();
-                    }
-                    catch { rel = null; }
-                }
+                    var texProp = allProps[i];
+                    if (texProp.PropertyType != typeof(Texture2D)) continue;
+                    if (!texProp.CanRead || !texProp.CanWrite) continue;
 
-                if (string.IsNullOrWhiteSpace(rel)) continue;
+                    var pathProp = type.GetProperty(texProp.Name + "Path",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (pathProp == null || pathProp.PropertyType != typeof(string) || !pathProp.CanRead) continue;
 
-                // be robust: try resolve in multiple places
-                var abs = TryResolveTextureFile(rel!);
-                if (string.IsNullOrWhiteSpace(abs)) abs = ResolveAssetPath(rel!);
-                if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs)) continue;
+                    string rel = null;
+                    try { rel = (string)pathProp.GetValue(instance); } catch { rel = null; }
 
-                try
-                {
-                    var texFromFile = Texture2D.FromFile(abs!);
-                    if (texFromFile != null) texProp.SetValue(instance, texFromFile);
-                }
-                catch
-                {
-                    // keep whatever ConvertPersisted set
-                }
-            }
-
-            //    Rebuild Mesh from ModelPath(+ModelPartIndex) if the component exposes them.
-            //    This is what restores multi-part models (one MeshFilter per layer) correctly.
-            var modelPathPI = type.GetProperty("ModelPath",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var partIndexPI = type.GetProperty("ModelPartIndex",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var meshPI = type.GetProperty("Mesh",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-            if (modelPathPI != null && modelPathPI.PropertyType == typeof(string) &&
-                meshPI != null && meshPI.PropertyType == typeof(Mesh) && meshPI.CanWrite)
-            {
-                string? relModel = null;
-                try { relModel = (string?)modelPathPI.GetValue(instance); } catch { relModel = null; }
-
-                // Allow pulling ModelPartIndex from instance or from dto map if not marked with [Persist]
-                int partIdx = 0;
-                if (partIndexPI != null && partIndexPI.PropertyType == typeof(int) && partIndexPI.CanRead)
-                {
-                    try { partIdx = (int)partIndexPI.GetValue(instance)!; } catch { partIdx = 0; }
-                }
-                else if (dto.Properties != null && dto.Properties.TryGetValue("ModelPartIndex", out var rawIdx))
-                {
-                    try
-                    {
-                        if (rawIdx is JsonElement je)
-                        {
-                            if (je.ValueKind == JsonValueKind.Number) partIdx = je.GetInt32();
-                            else if (je.ValueKind == JsonValueKind.String && int.TryParse(je.GetString(), out var parsed)) partIdx = parsed;
-                        }
-                        else if (rawIdx is int i) partIdx = i;
-                        else if (rawIdx is string s && int.TryParse(s, out var parsed)) partIdx = parsed;
-                    }
-                    catch { partIdx = 0; }
-                }
-
-                if (!string.IsNullOrWhiteSpace(relModel))
-                {
-                    var absModel = ResolveAssetPath(relModel!);
-                    if (!string.IsNullOrWhiteSpace(absModel) && File.Exists(absModel!))
+                    // fallback to raw dto map if property itself wasn't marked
+                    if (string.IsNullOrWhiteSpace(rel) && dto.Properties != null &&
+                        dto.Properties.TryGetValue(texProp.Name + "Path", out var raw))
                     {
                         try
                         {
-                            // Preferred: multi-mesh resolver (restores each layer by index)
-                            if (ResolveMeshesFromModelPath != null)
+                            if (raw is string sRaw) rel = sRaw;
+                            else if (raw is JsonElement je && je.ValueKind == JsonValueKind.String) rel = je.GetString();
+                        }
+                        catch { rel = null; }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(rel)) continue;
+
+                    var abs = TryResolveTextureFile(rel);
+                    if (string.IsNullOrWhiteSpace(abs)) abs = ResolveAssetPath(rel);
+                    if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs)) continue;
+
+                    try
+                    {
+                        var texFromFile = Texture2D.FromFile(abs);
+                        if (texFromFile != null) texProp.SetValue(instance, texFromFile);
+                    }
+                    catch { /* keep whatever ConvertPersisted set */ }
+                }
+            }
+
+            // ---------- MeshFilter post-pass: rebuild from ModelPath (robust, no empty fallback) ----------
+            {
+                var modelPathPI = type.GetProperty("ModelPath",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var partIndexPI = type.GetProperty("ModelPartIndex",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var meshPI = type.GetProperty("Mesh",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                if (modelPathPI != null && modelPathPI.PropertyType == typeof(string) &&
+                    meshPI != null && meshPI.PropertyType == typeof(Mesh) && meshPI.CanWrite)
+                {
+                    string relModel = null;
+                    try { relModel = (string)modelPathPI.GetValue(instance); } catch { relModel = null; }
+
+                    // If ModelPath didn't come through as [Persist], pull from DTO and push to instance
+                    if (string.IsNullOrWhiteSpace(relModel) && dto.Properties != null &&
+                        dto.Properties.TryGetValue("ModelPath", out var rawModel))
+                    {
+                        try
+                        {
+                            if (rawModel is string sRaw) relModel = sRaw;
+                            else if (rawModel is JsonElement jem && jem.ValueKind == JsonValueKind.String) relModel = jem.GetString();
+                        }
+                        catch { relModel = null; }
+
+                        // Normalize and store back so next save includes it
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(relModel))
                             {
-                                var list = ResolveMeshesFromModelPath(absModel!);
-                                if (list != null && list.Count > 0)
+                                // Make project-relative if needed
+                                var normalized = MakeAssetRelative(ResolveAssetPath(relModel) ?? relModel);
+                                modelPathPI.SetValue(instance, normalized ?? relModel);
+                                relModel = normalized ?? relModel;
+                            }
+                        }
+                        catch { }
+                    }
+
+                    // Pull ModelPartIndex robustly
+                    int partIdx = 0;
+                    if (partIndexPI != null && partIndexPI.PropertyType == typeof(int) && partIndexPI.CanRead)
+                    {
+                        try { partIdx = (int)partIndexPI.GetValue(instance); } catch { partIdx = 0; }
+                    }
+                    else if (dto.Properties != null && dto.Properties.TryGetValue("ModelPartIndex", out var rawIdx))
+                    {
+                        try
+                        {
+                            if (rawIdx is JsonElement je)
+                            {
+                                if (je.ValueKind == JsonValueKind.Number) partIdx = je.GetInt32();
+                                else if (je.ValueKind == JsonValueKind.String)
                                 {
-                                    if (partIdx < 0) partIdx = 0;
-                                    if (partIdx >= list.Count) partIdx = list.Count - 1;
-                                    var picked = list[partIdx];
-                                    if (picked != null) meshPI.SetValue(instance, picked);
+                                    int parsed;
+                                    if (int.TryParse(je.GetString(), out parsed)) partIdx = parsed;
                                 }
                             }
-                            // Fallback: single-mesh resolver
-                            else if (ResolveMeshFromModelPath != null)
+                            else if (rawIdx is int i) partIdx = i;
+                            else if (rawIdx is string s)
                             {
-                                var m = ResolveMeshFromModelPath(absModel!);
-                                if (m != null) meshPI.SetValue(instance, m);
+                                int parsed;
+                                if (int.TryParse(s, out parsed)) partIdx = parsed;
                             }
                         }
-                        catch
+                        catch { partIdx = 0; }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(relModel))
+                    {
+                        // 1) Resolve as stored
+                        string absModel = ResolveAssetPath(relModel);
+                        bool exists = !string.IsNullOrWhiteSpace(absModel) && File.Exists(absModel);
+
+                        // 2) If missing, try to guess by file name anywhere under Assets and update ModelPath if found
+                        if (!exists)
                         {
-                            // leave Mesh as-is on failure
+                            try
+                            {
+                                var guessedRel = GuessAssetPathByName(Path.GetFileName(relModel));
+                                if (!string.IsNullOrWhiteSpace(guessedRel))
+                                {
+                                    absModel = ResolveAssetPath(guessedRel);
+                                    exists = !string.IsNullOrWhiteSpace(absModel) && File.Exists(absModel);
+                                    if (exists)
+                                    {
+                                        try { modelPathPI.SetValue(instance, guessedRel); } catch { }
+                                        relModel = guessedRel;
+                                    }
+                                }
+                            }
+                            catch { }
                         }
+
+                        // 3) If exists, (multi-mesh preferred) rebuild the mesh
+                        if (exists)
+                        {
+                            try
+                            {
+                                bool resolved = false;
+
+                                if (ResolveMeshesFromModelPath != null)
+                                {
+                                    var list = ResolveMeshesFromModelPath(absModel);
+                                    if (list != null && list.Count > 0)
+                                    {
+                                        if (partIdx < 0) partIdx = 0;
+                                        if (partIdx >= list.Count) partIdx = list.Count - 1;
+                                        var picked = list[partIdx];
+                                        if (picked != null) { meshPI.SetValue(instance, picked); resolved = true; }
+                                    }
+                                }
+                                if (!resolved && ResolveMeshFromModelPath != null)
+                                {
+                                    var m = ResolveMeshFromModelPath(absModel);
+                                    if (m != null) { meshPI.SetValue(instance, m); resolved = true; }
+                                }
+
+                                // NOTE: If not resolved, we intentionally keep the current mesh (likely the default cube).
+                                // We no longer clear to an empty mesh to avoid “mesh removes after restore”.
+                            }
+                            catch
+                            {
+                                // keep current mesh on failure
+                            }
+                        }
+                        // else: still missing — do nothing, keep current mesh (no removal).
                     }
                 }
             }
+
         }
+
+        
 
 
 
@@ -666,212 +732,258 @@ namespace Game_Engine.Core
             catch { return null; }
         }
 
-        // ---------------- Material DTO (multi-texture) ----------------
+        // ---------------- Material DTO (asset-ref) ----------------
+
+        // Allow the app to tell us how to load a .material and how to find a material's asset path when saving.
+        public static Func<string, Material> ResolveMaterialFromPath;         // abs path -> Material (runtime)
+        public static Func<Material, string> GetMaterialAssetPath;            // Material -> abs or rel path
+        private const BindingFlags BF =
+             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
         sealed class MaterialDTO
         {
-            public string? tint { get; set; }      // "#AARRGGBB"
+            public string? tint { get; set; }           // "#AARRGGBB"
             public float metallic { get; set; }
             public float smoothness { get; set; }
-            public List<MatSlotDTO>? textures { get; set; }
 
-            // legacy single-path for old scenes
+            // Path to the .material file (project-relative)
+            [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
             public string? texturePath { get; set; }
+
+            // We no longer serialize individual texture slots from scenes.
+            [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+            public List<MatSlotDTO>? textures { get; set; }  // always null on save
         }
+
 
         sealed class MatSlotDTO
         {
             public string? name { get; set; }
-            public string? usage { get; set; }     // enum name
-            public int faceMask { get; set; }      // -1 or bitmask
-            public string? path { get; set; }      // project-relative
-            public Texture2DDTO? inline { get; set; } // if no path
+            public string? usage { get; set; }
+            public int faceMask { get; set; }
+            public string? path { get; set; }
+            public Texture2DDTO? inline { get; set; }
         }
 
-        // --- keep the exact authored order; do not reorder anything ---
+        static string? FindMaterialAssetPath(Material m)
+        {
+            // Try common property names on Material (AssetPath/MaterialPath/SourcePath/Path)
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            try
+            {
+                var t = m.GetType();
+                foreach (var n in new[] { "AssetPath", "MaterialPath", "SourcePath", "Path" })
+                {
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.PropertyType == typeof(string))
+                    {
+                        var v = p.GetValue(m) as string;
+                        if (!string.IsNullOrWhiteSpace(v)) return MakeAssetRelative(ResolveAssetPath(v) ?? v);
+                    }
+                }
+            }
+            catch { }
+
+            // Guess by name: <Name>.material anywhere under Assets
+            try
+            {
+                var nm = m.Name;
+                if (!string.IsNullOrWhiteSpace(nm))
+                {
+                    var guess = GuessAssetPathByName(nm.EndsWith(".material", StringComparison.OrdinalIgnoreCase)
+                                                     ? nm
+                                                     : (nm + ".material"));
+                    if (!string.IsNullOrWhiteSpace(guess)) return guess;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+
         static MaterialDTO ToDto(Material m)
         {
             var dto = new MaterialDTO
             {
+                // keep these lightweight scalars for convenience/back-compat
                 tint = ColorToHex(m.Tint),
                 metallic = m.Metallic,
                 smoothness = m.Smoothness,
-                textures = new List<MatSlotDTO>()
+
+                // scenes should NOT emit per-slot textures
+                textures = null
             };
 
-            // Preserve order 1:1
-            for (int i = 0; i < m.Textures.Count; i++)
-            {
-                var t = m.Textures[i];
-                var slot = new MatSlotDTO
-                {
-                    name = t.Name,
-                    usage = t.Usage.ToString(),
-                    faceMask = (int)t.FaceMask
-                };
+            // point to the .material file if we can find it
+            var matRel = FindMaterialAssetPath(m);
+            if (!string.IsNullOrWhiteSpace(matRel))
+                dto.texturePath = matRel;
+            else
+                dto.texturePath = null; // will still serialize, but null if we truly can't find it
 
-                string rel = null;
-                if (!string.IsNullOrWhiteSpace(t.SourcePath))
-                    rel = t.SourcePath;
-                else if (!string.IsNullOrWhiteSpace(t.Name))
-                    rel = GuessAssetPathByName(Path.GetFileName(t.Name));
-
-                if (!string.IsNullOrWhiteSpace(rel))
-                {
-                    var abs = ResolveAssetPath(rel);
-                    slot.path = MakeAssetRelative(abs ?? rel);
-                }
-                else if (t.Texture != null)
-                {
-                    slot.inline = ToDto(t.Texture);
-                }
-
-                dto.textures.Add(slot);
-            }
-
-            // legacy filler (unchanged)
-            dto.texturePath = (dto.textures.Count > 0) ? dto.textures[0].path : null;
             return dto;
         }
 
+
         static Material FromDto(MaterialDTO d)
         {
-            var mat = new Material
+            // 1) Try to load from the saved .material path (source of truth)
+            if (!string.IsNullOrWhiteSpace(d.texturePath))
             {
-                Tint = string.IsNullOrWhiteSpace(d.tint) ? Colors.White : HexToColor(d.tint),
-                Metallic = d.metallic,
-                Smoothness = d.smoothness
-            };
-
-            // Build the working list (support legacy single-path)
-            var slots = d.textures;
-            if ((slots == null || slots.Count == 0) && !string.IsNullOrWhiteSpace(d.texturePath))
-            {
-                slots = new List<MatSlotDTO>
-        {
-            new MatSlotDTO
-            {
-                name = Path.GetFileName(d.texturePath),
-                usage = "Albedo",
-                faceMask = -1,
-                path = d.texturePath
-            }
-        };
-            }
-
-            if (slots == null) return mat;
-
-            // IMPORTANT: do NOT reorder; add in exact serialized order
-            for (int i = 0; i < slots.Count; i++)
-            {
-                var s = slots[i];
-
-                var texSlot = new MaterialTexture
+                try
                 {
-                    Name = s.name
-                };
-
-                // Usage (fallback to Albedo)
-                if (!Enum.TryParse<MaterialTexture.TexUsage>(s.usage ?? "", true, out var usage))
-                    usage = MaterialTexture.TexUsage.Albedo;
-                texSlot.Usage = usage;
-
-                // Face mask
-                try { texSlot.FaceMask = (MaterialTexture.CubeFaceMask)s.faceMask; }
-                catch { texSlot.FaceMask = MaterialTexture.CubeFaceMask.All; }
-
-                Texture2D loaded = null;
-
-                // Prefer external file path
-                if (!string.IsNullOrWhiteSpace(s.path))
-                {
-                    texSlot.SourcePath = s.path; // keep relative for the next save
-                    var abs = TryResolveTextureFile(s.path);
+                    var abs = ResolveAssetPath(d.texturePath) ?? d.texturePath;
                     if (!string.IsNullOrWhiteSpace(abs) && File.Exists(abs))
                     {
-                        try { loaded = Texture2D.FromFile(abs); } catch { /* ignore */ }
+                        // Host-provided loader first (recommended; prints your MatTrace logs, etc.)
+                        if (ResolveMaterialFromPath != null)
+                        {
+                            try
+                            {
+                                var loaded = ResolveMaterialFromPath(abs);
+                                if (loaded != null) return loaded;
+                            }
+                            catch { /* fall through */ }
+                        }
+
+                        // Try MaterialRuntimeBuilder.* via reflection (Load/FromFile/Build/TryLoad)
+                        try
+                        {
+                            var asm = typeof(Material).Assembly;
+                            var t = asm.GetType("Game_Engine.Core.MaterialRuntimeBuilder")
+                                 ?? asm.GetTypes().FirstOrDefault(tt =>
+                                        string.Equals(tt.Name, "MaterialRuntimeBuilder", StringComparison.Ordinal));
+
+                            if (t != null)
+                            {
+                                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+
+                                // Prefer a (string)->Material
+                                var mLoad = t.GetMethod("Load", flags, null, new[] { typeof(string) }, null)
+                                         ?? t.GetMethod("FromFile", flags, null, new[] { typeof(string) }, null);
+
+                                if (mLoad != null)
+                                {
+                                    var res = mLoad.Invoke(null, new object[] { abs });
+                                    if (res is Material mRet) return mRet;
+                                }
+
+                                // Accept a (Material,string) builder that fills in-place
+                                var mBuild = t.GetMethod("Build", flags, null, new[] { typeof(Material), typeof(string) }, null)
+                                           ?? t.GetMethod("TryLoad", flags, null, new[] { typeof(Material), typeof(string) }, null);
+                                if (mBuild != null)
+                                {
+                                    var baseMat = new Material();
+                                    mBuild.Invoke(null, new object[] { baseMat, abs });
+                                    return baseMat;
+                                }
+                            }
+                        }
+                        catch { /* fall through */ }
+
+                        // Minimal JSON fallback — recognizes your current .material schema.
+                        try
+                        {
+                            return MinimalLoadMaterialAsset(abs);
+                        }
+                        catch { /* fall through */ }
                     }
                 }
-
-                // Fallback: inline RGBA payload
-                if (loaded == null && s.inline != null)
-                {
-                    try { loaded = FromDto(s.inline); } catch { /* ignore */ }
-                }
-
-                // Deep-copy pixel buffer to avoid shared state across layers/runs
-                if (loaded != null)
-                {
-                    try
-                    {
-                        var rgba = loaded.Rgba;
-                        byte[] clone = rgba != null ? (byte[])rgba.Clone() : null;
-                        loaded = new Texture2D(loaded.Width, loaded.Height, clone);
-                    }
-                    catch { /* keep as-is if cloning fails */ }
-
-                    // Best-effort sampler/sRGB normalization per usage (via reflection; safe if members don’t exist)
-                    NormalizeSampler(loaded, usage);
-
-                    texSlot.Texture = loaded;
-                }
-
-                mat.Textures.Add(texSlot);
+                catch { /* fall through */ }
             }
 
-            return mat;
-        }
-
-        // Try to set sensible defaults per usage without taking a hard dependency
-        static void NormalizeSampler(Texture2D tex, MaterialTexture.TexUsage usage)
-        {
-            // Many pipelines want sRGB for color, linear for data maps
-            bool? wantSrgb = usage switch
-            {
-                MaterialTexture.TexUsage.Albedo => true,
-                MaterialTexture.TexUsage.Emissive => true,
-                _ => (bool?)false
-            };
-
-            // These are optional and applied only if properties/methods exist on your Texture2D
+            // 2) Scalar-only fallback (if no path or load failed)
+            var col = string.IsNullOrWhiteSpace(d.tint) ? Colors.White : HexToColor(d.tint);
+            var mat = new Material { Metallic = d.metallic, Smoothness = d.smoothness };
             try
             {
-                var t = tex.GetType();
-
-                if (wantSrgb.HasValue)
+                var pBase = mat.GetType().GetProperty("BaseColor", BF);
+                if (pBase != null && pBase.PropertyType == typeof(Color)) pBase.SetValue(mat, col, null);
+                else
                 {
-                    var pSrgb = t.GetProperty("IsSrgb", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (pSrgb?.CanWrite == true) pSrgb.SetValue(tex, wantSrgb.Value);
-                }
-
-                var mGenMips = t.GetMethod("GenerateMips", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                mGenMips?.Invoke(tex, null);
-
-                var pFilter = t.GetProperty("FilterMode", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (pFilter?.CanWrite == true)
-                {
-                    // try set "Linear" if enum exists
-                    var ft = pFilter.PropertyType;
-                    var linear = Enum.GetNames(ft).FirstOrDefault(n => string.Equals(n, "Linear", StringComparison.OrdinalIgnoreCase));
-                    if (linear != null) pFilter.SetValue(tex, Enum.Parse(ft, linear));
-                }
-
-                // AddressU/V -> Wrap if available
-                foreach (var name in new[] { "AddressU", "AddressV" })
-                {
-                    var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (p?.CanWrite == true)
-                    {
-                        var et = p.PropertyType;
-                        var wrap = Enum.GetNames(et).FirstOrDefault(n => string.Equals(n, "Wrap", StringComparison.OrdinalIgnoreCase));
-                        if (wrap != null) p.SetValue(tex, Enum.Parse(et, wrap));
-                    }
+                    var pTint = mat.GetType().GetProperty("Tint", BF);
+                    if (pTint != null && pTint.PropertyType == typeof(Color)) pTint.SetValue(mat, col, null);
                 }
             }
-            catch
+            catch { }
+            return mat;
+
+            // ---- local helpers (C# 7.3-friendly) ---------------------------------
+            Material MinimalLoadMaterialAsset(string absPath)
             {
-                // Non-fatal: if your Texture2D doesn’t have these members, we just skip.
+                var json = File.ReadAllText(absPath);
+                using (var doc = JsonDocument.Parse(json))
+                {
+                    var root = doc.RootElement;
+                    var m = new Material();
+
+                    // param.{Tint | Tint(hex) | Metallic | Roughness | Transparent | AlphaCutoff}
+                    JsonElement param;
+                    if (root.TryGetProperty("param", out param) && param.ValueKind == JsonValueKind.Object)
+                    {
+                        string tintHex = null;
+                        JsonElement je;
+                        if (param.TryGetProperty("Tint", out je) && je.ValueKind == JsonValueKind.String) tintHex = je.GetString();
+                        else if (param.TryGetProperty("Tint(hex)", out je) && je.ValueKind == JsonValueKind.String) tintHex = je.GetString();
+
+                        if (!string.IsNullOrWhiteSpace(tintHex))
+                        {
+                            try
+                            {
+                                var c = HexToColor(tintHex);
+                                var pBase = m.GetType().GetProperty("BaseColor", BF);
+                                if (pBase != null && pBase.PropertyType == typeof(Color)) pBase.SetValue(m, c, null);
+                            }
+                            catch { }
+                        }
+
+                        if (param.TryGetProperty("Metallic", out je) && je.ValueKind == JsonValueKind.Number)
+                            m.Metallic = (float)je.GetDouble();
+                        if (param.TryGetProperty("Roughness", out je) && je.ValueKind == JsonValueKind.Number)
+                            m.Roughness = (float)je.GetDouble();
+                        if (param.TryGetProperty("Transparent", out je) && je.ValueKind == JsonValueKind.True)
+                            m.Transparent = true;
+                        if (param.TryGetProperty("AlphaCutoff", out je) && je.ValueKind == JsonValueKind.Number)
+                            m.AlphaCutoff = (float)je.GetDouble();
+                    }
+
+                    // textures (flat) or textures.obj { Albedo/Roughness/Metallic/AmbientOcclusion/Emissive/Opacity/Normal/Specular: "path" }
+                    JsonElement tex;
+                    if ((root.TryGetProperty("textures", out tex) || root.TryGetProperty("Textures", out tex)) && tex.ValueKind == JsonValueKind.Object)
+                    {
+                        var obj = tex;
+                        JsonElement inner;
+                        if (tex.TryGetProperty("obj", out inner) && inner.ValueKind == JsonValueKind.Object) obj = inner;
+
+                        foreach (var kv in obj.EnumerateObject())
+                        {
+                            if (kv.Value.ValueKind != JsonValueKind.String) continue;
+                            var rel = kv.Value.GetString();
+                            var absT = ResolveAssetPath(rel) ?? rel;
+                            if (string.IsNullOrWhiteSpace(absT) || !File.Exists(absT)) continue;
+
+                            Texture2D t2 = null;
+                            try { t2 = Texture2D.FromFile(absT); } catch { }
+                            if (t2 == null) continue;
+
+                            m.Textures.Add(new RuntimeTexSlot
+                            {
+                                Texture = t2,
+                                Usage = kv.Name,    // BuildGroups handles name case-insensitively
+                                FaceMask = -1
+                            });
+                        }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(m.Name))
+                        m.Name = Path.GetFileNameWithoutExtension(absPath);
+
+                    return m;
+                }
             }
         }
+
 
 
         // ---------------- Mesh DTO ----------------

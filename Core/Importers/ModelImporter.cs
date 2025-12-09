@@ -178,7 +178,7 @@ namespace Game_Engine.Core.Importers
             var (tex, resolvedAbsPath) = TryLoadTexture(slot, sc, dir);
             if (tex == null) return;
 
-            m.Textures.Add(new MaterialTexture
+          /*  m.Textures.Add(new MaterialTexture
             {
                 Name = Path.GetFileName(slot.FilePath),
                 Texture = tex,
@@ -187,7 +187,7 @@ namespace Game_Engine.Core.Importers
                 SourcePath = string.IsNullOrWhiteSpace(resolvedAbsPath)
                                 ? null
                                 : MakeProjectRelative(resolvedAbsPath)  // project-relative for serialization
-            });
+            });*/
         }
 
         // Try to choose a good usage from an Assimp type and/or the filename

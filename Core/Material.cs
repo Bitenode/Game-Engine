@@ -91,10 +91,9 @@ namespace Game_Engine.Core
     }
 
     /// <summary>
-    /// Engine material that supports the new shader/asset approach while
-    /// keeping legacy fields so existing code continues to compile.
+    /// Engine material that supports the new shader/asset approach
     /// </summary>
-    public sealed class Material
+    public sealed partial class Material
     {
         // ---- Core PBR-ish scalars ----
         [Persist] public string Name { get; set; }
@@ -146,36 +145,101 @@ namespace Game_Engine.Core
         // Optional shader asset hook for the “aspect-driven by shaders” plan
         [Persist] public string ShaderAssetPath { get; set; }
 
-        // ---- Legacy slots kept for compatibility with importers/builders ----
-        [Persist] public List<MaterialTexture> Textures { get; } = new();
-        [Persist] public string AlbedoTexturePath { get; set; }
-        [Persist] public string AOTexturePath { get; set; }
-        [Persist] public string NormalTexturePath { get; set; }
-        [Persist] public string EmissiveTexturePath { get; set; }
-        [Persist] public string MetallicTexturePath { get; set; }
-        [Persist] public string RoughnessTexturePath { get; set; }
+       
 
         // ---- Legacy Lit toggle (builder reads/sets this) ----
         [Persist] public bool Lit { get; set; } = true;
 
-        public Material Clone()
+
+        //WIP later down roadmap
+        public Material Clone(bool copyTextures = true)
         {
-            var m = new Material();
-            m.Name = Name;
-            m.BaseColor = BaseColor;
-            m.Transparent = Transparent;
-            m.AlphaCutoff = AlphaCutoff;
-            m._roughness = _roughness;
-            m.Metallic = Metallic;
-            m.ShaderAssetPath = ShaderAssetPath;
-            m.AlbedoTexturePath = AlbedoTexturePath;
-            m.AOTexturePath = AOTexturePath;
-            m.NormalTexturePath = NormalTexturePath;
-            m.EmissiveTexturePath = EmissiveTexturePath;
-            m.MetallicTexturePath = MetallicTexturePath;
-            m.RoughnessTexturePath = RoughnessTexturePath;
-            m.Lit = Lit;
+            var m = new Material
+            {
+                Name = this.Name,
+                BaseColor = this.BaseColor,
+                Transparent = this.Transparent,
+                AlphaCutoff = this.AlphaCutoff,
+                Metallic = this.Metallic,
+                ShaderAssetPath = this.ShaderAssetPath,
+                Lit = this.Lit
+            };
+            // keep exact roughness value (don’t re-map through Smoothness)
+            m._roughness = this._roughness;
+
+            if (copyTextures && this.Textures != null)
+            {
+                for (int i = 0; i < this.Textures.Count; i++)
+                {
+                    var s = this.Textures[i];
+                    if (s == null) continue;
+
+                    // Fast path: our RuntimeTexSlot
+                    if (s is RuntimeTexSlot rs)
+                    {
+                        m.Textures.Add(new RuntimeTexSlot
+                        {
+                            Texture = rs.Texture,   // share Texture2D ref
+                            Usage = rs.Usage,
+                            FaceMask = rs.FaceMask,
+                            NoFlipV = rs.NoFlipV,
+                            ScaleU = rs.ScaleU,
+                            ScaleV = rs.ScaleV,
+                            OffsetU = rs.OffsetU,
+                            OffsetV = rs.OffsetV,
+                            RotateUV = rs.RotateUV
+                        });
+                        continue;
+                    }
+
+                    // Generic reflection copy for any other slot shape that matches our names
+                    var t = s.GetType();
+                    var dst = Activator.CreateInstance(t);
+                    const System.Reflection.BindingFlags BF = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+
+                    foreach (var p in t.GetProperties(BF))
+                    {
+                        if (!p.CanRead || !p.CanWrite) continue;
+                        try { p.SetValue(dst, p.GetValue(s)); } catch { }
+                    }
+                    foreach (var f in t.GetFields(BF))
+                    {
+                        try { f.SetValue(dst, f.GetValue(s)); } catch { }
+                    }
+                    m.Textures.Add(dst);
+                }
+            }
+
             return m;
         }
+
+    }
+
+}
+//runtime
+namespace Game_Engine.Core
+{
+    public sealed partial class Material
+    {
+        // Runtime-only list consumed by Rasterizer.BuildGroups via reflection.
+        // No persistence; Asset files (.material) remain the source of truth.
+        [JsonIgnore]
+        public List<object> Textures { get; } = new List<object>();
+    }
+
+    // Minimal slot type with the exact property names Rasterizer expects.
+    internal sealed class RuntimeTexSlot
+    {
+        public Game_Engine.Core.Texture2D Texture { get; set; }    // required
+        public string Usage { get; set; } = "Albedo";               // Albedo/Normal/Roughness/Metallic/AmbientOcclusion/Emissive/Opacity/Specular
+        public int FaceMask { get; set; } = -1;                     // -1 means "all"
+        public bool NoFlipV { get; set; } = false;
+
+        // UV transforms (optional, keep defaults)
+        public float ScaleU { get; set; } = 1f;
+        public float ScaleV { get; set; } = 1f;
+        public float OffsetU { get; set; } = 0f;
+        public float OffsetV { get; set; } = 0f;
+        public float RotateUV { get; set; } = 0f;                   // degrees
     }
 }

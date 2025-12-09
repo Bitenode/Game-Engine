@@ -7,5 +7,5 @@ public static class SelectionService
     public static event Action? Changed;
     public static void Set(GameObject? go) { Current = go; Changed?.Invoke(); }
     public static void Touch() => Changed?.Invoke();
-    public static void Clear() { Current = null; Changed?.Invoke(); }
+    //public static void Clear() { Current = null; Changed?.Invoke(); }
 }

@@ -75,7 +75,7 @@ namespace Game_Engine.Core
         {
             var loaded = SceneSerialization.LoadScene(path);
             SceneService.ReplaceAll(loaded);
-            //AttachRoot(new ObservableCollection<GameObject>(list));
+            MaterialRebind.RepairScene();
             NotifyChanged();
         }
 
@@ -83,5 +83,6 @@ namespace Game_Engine.Core
 
         private static void OnRootChanged(object? sender, NotifyCollectionChangedEventArgs e)
             => Changed?.Invoke();
+
     }
 }
