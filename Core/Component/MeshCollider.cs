@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using SN = System.Numerics;
@@ -93,9 +93,8 @@ namespace Game_Engine.Core.Component
 
             if (_targets.Count == 0)
             {
-                // fallback to this GO's MeshFilter
-                var here = gameObject.Behaviors.OfType<MeshFilter>().FirstOrDefault(b => b.Enabled && b.Mesh != null);
-                if (here != null)
+                // fallback to ALL MeshFilters on this GO (multi-layer models have multiple)
+                foreach (var here in gameObject.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled && b.Mesh != null))
                 {
                     var W = BindToTargetTransform
                         ? TransformUtil.WorldFromTransform(here.gameObject.Transform)
@@ -156,14 +155,22 @@ namespace Game_Engine.Core.Component
                     return new AABB(min, max);
             }
 
-            //Fallback: MeshFilter on THIS GameObject, or a point at origin
-            var here = gameObject.Behaviors.OfType<MeshFilter>().FirstOrDefault(b => b.Enabled && b.Mesh != null);
-            if (here != null)
+            //Fallback: ALL MeshFilters on THIS GameObject, or a point at origin
             {
-                var W = BindToTargetTransform
-                    ? TransformUtil.WorldFromTransform(here.gameObject.Transform)
-                    : TransformUtil.WorldFromTransform(gameObject.Transform);
-                return AABBForMesh(here.Mesh, W);
+                SN.Vector3 min = new SN.Vector3(float.MaxValue);
+                SN.Vector3 max = new SN.Vector3(float.MinValue);
+                bool any = false;
+                foreach (var here in gameObject.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled && b.Mesh != null))
+                {
+                    var W = BindToTargetTransform
+                        ? TransformUtil.WorldFromTransform(here.gameObject.Transform)
+                        : TransformUtil.WorldFromTransform(gameObject.Transform);
+                    var a = AABBForMesh(here.Mesh, W);
+                    Encapsulate(ref min, ref max, a.Min);
+                    Encapsulate(ref min, ref max, a.Max);
+                    any = true;
+                }
+                if (any) return new AABB(min, max);
             }
 
             var W0 = TransformUtil.WorldFromTransform(gameObject.Transform);
@@ -222,7 +229,7 @@ namespace Game_Engine.Core.Component
             });
         }
 
-        // -------- path helpers (same logic as earlier single-target version) --------
+        // -------- path helpers  --------
         static string BuildPath(GameObject go)
         {
             if (go == null) return string.Empty;

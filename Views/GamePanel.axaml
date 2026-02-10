@@ -78,12 +78,19 @@
                                           ConverterParameter=Paused}"
 							  Click="OnPauseClicked">⏸</ToggleButton>
 
-				<ToggleButton x:Name="StopBtn"  Classes="tool" ToolTip.Tip="Stop"
-							  IsChecked="{Binding ElementName=Root, Path=State,
+			<ToggleButton x:Name="StopBtn"  Classes="tool" ToolTip.Tip="Stop"
+						  IsChecked="{Binding ElementName=Root, Path=State,
                                           Converter={StaticResource EnumEq},
                                           ConverterParameter=Stopped}"
-							  Click="OnStopClicked">■</ToggleButton>
-			</StackPanel>
+						  Click="OnStopClicked">■</ToggleButton>
+
+				<Separator Margin="5,0"/>
+
+				<!-- FPS counter -->
+				<TextBlock Text="{Binding ElementName=Game, Path=FpsText}"
+						   Foreground="#8899AA" FontSize="11"
+						   VerticalAlignment="Center" Opacity="0.85"/>
+		</StackPanel>
 		</Border>
 
 		<!-- Viewport -->

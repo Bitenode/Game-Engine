@@ -1,4 +1,4 @@
-﻿using Avalonia.Media;
+using Avalonia.Media;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -248,13 +248,20 @@ namespace Game_Engine.Core
                         catch { }
                     }
 
-                    // Pull ModelPartIndex robustly
+                    // Pull ModelPartIndex robustly (handles both int and string property types)
                     int partIdx = 0;
-                    if (partIndexPI != null && partIndexPI.PropertyType == typeof(int) && partIndexPI.CanRead)
+                    if (partIndexPI != null && partIndexPI.CanRead)
                     {
-                        try { partIdx = (int)partIndexPI.GetValue(instance); } catch { partIdx = 0; }
+                        try
+                        {
+                            var raw = partIndexPI.GetValue(instance);
+                            if (raw is int ii) partIdx = ii;
+                            else if (raw is string ss && int.TryParse(ss, out var pp)) partIdx = pp;
+                        }
+                        catch { partIdx = 0; }
                     }
-                    else if (dto.Properties != null && dto.Properties.TryGetValue("ModelPartIndex", out var rawIdx))
+                    // Fallback: read from DTO if instance value was 0 and DTO has a non-zero value
+                    if (partIdx == 0 && dto.Properties != null && dto.Properties.TryGetValue("ModelPartIndex", out var rawIdx))
                     {
                         try
                         {
@@ -279,11 +286,11 @@ namespace Game_Engine.Core
 
                     if (!string.IsNullOrWhiteSpace(relModel))
                     {
-                        // 1) Resolve as stored
+                        // Resolve as stored
                         string absModel = ResolveAssetPath(relModel);
                         bool exists = !string.IsNullOrWhiteSpace(absModel) && File.Exists(absModel);
 
-                        // 2) If missing, try to guess by file name anywhere under Assets and update ModelPath if found
+                        // If missing, try to guess by file name anywhere under Assets and update ModelPath if found
                         if (!exists)
                         {
                             try
@@ -303,7 +310,7 @@ namespace Game_Engine.Core
                             catch { }
                         }
 
-                        // 3) If exists, (multi-mesh preferred) rebuild the mesh
+                        // If exists, (multi-mesh preferred) rebuild the mesh
                         if (exists)
                         {
                             try
@@ -588,7 +595,7 @@ namespace Game_Engine.Core
                         yield return p;
                         continue;
                     }
-                    if (p.Name == "ModelPartIndex" && p.PropertyType == typeof(int))
+                    if (p.Name == "ModelPartIndex" && (p.PropertyType == typeof(int) || p.PropertyType == typeof(string)))
                     {
                         yield return p;
                         continue;
@@ -745,14 +752,15 @@ namespace Game_Engine.Core
             public string? tint { get; set; }           // "#AARRGGBB"
             public float metallic { get; set; }
             public float smoothness { get; set; }
+            public bool transparent { get; set; }
 
             // Path to the .material file (project-relative)
             [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
             public string? texturePath { get; set; }
 
-            // We no longer serialize individual texture slots from scenes.
+            // Texture slot paths — only emitted when no .material file is found.
             [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-            public List<MatSlotDTO>? textures { get; set; }  // always null on save
+            public List<MatSlotDTO>? textures { get; set; }
         }
 
 
@@ -810,17 +818,47 @@ namespace Game_Engine.Core
                 tint = ColorToHex(m.Tint),
                 metallic = m.Metallic,
                 smoothness = m.Smoothness,
-
-                // scenes should NOT emit per-slot textures
                 textures = null
             };
+
+            // Persist the Transparent flag
+            dto.transparent = m.Transparent;
 
             // point to the .material file if we can find it
             var matRel = FindMaterialAssetPath(m);
             if (!string.IsNullOrWhiteSpace(matRel))
                 dto.texturePath = matRel;
             else
-                dto.texturePath = null; // will still serialize, but null if we truly can't find it
+                dto.texturePath = null;
+
+            // If no .material file, save texture slot paths so they survive save/load
+            if (string.IsNullOrWhiteSpace(dto.texturePath) && m.Textures != null && m.Textures.Count > 0)
+            {
+                var slots = new List<MatSlotDTO>();
+                foreach (var raw in m.Textures)
+                {
+                    string? path = null;
+                    string? usage = null;
+                    int faceMask = -1;
+
+                    if (raw is RuntimeTexSlot rts)
+                    {
+                        path = rts.SourcePath;
+                        usage = rts.Usage;
+                        faceMask = rts.FaceMask;
+                    }
+                    else if (raw is MaterialTexture mtex)
+                    {
+                        path = mtex.SourcePath;
+                        usage = mtex.Usage.ToString();
+                        faceMask = (int)mtex.FaceMask;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(path))
+                        slots.Add(new MatSlotDTO { usage = usage, path = path, faceMask = faceMask });
+                }
+                if (slots.Count > 0) dto.textures = slots;
+            }
 
             return dto;
         }
@@ -828,7 +866,7 @@ namespace Game_Engine.Core
 
         static Material FromDto(MaterialDTO d)
         {
-            // 1) Try to load from the saved .material path (source of truth)
+            // Try to load from the saved .material path (source of truth)
             if (!string.IsNullOrWhiteSpace(d.texturePath))
             {
                 try
@@ -893,9 +931,9 @@ namespace Game_Engine.Core
                 catch { /* fall through */ }
             }
 
-            // 2) Scalar-only fallback (if no path or load failed)
+            // Scalar-only fallback (if no path or load failed)
             var col = string.IsNullOrWhiteSpace(d.tint) ? Colors.White : HexToColor(d.tint);
-            var mat = new Material { Metallic = d.metallic, Smoothness = d.smoothness };
+            var mat = new Material { Metallic = d.metallic, Smoothness = d.smoothness, Transparent = d.transparent };
             try
             {
                 var pBase = mat.GetType().GetProperty("BaseColor", BF);
@@ -907,6 +945,35 @@ namespace Game_Engine.Core
                 }
             }
             catch { }
+
+            // Reload texture slots from saved paths (when no .material file).
+            //    Always add the slot even when the texture file can't be loaded right now —
+            //    preserving SourcePath lets MaterialRebind retry on later frames.
+            if (d.textures != null)
+            {
+                foreach (var slotDto in d.textures)
+                {
+                    if (string.IsNullOrWhiteSpace(slotDto.path)) continue;
+
+                    Texture2D t2 = null;
+                    try
+                    {
+                        var absT = ResolveAssetPath(slotDto.path) ?? slotDto.path;
+                        if (!string.IsNullOrWhiteSpace(absT) && File.Exists(absT))
+                            t2 = Texture2D.FromFile(absT);
+                    }
+                    catch { /* deferred retry via MaterialRebind */ }
+
+                    mat.Textures.Add(new RuntimeTexSlot
+                    {
+                        Texture = t2,
+                        Usage = slotDto.usage ?? "Albedo",
+                        FaceMask = slotDto.faceMask,
+                        SourcePath = slotDto.path
+                    });
+                }
+            }
+
             return mat;
 
             // ---- local helpers (C# 7.3-friendly) ---------------------------------
@@ -970,8 +1037,9 @@ namespace Game_Engine.Core
                             m.Textures.Add(new RuntimeTexSlot
                             {
                                 Texture = t2,
-                                Usage = kv.Name,    // BuildGroups handles name case-insensitively
-                                FaceMask = -1
+                                Usage = kv.Name,
+                                FaceMask = -1,
+                                SourcePath = rel   // preserve for scene re-serialization
                             });
                         }
                     }

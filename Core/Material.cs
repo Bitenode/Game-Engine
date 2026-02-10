@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
 using SkiaSharp;
@@ -183,6 +183,7 @@ namespace Game_Engine.Core
                             Usage = rs.Usage,
                             FaceMask = rs.FaceMask,
                             NoFlipV = rs.NoFlipV,
+                            SourcePath = rs.SourcePath,
                             ScaleU = rs.ScaleU,
                             ScaleV = rs.ScaleV,
                             OffsetU = rs.OffsetU,
@@ -221,19 +222,25 @@ namespace Game_Engine.Core
 {
     public sealed partial class Material
     {
-        // Runtime-only list consumed by Rasterizer.BuildGroups via reflection.
+        // Runtime-only list of texture slots for GPU rendering.
         // No persistence; Asset files (.material) remain the source of truth.
         [JsonIgnore]
         public List<object> Textures { get; } = new List<object>();
     }
 
-    // Minimal slot type with the exact property names Rasterizer expects.
+    // Minimal slot type for associating textures with material usage channels.
     internal sealed class RuntimeTexSlot
     {
         public Game_Engine.Core.Texture2D Texture { get; set; }    // required
         public string Usage { get; set; } = "Albedo";               // Albedo/Normal/Roughness/Metallic/AmbientOcclusion/Emissive/Opacity/Specular
         public int FaceMask { get; set; } = -1;                     // -1 means "all"
         public bool NoFlipV { get; set; } = false;
+
+        /// <summary>
+        /// Project-relative path to the source image file. Used for scene serialization
+        /// so textures can be reloaded after save/load without a .material file.
+        /// </summary>
+        public string? SourcePath { get; set; }
 
         // UV transforms (optional, keep defaults)
         public float ScaleU { get; set; } = 1f;

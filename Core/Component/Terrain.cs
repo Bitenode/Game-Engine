@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -210,7 +210,10 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            // Indices (two tris per quad) — CCW
+            // Indices (two tris per quad) — CCW when viewed from above (+Y)
+            //   c --- d        Tri 1: a → c → d  (CCW from +Y → normal UP)
+            //   |   / |        Tri 2: a → d → b  (CCW from +Y → normal UP)
+            //   a --- b
             var tris = new List<int>((nx - 1) * (nz - 1) * 6);
             for (int z = 0; z < nz - 1; z++)
             {
@@ -220,8 +223,8 @@ namespace Game_Engine.Core.Component
                     int b = a + 1;
                     int c = a + nx;
                     int d = c + 1;
-                    tris.Add(a); tris.Add(b); tris.Add(d);
-                    tris.Add(a); tris.Add(d); tris.Add(c);
+                    tris.Add(a); tris.Add(c); tris.Add(d);
+                    tris.Add(a); tris.Add(d); tris.Add(b);
                 }
             }
 

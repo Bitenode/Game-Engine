@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -105,14 +105,29 @@ namespace Game_Engine.Core.Importers
                 var aimat = sc.Materials[i];
                 var m = new Material();
 
-                // Optional tint from diffuse color
+                // Optional tint from diffuse color (including alpha)
                 if (aimat.HasColorDiffuse)
                 {
                     var c = aimat.ColorDiffuse;
-                    m.Tint = Avalonia.Media.Color.FromRgb(
+                    byte ca = (byte)Math.Clamp((int)(c.A * 255f), 0, 255);
+                    m.BaseColor = Avalonia.Media.Color.FromArgb(ca,
                         (byte)Math.Clamp((int)(c.R * 255f), 0, 255),
                         (byte)Math.Clamp((int)(c.G * 255f), 0, 255),
                         (byte)Math.Clamp((int)(c.B * 255f), 0, 255));
+                    if (ca < 255) m.Transparent = true;
+                }
+
+                // Detect opacity from Assimp material
+                if (aimat.HasOpacity && aimat.Opacity < 0.999f)
+                {
+                    m.Transparent = true;
+                    // Bake opacity into base color alpha if not already low
+                    if (m.BaseColor.A == 255)
+                    {
+                        byte opA = (byte)Math.Clamp((int)(aimat.Opacity * 255f), 0, 255);
+                        m.BaseColor = Avalonia.Media.Color.FromArgb(opA,
+                            m.BaseColor.R, m.BaseColor.G, m.BaseColor.B);
+                    }
                 }
 
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -178,16 +193,32 @@ namespace Game_Engine.Core.Importers
             var (tex, resolvedAbsPath) = TryLoadTexture(slot, sc, dir);
             if (tex == null) return;
 
-          /*  m.Textures.Add(new MaterialTexture
+            // Map enum to string for RuntimeTexSlot
+            string usageStr = usage switch
             {
-                Name = Path.GetFileName(slot.FilePath),
+                MaterialTexture.TexUsage.Albedo => "Albedo",
+                MaterialTexture.TexUsage.Normal => "Normal",
+                MaterialTexture.TexUsage.Metallic => "Metallic",
+                MaterialTexture.TexUsage.Roughness => "Roughness",
+                MaterialTexture.TexUsage.Specular => "Specular",
+                MaterialTexture.TexUsage.Emissive => "Emissive",
+                MaterialTexture.TexUsage.AmbientOcclusion => "AmbientOcclusion",
+                MaterialTexture.TexUsage.Opacity => "Opacity",
+                MaterialTexture.TexUsage.Detail => "Detail",
+                _ => "Albedo"
+            };
+
+            m.Textures.Add(new RuntimeTexSlot
+            {
                 Texture = tex,
-                Usage = usage,
-                FaceMask = (MaterialTexture.CubeFaceMask)(-1),   // all faces for model textures by default
-                SourcePath = string.IsNullOrWhiteSpace(resolvedAbsPath)
-                                ? null
-                                : MakeProjectRelative(resolvedAbsPath)  // project-relative for serialization
-            });*/
+                Usage = usageStr,
+                FaceMask = -1,
+                SourcePath = !string.IsNullOrWhiteSpace(resolvedAbsPath)
+                    ? MakeProjectRelative(resolvedAbsPath)
+                    : null
+            });
+
+            System.Diagnostics.Debug.WriteLine($"[ModelImporter] +texture '{usageStr}' ({tex.Width}x{tex.Height}) for material '{m.Name}'");
         }
 
         // Try to choose a good usage from an Assimp type and/or the filename
@@ -308,14 +339,19 @@ namespace Game_Engine.Core.Importers
                 }
                 catch { /* ignore if property absent */ }
 
-                //  set the sequential layer number on import if MeshFilter has ModelPartIndex (int)
+                //  set the sequential layer number on import if MeshFilter has ModelPartIndex (int or string)
                 try
                 {
                     var mpiProp = typeof(MeshFilter).GetProperty("ModelPartIndex",
                         System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
 
-                    if (mpiProp != null && mpiProp.CanWrite && mpiProp.PropertyType == typeof(int))
-                        mpiProp.SetValue(mf, partIndex);
+                    if (mpiProp != null && mpiProp.CanWrite)
+                    {
+                        if (mpiProp.PropertyType == typeof(int))
+                            mpiProp.SetValue(mf, partIndex);
+                        else if (mpiProp.PropertyType == typeof(string))
+                            mpiProp.SetValue(mf, partIndex.ToString());
+                    }
                 }
                 catch { /* ignore if property absent */ }
                 finally

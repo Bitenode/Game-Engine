@@ -1,4 +1,4 @@
-﻿using Assimp;
+using Assimp;
 using Avalonia.Media;
 using Game_Engine.Core.Rendering;
 using System;
@@ -159,8 +159,8 @@ namespace Game_Engine.Core
                                 Usage = NormalizeUsage(usage),
                                 Texture = tex,
                                 FaceMask = -1,
-                                NoFlipV = false
-                                // UV defaults kept
+                                NoFlipV = false,
+                                SourcePath = rawPath  // preserve for scene serialization
                             };
                             m.Textures.Add(slot);
                             System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad]   +slot '{slot.Usage}' ({tex.Width}x{tex.Height})");

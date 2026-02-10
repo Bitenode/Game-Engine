@@ -66,6 +66,13 @@
 				</Button>
 
 
+				<Separator Margin="5,0"/>
+
+				<!-- FPS counter -->
+				<TextBlock Text="{Binding ElementName=Scene, Path=FpsText}"
+						   Foreground="#8899AA" FontSize="11"
+						   VerticalAlignment="Center" Opacity="0.85"/>
+
 			</StackPanel>
 		</Border>
 

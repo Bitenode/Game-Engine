@@ -46,6 +46,21 @@ namespace Game_Engine
                     return null;
                 }
             };
+
+            // Wire up the material-from-path resolver so scene deserialization
+            // can load .material files via ProjectService (same path the inspector uses).
+            // Without this, FromDto falls through to a scalar-only fallback that has no textures.
+            SceneSerialization.ResolveMaterialFromPath = absPath =>
+            {
+                try
+                {
+                    return ProjectService.MaterialsLoad(absPath);
+                }
+                catch
+                {
+                    return null;
+                }
+            };
         }
 
         // Depth-first: collect every MeshFilter.Mesh in stable order (per node)

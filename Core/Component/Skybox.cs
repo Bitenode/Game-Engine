@@ -1,4 +1,4 @@
-﻿using Avalonia.Media;
+using Avalonia.Media;
 
 namespace Game_Engine.Core.Component
 {
@@ -13,8 +13,11 @@ namespace Game_Engine.Core.Component
         [Persist] public float TextureBlend { get; set; } = 1.0f;
 
         [Persist] public float Yaw { get; set; } = 0f;
-        [Persist] public float SeamFeather { get; set; } = 0.01f;
-        [Persist] public bool KeyOutNearBlack { get; set; } = false;
-        [Persist] public float KeyLuma { get; set; } = 0.08f;
+        /// <summary>Sun elevation in degrees: 0 = horizon (deep shadows through windows),
+        /// 90 = overhead (minimal window penetration). Default 45.</summary>
+        [Persist] public float SunElevation { get; set; } = 45f;
+      //  [Persist] public float SeamFeather { get; set; } = 0.01f;
+      //  [Persist] public bool KeyOutNearBlack { get; set; } = false;
+      //  [Persist] public float KeyLuma { get; set; } = 0.08f;
     }
 }

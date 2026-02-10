@@ -10,12 +10,12 @@
         "dependencies": {
           "AssimpNet": "4.1.0",
           "AutoConstructor": "5.6.0",
-          "Avalonia": "11.3.8",
-          "Avalonia.Desktop": "11.3.8",
-          "Avalonia.Fonts.Inter": "11.3.8",
-          "Avalonia.Themes.Fluent": "11.3.8",
-          "ComputeSharp": "3.2.0",
+          "Avalonia": "11.3.11",
+          "Avalonia.Desktop": "11.3.11",
+          "Avalonia.Fonts.Inter": "11.3.11",
+          "Avalonia.Themes.Fluent": "11.3.11",
           "Microsoft.CodeAnalysis.CSharp": "4.14.0",
+          "Silk.NET.OpenGL": "2.23.0",
           "SkiaSharp": "2.88.9",
           "System.Reactive": "6.1.0"
         },
@@ -57,56 +57,56 @@
         }
       },
       "AutoConstructor/5.6.0": {},
-      "Avalonia/11.3.8": {
+      "Avalonia/11.3.11": {
         "dependencies": {
-          "Avalonia.BuildServices": "11.3.1",
-          "Avalonia.Remote.Protocol": "11.3.8",
+          "Avalonia.BuildServices": "11.3.2",
+          "Avalonia.Remote.Protocol": "11.3.11",
           "MicroCom.Runtime": "0.11.0"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Base.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.Controls.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.DesignerSupport.dll": {
             "assemblyVersion": "0.7.0.0",
             "fileVersion": "0.7.0.0"
           },
           "lib/net8.0/Avalonia.Dialogs.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.Markup.Xaml.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.Markup.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.Metal.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.MicroCom.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.OpenGL.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.Vulkan.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
@@ -129,53 +129,53 @@
           }
         }
       },
-      "Avalonia.BuildServices/11.3.1": {},
-      "Avalonia.Desktop/11.3.8": {
+      "Avalonia.BuildServices/11.3.2": {},
+      "Avalonia.Desktop/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8",
-          "Avalonia.Native": "11.3.8",
-          "Avalonia.Skia": "11.3.8",
-          "Avalonia.Win32": "11.3.8",
-          "Avalonia.X11": "11.3.8"
+          "Avalonia": "11.3.11",
+          "Avalonia.Native": "11.3.11",
+          "Avalonia.Skia": "11.3.11",
+          "Avalonia.Win32": "11.3.11",
+          "Avalonia.X11": "11.3.11"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Desktop.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.Fonts.Inter/11.3.8": {
+      "Avalonia.Fonts.Inter/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8"
+          "Avalonia": "11.3.11"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Fonts.Inter.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.FreeDesktop/11.3.8": {
+      "Avalonia.FreeDesktop/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8",
+          "Avalonia": "11.3.11",
           "Tmds.DBus.Protocol": "0.21.2"
         },
         "runtime": {
           "lib/net8.0/Avalonia.FreeDesktop.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.Native/11.3.8": {
+      "Avalonia.Native/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8"
+          "Avalonia": "11.3.11"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Native.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         },
         "runtimeTargets": {
@@ -186,17 +186,17 @@
           }
         }
       },
-      "Avalonia.Remote.Protocol/11.3.8": {
+      "Avalonia.Remote.Protocol/11.3.11": {
         "runtime": {
           "lib/net8.0/Avalonia.Remote.Protocol.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.Skia/11.3.8": {
+      "Avalonia.Skia/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8",
+          "Avalonia": "11.3.11",
           "HarfBuzzSharp": "8.3.1.1",
           "HarfBuzzSharp.NativeAssets.Linux": "8.3.1.1",
           "HarfBuzzSharp.NativeAssets.WebAssembly": "8.3.1.1",
@@ -206,67 +206,48 @@
         },
         "runtime": {
           "lib/net8.0/Avalonia.Skia.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.Themes.Fluent/11.3.8": {
+      "Avalonia.Themes.Fluent/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8"
+          "Avalonia": "11.3.11"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Themes.Fluent.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.Win32/11.3.8": {
+      "Avalonia.Win32/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8",
+          "Avalonia": "11.3.11",
           "Avalonia.Angle.Windows.Natives": "2.1.25547.20250602"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Win32.Automation.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           },
           "lib/net8.0/Avalonia.Win32.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
-      "Avalonia.X11/11.3.8": {
+      "Avalonia.X11/11.3.11": {
         "dependencies": {
-          "Avalonia": "11.3.8",
-          "Avalonia.FreeDesktop": "11.3.8",
-          "Avalonia.Skia": "11.3.8"
+          "Avalonia": "11.3.11",
+          "Avalonia.FreeDesktop": "11.3.11",
+          "Avalonia.Skia": "11.3.11"
         },
         "runtime": {
           "lib/net8.0/Avalonia.X11.dll": {
-            "assemblyVersion": "11.3.8.0",
-            "fileVersion": "11.3.8.0"
-          }
-        }
-      },
-      "ComputeSharp/3.2.0": {
-        "dependencies": {
-          "ComputeSharp.Core": "3.2.0"
-        },
-        "runtime": {
-          "lib/net8.0/ComputeSharp.dll": {
-            "assemblyVersion": "3.2.0.0",
-            "fileVersion": "3.2.0.0"
-          }
-        }
-      },
-      "ComputeSharp.Core/3.2.0": {
-        "runtime": {
-          "lib/net8.0/ComputeSharp.Core.dll": {
-            "assemblyVersion": "3.2.0.0",
-            "fileVersion": "3.2.0.0"
+            "assemblyVersion": "11.3.11.0",
+            "fileVersion": "11.3.11.0"
           }
         }
       },
@@ -488,6 +469,23 @@
           }
         }
       },
+      "Microsoft.CSharp/4.7.0": {},
+      "Microsoft.DotNet.PlatformAbstractions/3.1.6": {
+        "runtime": {
+          "lib/netstandard2.0/Microsoft.DotNet.PlatformAbstractions.dll": {
+            "assemblyVersion": "3.1.6.0",
+            "fileVersion": "3.100.620.31604"
+          }
+        }
+      },
+      "Microsoft.Extensions.DependencyModel/9.0.9": {
+        "runtime": {
+          "lib/net9.0/Microsoft.Extensions.DependencyModel.dll": {
+            "assemblyVersion": "9.0.0.9",
+            "fileVersion": "9.0.925.41916"
+          }
+        }
+      },
       "Microsoft.NETCore.Platforms/1.1.0": {},
       "Microsoft.NETCore.Targets/1.1.0": {},
       "Microsoft.Win32.Primitives/4.3.0": {
@@ -593,6 +591,42 @@
       "runtime.ubuntu.14.04-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
       "runtime.ubuntu.16.04-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
       "runtime.ubuntu.16.10-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
+      "Silk.NET.Core/2.23.0": {
+        "dependencies": {
+          "Microsoft.CSharp": "4.7.0",
+          "Microsoft.DotNet.PlatformAbstractions": "3.1.6",
+          "Microsoft.Extensions.DependencyModel": "9.0.9",
+          "System.Memory": "4.6.3",
+          "System.Numerics.Vectors": "4.6.1",
+          "System.Runtime.CompilerServices.Unsafe": "6.1.2"
+        },
+        "runtime": {
+          "lib/net6.0/Silk.NET.Core.dll": {
+            "assemblyVersion": "2.23.0.0",
+            "fileVersion": "2.23.0.0"
+          }
+        }
+      },
+      "Silk.NET.Maths/2.23.0": {
+        "runtime": {
+          "lib/net5.0/Silk.NET.Maths.dll": {
+            "assemblyVersion": "2.23.0.0",
+            "fileVersion": "2.23.0.0"
+          }
+        }
+      },
+      "Silk.NET.OpenGL/2.23.0": {
+        "dependencies": {
+          "Silk.NET.Core": "2.23.0",
+          "Silk.NET.Maths": "2.23.0"
+        },
+        "runtime": {
+          "lib/net5.0/Silk.NET.OpenGL.dll": {
+            "assemblyVersion": "2.23.0.0",
+            "fileVersion": "2.23.0.0"
+          }
+        }
+      },
       "SkiaSharp/2.88.9": {
         "dependencies": {
           "SkiaSharp.NativeAssets.Win32": "2.88.9",
@@ -850,6 +884,7 @@
           "System.Threading": "4.3.0"
         }
       },
+      "System.Memory/4.6.3": {},
       "System.Net.Http/4.3.0": {
         "dependencies": {
           "Microsoft.NETCore.Platforms": "1.1.0",
@@ -898,6 +933,7 @@
           "System.Threading.Tasks": "4.3.0"
         }
       },
+      "System.Numerics.Vectors/4.6.1": {},
       "System.ObjectModel/4.3.0": {
         "dependencies": {
           "System.Collections": "4.3.0",
@@ -985,6 +1021,7 @@
           "Microsoft.NETCore.Targets": "1.1.0"
         }
       },
+      "System.Runtime.CompilerServices.Unsafe/6.1.2": {},
       "System.Runtime.Extensions/4.3.0": {
         "dependencies": {
           "Microsoft.NETCore.Platforms": "1.1.0",
@@ -1266,12 +1303,12 @@
       "path": "autoconstructor/5.6.0",
       "hashPath": "autoconstructor.5.6.0.nupkg.sha512"
     },
-    "Avalonia/11.3.8": {
+    "Avalonia/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-VurCL/l7FiJg+RF9iuDDhubpvY43c3bxK1QnW1UUbH3tEhBH+WUgfdp1P8ywWkSfWnx8DJPkTXXLf/4A17xvzw==",
-      "path": "avalonia/11.3.8",
-      "hashPath": "avalonia.11.3.8.nupkg.sha512"
+      "sha512": "sha512-N+LjdoGLOD2Rio1JK0VlSMEB2opGZpq8/Vs5LV16eAnbjFeXdqY5uwmURFKb1rJ9McyMZQT3Kf2/DecmKqrLEw==",
+      "path": "avalonia/11.3.11",
+      "hashPath": "avalonia.11.3.11.nupkg.sha512"
     },
     "Avalonia.Angle.Windows.Natives/2.1.25547.20250602": {
       "type": "package",
@@ -1280,89 +1317,75 @@
       "path": "avalonia.angle.windows.natives/2.1.25547.20250602",
       "hashPath": "avalonia.angle.windows.natives.2.1.25547.20250602.nupkg.sha512"
     },
-    "Avalonia.BuildServices/11.3.1": {
+    "Avalonia.BuildServices/11.3.2": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-k/WwXbqwaCtmE0a90YXB9plT50ok6OgLBIr+DUYK16akJN82iK69kgkL1vGDd8XBvf77JM3O27znBuy7AEoFgg==",
-      "path": "avalonia.buildservices/11.3.1",
-      "hashPath": "avalonia.buildservices.11.3.1.nupkg.sha512"
+      "sha512": "sha512-qHDToxto1e3hci5YqbG9n0Ty8mlp3zBUN5wT66wKqaDVzXyQ0do3EnRILd4Ke9jpvsktaPpgE0YjEk7hornryQ==",
+      "path": "avalonia.buildservices/11.3.2",
+      "hashPath": "avalonia.buildservices.11.3.2.nupkg.sha512"
     },
-    "Avalonia.Desktop/11.3.8": {
+    "Avalonia.Desktop/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-lod+Y6j/adzeANDCzhgJHPHPzsxXI3+i307MBctGoiQW0Ny6uGW7J+RIlQlNMawgsAbnCaa5ygEadTbGudXZWg==",
-      "path": "avalonia.desktop/11.3.8",
-      "hashPath": "avalonia.desktop.11.3.8.nupkg.sha512"
+      "sha512": "sha512-m60U1jV96RquwYGg4Pzwp0ENL1HUrM3YZLMCes0gWRn8x+webT9V4Wfs58MAdTOukXPpy9t1XhEd4NON674Wmw==",
+      "path": "avalonia.desktop/11.3.11",
+      "hashPath": "avalonia.desktop.11.3.11.nupkg.sha512"
     },
-    "Avalonia.Fonts.Inter/11.3.8": {
+    "Avalonia.Fonts.Inter/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-chv46ANs8TdNPzK11AJ+2kQtOO5smU98vCgBn5ujAaQaimA+IDlhmIowU1RYXne+sJ/LTyPfAOoqjsLmZyyMjg==",
-      "path": "avalonia.fonts.inter/11.3.8",
-      "hashPath": "avalonia.fonts.inter.11.3.8.nupkg.sha512"
+      "sha512": "sha512-VzfS95eXV2YlMxizNWGug3eb4717lNGZ3lIfl5os+DTL+A1djDT+Sv87oXAj8jGVqijdA/eFP9jax5JA9GCb3g==",
+      "path": "avalonia.fonts.inter/11.3.11",
+      "hashPath": "avalonia.fonts.inter.11.3.11.nupkg.sha512"
     },
-    "Avalonia.FreeDesktop/11.3.8": {
+    "Avalonia.FreeDesktop/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-jaPuqqPTBBJrUOUZ3SUhv+uD/Vy4D9Lk7W/nSdo0HPtGbUsCpuQVLILKukrYissY0eY4VQjo85VFH29hdCmduw==",
-      "path": "avalonia.freedesktop/11.3.8",
-      "hashPath": "avalonia.freedesktop.11.3.8.nupkg.sha512"
+      "sha512": "sha512-kmmYhKVWAFAz064K4FYTqVOk/Oin6DWp5LfzVNISz3BP4YYUZdrGyglxhjbS6t8iOyzMnAoHCrNs1Pw+BRFYUQ==",
+      "path": "avalonia.freedesktop/11.3.11",
+      "hashPath": "avalonia.freedesktop.11.3.11.nupkg.sha512"
     },
-    "Avalonia.Native/11.3.8": {
+    "Avalonia.Native/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-vzLHmFSN/d5KRtpbNCT/Yv+ErxD8PV7+hlbAI75N/QqVJgQ2JTCQ5TtHiebpkcEQgkICl0NHf9CQ8sCUnXj4Zw==",
-      "path": "avalonia.native/11.3.8",
-      "hashPath": "avalonia.native.11.3.8.nupkg.sha512"
+      "sha512": "sha512-21XxwcOCYuf7fSYBsc4sF7CS0xNK80iDFyXyK9L4awnrjZOJjMuNSGiJ2L5+RQQkXnXaB8ECvMAWN3e/9WN3aw==",
+      "path": "avalonia.native/11.3.11",
+      "hashPath": "avalonia.native.11.3.11.nupkg.sha512"
     },
-    "Avalonia.Remote.Protocol/11.3.8": {
+    "Avalonia.Remote.Protocol/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-9JukvgTHAOLL7h2aL5WXZGKkhHlW8Rk6Am5tvoxDvVJt/UHkYrtr9IcAg/iKff4GcA0ZYY6jsG2jmweEyC2WgQ==",
-      "path": "avalonia.remote.protocol/11.3.8",
-      "hashPath": "avalonia.remote.protocol.11.3.8.nupkg.sha512"
+      "sha512": "sha512-kooZKlJb0DkzJYFzYTgChqAr+pOBq64FyNuvjpBLBmqTTTj/f+d7XyPvdNFgPsvyY3sa4X/W79t6hQnyWmM4zw==",
+      "path": "avalonia.remote.protocol/11.3.11",
+      "hashPath": "avalonia.remote.protocol.11.3.11.nupkg.sha512"
     },
-    "Avalonia.Skia/11.3.8": {
+    "Avalonia.Skia/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-dyrtpwFbUnE6jgUQ1sLEIM8xtz/YSwOp6zsr0k2yqCsJpTsypBtdQg8YPNS3E4wK/rc9zsCObfONb8Zkb6/gsA==",
-      "path": "avalonia.skia/11.3.8",
-      "hashPath": "avalonia.skia.11.3.8.nupkg.sha512"
+      "sha512": "sha512-7XynAFWmUR0pEXj6dY8ezpFkeMpNTGNvz1Vf2kLKQawJiv1MKdxzbehDXG9v4A0l2oBLd5m92Dme1/EKH7oj5g==",
+      "path": "avalonia.skia/11.3.11",
+      "hashPath": "avalonia.skia.11.3.11.nupkg.sha512"
     },
-    "Avalonia.Themes.Fluent/11.3.8": {
+    "Avalonia.Themes.Fluent/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-RGlEs6PrEA3y/kVLMkaw4y4H8lrYO0/4IJXKJKAf8I1lRIy2hWnh0v9FYqcFn9OT7sVGWj/BZT4mnqYof94UyQ==",
-      "path": "avalonia.themes.fluent/11.3.8",
-      "hashPath": "avalonia.themes.fluent.11.3.8.nupkg.sha512"
+      "sha512": "sha512-GBLwgTwLPGaWxtbBdZ+kUn+QIKVorTc3m8v3nr0wsvRJkWHPgrDR5LAoHJjkPQCLDFuqocYFIeLOUAaBYP0MeA==",
+      "path": "avalonia.themes.fluent/11.3.11",
+      "hashPath": "avalonia.themes.fluent.11.3.11.nupkg.sha512"
     },
-    "Avalonia.Win32/11.3.8": {
+    "Avalonia.Win32/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-gOdOrBzGw/nzHkr/8aZKcYIARsiFqFD5SJjlKVd42tlXsy4ZE3Q+Mpq91FxZKTWOCs87UMoBpVSzImoq9JIrcQ==",
-      "path": "avalonia.win32/11.3.8",
-      "hashPath": "avalonia.win32.11.3.8.nupkg.sha512"
+      "sha512": "sha512-hFOuFHuhOIiB1p4XtTYnIFHvVazCQwotlPW/iUPObUHQY6qoDYqzPIZIELZiLtUIs9zHA55DWvpmW/l4rDuuAQ==",
+      "path": "avalonia.win32/11.3.11",
+      "hashPath": "avalonia.win32.11.3.11.nupkg.sha512"
     },
-    "Avalonia.X11/11.3.8": {
+    "Avalonia.X11/11.3.11": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-TKshsGs3Vy+DH7r2CcPHHoKi3qFMF46cjRTrBT+kge0w+7jo+RgWBLNt1wmlfGH2f4P7ecyApTXQA0c83qGcuA==",
-      "path": "avalonia.x11/11.3.8",
-      "hashPath": "avalonia.x11.11.3.8.nupkg.sha512"
-    },
-    "ComputeSharp/3.2.0": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-DaFaqJS2cp6pCmjXcqG4KxE8KAy+x7W9SLxF1UnvPr+V29nj0a+0dMp0qSVNu49ePhYNBvSv8ZzuHZr2ac23rA==",
-      "path": "computesharp/3.2.0",
-      "hashPath": "computesharp.3.2.0.nupkg.sha512"
-    },
-    "ComputeSharp.Core/3.2.0": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-ImIKT+x8IpWG+i/D8bIBtxeZ7FwlzcpKtoOgLzrwgJu0XopoVLsh3Xu6uzgZQIgtegFZK15PYqpgZKhMu2UTcg==",
-      "path": "computesharp.core/3.2.0",
-      "hashPath": "computesharp.core.3.2.0.nupkg.sha512"
+      "sha512": "sha512-ZhNHTe8n0w7+Xkxgt13WidSZudHKiDQfDDv/jEDJ4ffdh6z4oKjkPrVUer0ECgEENOR2iCLvFNlaDi5glZ66SA==",
+      "path": "avalonia.x11/11.3.11",
+      "hashPath": "avalonia.x11.11.3.11.nupkg.sha512"
     },
     "HarfBuzzSharp/8.3.1.1": {
       "type": "package",
@@ -1426,6 +1449,27 @@
       "sha512": "sha512-568a6wcTivauIhbeWcCwfWwIn7UV7MeHEBvFB2uzGIpM2OhJ4eM/FZ8KS0yhPoNxnSpjGzz7x7CIjTxhslojQA==",
       "path": "microsoft.codeanalysis.csharp/4.14.0",
       "hashPath": "microsoft.codeanalysis.csharp.4.14.0.nupkg.sha512"
+    },
+    "Microsoft.CSharp/4.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-pTj+D3uJWyN3My70i2Hqo+OXixq3Os2D1nJ2x92FFo6sk8fYS1m1WLNTs0Dc1uPaViH0YvEEwvzddQ7y4rhXmA==",
+      "path": "microsoft.csharp/4.7.0",
+      "hashPath": "microsoft.csharp.4.7.0.nupkg.sha512"
+    },
+    "Microsoft.DotNet.PlatformAbstractions/3.1.6": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-jek4XYaQ/PGUwDKKhwR8K47Uh1189PFzMeLqO83mXrXQVIpARZCcfuDedH50YDTepBkfijCZN5U/vZi++erxtg==",
+      "path": "microsoft.dotnet.platformabstractions/3.1.6",
+      "hashPath": "microsoft.dotnet.platformabstractions.3.1.6.nupkg.sha512"
+    },
+    "Microsoft.Extensions.DependencyModel/9.0.9": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-fNGvKct2De8ghm0Bpfq0iWthtzIWabgOTi+gJhNOPhNJIowXNEUE2eZNW/zNCzrHVA3PXg2yZ+3cWZndC2IqYA==",
+      "path": "microsoft.extensions.dependencymodel/9.0.9",
+      "hashPath": "microsoft.extensions.dependencymodel.9.0.9.nupkg.sha512"
     },
     "Microsoft.NETCore.Platforms/1.1.0": {
       "type": "package",
@@ -1566,6 +1610,27 @@
       "sha512": "sha512-VB5cn/7OzUfzdnC8tqAIMQciVLiq2epm2NrAm1E9OjNRyG4lVhfR61SMcLizejzQP8R8Uf/0l5qOIbUEi+RdEg==",
       "path": "runtime.ubuntu.16.10-x64.runtime.native.system.security.cryptography.openssl/4.3.0",
       "hashPath": "runtime.ubuntu.16.10-x64.runtime.native.system.security.cryptography.openssl.4.3.0.nupkg.sha512"
+    },
+    "Silk.NET.Core/2.23.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-D7AT/nnwlB+4RZ84XY8QNGBZMJI5z9l4CSSETIJ1wCfRJzRt/341y3MRZ4HbnFz4r/IGaWOEZr86iE+0/65yyQ==",
+      "path": "silk.net.core/2.23.0",
+      "hashPath": "silk.net.core.2.23.0.nupkg.sha512"
+    },
+    "Silk.NET.Maths/2.23.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw==",
+      "path": "silk.net.maths/2.23.0",
+      "hashPath": "silk.net.maths.2.23.0.nupkg.sha512"
+    },
+    "Silk.NET.OpenGL/2.23.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-CIakUoUqiAyRPykMk54tr1M1XpbJrT/iw12T85HDQcuRCFlBa1cxbX7v3FmtznKO5eM89esfmGNCgqDaKBiWfg==",
+      "path": "silk.net.opengl/2.23.0",
+      "hashPath": "silk.net.opengl.2.23.0.nupkg.sha512"
     },
     "SkiaSharp/2.88.9": {
       "type": "package",
@@ -1749,6 +1814,13 @@
       "path": "system.linq.expressions/4.3.0",
       "hashPath": "system.linq.expressions.4.3.0.nupkg.sha512"
     },
+    "System.Memory/4.6.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-qdcDOgnFZY40+Q9876JUHnlHu7bosOHX8XISRoH94fwk6hgaeQGSgfZd8srWRZNt5bV9ZW2TljcegDNxsf+96A==",
+      "path": "system.memory/4.6.3",
+      "hashPath": "system.memory.4.6.3.nupkg.sha512"
+    },
     "System.Net.Http/4.3.0": {
       "type": "package",
       "serviceable": true,
@@ -1769,6 +1841,13 @@
       "sha512": "sha512-m6icV6TqQOAdgt5N/9I5KNpjom/5NFtkmGseEH+AK/hny8XrytLH3+b5M8zL/Ycg3fhIocFpUMyl/wpFnVRvdw==",
       "path": "system.net.sockets/4.3.0",
       "hashPath": "system.net.sockets.4.3.0.nupkg.sha512"
+    },
+    "System.Numerics.Vectors/4.6.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-sQxefTnhagrhoq2ReR0D/6K0zJcr9Hrd6kikeXsA1I8kOCboTavcUC4r7TSfpKFeE163uMuxZcyfO1mGO3EN8Q==",
+      "path": "system.numerics.vectors/4.6.1",
+      "hashPath": "system.numerics.vectors.4.6.1.nupkg.sha512"
     },
     "System.ObjectModel/4.3.0": {
       "type": "package",
@@ -1853,6 +1932,13 @@
       "sha512": "sha512-JufQi0vPQ0xGnAczR13AUFglDyVYt4Kqnz1AZaiKZ5+GICq0/1MH/mO/eAJHt/mHW1zjKBJd7kV26SrxddAhiw==",
       "path": "system.runtime/4.3.0",
       "hashPath": "system.runtime.4.3.0.nupkg.sha512"
+    },
+    "System.Runtime.CompilerServices.Unsafe/6.1.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-2hBr6zdbIBTDE3EhK7NSVNdX58uTK6iHW/P/Axmm9sl1xoGSLqDvMtpecn226TNwHByFokYwJmt/aQQNlO5CRw==",
+      "path": "system.runtime.compilerservices.unsafe/6.1.2",
+      "hashPath": "system.runtime.compilerservices.unsafe.6.1.2.nupkg.sha512"
     },
     "System.Runtime.Extensions/4.3.0": {
       "type": "package",

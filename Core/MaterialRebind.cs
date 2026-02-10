@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -46,6 +46,10 @@ namespace Game_Engine.Core
             s_forceOnce = true;
             if (s_framesToProbe < 4) s_framesToProbe = 4;
         }
+
+        /// <summary>True while we still have follow-up frames to probe. Callers
+        /// can use this to schedule additional renders (e.g. InvalidateVisual).</summary>
+        public static bool NeedsMoreFrames => s_forceOnce || s_framesToProbe > 0;
 
         /// <summary>
         /// Call this once per frame from GameView.Render (already present in your file).
@@ -99,7 +103,7 @@ namespace Game_Engine.Core
         {
             bool changed = false;
 
-            // --- 1) Single 'Material' from 'MaterialPath' (if present) -------------
+            // Single 'Material' from 'MaterialPath' (if present) -------------
             if (mr.Material == null)
             {
                 string rel = GetStringMember(mr, "MaterialPath");
@@ -114,7 +118,7 @@ namespace Game_Engine.Core
                 }
             }
 
-            // --- 2) Materials list from 'MaterialPaths' (if present) ----------------
+            // Materials list from 'MaterialPaths' (if present) ----------------
             IList paths = GetListMember(mr, "MaterialPaths");
             IList mats = GetListMember(mr, "Materials", createIfMissing: paths != null);
 
@@ -141,10 +145,68 @@ namespace Game_Engine.Core
                 }
             }
 
-            // --- 3) Resolve internal slots no matter what (cheap and idempotent) ---
+            //         Warm up texture slots: if a RuntimeTexSlot has a SourcePath but
+            //         its Texture is null, try to load from disk now (deferred retry
+            //         for textures that couldn't be loaded during initial scene load). ---
+            try { changed |= WarmUpMaterialTextures(mr.Material); } catch { }
+
+            // Resolve internal slots no matter what (cheap and idempotent) ---
             try { mr.ResolveMaterials(); } catch { }
 
             return changed;
+        }
+
+        /// <summary>
+        /// Iterate a Material's Textures list and retry loading from SourcePath
+        /// for any RuntimeTexSlot whose Texture is still null.
+        /// </summary>
+        static bool WarmUpMaterialTextures(Core.Material mat)
+        {
+            if (mat == null) return false;
+            var textures = mat.Textures;
+            if (textures == null || textures.Count == 0) return false;
+
+            bool any = false;
+            for (int i = 0; i < textures.Count; i++)
+            {
+                var slot = textures[i];
+                if (slot == null) continue;
+
+                // Only handle RuntimeTexSlot (most common for imported models)
+                string srcPath = null;
+                Texture2D curTex = null;
+                try
+                {
+                    var t = slot.GetType();
+                    var pTex = t.GetProperty("Texture", BF);
+                    var pSrc = t.GetProperty("SourcePath", BF);
+                    if (pTex != null) curTex = pTex.GetValue(slot) as Texture2D;
+                    if (pSrc != null) srcPath = pSrc.GetValue(slot) as string;
+
+                    if (curTex != null || string.IsNullOrWhiteSpace(srcPath))
+                        continue; // already loaded or no path to try
+
+                    // Resolve to absolute
+                    string abs = srcPath;
+                    if (!System.IO.Path.IsPathRooted(abs))
+                    {
+                        var proj = ProjectService.Current;
+                        if (proj != null)
+                            abs = System.IO.Path.Combine(proj.RootPath, srcPath);
+                    }
+                    if (string.IsNullOrWhiteSpace(abs) || !System.IO.File.Exists(abs))
+                        continue;
+
+                    var loaded = Texture2D.FromFile(abs);
+                    if (loaded != null && pTex.CanWrite)
+                    {
+                        pTex.SetValue(slot, loaded);
+                        any = true;
+                    }
+                }
+                catch { /* best-effort */ }
+            }
+            return any;
         }
 
         // ----- Reflection helpers (C# 7.3 compatible) ------------------------------

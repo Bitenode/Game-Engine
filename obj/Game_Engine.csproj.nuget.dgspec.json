@@ -77,13 +77,13 @@
               "target": "Package",
               "version": "[11.*, )"
             },
-            "ComputeSharp": {
-              "target": "Package",
-              "version": "[3.2.0, )"
-            },
             "Microsoft.CodeAnalysis.CSharp": {
               "target": "Package",
               "version": "[4.14.0, )"
+            },
+            "Silk.NET.OpenGL": {
+              "target": "Package",
+              "version": "[2.23.0, )"
             },
             "SkiaSharp": {
               "target": "Package",
