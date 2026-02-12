@@ -1,5 +1,6 @@
-﻿#nullable enable
+#nullable enable
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using SN = System.Numerics;
 
@@ -11,6 +12,7 @@ namespace Game_Engine.Core.Component
     ///  - Robust grounding w/ stick-to-ground + short grace ("coyote") time
     ///  - Kinematic horiz motion w/ CCD ray + wall slide + AABB unstick
     ///  - Gravity/jump integration (no input here; call Simulate from your player)
+    ///  - Uses O(1) heightmap collision for Terrain instead of brute-force mesh tests
     /// </summary>
     public sealed class CharacterController : Behavior
     {
@@ -56,6 +58,12 @@ namespace Game_Engine.Core.Component
 
         CapsuleCollider? _capsule;
 
+        // Per-frame caches to avoid repeated scene traversals
+        private readonly List<Terrain> _terrainCache = new();
+        private readonly HashSet<GameObject> _terrainGOs = new();
+        private readonly List<MeshCollider> _meshColliderCache = new();
+        private readonly List<Collider> _nonMeshColliderCache = new();
+
         public override void Awake() => RefreshCapsule();
         public override void OnEnable() => RefreshCapsule();
 
@@ -69,11 +77,51 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>
+        /// Refresh per-frame caches of terrains, mesh colliders, and non-mesh colliders.
+        /// Called once at the start of Simulate to avoid repeated FindBehaviors traversals.
+        /// </summary>
+        void RefreshCollisionCaches()
+        {
+            _terrainCache.Clear();
+            _terrainGOs.Clear();
+            _meshColliderCache.Clear();
+            _nonMeshColliderCache.Clear();
+
+            foreach (var t in SceneQuery.FindBehaviors<Terrain>())
+            {
+                if (t.Enabled && t.gameObject != null)
+                {
+                    _terrainCache.Add(t);
+                    // Mark terrain GO and all chunk children so we skip their MeshColliders
+                    _terrainGOs.Add(t.gameObject);
+                    for (int i = 0; i < t.gameObject.Children.Count; i++)
+                        _terrainGOs.Add(t.gameObject.Children[i]);
+                }
+            }
+
+            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>())
+            {
+                if (!mc.Enabled || mc.IsTrigger || mc.gameObject == this.gameObject) continue;
+                // Skip MeshColliders on terrain GameObjects — use heightmap instead
+                if (_terrainGOs.Contains(mc.gameObject)) continue;
+                _meshColliderCache.Add(mc);
+            }
+
+            foreach (var c in SceneQuery.FindBehaviors<Collider>())
+            {
+                if (!c.Enabled || c.IsTrigger || c.gameObject == this.gameObject || c is MeshCollider) continue;
+                _nonMeshColliderCache.Add(c);
+            }
+        }
+
+        /// <summary>
         /// Call from FixedUpdate. desiredHorizontalDelta is world XZ (meters) built using fixedDeltaTime.
         /// jump=true to attempt jump this step.
         /// </summary>
         public void Simulate(SN.Vector3 desiredHorizontalDelta, bool jump)
         {
+            RefreshCollisionCaches();
+
             var tr = Transform;
             float dt = Math.Max(0.0001f, Time.fixedDeltaTime);
 
@@ -213,7 +261,7 @@ namespace Game_Engine.Core.Component
             dir = SN.Vector3.Normalize(dir);
             if (dir.Y >= -1e-5f) dir = new SN.Vector3(dir.X, -MathF.Abs(dir.Y) - 1e-3f, dir.Z);
 
-            // 5-sample ring so we don’t “fall through” triangle edges
+            // 5-sample ring so we don't "fall through" triangle edges
             var ring = MathF.Max(0.05f, CapsuleRadius * 0.6f);
             var starts = new[]
             {
@@ -228,18 +276,35 @@ namespace Game_Engine.Core.Component
             SN.Vector3 bestN = SN.Vector3.UnitY;
             bool anyHit = false;
 
-            void Consider(in SN.Vector3 s, float t, in SN.Vector3 n)
+            void ConsiderHeight(float hitY, in SN.Vector3 n, float rayStartY)
+            {
+                if (hitY > rayStartY + 1e-4f) return; // must be below start
+                if (hitY > bestY) { bestY = hitY; bestN = n; anyHit = true; }
+            }
+
+            void ConsiderRay(in SN.Vector3 s, float t, in SN.Vector3 n)
             {
                 if (t < 0f || t > maxDist) return;
                 var p = s + dir * t;
-                if (p.Y > s.Y + 1e-4f) return; // must be below start
+                if (p.Y > s.Y + 1e-4f) return;
                 if (p.Y > bestY) { bestY = p.Y; bestN = n; anyHit = true; }
             }
 
-            // Triangle ground (all MeshColliders except self)
-            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>()
-                     .Where(m => m.Enabled && !m.IsTrigger && m.gameObject != this.gameObject))
+            // ---- O(1) Terrain heightmap collision (replaces 131K+ triangle tests) ----
+            for (int ti = 0; ti < _terrainCache.Count; ti++)
             {
+                var terrain = _terrainCache[ti];
+                for (int r = 0; r < starts.Length; r++)
+                {
+                    if (terrain.SampleHeightWorld(starts[r].X, starts[r].Z, out float hY, out SN.Vector3 hN))
+                        ConsiderHeight(hY, hN, starts[r].Y);
+                }
+            }
+
+            // ---- Non-terrain MeshColliders (buildings, props, etc.) ----
+            for (int mi = 0; mi < _meshColliderCache.Count; mi++)
+            {
+                var mc = _meshColliderCache[mi];
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -257,28 +322,28 @@ namespace Game_Engine.Core.Component
 
                         for (int r = 0; r < starts.Length; r++)
                             if (RayTri_TwoSided(starts[r], dir, a, b, c, out float t))
-                                Consider(starts[r], t, n);
+                                ConsiderRay(starts[r], t, n);
                     }
                 }
             }
 
-            // AABB tops (non-mesh colliders)
+            // ---- AABB tops (non-mesh colliders) ----
             if (dir.Y < -1e-6f)
             {
-                foreach (var col in SceneQuery.FindBehaviors<Collider>()
-                         .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider))
+                for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
                 {
+                    var col = _nonMeshColliderCache[ci];
                     var aabb = col.GetWorldAABB();
                     for (int r = 0; r < starts.Length; r++)
                     {
                         var s = starts[r];
-                        float t = (aabb.Max.Y - s.Y) / dir.Y; // dir.Y < 0
+                        float t = (aabb.Max.Y - s.Y) / dir.Y;
                         if (t >= 0f && t <= maxDist)
                         {
                             var p = s + dir * t;
                             if (p.X >= aabb.Min.X && p.X <= aabb.Max.X &&
                                 p.Z >= aabb.Min.Z && p.Z <= aabb.Max.Z)
-                                Consider(s, t, SN.Vector3.UnitY);
+                                ConsiderRay(s, t, SN.Vector3.UnitY);
                         }
                     }
                 }
@@ -312,14 +377,14 @@ namespace Game_Engine.Core.Component
             {
                 if (t < 0f || t > maxDist) return;
                 var p = s + dir * t;
-                if (p.Y < s.Y - 1e-4f) return; // must be above start
+                if (p.Y < s.Y - 1e-4f) return;
                 if (p.Y < bestY) { bestY = p.Y; anyHit = true; }
             }
 
-            // Mesh triangles
-            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>()
-                     .Where(m => m.Enabled && !m.IsTrigger && m.gameObject != this.gameObject))
+            // Non-terrain MeshColliders only (terrain is ground, never ceiling)
+            for (int mi = 0; mi < _meshColliderCache.Count; mi++)
             {
+                var mc = _meshColliderCache[mi];
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -341,14 +406,14 @@ namespace Game_Engine.Core.Component
             // AABB bottoms (ceilings)
             if (dir.Y > 1e-6f)
             {
-                foreach (var col in SceneQuery.FindBehaviors<Collider>()
-                         .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider))
+                for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
                 {
+                    var col = _nonMeshColliderCache[ci];
                     var aabb = col.GetWorldAABB();
                     for (int r = 0; r < starts.Length; r++)
                     {
                         var s = starts[r];
-                        float t = (aabb.Min.Y - s.Y) / dir.Y; // bottom plane (ceiling)
+                        float t = (aabb.Min.Y - s.Y) / dir.Y;
                         if (t >= 0f && t <= maxDist)
                         {
                             var p = s + dir * t;
@@ -389,7 +454,7 @@ namespace Game_Engine.Core.Component
             float skin = MathF.Max(0.01f, radius * 0.2f);
             float remainLen = len;
 
-            // ray origin at “waist”
+            // ray origin at "waist"
             var originBase = pos + new SN.Vector3(0, 0.5f * (halfCyl + radius), 0);
 
             for (int iter = 0; iter < 4 && remainLen > 1e-5f; iter++)
@@ -443,14 +508,12 @@ namespace Game_Engine.Core.Component
             const float EPS = 1e-5f;
             float pad = Math.Max(0f, WallPush);
 
-            var cols = SceneQuery.FindBehaviors<Collider>()
-                .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider);
-
-            foreach (var col in cols)
+            for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
             {
+                var col = _nonMeshColliderCache[ci];
                 var aabb = col.GetWorldAABB();
 
-                // ignore “world hulls”
+                // ignore "world hulls"
                 if (UnstickIgnoreHuge)
                 {
                     var sx = aabb.Max.X - aabb.Min.X;
@@ -488,7 +551,6 @@ namespace Game_Engine.Core.Component
                     float d = (float)Math.Sqrt(Math.Max(d2, 1e-12f));
                     if (d < EPS)
                     {
-                        // push along least-penetration axis (corner/edge)
                         float dl = Math.Abs(pos.X - aabb.Min.X);
                         float dr = Math.Abs(aabb.Max.X - pos.X);
                         float dn = Math.Abs(pos.Z - aabb.Min.Z);
@@ -517,9 +579,10 @@ namespace Game_Engine.Core.Component
             float bandMinY = start.Y - (0.5f * (CapsuleHalfCylinder + CapsuleRadius));
             float bandMaxY = start.Y + (0.5f * (CapsuleHalfCylinder + CapsuleRadius));
 
-            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>()
-                     .Where(m => m.Enabled && !m.IsTrigger && m.gameObject != this.gameObject))
+            // Non-terrain MeshColliders only (terrain has no vertical walls)
+            for (int mi = 0; mi < _meshColliderCache.Count; mi++)
             {
+                var mc = _meshColliderCache[mi];
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -550,9 +613,9 @@ namespace Game_Engine.Core.Component
             }
 
             // simple planes of AABBs
-            foreach (var c in SceneQuery.FindBehaviors<Collider>()
-                     .Where(c => c.Enabled && !c.IsTrigger && c.gameObject != this.gameObject && c is not MeshCollider))
+            for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
             {
+                var c = _nonMeshColliderCache[ci];
                 var a = c.GetWorldAABB();
                 if (a.Max.Y < bandMinY || a.Min.Y > bandMaxY) continue;
 

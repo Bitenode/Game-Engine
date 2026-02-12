@@ -45,6 +45,7 @@ namespace Game_Engine.Views
         private ShaderProgram? _depthShader;
         private ShaderProgram? _skyShader;
         private ShaderProgram? _gridShader;
+        private ShaderProgram? _terrainShader;
         private FullscreenQuad? _fsQuad;
         private ResourceCache? _cache;
         private ShadowMapGPU? _shadow;
@@ -98,11 +99,27 @@ namespace Game_Engine.Views
         static readonly IBrush HudBg = new SolidColorBrush(Color.FromArgb(0x80, 0x00, 0x00, 0x00));
         #endregion
 
+        // Render gating: prevent InvalidateVisual() from piling up.
+        // Avalonia's OpenGlControlBase compositing is very expensive (~500ms on some systems).
+        // We only request a new render after OnOpenGlRender has completed the previous one.
+        private volatile bool _renderInFlight;
+
         public GameView()
         {
             ClipToBounds = true;
 
-            _updateTimer.Tick += (_, __) => { TickUpdate(); InvalidateVisual(); };
+            _updateTimer.Tick += (_, __) =>
+            {
+                TickUpdate();
+                // Game logic runs every 16ms regardless, but we only request
+                // a render if the previous one has completed. This prevents
+                // Avalonia's expensive compositing from queueing up.
+                if (!_renderInFlight)
+                {
+                    _renderInFlight = true;
+                    InvalidateVisual();
+                }
+            };
             _fixedTimer.Interval = TimeSpan.FromMilliseconds(8);
             _fixedTimer.Tick += (_, __) => TickFixedUpdate();
 
@@ -162,9 +179,12 @@ namespace Game_Engine.Views
                 _gridShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.GridVert, es),
                     ShaderSources.Adapt(ShaderSources.GridFrag, es));
+                _terrainShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.TerrainVert, es),
+                    ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
                 _fsQuad = new FullscreenQuad(g);
                 _cache = new ResourceCache(g);
-                _shadow = new ShadowMapGPU(g, 4096, 4096);
+                _shadow = new ShadowMapGPU(g, 1024, 1024);
 
                 Debug.WriteLine($"[GameView] OpenGL initialized OK — all shaders compiled.");
             }
@@ -176,6 +196,7 @@ namespace Game_Engine.Views
 
         protected override void OnOpenGlDeinit(GlInterface gl)
         {
+            _terrainShader?.Dispose();
             _shadow?.Dispose();
             _cache?.Dispose();
             _fsQuad?.Dispose();
@@ -188,6 +209,28 @@ namespace Game_Engine.Views
             base.OnOpenGlDeinit(gl);
         }
 
+        static void WalkTreeLOD(GameObject go, SN.Vector3 cam)
+        {
+            foreach (var b in go.Behaviors)
+                if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
+            foreach (var c in go.Children) WalkTreeLOD(c, cam);
+        }
+
+        static void WalkTerrainLOD(GameObject go, SN.Vector3 cam)
+        {
+            foreach (var b in go.Behaviors)
+                if (b is Terrain t && t.Enabled) { t.UpdateLOD(cam); break; }
+            foreach (var c in go.Children) WalkTerrainLOD(c, cam);
+        }
+
+        // Shadows can be disabled at runtime to boost framerate on weak GPUs
+        public static readonly StyledProperty<bool> ShowShadowsProperty =
+            AvaloniaProperty.Register<GameView, bool>(nameof(ShowShadows), defaultValue: true);
+        public bool ShowShadows { get => GetValue(ShowShadowsProperty); set => SetValue(ShowShadowsProperty, value); }
+
+        // Section timing for HUD diagnostics
+        private double _tSetup, _tShadow, _tScene;
+
         protected override void OnOpenGlRender(GlInterface gl, int fb)
         {
             if (_glCtx == null || _standardShader == null || _skyShader == null || _fsQuad == null || _cache == null)
@@ -195,12 +238,15 @@ namespace Game_Engine.Views
 
             var g = _glCtx.GL;
 
-            MaterialRebind.RepairScene();
             _frameWatch.Restart();
+            var sec = Stopwatch.StartNew();
 
             double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
             _fpsTick.Restart();
             UpdateFps(dt);
+
+            // Wind system update
+            WindSystem.Update((float)Math.Min(dt, 0.1));
 
             double scaling = VisualRoot?.RenderScaling ?? 1.0;
             double Wdip = Math.Max(1.0, Bounds.Width);
@@ -220,6 +266,7 @@ namespace Game_Engine.Views
                 _frameWatch.Stop();
                 _msFrameLast = _frameWatch.Elapsed.TotalMilliseconds;
                 Ema(ref _msFrameEma, _msFrameLast, 0.18);
+                _renderInFlight = false;
                 return;
             }
 
@@ -281,7 +328,6 @@ namespace Game_Engine.Views
             }
             else
             {
-                // Fallback: identity
                 view = SN.Matrix4x4.CreateLookAt(new SN.Vector3(0, 5, 10), SN.Vector3.Zero, SN.Vector3.UnitY);
                 proj = SN.Matrix4x4.CreatePerspectiveFieldOfView(60f * MathF.PI / 180f, (float)(Wdip / Math.Max(1, Hdip)), 0.1f, 1000f);
             }
@@ -298,16 +344,15 @@ namespace Game_Engine.Views
             Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
                 skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
 
-            // --- SHADOW MAP PASS (always uses sun/sky direction for global shadows) ---
+            _tSetup = sec.Elapsed.TotalMilliseconds; sec.Restart();
+
+            // --- SHADOW MAP PASS (skippable) ---
             SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
             GPUFramebuffer? shadowFBO = null;
-            if (_shadow != null && _depthShader != null)
+            if (ShowShadows && _shadow != null && _depthShader != null)
             {
-                // Sun direction: direction sunlight travels (from sun toward scene)
                 var sunShineDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
 
-                // Shadow frustum large enough to cover the visible scene.
-                // Offset center slightly toward camera forward so nearby geometry is covered.
                 SN.Matrix4x4.Invert(view, out var invV);
                 var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
                 var sceneCenter = camPos + camFwd * 12f;
@@ -321,10 +366,17 @@ namespace Game_Engine.Views
                 SceneRenderer.RenderShadowPass(g, _depthShader, _cache!, shadowVP);
                 _shadow.End(g, (uint)fb);
 
-                // Restore viewport for main pass
+                // Restore main viewport after shadow pass
                 g.Viewport(0, 0, (uint)W, (uint)H);
                 shadowFBO = _shadow.FBO;
             }
+
+            _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
+
+            // Update terrain LOD per frame
+            foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
+            // Update tree LOD per frame
+            foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
 
             // --- SCENE ---
             var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
@@ -332,7 +384,12 @@ namespace Game_Engine.Views
                 view, proj,
                 SN.Vector3.Normalize(-L), DiffuseK, Ambient,
                 lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, camPos, sunSD);
+                shadowFBO, shadowVP, camPos, sunSD,
+                terrainShader: _terrainShader);
+
+            _tScene = sec.Elapsed.TotalMilliseconds;
+
+            g.Flush();
 
             // Restore Avalonia's FB and clean up GL state for compositing
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
@@ -349,19 +406,27 @@ namespace Game_Engine.Views
             _frameWatch.Stop();
             _msFrameLast = _frameWatch.Elapsed.TotalMilliseconds;
             Ema(ref _msFrameEma, _msFrameLast, 0.18);
+
+            // Signal the update timer that this render is done — it can request the next one.
+            _renderInFlight = false;
         }
         #endregion
 
         #region 2D HUD overlay (after GL render)
         public override void Render(DrawingContext ctx)
         {
+            // Material warm-up runs outside GL context to avoid blocking GPU work
+            MaterialRebind.RepairScene();
+            if (MaterialRebind.NeedsMoreFrames)
+                Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+
             base.Render(ctx);
             DrawFpsHud(ctx);
         }
 
         void DrawFpsHud(DrawingContext ctx)
         {
-            string line1 = $"FPS: {_fpsDisplay:F1}   Frame: {_msFrameEma:F2} ms   [GPU]";
+            string line1 = $"FPS:{_fpsDisplay:F0}  GL:{_msFrameEma:F1}ms  Sh:{_tShadow:F0} M:{_tScene:F0}";
             const double font = 12, padX = 8, padY = 6;
             double est = line1.Length * font * 0.62;
             double lineH = font * 1.4;
@@ -469,12 +534,16 @@ namespace Game_Engine.Views
                     _fixedTimer.Stop(); _updateTimer.Stop();
                     _updateWatch.Reset(); _fixedWatch.Reset();
                     CallOnDestroyAll(); RestorePlaySnapshot();
+                    // After scene restore, the old selected GO no longer exists in the new scene tree.
+                    // Try to re-select a GO with the same name, or clear the selection.
+                    ReSelectAfterRestore();
                     _awakened = _started = false; _collidersWarm = false; _needsWarm = true;
                     if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
                     _mouseLook = false; _hasLastMouse = false;
                     Input.ClearAll();
                     break;
             }
+            _renderInFlight = false; // Reset gate so first frame renders immediately
             InvalidateVisual();
         }
 
@@ -499,6 +568,39 @@ namespace Game_Engine.Views
             }
             try { System.IO.File.Delete(_playSnapshotPath); } catch { }
             _playSnapshotPath = null; _collidersWarm = false; _needsWarm = true;
+        }
+
+        /// <summary>
+        /// After scene restore, find a GO with the same name as the previously selected one
+        /// and re-select it so the inspector refreshes with the new (restored) instance.
+        /// </summary>
+        void ReSelectAfterRestore()
+        {
+            var prev = SelectionService.Current;
+            if (prev == null) { SelectionService.Touch(); return; }
+            string? name = prev.Name;
+            // Walk the restored scene to find a match by name
+            GameObject? match = null;
+            if (!string.IsNullOrEmpty(name))
+            {
+                foreach (var root in SceneService.Root)
+                {
+                    match = FindByName(root, name);
+                    if (match != null) break;
+                }
+            }
+            SelectionService.Set(match); // re-select (or clear if not found)
+        }
+
+        static GameObject? FindByName(GameObject go, string name)
+        {
+            if (go.Name == name) return go;
+            foreach (var c in go.Children)
+            {
+                var found = FindByName(c, name);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         /// <summary>

@@ -89,6 +89,67 @@ public sealed class GPUTexture : IDisposable
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
 
+    /// <summary>
+    /// Create an RGBA8 color texture (for off-screen FBO rendering).
+    /// </summary>
+    public unsafe void CreateColor(int width, int height)
+    {
+        Width = width;
+        Height = height;
+
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+
+        _gl.TexImage2D(TextureTarget.Texture2D, 0,
+            InternalFormat.Rgba8,
+            (uint)width, (uint)height, 0,
+            PixelFormat.Rgba, PixelType.UnsignedByte, null);
+
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    /// <summary>
+    /// Upload RGBA float data to GPU (for splatmap textures).
+    /// Data length must be width * height * 4 floats.
+    /// </summary>
+    public unsafe void UploadFloat(float[] data, int width, int height)
+    {
+        if (data == null || data.Length < width * height * 4) return;
+        Width = width;
+        Height = height;
+
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+
+        fixed (float* ptr = data)
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.Rgba32f,
+                (uint)width, (uint)height, 0,
+                PixelFormat.Rgba, PixelType.Float, ptr);
+        }
+
+        // No mipmaps for splatmaps — linear filtering only
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
     public void Bind(TextureUnit unit = TextureUnit.Texture0)
     {
         _gl.ActiveTexture(unit);

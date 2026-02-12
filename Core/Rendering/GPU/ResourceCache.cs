@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using Game_Engine.Core.Component;
 using Silk.NET.OpenGL;
 
 namespace Game_Engine.Core.Rendering.GPU;
@@ -17,6 +18,10 @@ public sealed class ResourceCache : IDisposable
     // Mesh → GPU mesh, keyed by reference identity
     private readonly Dictionary<Mesh, GPUMeshEntry> _meshes = new(64);
     private readonly Dictionary<Texture2D, GPUTexture> _textures = new(64);
+
+    // Per-context terrain splatmap textures (avoids cross-context GL issues)
+    // Also tracks the splatmap version last uploaded so each context re-uploads independently.
+    private readonly Dictionary<Terrain, (GPUTexture Splat0, GPUTexture Splat1, int Version)> _terrainSplatTextures = new();
 
     private struct GPUMeshEntry
     {
@@ -69,6 +74,18 @@ public sealed class ResourceCache : IDisposable
     }
 
     /// <summary>
+    /// Remove entries that are no longer referenced by any scene object.
+    /// Call periodically (e.g., every few seconds) to prevent unbounded growth.
+    /// </summary>
+    public void EvictOrphans(int maxEntries = 4096)
+    {
+        if (_meshes.Count <= maxEntries) return;
+        // Nuclear eviction: clear everything; entries rebuild lazily on next GetMesh call.
+        foreach (var kv in _meshes) kv.Value.GPU.Dispose();
+        _meshes.Clear();
+    }
+
+    /// <summary>
     /// Get or create a GPUTexture for the given engine Texture2D.
     /// </summary>
     public GPUTexture GetTexture(Texture2D tex)
@@ -96,6 +113,37 @@ public sealed class ResourceCache : IDisposable
     }
     private GPUTexture? _whiteTex;
 
+    /// <summary>
+    /// Get or create splatmap GPU textures for a Terrain. Per-context, so
+    /// SceneView and GameView each get their own GL textures.
+    /// Returns (Splat0, Splat1, needsUpload) — needsUpload is true when the
+    /// textures are brand new for this context and require an initial upload.
+    /// </summary>
+    /// <summary>
+    /// Get or create splatmap GPU textures for a Terrain. Returns whether this context
+    /// needs to (re-)upload the splatmap data, based on the terrain's SplatmapVersion.
+    /// </summary>
+    public (GPUTexture Splat0, GPUTexture Splat1, bool NeedsUpload) GetTerrainSplatTextures(Terrain terrain)
+    {
+        if (_terrainSplatTextures.TryGetValue(terrain, out var entry))
+        {
+            // Re-upload if the terrain's version is ahead of what we last uploaded
+            bool stale = entry.Version != terrain.SplatmapVersion;
+            return (entry.Splat0, entry.Splat1, stale);
+        }
+
+        var pair = (new GPUTexture(_gl), new GPUTexture(_gl), -1); // version -1 = never uploaded
+        _terrainSplatTextures[terrain] = pair;
+        return (pair.Item1, pair.Item2, true); // always needs upload on first use
+    }
+
+    /// <summary>Mark that this context has uploaded the terrain's splatmap at the given version.</summary>
+    public void SetTerrainSplatVersion(Terrain terrain, int version)
+    {
+        if (_terrainSplatTextures.TryGetValue(terrain, out var entry))
+            _terrainSplatTextures[terrain] = (entry.Splat0, entry.Splat1, version);
+    }
+
     public void Dispose()
     {
         foreach (var kv in _meshes)
@@ -105,6 +153,13 @@ public sealed class ResourceCache : IDisposable
         foreach (var kv in _textures)
             kv.Value.Dispose();
         _textures.Clear();
+
+        foreach (var kv in _terrainSplatTextures)
+        {
+            kv.Value.Splat0?.Dispose();
+            kv.Value.Splat1?.Dispose();
+        }
+        _terrainSplatTextures.Clear();
 
         _whiteTex?.Dispose();
         _whiteTex = null;

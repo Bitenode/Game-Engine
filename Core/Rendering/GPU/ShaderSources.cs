@@ -40,6 +40,12 @@ uniform mat4 uProj;
 uniform mat4 uNormalMatrix;   // transpose(inverse(model))
 uniform mat4 uShadowVP;      // light view-proj for shadow mapping
 
+// Wind / vegetation animation
+uniform float uWindTime;
+uniform vec3  uWindDir;
+uniform float uWindStrength;
+uniform int   uIsVegetation;  // 1 = apply wind displacement
+
 out vec3 vWorldPos;
 out vec3 vWorldNormal;
 out vec2 vUV;
@@ -48,6 +54,30 @@ out vec4 vShadowCoord;
 void main()
 {
     vec4 worldPos = uModel * vec4(aPosition, 1.0);
+
+    // Wind vertex animation for vegetation
+    if (uIsVegetation == 1 && uWindStrength > 0.0)
+    {
+        // Height factor: vertices higher above model origin sway more
+        float localY = aPosition.y;
+        float h = clamp(localY / 6.0, 0.0, 1.0);
+        float h2 = h * h;  // quadratic: tips move much more than base
+
+        // Trunk sway: slow large movement
+        float phase1 = uWindTime * 1.2 + worldPos.x * 0.5 + worldPos.z * 0.3;
+        vec3 trunkSway = uWindDir * uWindStrength * h2 * sin(phase1);
+
+        // Leaf flutter: fast small jitter perpendicular to wind
+        float phase2 = uWindTime * 3.7 + dot(worldPos.xyz, vec3(1.3, 0.7, 2.1));
+        vec3 flutter = uWindDir.zxy * uWindStrength * 0.3 * h * sin(phase2);
+
+        // Secondary micro-flutter for realism
+        float phase3 = uWindTime * 5.3 + worldPos.x * 2.7 - worldPos.z * 1.9;
+        flutter += vec3(0.0, 1.0, 0.0) * uWindStrength * 0.15 * h * sin(phase3);
+
+        worldPos.xyz += trunkSway + flutter;
+    }
+
     vWorldPos = worldPos.xyz;
     vWorldNormal = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
     vUV = aUV;
@@ -400,6 +430,208 @@ out vec4 FragColor;
 void main()
 {
     FragColor = uColor;
+}
+";
+
+    // ════════════════ TERRAIN SPLATMAP SHADER ════════════════
+
+    public const string TerrainVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform mat4 uNormalMatrix;
+uniform mat4 uShadowVP;
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out vec2 vUV;
+out vec4 vShadowCoord;
+
+void main()
+{
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vWorldPos = worldPos.xyz;
+    vWorldNormal = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
+    vUV = aUV;
+    vShadowCoord = uShadowVP * worldPos;
+    gl_Position = uProj * uView * worldPos;
+}
+";
+
+    public const string TerrainFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+in vec4 vShadowCoord;
+
+// Splatmaps (RGBA float textures, channels = layer weights)
+uniform sampler2D uSplatmap0;    // layers 0-3
+uniform sampler2D uSplatmap1;    // layers 4-7
+uniform int       uLayerCount;   // how many layers are active (0-8)
+
+// Layer albedo textures (up to 8)
+uniform sampler2D uLayer0; uniform float uTiling0;
+uniform sampler2D uLayer1; uniform float uTiling1;
+uniform sampler2D uLayer2; uniform float uTiling2;
+uniform sampler2D uLayer3; uniform float uTiling3;
+uniform sampler2D uLayer4; uniform float uTiling4;
+uniform sampler2D uLayer5; uniform float uTiling5;
+uniform sampler2D uLayer6; uniform float uTiling6;
+uniform sampler2D uLayer7; uniform float uTiling7;
+
+// Shadow
+uniform sampler2D uShadowMap;
+uniform bool      uHasShadow;
+uniform float     uShadowBias;
+uniform vec3      uSunDir;
+
+// Lighting
+uniform vec3  uLightDir;
+uniform vec3  uLightPos;
+uniform float uLightRange;
+uniform bool  uLightIsPoint;
+uniform float uDiffuseK;
+uniform float uAmbient;
+
+// Camera
+uniform vec3  uCamPos;
+
+// Fallback (no layers defined)
+uniform vec4  uBaseColor;
+uniform sampler2D uAlbedoTex;
+uniform bool      uHasAlbedoTex;
+
+out vec4 FragColor;
+
+float ShadowCalc(vec4 sc, vec3 N)
+{
+    if (!uHasShadow) return 1.0;
+    vec3 proj = sc.xyz / sc.w;
+    proj = proj * 0.5 + 0.5;
+    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
+        return 1.0;
+
+    float cosTheta = max(dot(N, -uSunDir), 0.0);
+    float bias = uShadowBias + uShadowBias * 3.0 * (1.0 - cosTheta);
+    float currentDepth = proj.z - bias;
+
+    float pcfDepth = texture(uShadowMap, proj.xy).r;
+    float shadow = (currentDepth > pcfDepth) ? 0.10 : 1.0;
+
+    float fadeMargin = 0.08;
+    float fadeX = smoothstep(0.0, fadeMargin, proj.x) * smoothstep(1.0, 1.0 - fadeMargin, proj.x);
+    float fadeY = smoothstep(0.0, fadeMargin, proj.y) * smoothstep(1.0, 1.0 - fadeMargin, proj.y);
+    return mix(1.0, shadow, fadeX * fadeY);
+}
+
+void main()
+{
+    vec3 N = normalize(vWorldNormal);
+
+    // ── Splatmap blended albedo ──
+    // Uses simple UV-based sampling (no triplanar) for maximum performance.
+    vec4 albedo;
+    if (uLayerCount > 0)
+    {
+        vec4 s0 = texture(uSplatmap0, vUV);
+        albedo = vec4(0.0);
+
+        // Layer 0
+        albedo += texture(uLayer0, vUV * uTiling0) * s0.r;
+
+        // Layers 1-3 (still in splatmap0)
+        if (uLayerCount > 1) albedo += texture(uLayer1, vUV * uTiling1) * s0.g;
+        if (uLayerCount > 2) albedo += texture(uLayer2, vUV * uTiling2) * s0.b;
+        if (uLayerCount > 3) albedo += texture(uLayer3, vUV * uTiling3) * s0.a;
+
+        // Layers 4-7 only sampled if needed (avoids splatmap1 texture fetch when <= 4 layers)
+        if (uLayerCount > 4)
+        {
+            vec4 s1 = texture(uSplatmap1, vUV);
+            albedo += texture(uLayer4, vUV * uTiling4) * s1.r;
+            if (uLayerCount > 5) albedo += texture(uLayer5, vUV * uTiling5) * s1.g;
+            if (uLayerCount > 6) albedo += texture(uLayer6, vUV * uTiling6) * s1.b;
+            if (uLayerCount > 7) albedo += texture(uLayer7, vUV * uTiling7) * s1.a;
+        }
+
+        albedo.a = 1.0;
+    }
+    else
+    {
+        albedo = uBaseColor;
+        if (uHasAlbedoTex) albedo *= texture(uAlbedoTex, vUV);
+    }
+
+    // ── Lighting ──
+    vec3 L;
+    float atten = 1.0;
+    if (uLightIsPoint)
+    {
+        vec3 toLight = uLightPos - vWorldPos;
+        float dist = length(toLight);
+        L = toLight / max(dist, 0.0001);
+        if (uLightRange > 0.0)
+        {
+            float t = dist / uLightRange;
+            atten = 1.0 / (1.0 + t * t);
+        }
+    }
+    else
+    {
+        L = uLightDir;
+    }
+
+    float NdotL = max(dot(N, L), 0.0);
+    float diffuse = min(NdotL * atten, 1.0);
+
+    float shadow = ShadowCalc(vShadowCoord, N);
+
+    // Specular (Blinn-Phong)
+    float specular = 0.0;
+    if (uDiffuseK > 0.0 && diffuse > 0.0)
+    {
+        float shininess = 16.0;
+        vec3 V = normalize(uCamPos - vWorldPos);
+        vec3 H = normalize(L + V);
+        float NdotH = max(dot(N, H), 0.0);
+        specular = pow(NdotH, shininess) * 0.15 * diffuse;
+    }
+
+    float ambShadow = mix(0.35, 1.0, shadow);
+    float shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
+    vec3 color = clamp(albedo.rgb * shade + vec3(specular * shadow), 0.0, 1.0);
+
+    FragColor = vec4(color, 1.0);
+}
+";
+
+    // ════════════════ BLIT (fullscreen texture copy / upscale) ════════════════
+
+    public const string BlitVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string BlitFrag = @"
+#version 330 core
+in vec2 vUV;
+uniform sampler2D uTex;
+out vec4 FragColor;
+void main()
+{
+    FragColor = texture(uTex, vUV);
 }
 ";
 }

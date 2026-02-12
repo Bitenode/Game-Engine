@@ -58,6 +58,39 @@ public sealed class GPUFramebuffer : IDisposable
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
+    /// <summary>
+    /// Configure as a color+depth FBO for off-screen rendering (e.g., half-resolution).
+    /// </summary>
+    public void SetupColorDepth(int width, int height)
+    {
+        Width = width;
+        Height = height;
+
+        // Color texture (RGBA8)
+        ColorTexture?.Dispose();
+        ColorTexture = new GPUTexture(_gl);
+        ColorTexture.CreateColor(width, height);
+
+        // Depth renderbuffer — we don't need to sample depth, just need it for Z-test
+        DepthTexture?.Dispose();
+        DepthTexture = new GPUTexture(_gl);
+        DepthTexture.CreateDepth(width, height);
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, ColorTexture.Handle, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.DepthAttachment,
+            TextureTarget.Texture2D, DepthTexture.Handle, 0);
+
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (status != GLEnum.FramebufferComplete)
+            System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] Color+Depth FBO incomplete: {status}");
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+    }
+
     /// <summary>Bind this FBO as the render target.</summary>
     public void Bind()
     {

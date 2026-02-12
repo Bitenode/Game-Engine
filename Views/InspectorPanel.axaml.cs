@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Data;
@@ -1059,13 +1059,19 @@ public partial class InspectorPanel : UserControl
         if (b is MeshCollider mc)
             outer.Children.Add(MeshColliderTargetRow(owner, mc));
 
-        // Terrain extra UI (tools + brush masks)
+        // Terrain extra UI (tools + brush masks + layers)
         if (b is Terrain terr)
         {
             outer.Children.Add(TerrainToolsRow(owner, terr));
             outer.Children.Add(TerrainBrushMasks(terr));
+            outer.Children.Add(TerrainLayersUI(owner, terr));
         }
 
+        // Tree extra UI (procedural / import settings)
+        if (b is Tree treeComp)
+        {
+            outer.Children.Add(TreeInspectorUI(owner, treeComp));
+        }
 
         // --------- BODY: custom inspector first, else default ----------
         Control body = TryBuildCustomInspectorUI(b, out var custom) && custom != null
@@ -3077,6 +3083,22 @@ public partial class InspectorPanel : UserControl
         public double BrushSize = 8;   // logical scene units
         public double Strength = 0.5; // 0..1
         public double Falloff = 0.5; // 0..1
+        public int ActivePaintLayer;  // splatmap layer for Paint Layers tool (0-7)
+        // Paint Trees tool settings
+        public int TreeDensity = 3;          // trees per stroke (1-20)
+        public double TreeMinScale = 0.8;    // minimum random scale
+        public double TreeMaxScale = 1.2;    // maximum random scale
+        public bool TreeRandomRotation = true;  // random Y rotation
+        // Multi-asset tree painting
+        public List<TreeAssetEntry> TreeAssets = new(); // list of tree model paths
+        public int ActiveTreeAsset;                      // index of selected tree asset (-1 or 0+ = imported, no entry = procedural)
+    }
+
+    /// <summary>A tree model asset entry for multi-asset tree painting.</summary>
+    sealed class TreeAssetEntry
+    {
+        public string ModelPath { get; set; } = "";
+        public string DisplayName => string.IsNullOrEmpty(ModelPath) ? "(procedural)" : System.IO.Path.GetFileNameWithoutExtension(ModelPath);
     }
 
     static TerrainEditorState GetTerrainState(Terrain t)
@@ -3115,15 +3137,30 @@ public partial class InspectorPanel : UserControl
         SceneView.TerrainBrushRadiusProvider = tt => (float)GetTerrainState(tt).BrushSize;
         SceneView.TerrainBrushStrengthProvider = tt => (float)GetTerrainState(tt).Strength;
         SceneView.TerrainBrushFalloffProvider = tt => (float)GetTerrainState(tt).Falloff;
+        SceneView.TerrainActivePaintLayerProvider = tt => GetTerrainState(tt).ActivePaintLayer;
+        // Paint Trees providers
+        SceneView.TerrainTreeDensityProvider = tt => GetTerrainState(tt).TreeDensity;
+        SceneView.TerrainTreeMinScaleProvider = tt => (float)GetTerrainState(tt).TreeMinScale;
+        SceneView.TerrainTreeMaxScaleProvider = tt => (float)GetTerrainState(tt).TreeMaxScale;
+        SceneView.TerrainTreeRandomRotProvider = tt => GetTerrainState(tt).TreeRandomRotation;
+        SceneView.TerrainTreeModelPathProvider = tt =>
+        {
+            var st = GetTerrainState(tt);
+            if (st.TreeAssets.Count > 0 && st.ActiveTreeAsset >= 0 && st.ActiveTreeAsset < st.TreeAssets.Count)
+                return st.TreeAssets[st.ActiveTreeAsset].ModelPath;
+            return null; // procedural
+        };
 
         var tools = new (int id, string tip, string glyph)[]
         {
         (0,"Raise/Lower","⛰"), (1,"Paint Holes","◯"), (2,"Noise","⋯"),
         (3,"Stitch/Blend","∞"), (4,"Sculpt","🖌"), (5,"Flatten","▭"),
-        (6,"Erode","⛏"), (7,"Paint Layers","👤"), (8,"Smooth","〰")
+        (6,"Erode","⛏"), (7,"Paint Layers","👤"), (8,"Smooth","〰"),
+        (9,"Paint Trees","🌲")
         };
 
         var bar = new WrapPanel { Orientation = Orientation.Horizontal };
+        StackPanel? _treeSettingsPanel = null; // set later, referenced in SetTool
 
         // Helper to commit selection and keep buttons in sync
         void SetTool(int id)
@@ -3131,6 +3168,7 @@ public partial class InspectorPanel : UserControl
             state.ToolIndex = id; // id >= 0 selects, -1 clears
             foreach (var tb in bar.Children.OfType<ToggleButton>())
                 tb.IsChecked = (id >= 0) && (int)tb.Tag! == id;
+            if (_treeSettingsPanel != null) _treeSettingsPanel.IsVisible = (id == 9);
             Game_Engine.Core.SceneService.NotifyChanged(); // so SceneView refreshes hover ring, etc.
         }
 
@@ -3212,9 +3250,311 @@ public partial class InspectorPanel : UserControl
 
         content.Children.Add(sliders);
 
+        // Paint Trees extra settings (visible when tool #9 is active)
+        var treeSettings = new StackPanel { Spacing = 4, Margin = new Thickness(2, 4, 2, 0), IsVisible = state.ToolIndex == 9 };
+        _treeSettingsPanel = treeSettings; // so SetTool can toggle visibility
+        treeSettings.Children.Add(new TextBlock { Text = "Tree Painting", FontWeight = FontWeight.Bold, Opacity = 0.9 });
+        treeSettings.Children.Add(SliderRow("Density", 1, 20, () => state.TreeDensity, v => state.TreeDensity = Math.Max(1, (int)v)));
+        treeSettings.Children.Add(SliderRow("Min Scale", 0.1, 3.0, () => state.TreeMinScale, v => state.TreeMinScale = v));
+        treeSettings.Children.Add(SliderRow("Max Scale", 0.1, 3.0, () => state.TreeMaxScale, v => state.TreeMaxScale = v));
+
+        // Random rotation checkbox
+        var rotCheck = new CheckBox { Content = "Random Y Rotation", IsChecked = state.TreeRandomRotation, Margin = new Thickness(0, 2, 0, 0) };
+        rotCheck.IsCheckedChanged += (_, _) =>
+        {
+            state.TreeRandomRotation = rotCheck.IsChecked == true;
+        };
+        treeSettings.Children.Add(rotCheck);
+
+        // ── Tree Asset List (switch between different 3D model files) ──
+        treeSettings.Children.Add(new TextBlock { Text = "Tree Assets", FontWeight = FontWeight.Bold, Opacity = 0.9, Margin = new Thickness(0, 6, 0, 2) });
+
+        var treeAssetsPanel = new StackPanel { Spacing = 2 };
+
+        void RebuildTreeAssetList()
+        {
+            treeAssetsPanel.Children.Clear();
+
+            // "Procedural" entry (always first)
+            {
+                bool isActive = state.TreeAssets.Count == 0 || state.ActiveTreeAsset < 0 || state.ActiveTreeAsset >= state.TreeAssets.Count;
+                var procRow = new Border
+                {
+                    Background = isActive ? new SolidColorBrush(Color.FromArgb(50, 80, 200, 80)) : Brushes.Transparent,
+                    CornerRadius = new CornerRadius(3), Padding = new Thickness(3, 2), Margin = new Thickness(0, 1)
+                };
+                var procBtn = new Button
+                {
+                    Content = new TextBlock { Text = "Procedural (default)", FontSize = 11 },
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    Padding = new Thickness(4, 2)
+                };
+                procBtn.Click += (_, __) => { state.ActiveTreeAsset = -1; RebuildTreeAssetList(); };
+                procRow.Child = procBtn;
+                treeAssetsPanel.Children.Add(procRow);
+            }
+
+            // Imported model entries
+            for (int ai = 0; ai < state.TreeAssets.Count; ai++)
+            {
+                int assetIdx = ai;
+                var asset = state.TreeAssets[assetIdx];
+                bool isActive = state.ActiveTreeAsset == assetIdx;
+
+                var assetRow = new Border
+                {
+                    Background = isActive ? new SolidColorBrush(Color.FromArgb(50, 80, 200, 80)) : Brushes.Transparent,
+                    CornerRadius = new CornerRadius(3), Padding = new Thickness(3, 2), Margin = new Thickness(0, 1)
+                };
+
+                var rowStack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+
+                // Select button
+                var selBtn = new Button
+                {
+                    Content = new TextBlock { Text = asset.DisplayName, FontSize = 11, MaxWidth = 130, TextTrimming = TextTrimming.CharacterEllipsis },
+                    Padding = new Thickness(4, 2)
+                };
+                ToolTip.SetTip(selBtn, asset.ModelPath);
+                selBtn.Click += (_, __) => { state.ActiveTreeAsset = assetIdx; RebuildTreeAssetList(); };
+                rowStack.Children.Add(selBtn);
+
+                // Remove button
+                var rmBtn = new Button
+                {
+                    Content = new TextBlock { Text = "X", FontSize = 10 },
+                    MinWidth = 22, MinHeight = 20, Padding = new Thickness(2)
+                };
+                rmBtn.Click += (_, __) =>
+                {
+                    state.TreeAssets.RemoveAt(assetIdx);
+                    if (state.ActiveTreeAsset >= state.TreeAssets.Count)
+                        state.ActiveTreeAsset = state.TreeAssets.Count - 1;
+                    RebuildTreeAssetList();
+                };
+                rowStack.Children.Add(rmBtn);
+
+                assetRow.Child = rowStack;
+                treeAssetsPanel.Children.Add(assetRow);
+            }
+
+            // Add button
+            var addBtn = new Button
+            {
+                Content = new TextBlock { Text = "+ Add Tree Model", FontSize = 11 },
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(6, 2),
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            addBtn.Click += async (_, __) =>
+            {
+                var dlg = new Avalonia.Controls.OpenFileDialog
+                {
+                    Title = "Select Tree 3D Model",
+                    AllowMultiple = false,
+                    Filters = new System.Collections.Generic.List<Avalonia.Controls.FileDialogFilter>
+                    {
+                        new() { Name = "3D Models", Extensions = { "obj", "fbx", "gltf", "glb", "dae" } },
+                        new() { Name = "All files", Extensions = { "*" } }
+                    }
+                };
+                var win = TopLevel.GetTopLevel(this) as Avalonia.Controls.Window;
+                if (win == null) return;
+                var files = await dlg.ShowAsync(win);
+                if (files == null || files.Length == 0) return;
+                string abs = files[0];
+                // Make project-relative if possible
+                var proj = Game_Engine.Core.ProjectService.Current;
+                string rel = abs;
+                if (proj != null && abs.StartsWith(proj.RootPath, StringComparison.OrdinalIgnoreCase))
+                    rel = Path.GetRelativePath(proj.RootPath, abs);
+                state.TreeAssets.Add(new TreeAssetEntry { ModelPath = rel });
+                state.ActiveTreeAsset = state.TreeAssets.Count - 1;
+                RebuildTreeAssetList();
+            };
+            treeAssetsPanel.Children.Add(addBtn);
+        }
+
+        RebuildTreeAssetList();
+        treeSettings.Children.Add(treeAssetsPanel);
+
+        content.Children.Add(treeSettings);
+
         var shell = new StackPanel { Spacing = 6 };
         shell.Children.Add(SectionTitle("Terrain Tools"));
         shell.Children.Add(ToolbarShell(content));
+        return shell;
+    }
+
+    // --- Terrain: Layers UI (multi-material painting) ---------------------------
+    Control TerrainLayersUI(GameObject owner, Terrain t)
+    {
+        var state = GetTerrainState(t);
+        var layersPanel = new StackPanel { Spacing = 4 };
+
+        void RebuildLayerList()
+        {
+            layersPanel.Children.Clear();
+            for (int li = 0; li < t.Layers.Count && li < 8; li++)
+            {
+                int idx = li; // capture
+                var layer = t.Layers[idx];
+                var row = new Border
+                {
+                    Background = (state.ActivePaintLayer == idx)
+                        ? new SolidColorBrush(Color.FromArgb(50, 100, 180, 255))
+                        : Brushes.Transparent,
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(4),
+                    Margin = new Thickness(0, 1)
+                };
+
+                var grid = new Avalonia.Controls.Grid();
+                grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(28)));  // select
+                grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));     // texture path
+                grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(80)));  // tiling
+                grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(28)));  // remove
+
+                // Select button (click to set active paint layer)
+                var selectBtn = new Button
+                {
+                    Content = new TextBlock { Text = $"{idx}", FontSize = 11 },
+                    MinWidth = 24, MinHeight = 24,
+                    Padding = new Thickness(2),
+                    Tag = idx,
+                };
+                ToolTip.SetTip(selectBtn, $"Select Layer {idx} for painting");
+                selectBtn.Click += (_, __) =>
+                {
+                    state.ActivePaintLayer = idx;
+                    RebuildLayerList(); // refresh highlighting
+                };
+                Avalonia.Controls.Grid.SetColumn(selectBtn, 0);
+                grid.Children.Add(selectBtn);
+
+                // Texture path label + choose button
+                var texStack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                var texLabel = new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(layer.TexturePath) ? "(none)" : Path.GetFileName(layer.TexturePath),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    FontSize = 11,
+                    MaxWidth = 120,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                };
+                ToolTip.SetTip(texLabel, layer.TexturePath);
+                var chooseBtn = new Button
+                {
+                    Content = new TextBlock { Text = "...", FontSize = 10 },
+                    MinWidth = 24, MinHeight = 20,
+                    Padding = new Thickness(2)
+                };
+                chooseBtn.Click += async (_, __) =>
+                {
+                    var dlg = new Avalonia.Controls.OpenFileDialog
+                    {
+                        Title = $"Choose texture for Layer {idx}",
+                        Filters = new List<Avalonia.Controls.FileDialogFilter>
+                        {
+                            new Avalonia.Controls.FileDialogFilter { Name = "Images", Extensions = { "png", "jpg", "jpeg", "bmp", "tga" } }
+                        }
+                    };
+                    var win = TopLevel.GetTopLevel(this) as Window;
+                    var result = await dlg.ShowAsync(win);
+                    if (result != null && result.Length > 0)
+                    {
+                        string abs = result[0];
+                        var proj = ProjectService.Current;
+                        if (proj != null)
+                        {
+                            try { abs = Path.GetRelativePath(proj.RootPath, abs).Replace('\\', '/'); }
+                            catch { }
+                        }
+                        layer.TexturePath = abs;
+                        texLabel.Text = Path.GetFileName(abs);
+                        ToolTip.SetTip(texLabel, abs);
+                        // Invalidate layer texture cache
+                        t.MarkSplatmapDirty();
+                        t.Save(); // keep .terrain.json in sync
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    }
+                };
+                texStack.Children.Add(texLabel);
+                texStack.Children.Add(chooseBtn);
+                Avalonia.Controls.Grid.SetColumn(texStack, 1);
+                grid.Children.Add(texStack);
+
+                // Tiling slider
+                var tilingSlider = new Slider
+                {
+                    Minimum = 0.1, Maximum = 100, Value = layer.Tiling,
+                    MinWidth = 60
+                };
+                ToolTip.SetTip(tilingSlider, "UV Tiling");
+                tilingSlider.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property == RangeBase.ValueProperty)
+                    {
+                        layer.Tiling = (float)tilingSlider.Value;
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    }
+                };
+                Avalonia.Controls.Grid.SetColumn(tilingSlider, 2);
+                grid.Children.Add(tilingSlider);
+
+                // Remove button
+                var removeBtn = new Button
+                {
+                    Content = new TextBlock { Text = "✕", FontSize = 11 },
+                    MinWidth = 24, MinHeight = 24,
+                    Padding = new Thickness(2)
+                };
+                ToolTip.SetTip(removeBtn, "Remove Layer");
+                removeBtn.Click += (_, __) =>
+                {
+                    if (t.Layers.Count > idx) t.Layers.RemoveAt(idx);
+                    if (state.ActivePaintLayer >= t.Layers.Count)
+                        state.ActivePaintLayer = Math.Max(0, t.Layers.Count - 1);
+                    t.MarkSplatmapDirty();
+                    t.Save(); // keep .terrain.json in sync
+                    RebuildLayerList();
+                    Game_Engine.Core.SceneService.NotifyChanged();
+                };
+                Avalonia.Controls.Grid.SetColumn(removeBtn, 3);
+                grid.Children.Add(removeBtn);
+
+                row.Child = grid;
+                layersPanel.Children.Add(row);
+            }
+
+            // Add Layer button
+            if (t.Layers.Count < 8)
+            {
+                var addBtn = new Button
+                {
+                    Content = new TextBlock { Text = "+ Add Layer", FontSize = 11 },
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Margin = new Thickness(0, 4, 0, 0),
+                    Padding = new Thickness(8, 4)
+                };
+                addBtn.Click += (_, __) =>
+                {
+                    t.Layers.Add(new TerrainLayer());
+                    t.EnsureSplatmaps();
+                    t.MarkSplatmapDirty();
+                    t.Save(); // keep .terrain.json in sync
+                    RebuildLayerList();
+                    Game_Engine.Core.SceneService.NotifyChanged();
+                };
+                layersPanel.Children.Add(addBtn);
+            }
+        }
+
+        RebuildLayerList();
+
+        var shell = new StackPanel { Spacing = 6, Margin = new Thickness(0, 8, 0, 0) };
+        shell.Children.Add(SectionTitle("Terrain Layers"));
+        shell.Children.Add(ToolbarShell(layersPanel));
         return shell;
     }
 
@@ -3776,6 +4116,134 @@ public partial class InspectorPanel : UserControl
 
         // ---- fallback: read-only type name -----------------------------------
         return new TextBlock { Text = t.Name, Opacity = 0.6 };
+    }
+
+    // ═══════════════════════ Tree Inspector UI ═══════════════════════
+
+    Control TreeInspectorUI(GameObject owner, Tree tree)
+    {
+        var panel = new StackPanel { Spacing = 6 };
+        panel.Children.Add(SectionTitle("Tree Settings"));
+
+        bool isImport = tree.IsImportMode;
+
+        // ── Mode indicator ──
+        var modeLbl = new TextBlock
+        {
+            Text = isImport ? "Mode: Imported Model" : "Mode: Procedural",
+            Opacity = 0.8,
+            Margin = new Thickness(0, 0, 0, 4)
+        };
+        panel.Children.Add(modeLbl);
+
+        // ── Import path (only if in import mode or to switch) ──
+        var importRow = new StackPanel { Spacing = 4 };
+        var importLbl = new TextBlock { Text = "Model Path:", Opacity = 0.8, Width = 80 };
+        var importTxt = new TextBox { Text = tree.ModelPath, Width = 200 };
+        importTxt.LostFocus += (_, _) =>
+        {
+            tree.ModelPath = importTxt.Text ?? "";
+            tree.MarkDirty();
+        };
+        var importGrid = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        importGrid.Children.Add(importLbl);
+        importGrid.Children.Add(importTxt);
+        panel.Children.Add(importGrid);
+
+        // ── Procedural section (only when not in import mode) ──
+        if (!isImport)
+        {
+            var procSection = new StackPanel { Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
+            procSection.Children.Add(new TextBlock { Text = "Trunk", FontWeight = FontWeight.SemiBold, Opacity = 0.9 });
+
+            procSection.Children.Add(TreeSliderRow("Height", 0.5, 20, tree.TrunkHeight, v => { tree.TrunkHeight = (float)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+            procSection.Children.Add(TreeSliderRow("Bottom Radius", 0.05, 2, tree.TrunkRadiusBottom, v => { tree.TrunkRadiusBottom = (float)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+            procSection.Children.Add(TreeSliderRow("Top Radius", 0.01, 1, tree.TrunkRadiusTop, v => { tree.TrunkRadiusTop = (float)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+            procSection.Children.Add(TreeSliderRow("Segments", 3, 24, tree.TrunkSegments, v => { tree.TrunkSegments = (int)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+
+            procSection.Children.Add(new TextBlock { Text = "Canopy", FontWeight = FontWeight.SemiBold, Opacity = 0.9, Margin = new Thickness(0, 6, 0, 0) });
+
+            // Shape dropdown
+            var shapeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            shapeRow.Children.Add(new TextBlock { Text = "Shape", Width = 80, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.8 });
+            var shapeCb = new ComboBox { Width = 120 };
+            shapeCb.Items.Add("Sphere");
+            shapeCb.Items.Add("Cone");
+            shapeCb.Items.Add("Layered Cone");
+            shapeCb.SelectedIndex = (int)tree.Shape;
+            shapeCb.SelectionChanged += (_, _) =>
+            {
+                tree.Shape = (CanopyShape)(shapeCb.SelectedIndex >= 0 ? shapeCb.SelectedIndex : 0);
+                tree.RebuildTree();
+                SceneService.NotifyChanged();
+            };
+            shapeRow.Children.Add(shapeCb);
+            procSection.Children.Add(shapeRow);
+
+            procSection.Children.Add(TreeSliderRow("Radius", 0.5, 10, tree.CanopyRadius, v => { tree.CanopyRadius = (float)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+            procSection.Children.Add(TreeSliderRow("Height", 0.5, 10, tree.CanopyHeight, v => { tree.CanopyHeight = (float)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+            procSection.Children.Add(TreeSliderRow("Segments", 4, 24, tree.CanopySegments, v => { tree.CanopySegments = (int)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+
+            if (tree.Shape == CanopyShape.LayeredCone)
+                procSection.Children.Add(TreeSliderRow("Layers", 1, 6, tree.CanopyLayers, v => { tree.CanopyLayers = (int)v; tree.RebuildTree(); SceneService.NotifyChanged(); }));
+
+            panel.Children.Add(ToolbarShell(procSection));
+        }
+
+        // ── Wind section ──
+        var windSection = new StackPanel { Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
+        windSection.Children.Add(new TextBlock { Text = "Wind", FontWeight = FontWeight.SemiBold, Opacity = 0.9 });
+
+        var vegCheck = new CheckBox { Content = "Vegetation Wind", IsChecked = tree.IsVegetation, Margin = new Thickness(0, 2, 0, 0) };
+        vegCheck.IsCheckedChanged += (_, _) =>
+        {
+            tree.IsVegetation = vegCheck.IsChecked == true;
+            SceneService.NotifyChanged();
+        };
+        windSection.Children.Add(vegCheck);
+        windSection.Children.Add(TreeSliderRow("Sway", 0, 1, tree.WindSway, v => { tree.WindSway = (float)v; SceneService.NotifyChanged(); }));
+        windSection.Children.Add(TreeSliderRow("Speed", 0.1, 5, tree.WindSpeed, v => { tree.WindSpeed = (float)v; SceneService.NotifyChanged(); }));
+
+        panel.Children.Add(ToolbarShell(windSection));
+
+        // ── Rebuild button ──
+        var rebuildBtn = new Button { Content = "Rebuild Tree", Margin = new Thickness(0, 6, 0, 0) };
+        rebuildBtn.Click += (_, _) => { tree.RebuildTree(); SceneService.NotifyChanged(); };
+        panel.Children.Add(rebuildBtn);
+
+        return panel;
+    }
+
+    static Control TreeSliderRow(string label, double min, double max, double initial, Action<double> onChange)
+    {
+        var grid = new Avalonia.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+        grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+        grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+
+        var lb = new TextBlock { Text = label, Width = 80, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.8 };
+        Avalonia.Controls.Grid.SetColumn(lb, 0);
+
+        var sl = new Slider { Minimum = min, Maximum = max, Value = initial };
+        Avalonia.Controls.Grid.SetColumn(sl, 1);
+
+        var val = new TextBlock { Text = initial.ToString(max <= 1.0 ? "0.00" : "0.0"), Width = 44, HorizontalAlignment = HorizontalAlignment.Right };
+        Avalonia.Controls.Grid.SetColumn(val, 2);
+
+        sl.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == RangeBase.ValueProperty)
+            {
+                var v = sl.Value;
+                val.Text = v.ToString(max <= 1.0 ? "0.00" : "0.0");
+                onChange(v);
+            }
+        };
+
+        grid.Children.Add(lb);
+        grid.Children.Add(sl);
+        grid.Children.Add(val);
+        return grid;
     }
 }
 

@@ -35,6 +35,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private ShaderProgram? _skyShader;
     private ShaderProgram? _gridShader;
     private ShaderProgram? _wireShader;
+    private ShaderProgram? _terrainShader;
     private FullscreenQuad? _fsQuad;
     private ResourceCache? _cache;
 
@@ -71,10 +72,20 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private readonly Stopwatch _windWatch = Stopwatch.StartNew();
     private double _windPrev = 0.0;
 
+    // Cached scene query results (refreshed on SceneService.Changed, not per-frame)
+    private Skybox? _cachedSkybox;
+    private Light? _cachedLight;
+    private bool _sceneQueryDirty = true;
+
     // FPS tracking
     private readonly Stopwatch _fpsWatch = new Stopwatch();
+    private readonly Stopwatch _frameTimer = new Stopwatch();
     private int _fpsFrameCount;
+    private double _lastFrameMs;
     private string _fpsText = "0 FPS";
+    private string _lastSectionTimes = "";
+    private double _lastCompositMs;  // Avalonia compositing time (base.Render minus OnOpenGlRender)
+    private double _lastOverlayMs;   // 2D overlay time (colliders, gizmos, wireframes)
 
     public static readonly DirectProperty<SceneView, string> FpsTextProperty =
         AvaloniaProperty.RegisterDirect<SceneView, string>(nameof(FpsText), o => o.FpsText);
@@ -109,6 +120,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     Terrain? _paintTarget;
     float _paintSign;
     int _paintToolIndex;
+    float _flattenTargetHeight;  // sampled on mouse-down for Flatten tool
+    public static Func<Terrain, int>? TerrainActivePaintLayerProvider; // active splatmap layer for Paint Layers tool
 
     private (SN.Matrix4x4 View, SN.Matrix4x4 Proj, Camera? Cam, bool UsingComponent)
     GetActiveViewProj(Size size)
@@ -178,6 +191,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         AvaloniaProperty.Register<SceneView, bool>(nameof(ShowTerrainGizmos), true);
     public bool ShowTerrainGizmos { get => GetValue(ShowTerrainGizmosProperty); set => SetValue(ShowTerrainGizmosProperty, value); }
 
+    public static readonly StyledProperty<bool> ShowShadowsProperty =
+        AvaloniaProperty.Register<SceneView, bool>(nameof(ShowShadows), defaultValue: true);
+    public bool ShowShadows { get => GetValue(ShowShadowsProperty); set => SetValue(ShowShadowsProperty, value); }
+
     public static readonly StyledProperty<bool> ShowCamerasProperty =
         AvaloniaProperty.Register<SceneView, bool>(nameof(ShowCameras), true);
     public bool ShowCameras { get => GetValue(ShowCamerasProperty); set => SetValue(ShowCamerasProperty, value); }
@@ -195,6 +212,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
         ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
         ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
+        ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
     }
     #endregion
 
@@ -278,44 +296,28 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         InvalidateVisual();
     }
 
+    // Height clamp range: allows digging below the initial flatland
+    const float MinTerrainH = -1f;
+    const float MaxTerrainH = 1f;
+
     void ApplyRaiseLowerBrush(Terrain t, SN.Vector3 centerW, float sign)
     {
-        if (t == null || t.Heights == null || t.ResX <= 1 || t.ResZ <= 1) return;
-        float radiusW = TerrainBrushRadiusProvider != null ? Math.Max(0.001f, TerrainBrushRadiusProvider(t)) : 5f;
-        float strength = TerrainBrushStrengthProvider != null ? Math.Clamp(TerrainBrushStrengthProvider(t), 0f, 1f) : 0.5f;
-        float falloff = TerrainBrushFalloffProvider != null ? Math.Clamp(TerrainBrushFalloffProvider(t), 0f, 1f) : 0.5f;
-        var W = TransformUtil.WorldFromTransform(t.gameObject!.Transform);
-        if (!SN.Matrix4x4.Invert(W, out var invW)) return;
-        var cL = SN.Vector3.Transform(centerW, invW);
-        float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
-        float sx = new SN.Vector3(W.M11, W.M21, W.M31).Length();
-        float sz = new SN.Vector3(W.M13, W.M23, W.M33).Length();
-        float rLx = radiusW / Math.Max(1e-6f, sx), rLz = radiusW / Math.Max(1e-6f, sz);
-        int nx = t.ResX, nz = t.ResZ;
-        float dx = t.SizeX / (nx - 1), dz = t.SizeZ / (nz - 1);
-        float tx = (cL.X + hx) / t.SizeX, tz = (cL.Z + hz) / t.SizeZ;
-        int cx = (int)Math.Round(tx * (nx - 1)), cz = (int)Math.Round(tz * (nz - 1));
-        int rx = (int)Math.Ceiling(rLx / dx), rz = (int)Math.Ceiling(rLz / dz);
-        float baseDelta01 = 0.02f * strength;
-        float innerBand = Math.Max(0f, 1f - falloff);
-        for (int z = Math.Max(0, cz - rz); z <= Math.Min(nz - 1, cz + rz); z++)
+        if (!ComputeBrushParams(t, centerW, out var bp)) return;
+        float baseDelta01 = 0.02f * bp.Strength;
+        for (int z = bp.MinVz; z <= bp.MaxVz; z++)
         {
-            float zL = -hz + z * dz;
-            for (int x = Math.Max(0, cx - rx); x <= Math.Min(nx - 1, cx + rx); x++)
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = bp.MinVx; x <= bp.MaxVx; x++)
             {
-                float xL = -hx + x * dx;
-                float nxr = (xL - cL.X) / Math.Max(1e-6f, rLx);
-                float nzr = (zL - cL.Z) / Math.Max(1e-6f, rLz);
-                float rNorm = MathF.Sqrt(nxr * nxr + nzr * nzr);
-                if (rNorm > 1f) continue;
-                float w = rNorm <= innerBand ? 1f : 1f - Math.Clamp((rNorm - innerBand) / Math.Max(1e-6f, 1f - innerBand), 0f, 1f);
-                w = w * w * (3f - 2f * w); // smoothstep
-                int idx = z * nx + x;
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL);
+                if (w <= 0f) continue;
+                int idx = z * bp.Nx + x;
                 float h = t.Heights[idx] + sign * baseDelta01 * w;
-                t.Heights[idx] = Math.Clamp(h, 0f, 1f);
+                t.Heights[idx] = Math.Clamp(h, MinTerrainH, MaxTerrainH);
             }
         }
-        t.RebuildMesh();
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
     }
 
     void ApplyTerrainToolUnified(Terrain t, SN.Vector3 hitW, int toolIndex, float sign)
@@ -324,12 +326,496 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         switch (toolIndex)
         {
             case 0: ApplyRaiseLowerBrush(t, hitW, sign); break;
+            case 1: ApplyPaintHolesBrush(t, hitW, sign); break;
+            case 2: ApplyNoiseBrush(t, hitW, sign); break;
+            case 3: ApplyStitchBlendBrush(t, hitW); break;
+            case 4: ApplySculptBrush(t, hitW, sign); break;
+            case 5: ApplyFlattenBrush(t, hitW); break;
+            case 6: ApplyErodeBrush(t, hitW); break;
+            case 7: ApplyPaintLayersBrush(t, hitW, sign); break;
+            case 8: ApplySmoothBrush(t, hitW); break;
+            case 9: ApplyPaintTreesBrush(t, hitW, sign); break;
             default: break;
         }
+        _terrStrokeDirty = true;
+    }
+
+    // ────────────── Brush Common Helper ──────────────
+    struct BrushParams
+    {
+        public int Nx, Nz;
+        public int Cx, Cz, Rx, Rz;
+        public float Hx, Hz, Dx, Dz;
+        public float RLx, RLz;
+        public SN.Vector3 CenterLocal;
+        public float Strength, Falloff, InnerBand;
+        // Affected vertex range for partial rebuild
+        public int MinVx => Math.Max(0, Cx - Rx);
+        public int MinVz => Math.Max(0, Cz - Rz);
+        public int MaxVx => Math.Min(Nx - 1, Cx + Rx);
+        public int MaxVz => Math.Min(Nz - 1, Cz + Rz);
+    }
+
+    bool ComputeBrushParams(Terrain t, SN.Vector3 hitW, out BrushParams bp)
+    {
+        bp = default;
+        if (t == null || t.Heights == null || t.ResX <= 1 || t.ResZ <= 1) return false;
+        float radiusW = TerrainBrushRadiusProvider != null ? Math.Max(0.001f, TerrainBrushRadiusProvider(t)) : 5f;
+        bp.Strength = TerrainBrushStrengthProvider != null ? Math.Clamp(TerrainBrushStrengthProvider(t), 0f, 1f) : 0.5f;
+        bp.Falloff = TerrainBrushFalloffProvider != null ? Math.Clamp(TerrainBrushFalloffProvider(t), 0f, 1f) : 0.5f;
+        var W = TransformUtil.WorldFromTransform(t.gameObject!.Transform);
+        if (!SN.Matrix4x4.Invert(W, out var invW)) return false;
+        bp.CenterLocal = SN.Vector3.Transform(hitW, invW);
+        bp.Hx = t.SizeX * 0.5f; bp.Hz = t.SizeZ * 0.5f;
+        float sx = new SN.Vector3(W.M11, W.M21, W.M31).Length();
+        float sz = new SN.Vector3(W.M13, W.M23, W.M33).Length();
+        bp.RLx = radiusW / Math.Max(1e-6f, sx); bp.RLz = radiusW / Math.Max(1e-6f, sz);
+        bp.Nx = t.ResX; bp.Nz = t.ResZ;
+        bp.Dx = t.SizeX / (bp.Nx - 1); bp.Dz = t.SizeZ / (bp.Nz - 1);
+        float tx = (bp.CenterLocal.X + bp.Hx) / t.SizeX;
+        float tz = (bp.CenterLocal.Z + bp.Hz) / t.SizeZ;
+        bp.Cx = (int)Math.Round(tx * (bp.Nx - 1)); bp.Cz = (int)Math.Round(tz * (bp.Nz - 1));
+        bp.Rx = (int)Math.Ceiling(bp.RLx / bp.Dx); bp.Rz = (int)Math.Ceiling(bp.RLz / bp.Dz);
+        bp.InnerBand = Math.Max(0f, 1f - bp.Falloff);
+        return true;
+    }
+
+    float BrushWeight(in BrushParams bp, float xL, float zL)
+    {
+        float nxr = (xL - bp.CenterLocal.X) / Math.Max(1e-6f, bp.RLx);
+        float nzr = (zL - bp.CenterLocal.Z) / Math.Max(1e-6f, bp.RLz);
+        float rNorm = MathF.Sqrt(nxr * nxr + nzr * nzr);
+        if (rNorm > 1f) return 0f;
+        float w = rNorm <= bp.InnerBand ? 1f : 1f - Math.Clamp((rNorm - bp.InnerBand) / Math.Max(1e-6f, 1f - bp.InnerBand), 0f, 1f);
+        return w * w * (3f - 2f * w); // smoothstep
+    }
+
+    // ────────────── Tool 1: Paint Holes ──────────────
+    void ApplyPaintHolesBrush(Terrain t, SN.Vector3 hitW, float sign)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        int total = bp.Nx * bp.Nz;
+        if (t.Holes == null || t.Holes.Length != total)
+            t.Holes = new bool[total];
+        bool setHole = sign > 0; // left click = add hole, right click = remove hole
+        for (int z = Math.Max(0, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 1, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(0, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 1, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                if (BrushWeight(bp, xL, zL) > 0.1f)
+                    t.Holes[z * bp.Nx + x] = setHole;
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // ────────────── Tool 2: Noise ──────────────
+    void ApplyNoiseBrush(Terrain t, SN.Vector3 hitW, float sign)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        float baseDelta = 0.02f * bp.Strength;
+        // Use a random seed offset each stroke so repeated clicks give varied results
+        float seedX = hitW.X * 7.13f + hitW.Z * 3.71f;
+        float seedZ = hitW.X * 2.37f + hitW.Z * 11.29f;
+        for (int z = Math.Max(0, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 1, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(0, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 1, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL);
+                if (w <= 0f) continue;
+                float noise = PerlinNoise2D(x * 0.15f + seedX, z * 0.15f + seedZ);
+                int idx = z * bp.Nx + x;
+                float h = t.Heights[idx] + sign * baseDelta * w * noise;
+                t.Heights[idx] = Math.Clamp(h, MinTerrainH, MaxTerrainH);
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // Simple 2D Perlin-like gradient noise (returns -1..1)
+    static float PerlinNoise2D(float x, float y)
+    {
+        int xi = (int)MathF.Floor(x), yi = (int)MathF.Floor(y);
+        float xf = x - xi, yf = y - yi;
+        float u = xf * xf * (3f - 2f * xf);
+        float v = yf * yf * (3f - 2f * yf);
+        float n00 = Grad(xi, yi, xf, yf);
+        float n10 = Grad(xi + 1, yi, xf - 1f, yf);
+        float n01 = Grad(xi, yi + 1, xf, yf - 1f);
+        float n11 = Grad(xi + 1, yi + 1, xf - 1f, yf - 1f);
+        float nx0 = n00 + u * (n10 - n00);
+        float nx1 = n01 + u * (n11 - n01);
+        return nx0 + v * (nx1 - nx0);
+
+        static float Grad(int ix, int iy, float dx, float dy)
+        {
+            int h = ix * 374761393 + iy * 668265263;
+            h = (h ^ (h >> 13)) * 1274126177;
+            h = h ^ (h >> 16);
+            return (h & 3) switch
+            {
+                0 => dx + dy,
+                1 => dx - dy,
+                2 => -dx + dy,
+                _ => -dx - dy,
+            };
+        }
+    }
+
+    // ────────────── Tool 3: Stitch/Blend ──────────────
+    void ApplyStitchBlendBrush(Terrain t, SN.Vector3 hitW)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        // Smooth heights at the brush area by averaging with neighbors (edge-blending)
+        var copy = new float[bp.Nx * bp.Nz];
+        Array.Copy(t.Heights, copy, copy.Length);
+        for (int z = Math.Max(1, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 2, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(1, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 2, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL) * bp.Strength;
+                if (w <= 0f) continue;
+                int idx = z * bp.Nx + x;
+                // Average of 8 neighbors + self
+                float sum = 0f; int cnt = 0;
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    { sum += copy[(z + dz) * bp.Nx + (x + dx)]; cnt++; }
+                float avg = sum / cnt;
+                t.Heights[idx] = Math.Clamp(copy[idx] + (avg - copy[idx]) * w, MinTerrainH, MaxTerrainH);
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // ────────────── Tool 4: Sculpt ──────────────
+    void ApplySculptBrush(Terrain t, SN.Vector3 hitW, float sign)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        // Push/pull along Y axis with a softer, more sculpty curve than raise/lower
+        float baseDelta = 0.015f * bp.Strength;
+        for (int z = Math.Max(0, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 1, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(0, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 1, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL);
+                if (w <= 0f) continue;
+                // Sculpt uses a sharper center, gentler edges (w^2)
+                float sculpt = w * w;
+                int idx = z * bp.Nx + x;
+                float h = t.Heights[idx] + sign * baseDelta * sculpt;
+                t.Heights[idx] = Math.Clamp(h, MinTerrainH, MaxTerrainH);
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // ────────────── Tool 5: Flatten ──────────────
+    void ApplyFlattenBrush(Terrain t, SN.Vector3 hitW)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        float lerpRate = 0.1f * bp.Strength; // how fast to lerp toward target
+        for (int z = Math.Max(0, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 1, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(0, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 1, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL);
+                if (w <= 0f) continue;
+                int idx = z * bp.Nx + x;
+                float current = t.Heights[idx];
+                // Lerp toward the flatten target height sampled on mouse-down
+                t.Heights[idx] = Math.Clamp(current + ((_flattenTargetHeight - current) * lerpRate * w), MinTerrainH, MaxTerrainH);
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // ────────────── Tool 6: Erode ──────────────
+    void ApplyErodeBrush(Terrain t, SN.Vector3 hitW)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        // Simple hydraulic erosion: move material downhill
+        float rate = 0.005f * bp.Strength;
+        var copy = new float[bp.Nx * bp.Nz];
+        Array.Copy(t.Heights, copy, copy.Length);
+        for (int z = Math.Max(1, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 2, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(1, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 2, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL);
+                if (w <= 0f) continue;
+                int idx = z * bp.Nx + x;
+                float h = copy[idx];
+                // Find steepest descent neighbor
+                float minH = h; int minIdx = idx;
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dz == 0) continue;
+                        int ni = (z + dz) * bp.Nx + (x + dx);
+                        if (copy[ni] < minH) { minH = copy[ni]; minIdx = ni; }
+                    }
+                if (minIdx != idx)
+                {
+                    float diff = h - minH;
+                    float transfer = Math.Min(diff * 0.5f, rate * w);
+                    t.Heights[idx] = Math.Clamp(t.Heights[idx] - transfer, MinTerrainH, MaxTerrainH);
+                    t.Heights[minIdx] = Math.Clamp(t.Heights[minIdx] + transfer, MinTerrainH, MaxTerrainH);
+                }
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // ────────────── Tool 7: Paint Layers (splatmap) ──────────────
+    // Left-click (sign>0): paint the active layer. Right-click (sign<0): erase the active layer (restore layer 0).
+    void ApplyPaintLayersBrush(Terrain t, SN.Vector3 hitW, float sign)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        int activeLayer = TerrainActivePaintLayerProvider?.Invoke(t) ?? 0;
+        if (activeLayer < 0 || activeLayer >= 8) return;
+
+        // Ensure splatmaps exist (use the terrain's own method to guarantee correct size)
+        t.EnsureSplatmaps();
+        int total = bp.Nx * bp.Nz;
+        if (t.Splatmap0 == null || t.Splatmap0.Length != total * 4) return; // safety
+
+        float paintRate = 0.15f * bp.Strength;
+        // When erasing (sign<0), we'll push weight toward layer 0 instead
+        int targetLayer = sign >= 0 ? activeLayer : 0;
+
+        for (int z = Math.Max(0, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 1, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(0, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 1, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL);
+                if (w <= 0f) continue;
+                int vi = z * bp.Nx + x;
+                float amount = paintRate * w;
+                // Read all 8 weights
+                float[] weights = new float[8];
+                for (int c = 0; c < 4; c++) weights[c] = t.Splatmap0[vi * 4 + c];
+                for (int c = 0; c < 4; c++) weights[4 + c] = t.Splatmap1[vi * 4 + c];
+                // Increase target layer weight
+                weights[targetLayer] = Math.Min(1f, weights[targetLayer] + amount);
+                // Normalize so all sum to 1
+                float sum = 0f;
+                for (int i = 0; i < 8; i++) sum += weights[i];
+                if (sum > 1e-6f)
+                    for (int i = 0; i < 8; i++) weights[i] /= sum;
+                // Write back
+                for (int c = 0; c < 4; c++) t.Splatmap0[vi * 4 + c] = weights[c];
+                for (int c = 0; c < 4; c++) t.Splatmap1[vi * 4 + c] = weights[4 + c];
+            }
+        }
+        t.MarkSplatmapDirty();
+    }
+
+    // ────────────── Tool 8: Smooth ──────────────
+    void ApplySmoothBrush(Terrain t, SN.Vector3 hitW)
+    {
+        if (!ComputeBrushParams(t, hitW, out var bp)) return;
+        var copy = new float[bp.Nx * bp.Nz];
+        Array.Copy(t.Heights, copy, copy.Length);
+        for (int z = Math.Max(1, bp.Cz - bp.Rz); z <= Math.Min(bp.Nz - 2, bp.Cz + bp.Rz); z++)
+        {
+            float zL = -bp.Hz + z * bp.Dz;
+            for (int x = Math.Max(1, bp.Cx - bp.Rx); x <= Math.Min(bp.Nx - 2, bp.Cx + bp.Rx); x++)
+            {
+                float xL = -bp.Hx + x * bp.Dx;
+                float w = BrushWeight(bp, xL, zL) * bp.Strength;
+                if (w <= 0f) continue;
+                int idx = z * bp.Nx + x;
+                // Gaussian-like weighted average: center=4, adjacent=2, diagonal=1
+                float sum = copy[idx] * 4f;
+                sum += copy[(z - 1) * bp.Nx + x] * 2f;
+                sum += copy[(z + 1) * bp.Nx + x] * 2f;
+                sum += copy[z * bp.Nx + (x - 1)] * 2f;
+                sum += copy[z * bp.Nx + (x + 1)] * 2f;
+                sum += copy[(z - 1) * bp.Nx + (x - 1)] * 1f;
+                sum += copy[(z - 1) * bp.Nx + (x + 1)] * 1f;
+                sum += copy[(z + 1) * bp.Nx + (x - 1)] * 1f;
+                sum += copy[(z + 1) * bp.Nx + (x + 1)] * 1f;
+                float avg = sum / 16f;
+                t.Heights[idx] = Math.Clamp(copy[idx] + (avg - copy[idx]) * w, MinTerrainH, MaxTerrainH);
+            }
+        }
+        t.RebuildArea(bp.MinVx, bp.MinVz, bp.MaxVx, bp.MaxVz);
+    }
+
+    // ────────────── Paint Trees Tool ──────────────
+    // Provider delegates set by InspectorPanel
+    public static Func<Terrain, int>? TerrainTreeDensityProvider;      // trees per stroke (1-20)
+    public static Func<Terrain, float>? TerrainTreeMinScaleProvider;   // minimum random scale
+    public static Func<Terrain, float>? TerrainTreeMaxScaleProvider;   // maximum random scale
+    public static Func<Terrain, bool>? TerrainTreeRandomRotProvider;   // random Y rotation
+    public static Func<Terrain, string?>? TerrainTreeModelPathProvider; // model path for imported tree asset (null = procedural)
+    static readonly Random _treeRng = new();
+
+    void ApplyPaintTreesBrush(Terrain t, SN.Vector3 hitW, float sign)
+    {
+        if (t.gameObject == null) return;
+
+        if (sign < 0f)
+        {
+            // Right-click: erase trees within brush radius
+            float radius = TerrainBrushRadiusProvider?.Invoke(t) ?? 5f;
+            float radius2 = radius * radius;
+            var toRemove = new System.Collections.Generic.List<GameObject>();
+            foreach (var child in t.gameObject.Children)
+            {
+                bool isTree = false;
+                foreach (var b in child.Behaviors)
+                    if (b is Tree) { isTree = true; break; }
+                if (!isTree) continue;
+
+                // Compute child world position (child is parented to terrain)
+                var parentW = TransformUtil.WorldFromTransform(t.gameObject.Transform);
+                var childLocal = new SN.Vector3((float)child.Transform.Position.X, (float)child.Transform.Position.Y, (float)child.Transform.Position.Z);
+                var childPos = SN.Vector3.Transform(childLocal, parentW);
+                float dist2 = (childPos - hitW).LengthSquared();
+                if (dist2 <= radius2)
+                    toRemove.Add(child);
+            }
+            foreach (var go in toRemove)
+                go.RemoveFromParent();
+            if (toRemove.Count > 0) SceneService.NotifyChanged();
+            return;
+        }
+
+        // Left-click: scatter trees
+        int density = TerrainTreeDensityProvider?.Invoke(t) ?? 3;
+        float minScale = TerrainTreeMinScaleProvider?.Invoke(t) ?? 0.8f;
+        float maxScale = TerrainTreeMaxScaleProvider?.Invoke(t) ?? 1.2f;
+        bool randomRot = TerrainTreeRandomRotProvider?.Invoke(t) ?? true;
+        string? modelPath = TerrainTreeModelPathProvider?.Invoke(t);
+        float radius_w = TerrainBrushRadiusProvider?.Invoke(t) ?? 5f;
+
+        var terrainW = TransformUtil.WorldFromTransform(t.gameObject.Transform);
+        SN.Matrix4x4.Invert(terrainW, out var invTerrainW);
+
+        for (int i = 0; i < density; i++)
+        {
+            // Random point within brush circle
+            float angle = (float)(_treeRng.NextDouble() * Math.PI * 2);
+            float dist = (float)Math.Sqrt(_treeRng.NextDouble()) * radius_w;
+            float ox = MathF.Cos(angle) * dist;
+            float oz = MathF.Sin(angle) * dist;
+            var worldPt = new SN.Vector3(hitW.X + ox, hitW.Y, hitW.Z + oz);
+
+            // Convert to terrain local space to sample height
+            var localPt = SN.Vector3.Transform(worldPt, invTerrainW);
+            float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
+            float tx = (localPt.X + hx) / t.SizeX;
+            float tz = (localPt.Z + hz) / t.SizeZ;
+            if (tx < 0 || tx > 1 || tz < 0 || tz > 1) continue;
+            int cx = (int)Math.Round(tx * (t.ResX - 1));
+            int cz = (int)Math.Round(tz * (t.ResZ - 1));
+            cx = Math.Clamp(cx, 0, t.ResX - 1);
+            cz = Math.Clamp(cz, 0, t.ResZ - 1);
+            int idx = cz * t.ResX + cx;
+
+            // Skip if there's a hole
+            if (t.Holes != null && idx < t.Holes.Length && t.Holes[idx]) continue;
+
+            float h01 = t.Heights[idx];
+            float localY = h01 * t.HeightScale;
+
+            // Create tree GameObject as child of terrain
+            var treeGo = new GameObject($"Tree_{_treeRng.Next(10000)}");
+            treeGo.Transform.Position = new Vector3(localPt.X, localY, localPt.Z);
+
+            float scale = minScale + (float)_treeRng.NextDouble() * (maxScale - minScale);
+            treeGo.Transform.Scale = new Vector3(scale, scale, scale);
+
+            if (randomRot)
+                treeGo.Transform.Rotation = new Vector3(0, (float)(_treeRng.NextDouble() * 360), 0);
+
+            var treeComp = new Tree();
+            // If a model path is set, use imported model instead of procedural
+            if (!string.IsNullOrEmpty(modelPath))
+                treeComp.ModelPath = modelPath;
+
+            treeGo.AddBehavior(treeComp);
+            // Tree [Require] auto-adds MeshFilter, MeshRenderer, TreeLOD
+
+            // Trigger tree mesh generation
+            treeComp.RebuildTree();
+
+            t.gameObject.AddChild(treeGo);
+        }
+        SceneService.NotifyChanged();
+    }
+
+    // ────────────── Terrain Height Sampling ──────────────
+    float SampleTerrainHeight01(Terrain t, SN.Vector3 worldPos)
+    {
+        if (t == null || t.Heights == null || t.ResX <= 1 || t.ResZ <= 1) return 0f;
+        var W = TransformUtil.WorldFromTransform(t.gameObject!.Transform);
+        if (!SN.Matrix4x4.Invert(W, out var invW)) return 0f;
+        var local = SN.Vector3.Transform(worldPos, invW);
+        float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
+        float tx = (local.X + hx) / t.SizeX;
+        float tz = (local.Z + hz) / t.SizeZ;
+        int cx = (int)Math.Round(tx * (t.ResX - 1));
+        int cz = (int)Math.Round(tz * (t.ResZ - 1));
+        cx = Math.Clamp(cx, 0, t.ResX - 1);
+        cz = Math.Clamp(cz, 0, t.ResZ - 1);
+        return t.Heights[cz * t.ResX + cx];
     }
 
     static float Smooth01(float x) => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3f - 2f * x);
     static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+
+    // ────────────── Terrain LOD Update ──────────────
+    void UpdateTerrainLOD(SN.Vector3 camPos)
+    {
+        foreach (var root in SceneService.Root) WalkLOD(root, camPos);
+        static void WalkLOD(GameObject go, SN.Vector3 cam)
+        {
+            foreach (var b in go.Behaviors)
+                if (b is Terrain t && t.Enabled) { t.UpdateLOD(cam); break; }
+            foreach (var c in go.Children) WalkLOD(c, cam);
+        }
+    }
+
+    // ────────────── Tree LOD Update ──────────────
+    void UpdateTreeLOD(SN.Vector3 camPos)
+    {
+        foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
+        static void WalkTreeLOD(GameObject go, SN.Vector3 cam)
+        {
+            foreach (var b in go.Behaviors)
+                if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
+            foreach (var c in go.Children) WalkTreeLOD(c, cam);
+        }
+    }
+
+    // ────────────── Cached Scene Queries ──────────────
+    void CacheSkyboxAndLight(GameObject go)
+    {
+        foreach (var b in go.Behaviors)
+        {
+            if (_cachedSkybox == null && b is Skybox sb && sb.Enabled) _cachedSkybox = sb;
+            if (_cachedLight == null && b is Light lt && lt.Enabled) _cachedLight = lt;
+        }
+        if (_cachedSkybox != null && _cachedLight != null) return; // found both
+        foreach (var c in go.Children) CacheSkyboxAndLight(c);
+    }
 
     void UpdateTerrainHover(Point mouse)
     {
@@ -356,6 +842,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 if (!SN.Matrix4x4.Invert(W, out var invW)) goto NEXT;
                 var rL = SN.Vector3.Transform(roL, invW);
                 var dL = SN.Vector3.Normalize(SN.Vector3.TransformNormal(rdL, invW));
+
+                // First try exact triangle raycast
                 for (int i = 0; i < mf.Mesh.TriIndices.Length; i += 3)
                 {
                     var v = mf.Mesh.Vertices; var tri = mf.Mesh.TriIndices;
@@ -363,6 +851,31 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     {
                         bestD = tH; bestT = t;
                         bestH = SN.Vector3.Transform(rL + dL * tH, W);
+                    }
+                }
+
+                // Fallback: ray-AABB intersection so brushes work over holes
+                // Intersect the terrain's local bounding box (covers full extent including holes)
+                if (bestT != t)
+                {
+                    float hx = t.SizeX * 0.5f, hz = t.SizeZ * 0.5f;
+                    float maxY = t.HeightScale;
+                    // Simple ray vs Y-slab: find where ray hits the Y range [-maxY, maxY]
+                    // Then check if XZ is within terrain bounds
+                    if (MathF.Abs(dL.Y) > 1e-7f)
+                    {
+                        // Try intersecting a horizontal plane at Y=0 (the default flat height)
+                        float avgY = 0f;
+                        float tPlane = (avgY - rL.Y) / dL.Y;
+                        if (tPlane > 1e-6f && tPlane < bestD)
+                        {
+                            var hitLocal = rL + dL * tPlane;
+                            if (hitLocal.X >= -hx && hitLocal.X <= hx && hitLocal.Z >= -hz && hitLocal.Z <= hz)
+                            {
+                                bestD = tPlane; bestT = t;
+                                bestH = SN.Vector3.Transform(hitLocal, W);
+                            }
+                        }
                     }
                 }
             }
@@ -389,7 +902,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         ClipToBounds = true;
         _selected = SelectionService.Current;
         SelectionService.Changed += () => { _selected = SelectionService.Current; InvalidateVisual(); };
-        SceneService.Changed += () => { _cache?.InvalidateAll(); InvalidateVisual(); };
+        SceneService.Changed += () => { _cache?.InvalidateAll(); _sceneQueryDirty = true; InvalidateVisual(); };
         AffectsRender<SceneView>(GizmoLocalProperty);
         AddHandler(PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
         AddHandler(PointerReleasedEvent, OnPointerReleased, RoutingStrategies.Tunnel);
@@ -406,7 +919,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             double fps = _fpsFrameCount / _fpsWatch.Elapsed.TotalSeconds;
             _fpsFrameCount = 0;
             _fpsWatch.Restart();
-            FpsText = $"{fps:F0} FPS";
+            FpsText = $"{fps:F0} FPS  GL:{_lastFrameMs:F0}ms C:{_lastCompositMs:F0}ms O:{_lastOverlayMs:F0}ms [{_lastSectionTimes}]";
         };
         _fpsTimer.Start();
     }
@@ -476,11 +989,18 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 ShaderSources.Adapt(ShaderSources.WireframeFrag, es));
             DiagLog("[SceneView] Wire shader OK");
 
+            DiagLog("[SceneView] Compiling terrain shader...");
+            _terrainShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.TerrainVert, es),
+                ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
+            DiagLog("[SceneView] Terrain shader OK");
+
             _fsQuad = new FullscreenQuad(g);
             _cache = new ResourceCache(g);
 
-            // Shadow map (4096×4096 depth texture for sharp window shadows)
-            _shadow = new ShadowMapGPU(g, 4096, 4096);
+            // Shadow map — 1024×1024 is a good balance of quality vs. performance.
+            // 4096 was far too expensive for integrated GPUs (4× the fillrate).
+            _shadow = new ShadowMapGPU(g, 1024, 1024);
             DiagLog("[SceneView] Shadow map OK");
 
             // Gizmo VAO/VBO – 24 vertices (3 lines + 3 arrowheads à 2 tris)
@@ -514,6 +1034,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _shadow?.Dispose();
         _cache?.Dispose();
         _fsQuad?.Dispose();
+        _terrainShader?.Dispose();
         _wireShader?.Dispose();
         _gridShader?.Dispose();
         _skyShader?.Dispose();
@@ -531,13 +1052,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         var g = _glCtx.GL;
 
-        // Warm-up pass: ensure every MeshRenderer has its Material textures loaded.
-        // This mirrors what GameView already does and fixes the "second layer has no
-        // material until you open the inspector" issue.
-        MaterialRebind.RepairScene();
-        // If there are more probing frames, schedule another render so hysteresis completes.
-        if (MaterialRebind.NeedsMoreFrames)
-            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual, Avalonia.Threading.DispatcherPriority.Render);
+        _frameTimer.Restart();
+        double _tSetup = 0, _tShadow = 0, _tScene = 0, _tGizmo = 0;
+        var _sec = Stopwatch.StartNew();
 
         // FPS frame count (display update happens via _fpsTimer)
         if (!_fpsWatch.IsRunning) _fpsWatch.Start();
@@ -572,8 +1089,18 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         SN.Matrix4x4.Invert(view, out var invView);
         var camPos = new SN.Vector3(invView.M41, invView.M42, invView.M43);
 
+        // Skybox / Light — cached lookup, refreshed on scene change
+        if (_sceneQueryDirty)
+        {
+            _cachedSkybox = null;
+            _cachedLight = null;
+            foreach (var root in SceneService.Root)
+                CacheSkyboxAndLight(root);
+            _sceneQueryDirty = false;
+        }
+
         // Skybox settings
-        var sky = SceneQuery.FindBehaviors<Skybox>().FirstOrDefault();
+        var sky = _cachedSkybox;
         var skyTop = sky?.Top ?? Avalonia.Media.Color.Parse("#1f1f1f");
         var skyBot = sky?.Bottom ?? Avalonia.Media.Color.Parse("#1f1f1f");
         Texture2D? skyTex = sky?.Texture;
@@ -609,7 +1136,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
 
         // --- LIGHTING ---
-        var light = SceneQuery.FindBehaviors<Light>().FirstOrDefault();
+        var light = _cachedLight;
         SN.Vector3 L = SN.Vector3.Normalize(new SN.Vector3(0.35f, 0.9f, 0.45f));
         float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
         float DiffuseK = ShowLight ? 1f : 0f;
@@ -632,10 +1159,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             }
         }
 
-        // --- SHADOW MAP PASS (always uses sun/sky direction for global shadows) ---
+        _tSetup = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
+
+        // --- SHADOW MAP PASS (skippable via ShowShadows toggle) ---
         SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
         GPUFramebuffer? shadowFBO = null;
-        if (_shadow != null && _depthShader != null)
+        if (ShowShadows && _shadow != null && _depthShader != null)
         {
             // Sun direction: direction sunlight travels (from sun toward scene)
             var sunShineDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
@@ -658,21 +1187,47 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             shadowFBO = _shadow.FBO;
         }
 
+        _tShadow = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
+
         // --- SCENE PASS (GPU draw calls) ---
         if (!ShowWire)
         {
             // sunShineDir was computed for the shadow pass; fall back to a default if not set
             var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
+            // Update terrain LOD per frame
+            UpdateTerrainLOD(camPos);
+            // Update tree LOD per frame
+            UpdateTreeLOD(camPos);
+
             SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
                 view, proj,
                 SN.Vector3.Normalize(-L), DiffuseK, Ambient,
                 lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, camPos, sunSD);
+                shadowFBO, shadowVP, camPos, sunSD,
+                terrainShader: _terrainShader);
         }
+
+        _tScene = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
 
         // --- GIZMO PASS (GL lines + cones on top of scene) ---
         g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         RenderGizmoGL(g, view, proj, new Size(W, H));
+
+        // Periodic GPU resource eviction (avoid unbounded cache growth)
+        if (++_evictCounter > 300) // roughly every ~5s at 60fps
+        {
+            _evictCounter = 0;
+            _cache.EvictOrphans();
+        }
+
+        _tGizmo = _sec.Elapsed.TotalMilliseconds;
+
+        // Flush GPU command queue so that when Avalonia does its readback (glReadPixels),
+        // the GPU has already started or finished the work, reducing stall time.
+        g.Flush();
+
+        _lastFrameMs = _frameTimer.Elapsed.TotalMilliseconds;
+        _lastSectionTimes = $"S:{_tSetup:F0} Sh:{_tShadow:F0} M:{_tScene:F0} G:{_tGizmo:F0}";
 
         // Restore GL state for Avalonia compositing
         g.UseProgram(0);
@@ -686,16 +1241,26 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         g.BindTexture(TextureTarget.Texture2D, 0);
 
     }
+    private int _evictCounter;
 
     #endregion
 
     #region 2D Overlay (gizmos, wireframes — drawn by Avalonia after GL)
     public override void Render(DrawingContext ctx)
     {
-        // This calls OnOpenGlRender internally, then draws the result
+        // Material warm-up runs outside GL context to avoid blocking GPU work
+        MaterialRebind.RepairScene();
+        if (MaterialRebind.NeedsMoreFrames)
+            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual, Avalonia.Threading.DispatcherPriority.Render);
+
+        // This calls OnOpenGlRender internally, then Avalonia reads back the FBO (glReadPixels).
+        // Both GL rendering AND compositing time are included in this call.
+        var compSw = Stopwatch.StartNew();
         base.Render(ctx);
+        _lastCompositMs = compSw.Elapsed.TotalMilliseconds;
 
         // Now draw 2D overlays on top
+        compSw.Restart();
         var size = Bounds.Size;
         var active = GetActiveViewProj(size);
         var view = active.View;
@@ -731,12 +1296,11 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             TerrainGizmos.DrawBrushWithFalloff(ctx, vp, size, _hoverPointW, radius,
                 Clamp01(TerrainBrushFalloffProvider(_hoverTerrain)), strength, outer, inner, 64);
         }
-
-        // Translate/Rotate/Scale gizmo — now rendered in GL (RenderGizmoGL)
-        // so it is part of the composition surface and always visible.
-        // The 2D DrawTranslateGizmo is kept for reference but no longer called;
-        // axis hit-testing still uses HitTestTranslateGizmo (unchanged).
+        _lastOverlayMs = compSw.Elapsed.TotalMilliseconds;
     }
+
+    // Max triangles for full wireframe display — larger meshes (e.g. terrain) use AABB only
+    const int MaxMeshWireTris = 4000;
 
     void DrawCollidersRecursive(DrawingContext ctx, in SN.Matrix4x4 viewProj, Size sz, GameObject go)
     {
@@ -761,8 +1325,21 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             }
             if (col is MeshCollider mc)
             {
-                foreach (var (mesh, Wm) in mc.EnumerateTargetMeshesWorld())
-                    ColliderGizmos.DrawMeshWire(ctx, viewProj, sz, mesh, Wm, mainColor, 1f);
+                // For large meshes (terrain, etc.), ONLY draw the AABB — full wireframe
+                // would draw tens of thousands of Avalonia 2D lines and destroy framerate.
+                bool tooLarge = false;
+                foreach (var (mesh, _) in mc.EnumerateTargetMeshesWorld())
+                {
+                    if (mesh?.TriIndices != null && mesh.TriIndices.Length / 3 > MaxMeshWireTris)
+                    { tooLarge = true; break; }
+                }
+
+                if (!tooLarge)
+                {
+                    foreach (var (mesh, Wm) in mc.EnumerateTargetMeshesWorld())
+                        ColliderGizmos.DrawMeshWire(ctx, viewProj, sz, mesh, Wm, mainColor, 1f);
+                }
+
                 var aabb = mc.GetWorldAABB();
                 var faint = mc.IsTrigger
                     ? Avalonia.Media.Color.FromArgb(64, Colors.OrangeRed.R, Colors.OrangeRed.G, Colors.OrangeRed.B)
@@ -815,7 +1392,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             {
                 _paintingTerrain = true; _paintTarget = _hoverTerrain; _paintToolIndex = toolIndex;
                 _paintSign = (props.IsRightButtonPressed || e.KeyModifiers.HasFlag(KeyModifiers.Shift)) ? -1f : +1f;
+                // Flatten tool: sample center height on mouse-down
+                if (toolIndex == 5) _flattenTargetHeight = SampleTerrainHeight01(_hoverTerrain, _hoverPointW);
                 ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign);
+                InvalidateVisual();
                 e.Pointer.Capture(this); e.Handled = true; return;
             }
         }
@@ -836,7 +1416,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         var pos = e.GetPosition(this);
         UpdateTerrainHover(pos);
         if (_paintingTerrain && _paintTarget != null && _hasHover && ReferenceEquals(_hoverTerrain, _paintTarget))
-        { ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign); e.Handled = true; return; }
+        { ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign); InvalidateVisual(); e.Handled = true; return; }
         if (_isDragging && _dragAxis != Axis.None && _selected != null)
         {
             var (view2, proj2) = GetViewProj(Bounds.Size);
@@ -861,7 +1441,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (_paintingTerrain)
         {
             _paintingTerrain = false;
-            if (_terrStrokeDirty && _paintTarget != null) { _paintTarget.RebuildMesh(); _terrStrokeDirty = false; SceneService.NotifyChanged(); }
+            if (_terrStrokeDirty && _paintTarget != null)
+            {
+                // Finalize: rebuild collision mesh + notify scene (expensive, but only once per stroke)
+                _paintTarget.FinalizeStroke();
+                // Auto-save terrain data to .terrain.json so it stays in sync with scene
+                _paintTarget.Save();
+                _terrStrokeDirty = false;
+                SceneService.NotifyChanged();
+            }
             _paintTarget = null;
             if (e.Pointer.Captured == this) e.Pointer.Capture(null); e.Handled = true; return;
         }

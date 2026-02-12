@@ -347,6 +347,10 @@ namespace Game_Engine.Core
                 }
             }
 
+            // Allow components to reconcile scene-file data with external assets
+            // (e.g., Terrain reloading heights from .terrain.json that were overwritten
+            //  by stale [Persist] properties from the scene file).
+            try { instance.PostDeserialize(); } catch { }
         }
 
         

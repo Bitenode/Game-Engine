@@ -19,6 +19,9 @@ namespace Game_Engine.Core
         private struct Sphere { public SN.Vector3 Center; public float Radius; }
         private static readonly Dictionary<Mesh, Sphere> s_meshSpheres = new(1024);
 
+        /// <summary>Periodic cleanup counter to evict orphaned mesh sphere entries.</summary>
+        private static int s_sphereCleanupCounter;
+
         private static Sphere GetMeshSphere(Mesh m)
         {
             if (s_meshSpheres.TryGetValue(m, out var s)) return s;
@@ -40,10 +43,23 @@ namespace Game_Engine.Core
 
             s = new Sphere { Center = c, Radius = (float)Math.Sqrt(r2) };
             s_meshSpheres[m] = s;
+
+            // Periodically cap the cache to prevent unbounded growth
+            if (++s_sphereCleanupCounter > 500 && s_meshSpheres.Count > 2048)
+            {
+                s_meshSpheres.Clear(); // nuclear option — entries rebuild lazily
+                s_sphereCleanupCounter = 0;
+            }
             return s;
         }
 
         private struct Plane { public float A, B, C, D; }
+
+        // Reusable per-frame buffers to avoid GC pressure
+        [ThreadStatic] private static Plane[]? s_planes;
+        [ThreadStatic] private static List<DrawItem>? s_opaqueItems;
+        [ThreadStatic] private static List<DrawItem>? s_transparentItems;
+        [ThreadStatic] private static Plane[]? s_shadowPlanes;
 
         private static void ExtractFrustumPlanes(in SN.Matrix4x4 viewProj, Plane[] planes)
         {
@@ -87,6 +103,9 @@ namespace Game_Engine.Core
             public MeshRenderer MR;
             public Material? Mat;
             public bool IsTransparent;
+            public Terrain? Terrain; // non-null when this mesh belongs to a terrain
+            public Tree? Tree;       // non-null for vegetation (wind animation)
+            public TreeLOD? TreeLOD;  // non-null for tree LOD management
         }
 
         // ---------- GPU RENDER ENTRY POINT ----------
@@ -95,6 +114,13 @@ namespace Game_Engine.Core
         /// Render the entire scene using GPU draw calls.
         /// Must be called within an active GL context.
         /// </summary>
+        // NOTE: Splatmap textures are now managed per-context via ResourceCache.GetTerrainSplatTextures()
+        // to avoid cross-GL-context issues between SceneView and GameView.
+
+        // Static string arrays for terrain shader uniforms (avoid per-draw-call allocation)
+        private static readonly string[] s_layerNames = { "uLayer0", "uLayer1", "uLayer2", "uLayer3", "uLayer4", "uLayer5", "uLayer6", "uLayer7" };
+        private static readonly string[] s_tilingNames = { "uTiling0", "uTiling1", "uTiling2", "uTiling3", "uTiling4", "uTiling5", "uTiling6", "uTiling7" };
+
         public static void RenderGPU(
             GL gl,
             ShaderProgram standardShader,
@@ -111,15 +137,18 @@ namespace Game_Engine.Core
             GPUFramebuffer? shadowFBO,
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 camPos,
-            SN.Vector3 sunShineDir = default)
+            SN.Vector3 sunShineDir = default,
+            ShaderProgram? terrainShader = null)
         {
             var viewProj = view * proj;
-            var planes = new Plane[6];
+            var planes = s_planes ??= new Plane[6];
             ExtractFrustumPlanes(viewProj, planes);
 
-            // Gather all visible draw items
-            var opaqueItems = new List<DrawItem>(256);
-            var transparentItems = new List<DrawItem>(64);
+            // Reuse draw-item lists to avoid GC pressure
+            var opaqueItems = s_opaqueItems ??= new List<DrawItem>(256);
+            var transparentItems = s_transparentItems ??= new List<DrawItem>(64);
+            opaqueItems.Clear();
+            transparentItems.Clear();
 
             foreach (var root in SceneService.Root)
             {
@@ -152,9 +181,68 @@ namespace Game_Engine.Core
                 standardShader.SetInt("uHasShadow", 0);
             }
 
+            // --- BATCH terrain draw items by Terrain reference ---
+            // This avoids rebinding splatmap + layer textures for every single chunk.
+            // We first draw all non-terrain opaque items, then group terrain items by terrain.
+            Terrain? boundTerrain = null;
+            bool terrainShaderActive = false;
+
             foreach (var item in opaqueItems)
             {
+                if (item.Terrain != null && terrainShader != null && item.Terrain.Layers.Count > 0)
+                    continue; // terrain items are drawn in a second pass below
+                if (terrainShaderActive)
+                {
+                    standardShader.Use();
+                    if (shadowFBO?.DepthTexture != null)
+                    {
+                        shadowFBO.DepthTexture.Bind(TextureUnit.Texture3);
+                        standardShader.SetTexture("uShadowMap", 3);
+                    }
+                    terrainShaderActive = false;
+                }
                 DrawMeshItem(gl, standardShader, cache, item);
+            }
+
+            // Now draw ALL terrain items, grouped by terrain to minimize state changes
+            if (terrainShader != null)
+            {
+                terrainShader.Use();
+                SetLightUniforms(terrainShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
+                terrainShader.SetMatrix4("uView", view);
+                terrainShader.SetMatrix4("uProj", proj);
+                terrainShader.SetVector3("uCamPos", camPos);
+
+                if (shadowFBO?.DepthTexture != null)
+                {
+                    terrainShader.SetInt("uHasShadow", 1);
+                    terrainShader.SetMatrix4("uShadowVP", shadowVP);
+                    terrainShader.SetFloat("uShadowBias", 0.008f);
+                    terrainShader.SetVector3("uSunDir", sunShineDir);
+                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture2);
+                    terrainShader.SetTexture("uShadowMap", 2);
+                }
+                else
+                {
+                    terrainShader.SetInt("uHasShadow", 0);
+                }
+
+                gl.Enable(EnableCap.CullFace);
+                gl.CullFace(TriangleFace.Back);
+                terrainShaderActive = true;
+
+                foreach (var item in opaqueItems)
+                {
+                    if (item.Terrain == null || item.Terrain.Layers.Count <= 0) continue;
+
+                    // Bind per-terrain state only when the terrain reference changes
+                    if (!ReferenceEquals(item.Terrain, boundTerrain))
+                    {
+                        boundTerrain = item.Terrain;
+                        BindTerrainState(gl, terrainShader, cache, boundTerrain);
+                    }
+                    DrawTerrainChunk(gl, terrainShader, cache, item);
+                }
             }
 
             // --- TRANSPARENT PASS (back-to-front) ---
@@ -164,7 +252,15 @@ namespace Game_Engine.Core
 
                 gl.Enable(EnableCap.Blend);
                 gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-                gl.DepthMask(false); // don't write depth for transparent
+                gl.DepthMask(false);
+
+                // Ensure standard shader is active for transparent pass
+                standardShader.Use();
+                if (shadowFBO?.DepthTexture != null)
+                {
+                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture3);
+                    standardShader.SetTexture("uShadowMap", 3);
+                }
 
                 foreach (var item in transparentItems)
                 {
@@ -185,7 +281,7 @@ namespace Game_Engine.Core
             ResourceCache cache,
             in SN.Matrix4x4 lightVP)
         {
-            var planes = new Plane[6];
+            var planes = s_shadowPlanes ??= new Plane[6];
             ExtractFrustumPlanes(lightVP, planes);
 
             depthShader.Use();
@@ -215,6 +311,23 @@ namespace Game_Engine.Core
             List<DrawItem> transparent)
         {
             var world = parentWorld * TransformUtil.WorldFromTransform(go.Transform);
+
+            // Detect terrain component on this GO or its parent (for splatmap shader path)
+            // Chunks are children of the terrain GO but don't have a Terrain component themselves.
+            Terrain? terrain = null;
+            Tree? tree = null;
+            TreeLOD? treeLod = null;
+            foreach (var b in go.Behaviors)
+            {
+                if (terrain == null && b is Terrain tt && tt.Enabled) terrain = tt;
+                if (tree == null && b is Tree tr && tr.Enabled) tree = tr;
+                if (treeLod == null && b is TreeLOD tl && tl.Enabled) treeLod = tl;
+            }
+            if (terrain == null && go.Parent != null)
+            {
+                foreach (var b in go.Parent.Behaviors)
+                    if (b is Terrain tt && tt.Enabled) { terrain = tt; break; }
+            }
 
             // Iterate behaviors once, pairing MeshFilters with MeshRenderers in order.
             // Avoids per-call list allocations — use index tracking instead.
@@ -267,7 +380,10 @@ namespace Game_Engine.Core
                         MF = f,
                         MR = mr,
                         Mat = mat,
-                        IsTransparent = isTransparent
+                        IsTransparent = isTransparent,
+                        Terrain = terrain,
+                        Tree = tree,
+                        TreeLOD = treeLod
                     };
 
                     if (isTransparent)
@@ -354,6 +470,19 @@ namespace Game_Engine.Core
                 gl.CullFace(item.MR.InvertFrontFace ? TriangleFace.Front : TriangleFace.Back);
             }
 
+            // Wind / vegetation uniforms
+            if (item.Tree != null && item.Tree.IsVegetation)
+            {
+                shader.SetInt("uIsVegetation", 1);
+                shader.SetFloat("uWindTime", WindSystem.Time * item.Tree.WindSpeed);
+                shader.SetVector3("uWindDir", WindSystem.Direction);
+                shader.SetFloat("uWindStrength", WindSystem.GetCurrentStrength() * item.Tree.WindSway);
+            }
+            else
+            {
+                shader.SetInt("uIsVegetation", 0);
+            }
+
             // Albedo texture
             bool hasAlbedo = false;
             if (mat?.Textures != null && mat.Textures.Count > 0)
@@ -395,6 +524,115 @@ namespace Game_Engine.Core
 
             // Draw
             gpuMesh.Draw();
+        }
+
+        // ────────── TERRAIN SPLATMAP DRAW (batched) ──────────
+
+        /// <summary>
+        /// Bind per-terrain state: splatmaps, layer textures, tiling uniforms.
+        /// Call once per unique Terrain before drawing its chunks.
+        /// </summary>
+        private static void BindTerrainState(GL gl, ShaderProgram shader, ResourceCache cache, Terrain terrain)
+        {
+            // Ensure splatmaps
+            terrain.EnsureSplatmaps();
+
+            // Get per-context splatmap textures. NeedsUpload is true when this context's
+            // cached version doesn't match the terrain's current SplatmapVersion.
+            var (splat0, splat1, needsUpload) = cache.GetTerrainSplatTextures(terrain);
+
+            // Upload if textures are new for this context OR if terrain data changed
+            if (needsUpload)
+            {
+                splat0.UploadFloat(terrain.Splatmap0!, terrain.ResX, terrain.ResZ);
+                splat1.UploadFloat(terrain.Splatmap1!, terrain.ResX, terrain.ResZ);
+                cache.SetTerrainSplatVersion(terrain, terrain.SplatmapVersion);
+            }
+
+            // Bind splatmaps on units 0,1
+            splat0.Bind(TextureUnit.Texture0);
+            shader.SetTexture("uSplatmap0", 0);
+            splat1.Bind(TextureUnit.Texture1);
+            shader.SetTexture("uSplatmap1", 1);
+
+            // Layer count + textures — bound ONCE for all chunks of this terrain
+            int layerCount = Math.Min(terrain.Layers.Count, 8);
+            shader.SetInt("uLayerCount", layerCount);
+
+            for (int i = 0; i < layerCount; i++)
+            {
+                var layer = terrain.Layers[i];
+                int texUnit = 4 + i;
+
+                Texture2D? layerTex = null;
+                if (!string.IsNullOrEmpty(layer.TexturePath))
+                    layerTex = TryLoadLayerTexture(layer.TexturePath);
+
+                if (layerTex != null)
+                    cache.GetTexture(layerTex).Bind(TextureUnit.Texture0 + texUnit);
+                else
+                    cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + texUnit);
+
+                shader.SetTexture(s_layerNames[i], texUnit);
+                shader.SetFloat(s_tilingNames[i], layer.Tiling);
+            }
+        }
+
+        /// <summary>
+        /// Draw a single terrain chunk. Only sets per-chunk state (model matrix).
+        /// Assumes BindTerrainState was already called for this chunk's terrain.
+        /// </summary>
+        private static void DrawTerrainChunk(GL gl, ShaderProgram shader, ResourceCache cache, in DrawItem item)
+        {
+            var mesh = item.MF.Mesh;
+            if (mesh == null) return;
+
+            var gpuMesh = cache.GetMesh(mesh);
+
+            // Per-chunk: model matrix + normal matrix
+            shader.SetMatrix4("uModel", item.World);
+            SN.Matrix4x4.Invert(item.World, out var invWorld);
+            shader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
+
+            // Base color fallback
+            var mat = item.Mat;
+            float r = 1f, g2 = 1f, b = 1f, a = 1f;
+            if (mat != null)
+            {
+                r = mat.BaseColor.R / 255f; g2 = mat.BaseColor.G / 255f;
+                b = mat.BaseColor.B / 255f; a = mat.BaseColor.A / 255f;
+            }
+            var tint = item.MR.Color;
+            r *= tint.R / 255f; g2 *= tint.G / 255f; b *= tint.B / 255f; a *= tint.A / 255f;
+            shader.SetVector4("uBaseColor", r, g2, b, a);
+            shader.SetInt("uHasAlbedoTex", 0);
+
+            gpuMesh.Draw();
+        }
+
+        // Cache loaded layer textures by path
+        private static readonly Dictionary<string, Texture2D?> s_layerTextureCache = new();
+
+        private static Texture2D? TryLoadLayerTexture(string path)
+        {
+            if (s_layerTextureCache.TryGetValue(path, out var cached))
+                return cached;
+
+            Texture2D? tex = null;
+            try
+            {
+                string abs = path;
+                var proj = ProjectService.Current;
+                if (proj != null && !System.IO.Path.IsPathRooted(path))
+                    abs = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, path));
+
+                if (System.IO.File.Exists(abs))
+                    tex = Texture2D.FromFile(abs);
+            }
+            catch { }
+
+            s_layerTextureCache[path] = tex;
+            return tex;
         }
 
         private static void SetLightUniforms(

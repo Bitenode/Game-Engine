@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Game_Engine.Core.Component;
@@ -125,6 +125,15 @@ namespace Game_Engine.Core
         public virtual void OnEnable() { }
         public virtual void OnDisable() { }
         public virtual void OnDestroy() { }
+
+        /// <summary>
+        /// Called by the scene deserializer AFTER all [Persist] properties have been applied.
+        /// Override this when a component needs to reconcile scene-file data with external
+        /// asset files (e.g., Terrain reloading from .terrain.json).
+        /// During normal editor usage (adding a component manually), this is NOT called —
+        /// OnEnable() handles that case.
+        /// </summary>
+        public virtual void PostDeserialize() { }
 
         // -------- Runtime helper you can call explicitly ----------------------
         public void EnsureDependenciesNow(bool notify = true)
