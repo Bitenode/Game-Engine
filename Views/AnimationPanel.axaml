@@ -1,0 +1,267 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.AnimationPanel">
+
+    <UserControl.Styles>
+        <!-- Transport buttons: visible dark bg, bright white text, blue hover -->
+        <Style Selector="Button.transport">
+            <Setter Property="Background" Value="#3A3F4A"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#55596A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+        <Style Selector="Button.transport:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#4A8CFF"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <!-- Record toggle -->
+        <Style Selector="ToggleButton.record">
+            <Setter Property="Background" Value="#3A3F4A"/>
+            <Setter Property="Foreground" Value="#FF6666"/>
+            <Setter Property="BorderBrush" Value="#55596A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+        <Style Selector="ToggleButton.record:checked /template/ ContentPresenter">
+            <Setter Property="Background" Value="#DD2222"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="ToggleButton.record:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#993333"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <!-- Action buttons (+ New, + Add Property, + Add Animator) -->
+        <Style Selector="Button.action">
+            <Setter Property="Background" Value="#2D6ABF"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#3A7ADF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="Button.action:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3A82E8"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <!-- Key button (diamond icon, for adding keyframes) -->
+        <Style Selector="Button.keyBtn">
+            <Setter Property="Background" Value="#333844"/>
+            <Setter Property="Foreground" Value="#FFCC44"/>
+            <Setter Property="BorderBrush" Value="#55596A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+        <Style Selector="Button.keyBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#FFCC44"/>
+            <Setter Property="Foreground" Value="#1A1B1E"/>
+        </Style>
+        <!-- Remove button (x) -->
+        <Style Selector="Button.remove">
+            <Setter Property="Background" Value="#442222"/>
+            <Setter Property="Foreground" Value="#FF6666"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="CornerRadius" Value="3"/>
+        </Style>
+        <Style Selector="Button.remove:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#CC3333"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <!-- Inline value TextBox -->
+        <Style Selector="TextBox.trackValue">
+            <Setter Property="Background" Value="#1A1C20"/>
+            <Setter Property="Foreground" Value="#E0E4EA"/>
+            <Setter Property="BorderBrush" Value="#3A3E48"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Padding" Value="3,1"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="MinWidth" Value="48"/>
+            <Setter Property="MaxWidth" Value="60"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="TextBox.trackValue:focus">
+            <Setter Property="BorderBrush" Value="#4A8CFF"/>
+        </Style>
+        <!-- Transform section value TextBox (slightly wider) -->
+        <Style Selector="TextBox.transformValue">
+            <Setter Property="Background" Value="#1A1C20"/>
+            <Setter Property="Foreground" Value="#E0E4EA"/>
+            <Setter Property="BorderBrush" Value="#3A3E48"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Padding" Value="3,1"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="MinWidth" Value="50"/>
+            <Setter Property="MaxWidth" Value="65"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="TextBox.transformValue:focus">
+            <Setter Property="BorderBrush" Value="#4A8CFF"/>
+        </Style>
+        <!-- Bone tree item -->
+        <Style Selector="Button.boneItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#B0BEC5"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="2,1"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Height" Value="20"/>
+        </Style>
+        <Style Selector="Button.boneItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2E36"/>
+            <Setter Property="Foreground" Value="#E0E4EA"/>
+        </Style>
+        <Style Selector="Button.boneItemSelected">
+            <Setter Property="Background" Value="#2D4A7A"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#4A8CFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="2,1"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Height" Value="20"/>
+        </Style>
+    </UserControl.Styles>
+
+    <DockPanel>
+        <!-- Header -->
+        <TextBlock DockPanel.Dock="Top" Text="Animation" FontSize="14" FontWeight="SemiBold"
+                   Foreground="#E0E4EA" Margin="8,6" />
+
+        <!-- GameObject Selector Row -->
+        <Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6,4" CornerRadius="4" Background="#26282B">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <TextBlock Grid.Column="0" Text="GameObject:" Foreground="#99AABB" FontSize="11"
+                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <ComboBox x:Name="CbGameObject" Grid.Column="1" MinWidth="140" MaxWidth="300"
+                          Height="26" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Stretch"/>
+                <Button x:Name="BtnAddAnimator" Grid.Column="2" Classes="action"
+                        Content="+ Add Animator"
+                        Height="26" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"
+                        IsVisible="False"/>
+            </Grid>
+        </Border>
+
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6,4" CornerRadius="4" Background="#26282B">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,12,Auto,Auto,12,Auto,*,Auto">
+
+                <!-- Transport — clear text labels -->
+                <Button x:Name="BtnPlay" Grid.Column="0" Classes="transport" Margin="0,0,3,0"
+                        ToolTip.Tip="Play" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="▶" FontSize="13" VerticalAlignment="Center"/>
+                        <TextBlock Text="Play" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="BtnPause" Grid.Column="1" Classes="transport" Margin="0,0,3,0"
+                        ToolTip.Tip="Pause" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="❚❚" FontSize="10" VerticalAlignment="Center"/>
+                        <TextBlock Text="Pause" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="BtnStop" Grid.Column="2" Classes="transport" Margin="0,0,3,0"
+                        ToolTip.Tip="Stop" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="■" FontSize="12" VerticalAlignment="Center"/>
+                        <TextBlock Text="Stop" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <!-- Record -->
+                <ToggleButton x:Name="BtnRecord" Grid.Column="3" Classes="record" Margin="0"
+                              ToolTip.Tip="Record (auto-key)" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="●" FontSize="14" VerticalAlignment="Center"/>
+                        <TextBlock Text="Rec" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+
+                <!-- View mode -->
+                <RadioButton x:Name="RbTimeline" Grid.Column="5" Content="Timeline" GroupName="viewMode"
+                             IsChecked="True" Foreground="#DCE0E6" FontSize="11" VerticalAlignment="Center"/>
+                <RadioButton x:Name="RbCurves" Grid.Column="6" Content="Curves" GroupName="viewMode"
+                             Foreground="#DCE0E6" FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                <!-- State machine toggle -->
+                <RadioButton x:Name="RbStateMachine" Grid.Column="8" Content="State Machine" GroupName="viewMode"
+                             Foreground="#DCE0E6" FontSize="11" VerticalAlignment="Center"/>
+
+                <!-- Time display + clip selector -->
+                <StackPanel Grid.Column="10" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBlock x:Name="TxtTime" Text="0:00.000" Foreground="#99AABB" FontSize="11"
+                               VerticalAlignment="Center" MinWidth="55"/>
+                    <ComboBox x:Name="CbClip" MinWidth="100" MaxWidth="200" Height="26" FontSize="11"
+                              VerticalAlignment="Center"/>
+                    <Button x:Name="BtnNewClip" Classes="action" Content="+ New" Height="26" FontSize="11"
+                            VerticalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main content area: switches between timeline, curves, and state machine -->
+        <Grid>
+            <!-- Timeline / Curves views share the split layout -->
+            <Grid x:Name="TimelineCurveGrid" ColumnDefinitions="270,4,*">
+
+                <!-- Left: Transform editor + Track list -->
+                <Border Grid.Column="0" Background="#1E1F22" CornerRadius="4,0,0,4" Margin="6,0,0,6">
+                    <DockPanel>
+                        <Button x:Name="BtnAddTrack" DockPanel.Dock="Bottom" Classes="action"
+                                Content="+ Add Property"
+                                Margin="4" Height="26" FontSize="11"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Spacing="0" Margin="2">
+                                <!-- Transform Editor Section (always visible when GO selected) -->
+                                <StackPanel x:Name="TransformSection" Spacing="0" IsVisible="False"/>
+
+                                <!-- Separator between transform and tracks -->
+                                <Border x:Name="TransformTrackSeparator" IsVisible="False"
+                                        Height="1" Background="#3A3E48" Margin="4,4"/>
+
+                                <!-- Bone Tree Section (visible when GO has SkinnedMeshRenderer) -->
+                                <StackPanel x:Name="BoneTreeSection" Spacing="0" IsVisible="False"/>
+
+                                <!-- Separator between bones and tracks -->
+                                <Border x:Name="BoneTrackSeparator" IsVisible="False"
+                                        Height="1" Background="#3A3E48" Margin="4,4"/>
+
+                                <!-- Existing dynamic tracks -->
+                                <StackPanel x:Name="TrackListPanel" Spacing="0"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+
+                <!-- Splitter -->
+                <GridSplitter Grid.Column="1" Width="4" Background="Transparent"/>
+
+                <!-- Right: Canvas area (timeline or curves drawn here) -->
+                <Border Grid.Column="2" Background="#1A1B1E" CornerRadius="0,4,4,0" Margin="0,0,6,6"
+                        ClipToBounds="True">
+                    <local:AnimationCanvas x:Name="Canvas"/>
+                </Border>
+            </Grid>
+
+            <!-- State machine view (hidden by default) -->
+            <Border x:Name="StateMachineGrid" IsVisible="False" Background="#1A1B1E"
+                    CornerRadius="4" Margin="6,0,6,6" ClipToBounds="True">
+                <local:StateMachineCanvas x:Name="SmCanvas"/>
+            </Border>
+        </Grid>
+    </DockPanel>
+</UserControl>

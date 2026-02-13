@@ -33,6 +33,8 @@ public static class ShaderSources
 layout(location = 0) in vec3 aPosition;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec4 aBoneIds;
+layout(location = 4) in vec4 aBoneWeights;
 
 uniform mat4 uModel;
 uniform mat4 uView;
@@ -46,6 +48,10 @@ uniform vec3  uWindDir;
 uniform float uWindStrength;
 uniform int   uIsVegetation;  // 1 = apply wind displacement
 
+// Skeletal animation (GPU skinning)
+uniform int  uHasBones;       // 1 = apply bone skinning
+uniform mat4 uBones[128];     // bone final matrices
+
 out vec3 vWorldPos;
 out vec3 vWorldNormal;
 out vec2 vUV;
@@ -53,7 +59,25 @@ out vec4 vShadowCoord;
 
 void main()
 {
-    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vec3 localPos  = aPosition;
+    vec3 localNorm = aNormal;
+
+    // GPU skinning
+    if (uHasBones == 1)
+    {
+        ivec4 ids = ivec4(aBoneIds);
+        vec4  w   = aBoneWeights;
+
+        mat4 skin = w.x * uBones[ids.x]
+                  + w.y * uBones[ids.y]
+                  + w.z * uBones[ids.z]
+                  + w.w * uBones[ids.w];
+
+        localPos  = (skin * vec4(aPosition, 1.0)).xyz;
+        localNorm = mat3(skin) * aNormal;
+    }
+
+    vec4 worldPos = uModel * vec4(localPos, 1.0);
 
     // Wind vertex animation for vegetation
     if (uIsVegetation == 1 && uWindStrength > 0.0)
@@ -79,7 +103,7 @@ void main()
     }
 
     vWorldPos = worldPos.xyz;
-    vWorldNormal = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
+    vWorldNormal = normalize((uNormalMatrix * vec4(localNorm, 0.0)).xyz);
     vUV = aUV;
     vShadowCoord = uShadowVP * worldPos;
     gl_Position = uProj * uView * worldPos;
@@ -229,12 +253,27 @@ void main()
     public const string DepthOnlyVert = @"
 #version 330 core
 layout(location = 0) in vec3 aPosition;
+layout(location = 3) in vec4 aBoneIds;
+layout(location = 4) in vec4 aBoneWeights;
 
 uniform mat4 uMVP;
+uniform int  uHasBones;
+uniform mat4 uBones[128];
 
 void main()
 {
-    gl_Position = uMVP * vec4(aPosition, 1.0);
+    vec3 pos = aPosition;
+    if (uHasBones == 1)
+    {
+        ivec4 ids = ivec4(aBoneIds);
+        vec4  w   = aBoneWeights;
+        mat4 skin = w.x * uBones[ids.x]
+                  + w.y * uBones[ids.y]
+                  + w.z * uBones[ids.z]
+                  + w.w * uBones[ids.w];
+        pos = (skin * vec4(aPosition, 1.0)).xyz;
+    }
+    gl_Position = uMVP * vec4(pos, 1.0);
 }
 ";
 
@@ -632,6 +671,358 @@ out vec4 FragColor;
 void main()
 {
     FragColor = texture(uTex, vUV);
+}
+";
+
+    // ════════════════ PARTICLE BILLBOARD SHADER ════════════════
+
+    public const string ParticleVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;    // billboard quad corner (-0.5..0.5)
+
+// Per-instance data (passed as uniforms per batch)
+uniform vec4 uParticlePos[128];   // xyz = world position, w = size
+uniform vec4 uParticleCol[128];   // rgba color
+
+uniform mat4 uView;
+uniform mat4 uProj;
+
+out vec4 vColor;
+out vec2 vUV;
+flat out int vInstanceID;
+
+void main()
+{
+    int id = gl_InstanceID;
+    vInstanceID = id;
+
+    vec3 worldPos = uParticlePos[id].xyz;
+    float size = uParticlePos[id].w;
+    vColor = uParticleCol[id];
+    vUV = aPosition + 0.5;
+
+    // Billboard: extract camera right and up from view matrix
+    vec3 camRight = vec3(uView[0][0], uView[1][0], uView[2][0]);
+    vec3 camUp    = vec3(uView[0][1], uView[1][1], uView[2][1]);
+
+    vec3 corner = worldPos + (aPosition.x * camRight + aPosition.y * camUp) * size;
+    gl_Position = uProj * uView * vec4(corner, 1.0);
+}
+";
+
+    public const string ParticleFrag = @"
+#version 330 core
+in vec4 vColor;
+in vec2 vUV;
+
+out vec4 FragColor;
+
+void main()
+{
+    // Soft circular particle
+    float dist = length(vUV - vec2(0.5));
+    float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+
+    FragColor = vec4(vColor.rgb, vColor.a * alpha);
+    if (FragColor.a < 0.01) discard;
+}
+";
+
+    // ════════════════ POST-PROCESSING SHADER ════════════════
+
+    public const string PostProcessVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string PostProcessFrag = @"
+#version 330 core
+in vec2 vUV;
+
+uniform sampler2D uScene;
+uniform vec2 uTexelSize;     // 1.0 / resolution
+
+// Bloom
+uniform bool  uBloomEnabled;
+uniform float uBloomThreshold;
+uniform float uBloomIntensity;
+
+// Fog
+uniform bool  uFogEnabled;
+uniform vec3  uFogColor;
+uniform float uFogDensity;
+uniform float uFogStart;
+uniform float uFogEnd;
+
+// Color Grading
+uniform bool  uColorGradingEnabled;
+uniform float uBrightness;
+uniform float uContrast;
+uniform float uSaturation;
+uniform float uExposure;
+uniform int   uToneMap;     // 0=None, 1=Reinhard, 2=ACES
+
+// Vignette
+uniform bool  uVignetteEnabled;
+uniform float uVignetteIntensity;
+uniform float uVignetteSmoothness;
+
+// FXAA
+uniform bool  uFXAAEnabled;
+
+out vec4 FragColor;
+
+vec3 ACESFilm(vec3 x)
+{
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+}
+
+vec3 ReinhardTonemap(vec3 color)
+{
+    return color / (color + vec3(1.0));
+}
+
+void main()
+{
+    vec3 color = texture(uScene, vUV).rgb;
+
+    // ── FXAA (simplified) ──
+    if (uFXAAEnabled)
+    {
+        vec3 rgbNW = texture(uScene, vUV + vec2(-1.0, -1.0) * uTexelSize).rgb;
+        vec3 rgbNE = texture(uScene, vUV + vec2( 1.0, -1.0) * uTexelSize).rgb;
+        vec3 rgbSW = texture(uScene, vUV + vec2(-1.0,  1.0) * uTexelSize).rgb;
+        vec3 rgbSE = texture(uScene, vUV + vec2( 1.0,  1.0) * uTexelSize).rgb;
+
+        vec3 luma = vec3(0.299, 0.587, 0.114);
+        float lumaNW = dot(rgbNW, luma);
+        float lumaNE = dot(rgbNE, luma);
+        float lumaSW = dot(rgbSW, luma);
+        float lumaSE = dot(rgbSE, luma);
+        float lumaM  = dot(color, luma);
+
+        float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+        float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+        float lumaRange = lumaMax - lumaMin;
+
+        if (lumaRange > max(0.0312, lumaMax * 0.0625))
+        {
+            vec2 dir;
+            dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+            dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+
+            float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.25 * 0.25, 1.0/128.0);
+            float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+            dir = clamp(dir * rcpDirMin, vec2(-8.0), vec2(8.0)) * uTexelSize;
+
+            vec3 rgbA = 0.5 * (
+                texture(uScene, vUV + dir * (1.0/3.0 - 0.5)).rgb +
+                texture(uScene, vUV + dir * (2.0/3.0 - 0.5)).rgb);
+            vec3 rgbB = rgbA * 0.5 + 0.25 * (
+                texture(uScene, vUV + dir * -0.5).rgb +
+                texture(uScene, vUV + dir *  0.5).rgb);
+
+            float lumaB = dot(rgbB, luma);
+            color = (lumaB < lumaMin || lumaB > lumaMax) ? rgbA : rgbB;
+        }
+    }
+
+    // ── Bloom (simplified bright pass + blur approximation) ──
+    if (uBloomEnabled)
+    {
+        vec3 bright = max(color - vec3(uBloomThreshold), vec3(0.0));
+        // Simple 5-tap blur for bloom approximation
+        vec3 bloom = bright;
+        bloom += max(texture(uScene, vUV + vec2( 2.0, 0.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2(-2.0, 0.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2(0.0,  2.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2(0.0, -2.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
+        bloom *= 0.2;
+        color += bloom * uBloomIntensity;
+    }
+
+    // ── Fog ──
+    if (uFogEnabled)
+    {
+        // Distance-based fog using depth approximation from luminance (simplified)
+        float depth = dot(color, vec3(0.299, 0.587, 0.114)); // rough depth proxy
+        float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * depth * depth * 100.0);
+        fogFactor = clamp(fogFactor, 0.0, 1.0);
+        color = mix(color, uFogColor, fogFactor);
+    }
+
+    // ── Color Grading ──
+    if (uColorGradingEnabled)
+    {
+        // Exposure
+        color *= uExposure;
+
+        // Brightness
+        color += vec3(uBrightness);
+
+        // Contrast
+        color = ((color - 0.5) * uContrast) + 0.5;
+
+        // Saturation
+        float gray = dot(color, vec3(0.299, 0.587, 0.114));
+        color = mix(vec3(gray), color, uSaturation);
+
+        // Tone mapping
+        if (uToneMap == 1) color = ReinhardTonemap(color);
+        else if (uToneMap == 2) color = ACESFilm(color);
+    }
+
+    // ── Vignette ──
+    if (uVignetteEnabled)
+    {
+        float dist = distance(vUV, vec2(0.5));
+        float vig = smoothstep(0.5 - uVignetteSmoothness, 0.5, dist);
+        color *= 1.0 - vig * uVignetteIntensity;
+    }
+
+    color = clamp(color, 0.0, 1.0);
+    FragColor = vec4(color, 1.0);
+}
+";
+
+    // ════════════════ WATER SHADER ════════════════
+
+    public const string WaterVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform mat4 uNormalMatrix;
+
+// Wave parameters
+uniform float uTime;
+uniform float uWaveAmp1;
+uniform float uWaveFreq1;
+uniform vec2  uWaveDir1;
+uniform float uWaveSteep1;
+uniform float uWaveAmp2;
+uniform float uWaveFreq2;
+uniform vec2  uWaveDir2;
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out vec2 vUV;
+
+void main()
+{
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+
+    // Gerstner wave 1
+    vec2 d1 = normalize(uWaveDir1);
+    float dot1 = d1.x * worldPos.x + d1.y * worldPos.z;
+    float phase1 = dot1 * uWaveFreq1 + uTime;
+    worldPos.y += uWaveAmp1 * sin(phase1);
+    worldPos.x += uWaveSteep1 * uWaveAmp1 * d1.x * cos(phase1);
+    worldPos.z += uWaveSteep1 * uWaveAmp1 * d1.y * cos(phase1);
+
+    // Gerstner wave 2
+    vec2 d2 = normalize(uWaveDir2);
+    float dot2 = d2.x * worldPos.x + d2.y * worldPos.z;
+    float phase2 = dot2 * uWaveFreq2 + uTime * 0.7;
+    worldPos.y += uWaveAmp2 * sin(phase2);
+
+    // Compute normal from wave derivatives
+    float nx = -(uWaveAmp1 * uWaveFreq1 * d1.x * cos(phase1) + uWaveAmp2 * uWaveFreq2 * d2.x * cos(phase2));
+    float nz = -(uWaveAmp1 * uWaveFreq1 * d1.y * cos(phase1) + uWaveAmp2 * uWaveFreq2 * d2.y * cos(phase2));
+    vec3 waveNormal = normalize(vec3(nx, 1.0, nz));
+
+    vWorldPos = worldPos.xyz;
+    vWorldNormal = normalize((uNormalMatrix * vec4(waveNormal, 0.0)).xyz);
+    vUV = aUV;
+
+    gl_Position = uProj * uView * worldPos;
+}
+";
+
+    public const string WaterFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+
+// Water colors
+uniform vec4  uShallowColor;
+uniform vec4  uDeepColor;
+uniform float uFresnelPower;
+uniform float uReflectivity;
+uniform float uTransparency;
+
+// Foam
+uniform bool  uFoamEnabled;
+uniform float uFoamThreshold;
+uniform float uFoamIntensity;
+uniform vec3  uFoamColor;
+
+// Lighting
+uniform vec3  uLightDir;
+uniform float uAmbient;
+uniform float uDiffuseK;
+uniform vec3  uCamPos;
+
+// Sky reflection color (from skybox)
+uniform vec3 uSkyColor;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 L = uLightDir;
+
+    // Fresnel
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), uFresnelPower);
+    fresnel = clamp(fresnel, 0.0, 1.0);
+
+    // Base water color (shallow/deep blend using fresnel)
+    vec4 waterColor = mix(uShallowColor, uDeepColor, fresnel);
+
+    // Reflection (sky color as simple reflection)
+    vec3 R = reflect(-V, N);
+    float upness = max(R.y, 0.0);
+    vec3 reflColor = mix(uSkyColor * 0.5, uSkyColor, upness) * uReflectivity;
+
+    // Specular highlight (sun reflection on water)
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 128.0) * 1.5;
+
+    // Lighting
+    float NdotL = max(dot(N, L), 0.0);
+    float lighting = uAmbient + uDiffuseK * NdotL;
+
+    vec3 color = waterColor.rgb * lighting + reflColor * fresnel + vec3(spec);
+
+    // Foam (based on wave height, simplified)
+    if (uFoamEnabled)
+    {
+        float foam = smoothstep(uFoamThreshold, uFoamThreshold + 0.3, N.y);
+        float foamPattern = fract(sin(dot(vWorldPos.xz * 3.0, vec2(12.9898, 78.233))) * 43758.5453);
+        foam *= foamPattern * uFoamIntensity;
+        color = mix(color, uFoamColor, foam);
+    }
+
+    float alpha = mix(uTransparency, 1.0, fresnel);
+    FragColor = vec4(clamp(color, 0.0, 1.0), alpha);
 }
 ";
 }

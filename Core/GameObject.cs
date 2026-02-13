@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using Game_Engine.Core.Component;
 
@@ -23,6 +23,10 @@ public class GameObject : INotifyPropertyChanged
 
     public ObservableCollection<GameObject> Children { get; } = new();
     public ObservableCollection<Behavior> Behaviors { get; } = new();
+
+    // Prefab tracking
+    public string? PrefabId { get; set; }
+    public string? PrefabPath { get; set; }
 
     // Mandatory component
     public Transform Transform { get; } = new();

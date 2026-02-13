@@ -60,6 +60,9 @@ public sealed class GPUFramebuffer : IDisposable
 
     /// <summary>
     /// Configure as a color+depth FBO for off-screen rendering (e.g., half-resolution).
+    /// NOTE: Leaves the framebuffer bound to this FBO.  Callers typically call Bind()
+    /// immediately after, so this avoids a pointless unbind→rebind round-trip.
+    /// If you need to unbind, call Unbind(avaloniaFB) explicitly.
     /// </summary>
     public void SetupColorDepth(int width, int height)
     {
@@ -84,11 +87,20 @@ public sealed class GPUFramebuffer : IDisposable
             FramebufferAttachment.DepthAttachment,
             TextureTarget.Texture2D, DepthTexture.Handle, 0);
 
+        // Explicitly set draw buffer — prevents inheriting DrawBuffers(None)
+        // from a previously bound depth-only FBO (shadow map).
+        unsafe
+        {
+            DrawBufferMode color0 = DrawBufferMode.ColorAttachment0;
+            _gl.DrawBuffers(1, &color0);
+        }
+
         var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (status != GLEnum.FramebufferComplete)
             System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] Color+Depth FBO incomplete: {status}");
 
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        // Don't unbind to FB 0 — in Avalonia's shared GL context, FB 0 is NOT the
+        // screen.  The caller should bind the correct target after setup.
     }
 
     /// <summary>Bind this FBO as the render target.</summary>

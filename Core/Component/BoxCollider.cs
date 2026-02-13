@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using SN = System.Numerics;
 using CoreVec3 = Game_Engine.Core.Vector3;
 
@@ -28,7 +28,7 @@ namespace Game_Engine.Core.Component
 
         public override AABB GetWorldAABB()
         {
-            var W = TransformUtil.WorldFromTransform(gameObject.Transform); 
+            var W = SceneGraphUtil.AccumulateWorld(gameObject);
             var lc = new SN.Vector3[8];
             GetLocalCorners(lc);
 

@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.IO;
 using System.Numerics; // Vector4
 using Avalonia.Media;
 using Game_Engine.Core;
@@ -40,6 +41,39 @@ namespace Game_Engine.Core.Rendering
             m.Transparent = transp;
             m.AlphaCutoff = Clamp01(GetFloat(src, "_AlphaCutoff", m.AlphaCutoff));
 
+            // ── Texture2D properties → RuntimeTexSlot entries ──
+            // The old code never processed texture properties, so materials loaded
+            // through the asset pipeline always had zero texture slots.
+            if (src?.Properties != null)
+            {
+                foreach (var kv in src.Properties)
+                {
+                    var prop = kv.Value;
+                    if (prop == null || prop.Type != ShaderPropType.Texture2D) continue;
+                    if (string.IsNullOrWhiteSpace(prop.TexturePath)) continue;
+
+                    string usage = GuessUsageFromPropertyName(kv.Key);
+                    string absPath = ResolveTexturePath(prop.TexturePath);
+                    if (string.IsNullOrWhiteSpace(absPath) || !File.Exists(absPath)) continue;
+
+                    try
+                    {
+                        var tex = Texture2D.FromFile(absPath);
+                        if (tex != null)
+                        {
+                            m.Textures.Add(new RuntimeTexSlot
+                            {
+                                Texture = tex,
+                                Usage = usage,
+                                FaceMask = -1,
+                                SourcePath = prop.TexturePath
+                            });
+                        }
+                    }
+                    catch { /* skip unreadable textures */ }
+                }
+            }
+
             return m;
         }
 
@@ -70,6 +104,43 @@ namespace Game_Engine.Core.Rendering
             if (src.Properties.TryGetValue(name, out v) && v != null && v.Floats != null && v.Floats.Length >= 4)
                 return new Vector4(v.Floats[0], v.Floats[1], v.Floats[2], v.Floats[3]);
             return new Vector4(r, g, b, a);
+        }
+
+        // ── Texture helpers ──
+
+        /// <summary>
+        /// Map a shader property name (e.g. "_BaseMap", "_NormalMap") to a texture usage
+        /// string that the SceneRenderer recognizes for binding to the correct sampler.
+        /// </summary>
+        private static string GuessUsageFromPropertyName(string propName)
+        {
+            if (string.IsNullOrWhiteSpace(propName)) return "Albedo";
+            var n = propName.ToLowerInvariant();
+            if (n.Contains("base") || n.Contains("albedo") || n.Contains("diffuse") || n.Contains("maintex") || n.Contains("color_map")) return "Albedo";
+            if (n.Contains("normal") || n.Contains("bump")) return "Normal";
+            if (n.Contains("metal")) return "Metallic";
+            if (n.Contains("rough") || n.Contains("smooth")) return "Roughness";
+            if (n.Contains("ao") || n.Contains("occl")) return "AmbientOcclusion";
+            if (n.Contains("emiss")) return "Emissive";
+            if (n.Contains("spec")) return "Specular";
+            if (n.Contains("opac") || n.Contains("alpha") || n.Contains("transp")) return "Opacity";
+            return "Albedo";
+        }
+
+        /// <summary>
+        /// Resolve a project-relative or absolute texture path to an absolute path.
+        /// </summary>
+        private static string ResolveTexturePath(string relOrAbs)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(relOrAbs)) return null;
+                if (Path.IsPathRooted(relOrAbs)) return Path.GetFullPath(relOrAbs);
+                var proj = ProjectService.Current;
+                if (proj == null) return relOrAbs;
+                return Path.GetFullPath(Path.Combine(proj.RootPath, relOrAbs));
+            }
+            catch { return relOrAbs; }
         }
     }
 }

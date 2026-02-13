@@ -84,7 +84,7 @@ namespace Game_Engine.Core.Component
             // manual override takes precedence
             if (Mesh != null && Mesh.Vertices != null && Mesh.Vertices.Length > 0)
             {
-                var W = TransformUtil.WorldFromTransform(gameObject.Transform);
+                var W = SceneGraphUtil.AccumulateWorld(gameObject);
                 yield return (Mesh, W);
                 yield break;
             }
@@ -97,8 +97,8 @@ namespace Game_Engine.Core.Component
                 foreach (var here in gameObject.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled && b.Mesh != null))
                 {
                     var W = BindToTargetTransform
-                        ? TransformUtil.WorldFromTransform(here.gameObject.Transform)
-                        : TransformUtil.WorldFromTransform(gameObject.Transform);
+                        ? SceneGraphUtil.AccumulateWorld(here.gameObject)
+                        : SceneGraphUtil.AccumulateWorld(gameObject);
                     yield return (here.Mesh, W);
                 }
                 yield break;
@@ -112,8 +112,8 @@ namespace Game_Engine.Core.Component
                     continue;
 
                 var W = BindToTargetTransform && mf.gameObject != null
-                    ? TransformUtil.WorldFromTransform(mf.gameObject.Transform)
-                    : TransformUtil.WorldFromTransform(gameObject.Transform);
+                    ? SceneGraphUtil.AccumulateWorld(mf.gameObject)
+                    : SceneGraphUtil.AccumulateWorld(gameObject);
 
                 yield return (mf.Mesh, W);
             }
@@ -124,7 +124,7 @@ namespace Game_Engine.Core.Component
             // 0) Manual override mesh = single AABB
             if (Mesh != null && Mesh.Vertices != null && Mesh.Vertices.Length > 0)
             {
-                var W = TransformUtil.WorldFromTransform(gameObject.Transform);
+                var W = SceneGraphUtil.AccumulateWorld(gameObject);
                 return AABBForMesh(Mesh, W);
             }
 
@@ -143,8 +143,8 @@ namespace Game_Engine.Core.Component
                     if (mf == null || mf.Mesh == null || mf.Mesh.Vertices == null || mf.Mesh.Vertices.Length == 0) continue;
 
                     var W = BindToTargetTransform && mf.gameObject != null
-                        ? TransformUtil.WorldFromTransform(mf.gameObject.Transform)
-                        : TransformUtil.WorldFromTransform(gameObject.Transform);
+                        ? SceneGraphUtil.AccumulateWorld(mf.gameObject)
+                        : SceneGraphUtil.AccumulateWorld(gameObject);
 
                     var a = AABBForMesh(mf.Mesh, W);
                     Encapsulate(ref min, ref max, a.Min);
@@ -163,8 +163,8 @@ namespace Game_Engine.Core.Component
                 foreach (var here in gameObject.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled && b.Mesh != null))
                 {
                     var W = BindToTargetTransform
-                        ? TransformUtil.WorldFromTransform(here.gameObject.Transform)
-                        : TransformUtil.WorldFromTransform(gameObject.Transform);
+                        ? SceneGraphUtil.AccumulateWorld(here.gameObject)
+                        : SceneGraphUtil.AccumulateWorld(gameObject);
                     var a = AABBForMesh(here.Mesh, W);
                     Encapsulate(ref min, ref max, a.Min);
                     Encapsulate(ref min, ref max, a.Max);
@@ -173,7 +173,7 @@ namespace Game_Engine.Core.Component
                 if (any) return new AABB(min, max);
             }
 
-            var W0 = TransformUtil.WorldFromTransform(gameObject.Transform);
+            var W0 = SceneGraphUtil.AccumulateWorld(gameObject);
             var p0 = SN.Vector3.Transform(SN.Vector3.Zero, W0);
             return new AABB(p0, p0);
         }

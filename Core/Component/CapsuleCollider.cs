@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using SN = System.Numerics;
 using CoreVec3 = Game_Engine.Core.Vector3;
 
@@ -41,8 +41,8 @@ namespace Game_Engine.Core.Component
 
         public override AABB GetWorldAABB()
         {
-            // Build world matrix from this GO's transform
-            var W = TransformUtil.WorldFromTransform(gameObject.Transform);
+            // Build full world matrix accounting for parent hierarchy
+            var W = SceneGraphUtil.AccumulateWorld(gameObject);
 
             // Local capsule ends
             GetLocalCapsule(out var la, out var lb, out var r);

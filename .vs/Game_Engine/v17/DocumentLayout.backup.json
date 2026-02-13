@@ -3,6 +3,154 @@
   "WorkspaceRootPath": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\inspectorpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\inspectorpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\shaderasset.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\shaderasset.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\rigidbody.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\rigidbody.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\rigidbodyplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\rigidbodyplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\navmeshagent.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\navmeshagent.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\particleemitter.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\particleemitter.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\postprocessvolume.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\postprocessvolume.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\animator.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\animator.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\vegetationinstance.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\vegetationinstance.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\animationpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\animationpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\importers\\modelimporter.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\importers\\modelimporter.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\skinnedmeshrenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\skinnedmeshrenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\meshrenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\meshrenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\hierarchypanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\hierarchypanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\projectpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\projectpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\input\\input.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\input\\input.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\treelod.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\treelod.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\playermovement.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\playermovement.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\light.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\light.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\collidergizmos.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\collidergizmos.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\terraingizmos.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\terraingizmos.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\skybox.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\skybox.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\sceneview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\sceneview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\scenerenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\scenerenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\gameview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\gameview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\lighting\\shadowmap.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\lighting\\shadowmap.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\audiolistener.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\audiolistener.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\water.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\water.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\gpu\\shadersources.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\gpu\\shadersources.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\10_model_import_and_assets.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\10_model_import_and_assets.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\09_scene_and_project_management.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\09_scene_and_project_management.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\08_materials_and_textures.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\08_materials_and_textures.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\07_physics_and_collision.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\07_physics_and_collision.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\06_scripting_and_extensibility.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\06_scripting_and_extensibility.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\04_rendering_pipeline.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\04_rendering_pipeline.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\03_components_reference.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\03_components_reference.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\02_editor_guide.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\02_editor_guide.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\01_engine_overview.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\01_engine_overview.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
     },
@@ -19,40 +167,8 @@
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\tree.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\treelod.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\treelod.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\10_model_import_and_assets.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\10_model_import_and_assets.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\08_materials_and_textures.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\08_materials_and_textures.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\07_physics_and_collision.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\07_physics_and_collision.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\06_scripting_and_extensibility.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\06_scripting_and_extensibility.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\05_terrain_system.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\05_terrain_system.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\04_rendering_pipeline.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\04_rendering_pipeline.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\03_components_reference.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\03_components_reference.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\docs\\02_editor_guide.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:docs\\02_editor_guide.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\charactercontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -63,16 +179,8 @@
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\meshcollider.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\sceneview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\sceneview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\color\\colorutil.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\color\\colorutil.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\lighting\\shadowmap.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\lighting\\shadowmap.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\grid.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -91,10 +199,6 @@
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\materialrebind.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\scenerenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\scenerenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\sky.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\sky.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
@@ -111,28 +215,12 @@
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\gpu\\gpumesh.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\gpu\\gpuframebuffer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\gpu\\gpuframebuffer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\gpu\\glcontext.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\gpu\\glcontext.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\gpu\\fullscreenquad.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\gpu\\fullscreenquad.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\skybox.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\skybox.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\inspectorpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\inspectorpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\gameview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\gameview.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\gamepanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -145,10 +233,6 @@
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\gamepanel.axaml||{6D5344A2-2FCD-49DE-A09D-6A14FD1B1224}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\gamepanel.axaml||{6D5344A2-2FCD-49DE-A09D-6A14FD1B1224}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\playermovement.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\playermovement.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\materialruntimebuilder.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -171,28 +255,12 @@
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:mainwindow.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\component\\meshrenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\component\\meshrenderer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\behavior.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\behavior.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\commands.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\commands.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\rendering\\shaderasset.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\rendering\\shaderasset.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\core\\importers\\modelimporter.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:core\\importers\\modelimporter.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|c:\\users\\bitenode\\desktop\\github engine\\game-engine\\views\\projectpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{EDBF0F83-784B-4E22-B35A-A4631C394AFF}|Game_Engine.csproj|solutionrelative:views\\projectpanel.axaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     }
   ],
   "DocumentGroupContainers": [
@@ -202,11 +270,235 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 11,
+          "SelectedChildIndex": 55,
           "Children": [
             {
               "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "NavMeshAgent.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\NavMeshAgent.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\NavMeshAgent.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\NavMeshAgent.cs",
+              "RelativeToolTip": "Core\\Component\\NavMeshAgent.cs",
+              "ViewState": "AgIAAOQDAAAAAAAAAAAuwCMAAAAkAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-13T18:45:10.777Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "ParticleEmitter.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\ParticleEmitter.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\ParticleEmitter.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\ParticleEmitter.cs",
+              "RelativeToolTip": "Core\\Component\\ParticleEmitter.cs",
+              "ViewState": "AgIAAA0AAAAAAAAAAAAQwBQAAAAnAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-13T18:14:10.134Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 9,
+              "Title": "AnimationPanel.axaml.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\AnimationPanel.axaml.cs",
+              "RelativeDocumentMoniker": "Views\\AnimationPanel.axaml.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\AnimationPanel.axaml.cs",
+              "RelativeToolTip": "Views\\AnimationPanel.axaml.cs",
+              "ViewState": "AgIAAAQDAAAAAAAAAAAYwAwDAAAlAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-13T10:08:32.688Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 11,
+              "Title": "SkinnedMeshRenderer.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\SkinnedMeshRenderer.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\SkinnedMeshRenderer.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\SkinnedMeshRenderer.cs",
+              "RelativeToolTip": "Core\\Component\\SkinnedMeshRenderer.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAsAAAAgAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-13T07:59:29.402Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 15,
+              "Title": "Input.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Input\\Input.cs",
+              "RelativeDocumentMoniker": "Core\\Input\\Input.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Input\\Input.cs",
+              "RelativeToolTip": "Core\\Input\\Input.cs",
+              "ViewState": "AgIAAGQBAAAAAAAAAAAAwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-13T04:49:15.524Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "RigidbodyPlayer.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\RigidbodyPlayer.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\RigidbodyPlayer.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\RigidbodyPlayer.cs",
+              "RelativeToolTip": "Core\\Component\\RigidbodyPlayer.cs",
+              "ViewState": "AgIAADMAAAAAAAAAAAAuwBEAAAAnAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T20:02:19.66Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 18,
+              "Title": "Light.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Light.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\Light.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Light.cs",
+              "RelativeToolTip": "Core\\Component\\Light.cs",
+              "ViewState": "AgIAADYAAAAAAAAAAAAiwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T17:13:34.013Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 19,
+              "Title": "ColliderGizmos.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\ColliderGizmos.cs",
+              "RelativeDocumentMoniker": "Views\\ColliderGizmos.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\ColliderGizmos.cs",
+              "RelativeToolTip": "Views\\ColliderGizmos.cs",
+              "ViewState": "AgIAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T16:55:52.875Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 20,
+              "Title": "TerrainGizmos.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\TerrainGizmos.cs",
+              "RelativeDocumentMoniker": "Core\\TerrainGizmos.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\TerrainGizmos.cs",
+              "RelativeToolTip": "Core\\TerrainGizmos.cs",
+              "ViewState": "AgIAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T16:55:16.492Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 13,
+              "Title": "HierarchyPanel.axaml.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\HierarchyPanel.axaml.cs",
+              "RelativeDocumentMoniker": "Views\\HierarchyPanel.axaml.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\HierarchyPanel.axaml.cs",
+              "RelativeToolTip": "Views\\HierarchyPanel.axaml.cs",
+              "ViewState": "AgIAAJwAAAAAAAAAAIAwwIEAAAAzAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T16:51:16.887Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "PostProcessVolume.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\PostProcessVolume.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\PostProcessVolume.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\PostProcessVolume.cs",
+              "RelativeToolTip": "Core\\Component\\PostProcessVolume.cs",
+              "ViewState": "AgIAAAMAAAAAAAAAAAAAAA0AAAApAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T06:13:45.344Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 8,
+              "Title": "VegetationInstance.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\VegetationInstance.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\VegetationInstance.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\VegetationInstance.cs",
+              "RelativeToolTip": "Core\\Component\\VegetationInstance.cs",
+              "ViewState": "AgIAABwAAAAAAAAAAAAQwB0AAAAYAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T06:05:09.615Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "Animator.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Animator.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\Animator.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Animator.cs",
+              "RelativeToolTip": "Core\\Component\\Animator.cs",
+              "ViewState": "AgIAAL4AAAAAAAAAAAAcwMcAAAAgAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T06:02:57.018Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
               "DocumentIndex": 2,
+              "Title": "Rigidbody.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Rigidbody.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\Rigidbody.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Rigidbody.cs",
+              "RelativeToolTip": "Core\\Component\\Rigidbody.cs",
+              "ViewState": "AgIAACsAAAAAAAAAAAAAAA4AAAAhAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T05:17:15.886Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 26,
+              "Title": "AudioListener.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\AudioListener.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\AudioListener.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\AudioListener.cs",
+              "RelativeToolTip": "Core\\Component\\AudioListener.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAoAAAAlAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T01:58:28.158Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 27,
+              "Title": "Water.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Water.cs",
+              "RelativeDocumentMoniker": "Core\\Component\\Water.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Water.cs",
+              "RelativeToolTip": "Core\\Component\\Water.cs",
+              "ViewState": "AgIAALoAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T01:04:16.491Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 28,
+              "Title": "ShaderSources.cs",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\ShaderSources.cs",
+              "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\ShaderSources.cs",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\ShaderSources.cs",
+              "RelativeToolTip": "Core\\Rendering\\GPU\\ShaderSources.cs",
+              "ViewState": "AgIAAJoDAAAAAAAAAAAjwKADAAAdAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-02-12T01:02:39.081Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 30,
+              "Title": "09_Scene_And_Project_Management.md",
+              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\09_Scene_And_Project_Management.md",
+              "RelativeDocumentMoniker": "Docs\\09_Scene_And_Project_Management.md",
+              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\09_Scene_And_Project_Management.md",
+              "RelativeToolTip": "Docs\\09_Scene_And_Project_Management.md",
+              "ViewState": "AgIAAMQAAAAAAAAAAAAiwOEAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
+              "WhenOpened": "2026-02-11T23:52:25.896Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 39,
               "Title": "WindSystem.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\WindSystem.cs",
               "RelativeDocumentMoniker": "Core\\WindSystem.cs",
@@ -214,12 +506,11 @@
               "RelativeToolTip": "Core\\WindSystem.cs",
               "ViewState": "AgIAAAoAAAAAAAAAAAAkwBkAAAAwAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-11T03:43:16.926Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-11T03:43:16.926Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 40,
               "Title": "Tree.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Tree.cs",
               "RelativeDocumentMoniker": "Core\\Component\\Tree.cs",
@@ -227,142 +518,131 @@
               "RelativeToolTip": "Core\\Component\\Tree.cs",
               "ViewState": "AgIAADMAAAAAAAAAAAAYwAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-11T03:42:52.433Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-11T03:42:52.433Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 4,
+              "DocumentIndex": 16,
               "Title": "TreeLOD.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\TreeLOD.cs",
               "RelativeDocumentMoniker": "Core\\Component\\TreeLOD.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\TreeLOD.cs",
               "RelativeToolTip": "Core\\Component\\TreeLOD.cs",
-              "ViewState": "AgIAAMkAAAAAAAAAAAAYwA0AAAAfAAAAAAAAAA==",
+              "ViewState": "AgIAAAwAAAAAAAAAAAAAAA0AAAAfAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-10T22:15:46.507Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:15:46.507Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 5,
+              "DocumentIndex": 29,
               "Title": "10_Model_Import_And_Assets.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\10_Model_Import_And_Assets.md",
               "RelativeDocumentMoniker": "Docs\\10_Model_Import_And_Assets.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\10_Model_Import_And_Assets.md",
               "RelativeToolTip": "Docs\\10_Model_Import_And_Assets.md",
-              "ViewState": "AgIAAKgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAADYAAAAAAAAAAAAiwJ4AAABWAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:12:41.65Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:12:41.65Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 6,
+              "DocumentIndex": 31,
               "Title": "08_Materials_And_Textures.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\08_Materials_And_Textures.md",
               "RelativeDocumentMoniker": "Docs\\08_Materials_And_Textures.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\08_Materials_And_Textures.md",
               "RelativeToolTip": "Docs\\08_Materials_And_Textures.md",
-              "ViewState": "AgIAAEsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAJYAAAAAAAAAAAAiwLMAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:12:34.367Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:12:34.367Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 7,
+              "DocumentIndex": 32,
               "Title": "07_Physics_And_Collision.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\07_Physics_And_Collision.md",
               "RelativeDocumentMoniker": "Docs\\07_Physics_And_Collision.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\07_Physics_And_Collision.md",
               "RelativeToolTip": "Docs\\07_Physics_And_Collision.md",
-              "ViewState": "AgIAAIoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAI8AAAAAAAAAAAAiwKwAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:11:43.027Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:11:43.027Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 8,
+              "DocumentIndex": 33,
               "Title": "06_Scripting_And_Extensibility.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\06_Scripting_And_Extensibility.md",
               "RelativeDocumentMoniker": "Docs\\06_Scripting_And_Extensibility.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\06_Scripting_And_Extensibility.md",
               "RelativeToolTip": "Docs\\06_Scripting_And_Extensibility.md",
-              "ViewState": "AgIAAOEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAANcAAAAAAAAAAAAiwPQAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:10:50.411Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:10:50.411Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 9,
+              "DocumentIndex": 41,
               "Title": "05_Terrain_System.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\05_Terrain_System.md",
               "RelativeDocumentMoniker": "Docs\\05_Terrain_System.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\05_Terrain_System.md",
               "RelativeToolTip": "Docs\\05_Terrain_System.md",
-              "ViewState": "AgIAANsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAEMBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:09:33.415Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:09:33.415Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 10,
+              "DocumentIndex": 34,
               "Title": "04_Rendering_Pipeline.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\04_Rendering_Pipeline.md",
               "RelativeDocumentMoniker": "Docs\\04_Rendering_Pipeline.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\04_Rendering_Pipeline.md",
               "RelativeToolTip": "Docs\\04_Rendering_Pipeline.md",
-              "ViewState": "AgIAAJYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAJQAAAAAAAAAAAAiwLEAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:09:09.064Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:09:09.064Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 11,
+              "DocumentIndex": 35,
               "Title": "03_Components_Reference.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\03_Components_Reference.md",
               "RelativeDocumentMoniker": "Docs\\03_Components_Reference.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\03_Components_Reference.md",
               "RelativeToolTip": "Docs\\03_Components_Reference.md",
-              "ViewState": "AgIAAN4AAAAAAAAAAAAAANcAAABTAAAAAAAAAA==",
+              "ViewState": "AgIAAAkBAAAAAAAAAAAiwCYBAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:08:09.3Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:08:09.3Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 12,
+              "DocumentIndex": 36,
               "Title": "02_Editor_Guide.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\02_Editor_Guide.md",
               "RelativeDocumentMoniker": "Docs\\02_Editor_Guide.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\02_Editor_Guide.md",
               "RelativeToolTip": "Docs\\02_Editor_Guide.md",
-              "ViewState": "AgIAAMYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAMIAAAAAAAAAAAAiwN8AAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:01:10.29Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:01:10.29Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 0,
+              "DocumentIndex": 37,
               "Title": "01_Engine_Overview.md",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\01_Engine_Overview.md",
               "RelativeDocumentMoniker": "Docs\\01_Engine_Overview.md",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Docs\\01_Engine_Overview.md",
               "RelativeToolTip": "Docs\\01_Engine_Overview.md",
-              "ViewState": "AgIAAAMAAAAAAAAAAAAAAAkAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAGkAAAAAAAAAAAAiwIYAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
-              "WhenOpened": "2026-02-10T22:00:29.858Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T22:00:29.858Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 13,
+              "DocumentIndex": 42,
               "Title": "CharacterController.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\CharacterController.cs",
               "RelativeDocumentMoniker": "Core\\Component\\CharacterController.cs",
@@ -370,12 +650,11 @@
               "RelativeToolTip": "Core\\Component\\CharacterController.cs",
               "ViewState": "AgIAACAAAAAAAAAAAAAowAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-10T20:07:38.518Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T20:07:38.518Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 14,
+              "DocumentIndex": 43,
               "Title": "MeshCollider.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\MeshCollider.cs",
               "RelativeDocumentMoniker": "Core\\Component\\MeshCollider.cs",
@@ -387,7 +666,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 16,
+              "DocumentIndex": 44,
               "Title": "ColorUtil.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Color\\ColorUtil.cs",
               "RelativeDocumentMoniker": "Core\\Color\\ColorUtil.cs",
@@ -399,7 +678,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 18,
+              "DocumentIndex": 45,
               "Title": "Grid.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\Grid.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\Grid.cs",
@@ -411,19 +690,19 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 22,
+              "DocumentIndex": 23,
               "Title": "SceneRenderer.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\SceneRenderer.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\SceneRenderer.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\SceneRenderer.cs",
               "RelativeToolTip": "Core\\Rendering\\SceneRenderer.cs",
-              "ViewState": "AgIAAMIBAAAAAAAAAAAiwAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAD4BAAAAAAAAAAAkwEkBAAAeAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-02-10T20:01:21.107Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 23,
+              "DocumentIndex": 49,
               "Title": "Sky.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\Sky.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\Sky.cs",
@@ -435,7 +714,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 24,
+              "DocumentIndex": 50,
               "Title": "ResourceCache.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\ResourceCache.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\ResourceCache.cs",
@@ -447,7 +726,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 25,
+              "DocumentIndex": 51,
               "Title": "GPUTexture.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\GPUTexture.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\GPUTexture.cs",
@@ -459,7 +738,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 26,
+              "DocumentIndex": 52,
               "Title": "GPUMesh.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\GPUMesh.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\GPUMesh.cs",
@@ -471,19 +750,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 27,
-              "Title": "GPUFramebuffer.cs",
-              "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\GPUFramebuffer.cs",
-              "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\GPUFramebuffer.cs",
-              "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\GPUFramebuffer.cs",
-              "RelativeToolTip": "Core\\Rendering\\GPU\\GPUFramebuffer.cs",
-              "ViewState": "AgIAAEMAAAAAAAAAAADwvwAAAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-10T20:00:19.024Z"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 28,
+              "DocumentIndex": 53,
               "Title": "GLContext.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\GLContext.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\GLContext.cs",
@@ -495,7 +762,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 29,
+              "DocumentIndex": 54,
               "Title": "FullscreenQuad.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\GPU\\FullscreenQuad.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\GPU\\FullscreenQuad.cs",
@@ -507,7 +774,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 38,
               "Title": "Terrain.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Terrain.cs",
               "RelativeDocumentMoniker": "Core\\Component\\Terrain.cs",
@@ -515,24 +782,23 @@
               "RelativeToolTip": "Core\\Component\\Terrain.cs",
               "ViewState": "AgIAAFIDAAAAAAAAAAAcwBECAAAYAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-10T19:35:45.113Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-10T19:35:45.113Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 30,
+              "DocumentIndex": 21,
               "Title": "Skybox.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Skybox.cs",
               "RelativeDocumentMoniker": "Core\\Component\\Skybox.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\Skybox.cs",
               "RelativeToolTip": "Core\\Component\\Skybox.cs",
-              "ViewState": "AgIAAAYAAAAAAAAAAAAYwBQAAAAIAAAAAAAAAA==",
+              "ViewState": "AgIAAAUAAAAAAAAAAAAAwBQAAAAIAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-02-10T17:56:32.193Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 34,
+              "DocumentIndex": 56,
               "Title": "LICENSE",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\LICENSE",
               "RelativeDocumentMoniker": "LICENSE",
@@ -544,7 +810,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 35,
+              "DocumentIndex": 57,
               "Title": "GamePanel.axaml",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\GamePanel.axaml",
               "RelativeDocumentMoniker": "Views\\GamePanel.axaml",
@@ -555,7 +821,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 33,
+              "DocumentIndex": 55,
               "Title": "GamePanel.axaml.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\GamePanel.axaml.cs",
               "RelativeDocumentMoniker": "Views\\GamePanel.axaml.cs",
@@ -567,31 +833,31 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 36,
+              "DocumentIndex": 17,
               "Title": "PlayerMovement.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\PlayerMovement.cs",
               "RelativeDocumentMoniker": "Core\\Component\\PlayerMovement.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\PlayerMovement.cs",
               "RelativeToolTip": "Core\\Component\\PlayerMovement.cs",
-              "ViewState": "AgIAAB8AAAAAAAAAAADwvwAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAANQAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-02-10T07:27:51.104Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 17,
+              "DocumentIndex": 25,
               "Title": "ShadowMap.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Lighting\\ShadowMap.cs",
               "RelativeDocumentMoniker": "Core\\Lighting\\ShadowMap.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Lighting\\ShadowMap.cs",
               "RelativeToolTip": "Core\\Lighting\\ShadowMap.cs",
-              "ViewState": "AgIAADYAAAAAAAAAAAAIwAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAAYAAAAAAAAAAAAowA8AAAALAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-02-10T06:29:42.81Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 37,
+              "DocumentIndex": 58,
               "Title": "MaterialRuntimeBuilder.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\MaterialRuntimeBuilder.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\MaterialRuntimeBuilder.cs",
@@ -603,7 +869,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 38,
+              "DocumentIndex": 59,
               "Title": "SceneService.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\SceneService.cs",
               "RelativeDocumentMoniker": "Core\\SceneService.cs",
@@ -615,7 +881,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 19,
+              "DocumentIndex": 46,
               "Title": "SceneSerialization.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\SceneSerialization.cs",
               "RelativeDocumentMoniker": "Core\\SceneSerialization.cs",
@@ -627,31 +893,31 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 42,
+              "DocumentIndex": 12,
               "Title": "MeshRenderer.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\MeshRenderer.cs",
               "RelativeDocumentMoniker": "Core\\Component\\MeshRenderer.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Component\\MeshRenderer.cs",
               "RelativeToolTip": "Core\\Component\\MeshRenderer.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAUAAAAkAAAAAAAAAA==",
+              "ViewState": "AgIAAA0AAAAAAAAAAAA/wAUAAAAkAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-30T19:58:08.148Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 32,
+              "DocumentIndex": 24,
               "Title": "GameView.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\GameView.cs",
               "RelativeDocumentMoniker": "Views\\GameView.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\GameView.cs",
               "RelativeToolTip": "Views\\GameView.cs",
-              "ViewState": "AgIAAP8BAAAAAAAAAAAAAMIBAAAIAAAAAAAAAA==",
+              "ViewState": "AgIAAJgBAAAAAAAAAAAowKEBAAAdAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-31T18:52:34.315Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 21,
+              "DocumentIndex": 48,
               "Title": "MaterialRebind.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\MaterialRebind.cs",
               "RelativeDocumentMoniker": "Core\\MaterialRebind.cs",
@@ -663,7 +929,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 20,
+              "DocumentIndex": 47,
               "Title": "Material.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Material.cs",
               "RelativeDocumentMoniker": "Core\\Material.cs",
@@ -675,19 +941,20 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 31,
+              "DocumentIndex": 0,
               "Title": "InspectorPanel.axaml.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\InspectorPanel.axaml.cs",
               "RelativeDocumentMoniker": "Views\\InspectorPanel.axaml.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\InspectorPanel.axaml.cs",
               "RelativeToolTip": "Views\\InspectorPanel.axaml.cs",
-              "ViewState": "AgIAAFwAAAAAAAAAAAAAwGkAAAAjAAAAAAAAAA==",
+              "ViewState": "AgIAABoKAAAAAAAAAAAwwGkAAAAjAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-11-03T05:47:46.463Z"
+              "WhenOpened": "2025-11-03T05:47:46.463Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 41,
+              "DocumentIndex": 62,
               "Title": "MainWindow.axaml.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\MainWindow.axaml.cs",
               "RelativeDocumentMoniker": "MainWindow.axaml.cs",
@@ -699,7 +966,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 39,
+              "DocumentIndex": 60,
               "Title": "SelectionService.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\SelectionService.cs",
               "RelativeDocumentMoniker": "Core\\SelectionService.cs",
@@ -711,7 +978,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 44,
+              "DocumentIndex": 64,
               "Title": "Commands.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Commands.cs",
               "RelativeDocumentMoniker": "Core\\Commands.cs",
@@ -723,7 +990,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 43,
+              "DocumentIndex": 63,
               "Title": "Behavior.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Behavior.cs",
               "RelativeDocumentMoniker": "Core\\Behavior.cs",
@@ -735,19 +1002,19 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 15,
+              "DocumentIndex": 22,
               "Title": "SceneView.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\SceneView.cs",
               "RelativeDocumentMoniker": "Views\\SceneView.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\SceneView.cs",
               "RelativeToolTip": "Views\\SceneView.cs",
-              "ViewState": "AgIAAJQBAAAAAAAAAAASwKYBAAAdAAAAAAAAAA==",
+              "ViewState": "AgIAACIAAAAAAAAAAAAowCsAAAAMAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-31T18:52:03.857Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 40,
+              "DocumentIndex": 61,
               "Title": "ProjectService.Materials.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\ProjectService.Materials.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\ProjectService.Materials.cs",
@@ -759,37 +1026,38 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 45,
+              "DocumentIndex": 1,
               "Title": "ShaderAsset.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\ShaderAsset.cs",
               "RelativeDocumentMoniker": "Core\\Rendering\\ShaderAsset.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Rendering\\ShaderAsset.cs",
               "RelativeToolTip": "Core\\Rendering\\ShaderAsset.cs",
-              "ViewState": "AgIAACYAAAAAAAAAAAAgwAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAB8AAAAAAAAAAAAuwAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-11-01T14:04:17.956Z"
+              "WhenOpened": "2025-11-01T14:04:17.956Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 46,
+              "DocumentIndex": 10,
               "Title": "ModelImporter.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Importers\\ModelImporter.cs",
               "RelativeDocumentMoniker": "Core\\Importers\\ModelImporter.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Core\\Importers\\ModelImporter.cs",
               "RelativeToolTip": "Core\\Importers\\ModelImporter.cs",
-              "ViewState": "AgIAAKUAAAAAAAAAAIAwwLQAAAAMAAAAAAAAAA==",
+              "ViewState": "AgIAACcCAAAAAAAAAAA1wCcCAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-31T18:47:37.75Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 47,
+              "DocumentIndex": 14,
               "Title": "ProjectPanel.axaml.cs",
               "DocumentMoniker": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\ProjectPanel.axaml.cs",
               "RelativeDocumentMoniker": "Views\\ProjectPanel.axaml.cs",
               "ToolTip": "C:\\Users\\Bitenode\\Desktop\\Github Engine\\Game-Engine\\Views\\ProjectPanel.axaml.cs",
               "RelativeToolTip": "Views\\ProjectPanel.axaml.cs",
-              "ViewState": "AgIAAL0CAAAAAAAAAAAowOkCAAAeAAAAAAAAAA==",
+              "ViewState": "AgIAAOwCAAAAAAAAAAAQwOkCAAAeAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-29T19:31:39.545Z"
             }

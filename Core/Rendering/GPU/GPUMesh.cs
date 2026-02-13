@@ -1,13 +1,14 @@
 #nullable enable
 using System;
-using System.Numerics;
 using Silk.NET.OpenGL;
+using SN = System.Numerics;
 
 namespace Game_Engine.Core.Rendering.GPU;
 
 /// <summary>
 /// Manages a VAO / VBO / EBO on the GPU for an engine Mesh.
-/// Vertex layout: [Position3, Normal3, UV2] = 32 bytes interleaved.
+/// Non-skinned layout: [Position3, Normal3, UV2] = 32 bytes interleaved.
+/// Skinned layout:     [Position3, Normal3, UV2, BoneIdx4_as_float, BoneWeight4] = 64 bytes interleaved.
 /// </summary>
 public sealed class GPUMesh : IDisposable
 {
@@ -18,6 +19,9 @@ public sealed class GPUMesh : IDisposable
     public uint EBO { get; private set; }
     public int IndexCount { get; private set; }
     public int LineIndexCount { get; private set; }
+
+    /// <summary>True if the last Upload() included bone data.</summary>
+    public bool IsSkinned { get; private set; }
 
     private uint _lineEBO;
 
@@ -46,8 +50,34 @@ public sealed class GPUMesh : IDisposable
         int vertCount = verts.Length;
         IndexCount = tris.Length;
         LineIndexCount = lines?.Length ?? 0;
+        IsSkinned = mesh.HasBones;
 
-        // Build interleaved vertex data: [Pos3, Normal3, UV2] per vertex
+        if (IsSkinned)
+            UploadSkinned(mesh, vertCount);
+        else
+            UploadStatic(mesh, vertCount);
+
+        // Line EBO (for wireframe)
+        if (lines != null && lines.Length > 0)
+        {
+            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _lineEBO);
+            fixed (int* ptr = lines)
+            {
+                _gl.BufferData(BufferTargetARB.ElementArrayBuffer,
+                    (nuint)(lines.Length * sizeof(int)), ptr, BufferUsageARB.DynamicDraw);
+            }
+            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
+        }
+    }
+
+    /// <summary>Upload non-skinned mesh: [Pos3, Norm3, UV2] = 32 bytes/vert.</summary>
+    private unsafe void UploadStatic(Mesh mesh, int vertCount)
+    {
+        var verts = mesh.Vertices;
+        var normals = mesh.Normals;
+        var uvs = mesh.UVs;
+        var tris = mesh.TriIndices;
+
         const int STRIDE = 8; // 8 floats = 32 bytes
         float[] data = new float[vertCount * STRIDE];
 
@@ -85,24 +115,96 @@ public sealed class GPUMesh : IDisposable
 
         _gl.BindVertexArray(VAO);
 
-        // VBO
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, VBO);
         fixed (float* ptr = data)
-        {
-            _gl.BufferData(BufferTargetARB.ArrayBuffer,
-                (nuint)(data.Length * sizeof(float)), ptr, BufferUsageARB.DynamicDraw);
-        }
+            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, BufferUsageARB.DynamicDraw);
 
-        // EBO (triangles)
         _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, EBO);
         fixed (int* ptr = tris)
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(tris.Length * sizeof(int)), ptr, BufferUsageARB.DynamicDraw);
+
+        const uint stride = STRIDE * sizeof(float);
+
+        _gl.EnableVertexAttribArray(0);
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, (void*)0);
+        _gl.EnableVertexAttribArray(1);
+        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, (void*)(3 * sizeof(float)));
+        _gl.EnableVertexAttribArray(2);
+        _gl.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, (void*)(6 * sizeof(float)));
+
+        // Disable bone attribs in case this VAO was previously skinned
+        _gl.DisableVertexAttribArray(3);
+        _gl.DisableVertexAttribArray(4);
+
+        _gl.BindVertexArray(0);
+    }
+
+    /// <summary>Upload skinned mesh: [Pos3, Norm3, UV2, BoneIdx4_as_float, BoneWeight4] = 64 bytes/vert.</summary>
+    private unsafe void UploadSkinned(Mesh mesh, int vertCount)
+    {
+        var verts = mesh.Vertices;
+        var normals = mesh.Normals;
+        var uvs = mesh.UVs;
+        var tris = mesh.TriIndices;
+        var boneIndices = mesh.BoneIndices;
+        var boneWeights = mesh.BoneWeights;
+
+        const int STRIDE = 16; // 16 floats = 64 bytes
+        float[] data = new float[vertCount * STRIDE];
+
+        for (int i = 0; i < vertCount; i++)
         {
-            _gl.BufferData(BufferTargetARB.ElementArrayBuffer,
-                (nuint)(tris.Length * sizeof(int)), ptr, BufferUsageARB.DynamicDraw);
+            int off = i * STRIDE;
+
+            data[off + 0] = verts[i].X;
+            data[off + 1] = verts[i].Y;
+            data[off + 2] = verts[i].Z;
+
+            if (normals != null && i < normals.Length)
+            { data[off + 3] = normals[i].X; data[off + 4] = normals[i].Y; data[off + 5] = normals[i].Z; }
+            else
+            { data[off + 3] = 0f; data[off + 4] = 1f; data[off + 5] = 0f; }
+
+            if (uvs != null && i < uvs.Length)
+            { data[off + 6] = uvs[i].X; data[off + 7] = uvs[i].Y; }
+            else
+            { data[off + 6] = 0f; data[off + 7] = 0f; }
+
+            // Bone indices (as float — shader reads via vec4 then converts to int)
+            int bi = i * 4;
+            if (boneIndices != null && bi + 3 < boneIndices.Length)
+            {
+                data[off + 8] = boneIndices[bi + 0];
+                data[off + 9] = boneIndices[bi + 1];
+                data[off + 10] = boneIndices[bi + 2];
+                data[off + 11] = boneIndices[bi + 3];
+            }
+
+            // Bone weights
+            if (boneWeights != null && i < boneWeights.Length)
+            {
+                data[off + 12] = boneWeights[i].X;
+                data[off + 13] = boneWeights[i].Y;
+                data[off + 14] = boneWeights[i].Z;
+                data[off + 15] = boneWeights[i].W;
+            }
+            else
+            {
+                data[off + 12] = 1f; // default: all weight on bone 0
+            }
         }
 
-        // Vertex attributes
-        const uint stride = STRIDE * sizeof(float);
+        _gl.BindVertexArray(VAO);
+
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, VBO);
+        fixed (float* ptr = data)
+            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, BufferUsageARB.DynamicDraw);
+
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, EBO);
+        fixed (int* ptr = tris)
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(tris.Length * sizeof(int)), ptr, BufferUsageARB.DynamicDraw);
+
+        const uint stride = STRIDE * sizeof(float); // 64 bytes
 
         // location 0: position (vec3)
         _gl.EnableVertexAttribArray(0);
@@ -116,19 +218,15 @@ public sealed class GPUMesh : IDisposable
         _gl.EnableVertexAttribArray(2);
         _gl.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, (void*)(6 * sizeof(float)));
 
-        _gl.BindVertexArray(0);
+        // location 3: bone indices (vec4 — read as float, cast to int in shader)
+        _gl.EnableVertexAttribArray(3);
+        _gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, stride, (void*)(8 * sizeof(float)));
 
-        // Line EBO (for wireframe)
-        if (lines != null && lines.Length > 0)
-        {
-            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _lineEBO);
-            fixed (int* ptr = lines)
-            {
-                _gl.BufferData(BufferTargetARB.ElementArrayBuffer,
-                    (nuint)(lines.Length * sizeof(int)), ptr, BufferUsageARB.DynamicDraw);
-            }
-            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
-        }
+        // location 4: bone weights (vec4)
+        _gl.EnableVertexAttribArray(4);
+        _gl.VertexAttribPointer(4, 4, VertexAttribPointerType.Float, false, stride, (void*)(12 * sizeof(float)));
+
+        _gl.BindVertexArray(0);
     }
 
     /// <summary>Draw triangles.</summary>

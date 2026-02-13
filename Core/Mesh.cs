@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using SN = System.Numerics;
 
@@ -23,6 +23,16 @@ public sealed class Mesh
     public int TessB { get; init; }
 
     public SN.Vector2[]? UV2 { get; set; } // wind weight (x) & phase (y)
+
+    // --- Skeletal / skinning data -------------------------------------------
+    /// <summary>4 bone weights per vertex (x,y,z,w). Null if mesh is not skinned.</summary>
+    public SN.Vector4[]? BoneWeights { get; set; }
+    /// <summary>4 bone indices per vertex, packed as flat array [v0i0,v0i1,v0i2,v0i3, v1i0,...]. Length = Vertices.Length * 4.</summary>
+    public int[]? BoneIndices { get; set; }
+    /// <summary>The skeleton this mesh is bound to (null for non-skinned meshes).</summary>
+    public Skeleton? Skeleton { get; set; }
+    /// <summary>True if this mesh has bone skinning data.</summary>
+    public bool HasBones => BoneWeights != null && BoneIndices != null && Skeleton != null;
 
     public Mesh(SN.Vector3[] v, int[] lines, int[] tris)
     {

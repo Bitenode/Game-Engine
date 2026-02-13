@@ -34,6 +34,7 @@
 					<MenuItem Header="New Hierarchy Tab" x:Name="NewHierarchyTab"/>
 					<MenuItem Header="New Project Tab"   x:Name="NewProjectTab"/>
 					<MenuItem Header="New Console Tab"   x:Name="NewConsoleTab"/>
+					<MenuItem Header="New Animation Tab" x:Name="NewAnimationTab"/>
 				</MenuItem>
 			</MenuItem>
 

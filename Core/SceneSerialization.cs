@@ -29,6 +29,9 @@ namespace Game_Engine.Core
         public static Func<string, Mesh?>? ResolveMeshFromModelPath;     // single-mesh (fallback)
 
         // ---------------- JSON setup ----------------
+        /// <summary>Shared JSON options used for scene serialization (read-only access).</summary>
+        public static JsonSerializerOptions JsonOptions => _json;
+
         static readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
             WriteIndented = true,
@@ -66,6 +69,10 @@ namespace Game_Engine.Core
         }
 
         // ---------------- GameObject/Behavior mapping ----------------
+        /// <summary>Children to skip during serialization (generated at runtime, e.g. grass chunks).</summary>
+        static bool IsGeneratedChild(GameObject child)
+            => child.Name == "Grass" || child.Name.StartsWith("grass_") || child.Name.StartsWith("chunk_");
+
         static GameObjectDTO ToDTO(GameObject go)
         {
             var dto = new GameObjectDTO
@@ -78,7 +85,7 @@ namespace Game_Engine.Core
                     LocalScale = go.Transform.Scale
                 },
                 Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
-                Children = go.Children.Select(ToDTO).ToList()
+                Children = go.Children.Where(c => !IsGeneratedChild(c)).Select(ToDTO).ToList()
             };
             return dto;
         }

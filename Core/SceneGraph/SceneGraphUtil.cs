@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System.Linq;
 using System.Collections.Generic;
 using SN = System.Numerics;
@@ -11,10 +11,9 @@ public static class SceneGraphUtil
 {
     public static SN.Matrix4x4 AccumulateWorld(GameObject go)
     {
-        var stack = new Stack<GameObject>();
-        for (var n = go; n != null; n = n.Parent) stack.Push(n);
         var w = SN.Matrix4x4.Identity;
-        while (stack.Count > 0) w = w * TransformUtil.WorldFromTransform(stack.Pop().Transform);
+        for (var n = go; n != null; n = n.Parent)
+            w = w * TransformUtil.WorldFromTransform(n.Transform);
         return w;
     }
 
@@ -22,7 +21,7 @@ public static class SceneGraphUtil
     {
         SN.Matrix4x4 parentW = SN.Matrix4x4.Identity;
         for (var p = go.Parent; p != null; p = p.Parent)
-            parentW = TransformUtil.WorldFromTransform(p.Transform) * parentW;
+            parentW = parentW * TransformUtil.WorldFromTransform(p.Transform);
 
         SN.Matrix4x4.Invert(parentW, out var inv);
         var pLocal = SN.Vector3.Transform(pWorld, inv);
@@ -47,7 +46,7 @@ public static class SceneGraphUtil
 
         void Walk(GameObject go, SN.Matrix4x4 parentW)
         {
-            var W = parentW * TransformUtil.WorldFromTransform(go.Transform);
+            var W = TransformUtil.WorldFromTransform(go.Transform) * parentW;
 
             foreach (var mf in go.Behaviors.OfType<MeshFilter>())
             {

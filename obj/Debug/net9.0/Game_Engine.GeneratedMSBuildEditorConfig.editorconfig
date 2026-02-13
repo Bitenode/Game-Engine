@@ -42,6 +42,9 @@ build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
 [C:/Users/Bitenode/Desktop/Github Engine/Game-Engine/MainWindow.axaml]
 build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
 
+[C:/Users/Bitenode/Desktop/Github Engine/Game-Engine/Views/AnimationPanel.axaml]
+build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
+
 [C:/Users/Bitenode/Desktop/Github Engine/Game-Engine/Views/ConsolePanel.axaml]
 build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
 

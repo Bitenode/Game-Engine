@@ -84,11 +84,31 @@ namespace Game_Engine.Core
         {
             bool changed = false;
 
+            // Skip entire "Grass" container but allow texture warm-up for individual grass GOs
+            if (go.Name == "Grass")
+            {
+                // Still walk children so their textures get warmed up
+                var grassCh = go.Children;
+                for (int gc = 0; gc < grassCh.Count; gc++)
+                    changed |= Walk(grassCh[gc]);
+                return changed;
+            }
+
             var bs = go.Behaviors;
+
+            // Skip MeshRenderers that belong to components with their own material management
+            bool hasDecal = false;
+            bool hasParticle = false;
+            for (int i = 0; i < bs.Count; i++)
+            {
+                if (bs[i] is Component.Decal) hasDecal = true;
+                if (bs[i] is Component.ParticleEmitter) hasParticle = true;
+            }
+
             for (int i = 0; i < bs.Count; i++)
             {
                 var mr = bs[i] as MeshRenderer;
-                if (mr != null)
+                if (mr != null && !hasDecal && !hasParticle)
                     changed |= RebindRenderer(mr);
             }
 
@@ -120,7 +140,7 @@ namespace Game_Engine.Core
 
             // Materials list from 'MaterialPaths' (if present) ----------------
             IList paths = GetListMember(mr, "MaterialPaths");
-            IList mats = GetListMember(mr, "Materials", createIfMissing: paths != null);
+            IList mats = GetListMember(mr, "ResolvedMaterials", createIfMissing: paths != null);
 
             if (paths != null && mats != null)
             {
@@ -149,6 +169,15 @@ namespace Game_Engine.Core
             //         its Texture is null, try to load from disk now (deferred retry
             //         for textures that couldn't be loaded during initial scene load). ---
             try { changed |= WarmUpMaterialTextures(mr.Material); } catch { }
+
+            // Also warm up textures for all resolved materials (multi-submesh support)
+            if (mr.ResolvedMaterials != null)
+            {
+                for (int ri = 0; ri < mr.ResolvedMaterials.Count; ri++)
+                {
+                    try { changed |= WarmUpMaterialTextures(mr.ResolvedMaterials[ri]); } catch { }
+                }
+            }
 
             // Resolve internal slots no matter what (cheap and idempotent) ---
             try { mr.ResolveMaterials(); } catch { }
@@ -186,16 +215,35 @@ namespace Game_Engine.Core
                     if (curTex != null || string.IsNullOrWhiteSpace(srcPath))
                         continue; // already loaded or no path to try
 
-                    // Resolve to absolute
+                    // Resolve to absolute — try project root, then Assets sub-folder
                     string abs = srcPath;
                     if (!System.IO.Path.IsPathRooted(abs))
                     {
                         var proj = ProjectService.Current;
                         if (proj != null)
+                        {
                             abs = System.IO.Path.Combine(proj.RootPath, srcPath);
+                            if (!System.IO.File.Exists(abs))
+                                abs = System.IO.Path.Combine(proj.AssetsPath, srcPath);
+                        }
                     }
                     if (string.IsNullOrWhiteSpace(abs) || !System.IO.File.Exists(abs))
-                        continue;
+                    {
+                        // Last resort: search by filename inside Assets
+                        var proj2 = ProjectService.Current;
+                        if (proj2 != null && System.IO.Directory.Exists(proj2.AssetsPath))
+                        {
+                            try
+                            {
+                                var found = System.IO.Directory.GetFiles(proj2.AssetsPath,
+                                    System.IO.Path.GetFileName(srcPath), System.IO.SearchOption.AllDirectories);
+                                if (found.Length > 0) abs = found[0];
+                            }
+                            catch { }
+                        }
+                        if (string.IsNullOrWhiteSpace(abs) || !System.IO.File.Exists(abs))
+                            continue;
+                    }
 
                     var loaded = Texture2D.FromFile(abs);
                     if (loaded != null && pTex.CanWrite)

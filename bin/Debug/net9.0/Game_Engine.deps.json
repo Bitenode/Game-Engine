@@ -10,11 +10,12 @@
         "dependencies": {
           "AssimpNet": "4.1.0",
           "AutoConstructor": "5.6.0",
-          "Avalonia": "11.3.11",
-          "Avalonia.Desktop": "11.3.11",
-          "Avalonia.Fonts.Inter": "11.3.11",
-          "Avalonia.Themes.Fluent": "11.3.11",
+          "Avalonia": "11.3.12",
+          "Avalonia.Desktop": "11.3.12",
+          "Avalonia.Fonts.Inter": "11.3.12",
+          "Avalonia.Themes.Fluent": "11.3.12",
           "Microsoft.CodeAnalysis.CSharp": "4.14.0",
+          "NAudio": "2.2.1",
           "Silk.NET.OpenGL": "2.23.0",
           "SkiaSharp": "2.88.9",
           "System.Reactive": "6.1.0"
@@ -57,56 +58,56 @@
         }
       },
       "AutoConstructor/5.6.0": {},
-      "Avalonia/11.3.11": {
+      "Avalonia/11.3.12": {
         "dependencies": {
           "Avalonia.BuildServices": "11.3.2",
-          "Avalonia.Remote.Protocol": "11.3.11",
+          "Avalonia.Remote.Protocol": "11.3.12",
           "MicroCom.Runtime": "0.11.0"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Base.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.Controls.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.DesignerSupport.dll": {
             "assemblyVersion": "0.7.0.0",
             "fileVersion": "0.7.0.0"
           },
           "lib/net8.0/Avalonia.Dialogs.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.Markup.Xaml.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.Markup.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.Metal.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.MicroCom.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.OpenGL.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.Vulkan.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
@@ -130,52 +131,52 @@
         }
       },
       "Avalonia.BuildServices/11.3.2": {},
-      "Avalonia.Desktop/11.3.11": {
+      "Avalonia.Desktop/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11",
-          "Avalonia.Native": "11.3.11",
-          "Avalonia.Skia": "11.3.11",
-          "Avalonia.Win32": "11.3.11",
-          "Avalonia.X11": "11.3.11"
+          "Avalonia": "11.3.12",
+          "Avalonia.Native": "11.3.12",
+          "Avalonia.Skia": "11.3.12",
+          "Avalonia.Win32": "11.3.12",
+          "Avalonia.X11": "11.3.12"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Desktop.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.Fonts.Inter/11.3.11": {
+      "Avalonia.Fonts.Inter/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11"
+          "Avalonia": "11.3.12"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Fonts.Inter.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.FreeDesktop/11.3.11": {
+      "Avalonia.FreeDesktop/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11",
+          "Avalonia": "11.3.12",
           "Tmds.DBus.Protocol": "0.21.2"
         },
         "runtime": {
           "lib/net8.0/Avalonia.FreeDesktop.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.Native/11.3.11": {
+      "Avalonia.Native/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11"
+          "Avalonia": "11.3.12"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Native.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         },
         "runtimeTargets": {
@@ -186,17 +187,17 @@
           }
         }
       },
-      "Avalonia.Remote.Protocol/11.3.11": {
+      "Avalonia.Remote.Protocol/11.3.12": {
         "runtime": {
           "lib/net8.0/Avalonia.Remote.Protocol.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.Skia/11.3.11": {
+      "Avalonia.Skia/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11",
+          "Avalonia": "11.3.12",
           "HarfBuzzSharp": "8.3.1.1",
           "HarfBuzzSharp.NativeAssets.Linux": "8.3.1.1",
           "HarfBuzzSharp.NativeAssets.WebAssembly": "8.3.1.1",
@@ -206,48 +207,48 @@
         },
         "runtime": {
           "lib/net8.0/Avalonia.Skia.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.Themes.Fluent/11.3.11": {
+      "Avalonia.Themes.Fluent/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11"
+          "Avalonia": "11.3.12"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Themes.Fluent.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.Win32/11.3.11": {
+      "Avalonia.Win32/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11",
+          "Avalonia": "11.3.12",
           "Avalonia.Angle.Windows.Natives": "2.1.25547.20250602"
         },
         "runtime": {
           "lib/net8.0/Avalonia.Win32.Automation.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           },
           "lib/net8.0/Avalonia.Win32.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
-      "Avalonia.X11/11.3.11": {
+      "Avalonia.X11/11.3.12": {
         "dependencies": {
-          "Avalonia": "11.3.11",
-          "Avalonia.FreeDesktop": "11.3.11",
-          "Avalonia.Skia": "11.3.11"
+          "Avalonia": "11.3.12",
+          "Avalonia.FreeDesktop": "11.3.12",
+          "Avalonia.Skia": "11.3.12"
         },
         "runtime": {
           "lib/net8.0/Avalonia.X11.dll": {
-            "assemblyVersion": "11.3.11.0",
-            "fileVersion": "11.3.11.0"
+            "assemblyVersion": "11.3.12.0",
+            "fileVersion": "11.3.12.0"
           }
         }
       },
@@ -486,18 +487,93 @@
           }
         }
       },
-      "Microsoft.NETCore.Platforms/1.1.0": {},
+      "Microsoft.NETCore.Platforms/3.1.0": {},
       "Microsoft.NETCore.Targets/1.1.0": {},
       "Microsoft.Win32.Primitives/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
+      "Microsoft.Win32.Registry/4.7.0": {
+        "dependencies": {
+          "System.Security.AccessControl": "4.7.0",
+          "System.Security.Principal.Windows": "4.7.0"
+        }
+      },
+      "NAudio/2.2.1": {
+        "dependencies": {
+          "NAudio.Asio": "2.2.1",
+          "NAudio.Core": "2.2.1",
+          "NAudio.Midi": "2.2.1",
+          "NAudio.Wasapi": "2.2.1",
+          "NAudio.WinMM": "2.2.1"
+        },
+        "runtime": {
+          "lib/net6.0/NAudio.dll": {
+            "assemblyVersion": "2.2.1.0",
+            "fileVersion": "2.2.1.0"
+          }
+        }
+      },
+      "NAudio.Asio/2.2.1": {
+        "dependencies": {
+          "Microsoft.Win32.Registry": "4.7.0",
+          "NAudio.Core": "2.2.1"
+        },
+        "runtime": {
+          "lib/netstandard2.0/NAudio.Asio.dll": {
+            "assemblyVersion": "2.2.1.0",
+            "fileVersion": "2.2.1.0"
+          }
+        }
+      },
+      "NAudio.Core/2.2.1": {
+        "runtime": {
+          "lib/netstandard2.0/NAudio.Core.dll": {
+            "assemblyVersion": "2.2.1.0",
+            "fileVersion": "2.2.1.0"
+          }
+        }
+      },
+      "NAudio.Midi/2.2.1": {
+        "dependencies": {
+          "NAudio.Core": "2.2.1"
+        },
+        "runtime": {
+          "lib/netstandard2.0/NAudio.Midi.dll": {
+            "assemblyVersion": "2.2.1.0",
+            "fileVersion": "2.2.1.0"
+          }
+        }
+      },
+      "NAudio.Wasapi/2.2.1": {
+        "dependencies": {
+          "NAudio.Core": "2.2.1"
+        },
+        "runtime": {
+          "lib/netstandard2.0/NAudio.Wasapi.dll": {
+            "assemblyVersion": "2.2.1.0",
+            "fileVersion": "2.2.1.0"
+          }
+        }
+      },
+      "NAudio.WinMM/2.2.1": {
+        "dependencies": {
+          "Microsoft.Win32.Registry": "4.7.0",
+          "NAudio.Core": "2.2.1"
+        },
+        "runtime": {
+          "lib/netstandard2.0/NAudio.WinMM.dll": {
+            "assemblyVersion": "2.2.1.0",
+            "fileVersion": "2.2.1.0"
+          }
+        }
+      },
       "NETStandard.Library/1.6.1": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.Win32.Primitives": "4.3.0",
           "System.AppContext": "4.3.0",
           "System.Collections": "4.3.0",
@@ -548,19 +624,19 @@
       "runtime.fedora.24-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
       "runtime.native.System/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0"
         }
       },
       "runtime.native.System.IO.Compression/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0"
         }
       },
       "runtime.native.System.Net.Http/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0"
         }
       },
@@ -711,7 +787,7 @@
       },
       "System.Collections/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
@@ -733,7 +809,7 @@
       "System.Collections.Immutable/9.0.0": {},
       "System.Console/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.IO": "4.3.0",
           "System.Runtime": "4.3.0",
@@ -742,7 +818,7 @@
       },
       "System.Diagnostics.Debug/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
@@ -758,28 +834,28 @@
       },
       "System.Diagnostics.Tools/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
       "System.Diagnostics.Tracing/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
       "System.Globalization/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
       "System.Globalization.Calendars/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Globalization": "4.3.0",
           "System.Runtime": "4.3.0"
@@ -787,7 +863,7 @@
       },
       "System.Globalization.Extensions/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.Globalization": "4.3.0",
           "System.Resources.ResourceManager": "4.3.0",
           "System.Runtime": "4.3.0",
@@ -797,7 +873,7 @@
       },
       "System.IO/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0",
           "System.Text.Encoding": "4.3.0",
@@ -806,7 +882,7 @@
       },
       "System.IO.Compression/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.Buffers": "4.3.0",
           "System.Collections": "4.3.0",
           "System.Diagnostics.Debug": "4.3.0",
@@ -838,7 +914,7 @@
       },
       "System.IO.FileSystem/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.IO": "4.3.0",
           "System.IO.FileSystem.Primitives": "4.3.0",
@@ -887,7 +963,7 @@
       "System.Memory/4.6.3": {},
       "System.Net.Http/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.Collections": "4.3.0",
           "System.Diagnostics.Debug": "4.3.0",
           "System.Diagnostics.DiagnosticSource": "4.3.0",
@@ -917,7 +993,7 @@
       },
       "System.Net.Primitives/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0",
           "System.Runtime.Handles": "4.3.0"
@@ -925,7 +1001,7 @@
       },
       "System.Net.Sockets/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.IO": "4.3.0",
           "System.Net.Primitives": "4.3.0",
@@ -953,7 +1029,7 @@
       },
       "System.Reflection/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.IO": "4.3.0",
           "System.Reflection.Primitives": "4.3.0",
@@ -986,7 +1062,7 @@
       },
       "System.Reflection.Extensions/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Reflection": "4.3.0",
           "System.Runtime": "4.3.0"
@@ -995,7 +1071,7 @@
       "System.Reflection.Metadata/9.0.0": {},
       "System.Reflection.Primitives/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
@@ -1008,7 +1084,7 @@
       },
       "System.Resources.ResourceManager/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Globalization": "4.3.0",
           "System.Reflection": "4.3.0",
@@ -1017,28 +1093,28 @@
       },
       "System.Runtime/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0"
         }
       },
       "System.Runtime.CompilerServices.Unsafe/6.1.2": {},
       "System.Runtime.Extensions/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
       "System.Runtime.Handles/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
       "System.Runtime.InteropServices/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Reflection": "4.3.0",
           "System.Reflection.Primitives": "4.3.0",
@@ -1065,9 +1141,15 @@
           "System.Runtime.Extensions": "4.3.0"
         }
       },
+      "System.Security.AccessControl/4.7.0": {
+        "dependencies": {
+          "Microsoft.NETCore.Platforms": "3.1.0",
+          "System.Security.Principal.Windows": "4.7.0"
+        }
+      },
       "System.Security.Cryptography.Algorithms/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.Collections": "4.3.0",
           "System.IO": "4.3.0",
           "System.Resources.ResourceManager": "4.3.0",
@@ -1085,7 +1167,7 @@
       },
       "System.Security.Cryptography.Cng/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.IO": "4.3.0",
           "System.Resources.ResourceManager": "4.3.0",
           "System.Runtime": "4.3.0",
@@ -1100,7 +1182,7 @@
       },
       "System.Security.Cryptography.Csp/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.IO": "4.3.0",
           "System.Reflection": "4.3.0",
           "System.Resources.ResourceManager": "4.3.0",
@@ -1117,7 +1199,7 @@
       },
       "System.Security.Cryptography.Encoding/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.Collections": "4.3.0",
           "System.Collections.Concurrent": "4.3.0",
           "System.Linq": "4.3.0",
@@ -1161,7 +1243,7 @@
       },
       "System.Security.Cryptography.X509Certificates/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "System.Collections": "4.3.0",
           "System.Diagnostics.Debug": "4.3.0",
           "System.Globalization": "4.3.0",
@@ -1188,16 +1270,17 @@
           "runtime.native.System.Security.Cryptography.OpenSsl": "4.3.0"
         }
       },
+      "System.Security.Principal.Windows/4.7.0": {},
       "System.Text.Encoding/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
       },
       "System.Text.Encoding.Extensions/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0",
           "System.Text.Encoding": "4.3.0"
@@ -1216,7 +1299,7 @@
       },
       "System.Threading.Tasks/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
@@ -1230,7 +1313,7 @@
       },
       "System.Threading.Timer/4.3.0": {
         "dependencies": {
-          "Microsoft.NETCore.Platforms": "1.1.0",
+          "Microsoft.NETCore.Platforms": "3.1.0",
           "Microsoft.NETCore.Targets": "1.1.0",
           "System.Runtime": "4.3.0"
         }
@@ -1303,12 +1386,12 @@
       "path": "autoconstructor/5.6.0",
       "hashPath": "autoconstructor.5.6.0.nupkg.sha512"
     },
-    "Avalonia/11.3.11": {
+    "Avalonia/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-N+LjdoGLOD2Rio1JK0VlSMEB2opGZpq8/Vs5LV16eAnbjFeXdqY5uwmURFKb1rJ9McyMZQT3Kf2/DecmKqrLEw==",
-      "path": "avalonia/11.3.11",
-      "hashPath": "avalonia.11.3.11.nupkg.sha512"
+      "sha512": "sha512-CHB0gXMSba8gTXqTrO9lS1te9ejH52ngHPm+0i/RfXFzqHXHPQ3yciFc/GfGnXUBjqjwH85J1rhYNl4/EujP0w==",
+      "path": "avalonia/11.3.12",
+      "hashPath": "avalonia.11.3.12.nupkg.sha512"
     },
     "Avalonia.Angle.Windows.Natives/2.1.25547.20250602": {
       "type": "package",
@@ -1324,68 +1407,68 @@
       "path": "avalonia.buildservices/11.3.2",
       "hashPath": "avalonia.buildservices.11.3.2.nupkg.sha512"
     },
-    "Avalonia.Desktop/11.3.11": {
+    "Avalonia.Desktop/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-m60U1jV96RquwYGg4Pzwp0ENL1HUrM3YZLMCes0gWRn8x+webT9V4Wfs58MAdTOukXPpy9t1XhEd4NON674Wmw==",
-      "path": "avalonia.desktop/11.3.11",
-      "hashPath": "avalonia.desktop.11.3.11.nupkg.sha512"
+      "sha512": "sha512-zwtEFNvXB60z7rHD92oISkCQq0PcFyttfAW+cgcfALECegtNkd9P9/UXIuE0GvMVBVUPTRUQeSB6/jhwZKqqRQ==",
+      "path": "avalonia.desktop/11.3.12",
+      "hashPath": "avalonia.desktop.11.3.12.nupkg.sha512"
     },
-    "Avalonia.Fonts.Inter/11.3.11": {
+    "Avalonia.Fonts.Inter/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-VzfS95eXV2YlMxizNWGug3eb4717lNGZ3lIfl5os+DTL+A1djDT+Sv87oXAj8jGVqijdA/eFP9jax5JA9GCb3g==",
-      "path": "avalonia.fonts.inter/11.3.11",
-      "hashPath": "avalonia.fonts.inter.11.3.11.nupkg.sha512"
+      "sha512": "sha512-Q28QGYnGbvrlTwg6md5U0sR8PuP7H77cysnJDR6a/hnCBH71/GPKxi4GGOKh2qFyo15XmvAwNZ+3QetfnOKSXw==",
+      "path": "avalonia.fonts.inter/11.3.12",
+      "hashPath": "avalonia.fonts.inter.11.3.12.nupkg.sha512"
     },
-    "Avalonia.FreeDesktop/11.3.11": {
+    "Avalonia.FreeDesktop/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-kmmYhKVWAFAz064K4FYTqVOk/Oin6DWp5LfzVNISz3BP4YYUZdrGyglxhjbS6t8iOyzMnAoHCrNs1Pw+BRFYUQ==",
-      "path": "avalonia.freedesktop/11.3.11",
-      "hashPath": "avalonia.freedesktop.11.3.11.nupkg.sha512"
+      "sha512": "sha512-R1UdslorpUSmAt1SKNmmypkUPj993WpE4iUm5KvPd0mL0NQbIFra2DYYGb8GCtLOsupnA4pyNOU2FXumB2EGKA==",
+      "path": "avalonia.freedesktop/11.3.12",
+      "hashPath": "avalonia.freedesktop.11.3.12.nupkg.sha512"
     },
-    "Avalonia.Native/11.3.11": {
+    "Avalonia.Native/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-21XxwcOCYuf7fSYBsc4sF7CS0xNK80iDFyXyK9L4awnrjZOJjMuNSGiJ2L5+RQQkXnXaB8ECvMAWN3e/9WN3aw==",
-      "path": "avalonia.native/11.3.11",
-      "hashPath": "avalonia.native.11.3.11.nupkg.sha512"
+      "sha512": "sha512-28q2DUSGUBVRpEQWYBo0crokZabPyI7KmA68++nm/qAe/9Zxmxythk/F36swAkI4pIU2ouLIKK0yxiFBy+xvNw==",
+      "path": "avalonia.native/11.3.12",
+      "hashPath": "avalonia.native.11.3.12.nupkg.sha512"
     },
-    "Avalonia.Remote.Protocol/11.3.11": {
+    "Avalonia.Remote.Protocol/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-kooZKlJb0DkzJYFzYTgChqAr+pOBq64FyNuvjpBLBmqTTTj/f+d7XyPvdNFgPsvyY3sa4X/W79t6hQnyWmM4zw==",
-      "path": "avalonia.remote.protocol/11.3.11",
-      "hashPath": "avalonia.remote.protocol.11.3.11.nupkg.sha512"
+      "sha512": "sha512-zaWTPaBKxGfHxqQfPh1WP+vWy3iVAwYWW/7FGlz63/wT1b+3b7Wn37H6c9C2E/M3cgllrW5/cirye516QUDZiA==",
+      "path": "avalonia.remote.protocol/11.3.12",
+      "hashPath": "avalonia.remote.protocol.11.3.12.nupkg.sha512"
     },
-    "Avalonia.Skia/11.3.11": {
+    "Avalonia.Skia/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-7XynAFWmUR0pEXj6dY8ezpFkeMpNTGNvz1Vf2kLKQawJiv1MKdxzbehDXG9v4A0l2oBLd5m92Dme1/EKH7oj5g==",
-      "path": "avalonia.skia/11.3.11",
-      "hashPath": "avalonia.skia.11.3.11.nupkg.sha512"
+      "sha512": "sha512-rlVMl2obc5hy4CHfLwA4+Lyu7KU+l5iSmj8leugoWofjgGDyUPa281VCo5FSH4+SkU1+EIXVJZubx2o02gp9nw==",
+      "path": "avalonia.skia/11.3.12",
+      "hashPath": "avalonia.skia.11.3.12.nupkg.sha512"
     },
-    "Avalonia.Themes.Fluent/11.3.11": {
+    "Avalonia.Themes.Fluent/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-GBLwgTwLPGaWxtbBdZ+kUn+QIKVorTc3m8v3nr0wsvRJkWHPgrDR5LAoHJjkPQCLDFuqocYFIeLOUAaBYP0MeA==",
-      "path": "avalonia.themes.fluent/11.3.11",
-      "hashPath": "avalonia.themes.fluent.11.3.11.nupkg.sha512"
+      "sha512": "sha512-umclBVVjbKdbh6i+dAtbDlVIPS8A83S222fxgC1w0zqWvJrk9NwfFsnIQVBHxN/1hLPVMcUfp5Gxu2FOPWjDaQ==",
+      "path": "avalonia.themes.fluent/11.3.12",
+      "hashPath": "avalonia.themes.fluent.11.3.12.nupkg.sha512"
     },
-    "Avalonia.Win32/11.3.11": {
+    "Avalonia.Win32/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-hFOuFHuhOIiB1p4XtTYnIFHvVazCQwotlPW/iUPObUHQY6qoDYqzPIZIELZiLtUIs9zHA55DWvpmW/l4rDuuAQ==",
-      "path": "avalonia.win32/11.3.11",
-      "hashPath": "avalonia.win32.11.3.11.nupkg.sha512"
+      "sha512": "sha512-3Z8gSpWMU0NWR0fI/m8d9b6d9fms1MJ6eZJ7IU4CdU/zCrPiFTjtPfc2VRaRD/0H4tsR3VgP+iTMGZn5nBWljg==",
+      "path": "avalonia.win32/11.3.12",
+      "hashPath": "avalonia.win32.11.3.12.nupkg.sha512"
     },
-    "Avalonia.X11/11.3.11": {
+    "Avalonia.X11/11.3.12": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-ZhNHTe8n0w7+Xkxgt13WidSZudHKiDQfDDv/jEDJ4ffdh6z4oKjkPrVUer0ECgEENOR2iCLvFNlaDi5glZ66SA==",
-      "path": "avalonia.x11/11.3.11",
-      "hashPath": "avalonia.x11.11.3.11.nupkg.sha512"
+      "sha512": "sha512-HR0zf0si52uu/hxPTIOI7gW68kPwz8D/fPYgioxISXAR+Yf6BH/TY/F/zrlu3LbptqU3ySoUmqkA9QJpXz04BQ==",
+      "path": "avalonia.x11/11.3.12",
+      "hashPath": "avalonia.x11.11.3.12.nupkg.sha512"
     },
     "HarfBuzzSharp/8.3.1.1": {
       "type": "package",
@@ -1471,12 +1554,12 @@
       "path": "microsoft.extensions.dependencymodel/9.0.9",
       "hashPath": "microsoft.extensions.dependencymodel.9.0.9.nupkg.sha512"
     },
-    "Microsoft.NETCore.Platforms/1.1.0": {
+    "Microsoft.NETCore.Platforms/3.1.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-kz0PEW2lhqygehI/d6XsPCQzD7ff7gUJaVGPVETX611eadGsA3A877GdSlU0LRVMCTH/+P3o2iDTak+S08V2+A==",
-      "path": "microsoft.netcore.platforms/1.1.0",
-      "hashPath": "microsoft.netcore.platforms.1.1.0.nupkg.sha512"
+      "sha512": "sha512-z7aeg8oHln2CuNulfhiLYxCVMPEwBl3rzicjvIX+4sUuCwvXw5oXQEtbiU2c0z4qYL5L3Kmx0mMA/+t/SbY67w==",
+      "path": "microsoft.netcore.platforms/3.1.0",
+      "hashPath": "microsoft.netcore.platforms.3.1.0.nupkg.sha512"
     },
     "Microsoft.NETCore.Targets/1.1.0": {
       "type": "package",
@@ -1491,6 +1574,55 @@
       "sha512": "sha512-9ZQKCWxH7Ijp9BfahvL2Zyf1cJIk8XYLF6Yjzr2yi0b2cOut/HQ31qf1ThHAgCc3WiZMdnWcfJCgN82/0UunxA==",
       "path": "microsoft.win32.primitives/4.3.0",
       "hashPath": "microsoft.win32.primitives.4.3.0.nupkg.sha512"
+    },
+    "Microsoft.Win32.Registry/4.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-KSrRMb5vNi0CWSGG1++id2ZOs/1QhRqROt+qgbEAdQuGjGrFcl4AOl4/exGPUYz2wUnU42nvJqon1T3U0kPXLA==",
+      "path": "microsoft.win32.registry/4.7.0",
+      "hashPath": "microsoft.win32.registry.4.7.0.nupkg.sha512"
+    },
+    "NAudio/2.2.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-c0DzwiyyklM0TP39Y7RObwO3QkWecgM6H60ikiEnsV/aEAJPbj5MFCLaD8BSfKuZe0HGuh9GRGWWlJmSxDc9MA==",
+      "path": "naudio/2.2.1",
+      "hashPath": "naudio.2.2.1.nupkg.sha512"
+    },
+    "NAudio.Asio/2.2.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-hQglyOT5iT3XuGpBP8ZG0+aoqwRfidHjTNehpoWwX0g6KJEgtH2VaqM2nuJ2mheKZa/IBqB4YQTZVvrIapzfOA==",
+      "path": "naudio.asio/2.2.1",
+      "hashPath": "naudio.asio.2.2.1.nupkg.sha512"
+    },
+    "NAudio.Core/2.2.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-GgkdP6K/7FqXFo7uHvoqGZTJvW4z8g2IffhOO4JHaLzKCdDOUEzVKtveoZkCuUX8eV2HAINqi7VFqlFndrnz/g==",
+      "path": "naudio.core/2.2.1",
+      "hashPath": "naudio.core.2.2.1.nupkg.sha512"
+    },
+    "NAudio.Midi/2.2.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-6r23ylGo5aeP02WFXsPquz0T0hFJWyh+7t++tz19tc3Kr38NHm+Z9j+FiAv+xkH8tZqXJqus9Q8p6u7bidIgbw==",
+      "path": "naudio.midi/2.2.1",
+      "hashPath": "naudio.midi.2.2.1.nupkg.sha512"
+    },
+    "NAudio.Wasapi/2.2.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-lFfXoqacZZe0WqNChJgGYI+XV/n/61LzPHT3C1CJp4khoxeo2sziyX5wzNYWeCMNbsWxFvT3b3iXeY1UYjBhZw==",
+      "path": "naudio.wasapi/2.2.1",
+      "hashPath": "naudio.wasapi.2.2.1.nupkg.sha512"
+    },
+    "NAudio.WinMM/2.2.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-xFHRFwH4x6aq3IxRbewvO33ugJRvZFEOfO62i7uQJRUNW2cnu6BeBTHUS0JD5KBucZbHZaYqxQG8dwZ47ezQuQ==",
+      "path": "naudio.winmm/2.2.1",
+      "hashPath": "naudio.winmm.2.2.1.nupkg.sha512"
     },
     "NETStandard.Library/1.6.1": {
       "type": "package",
@@ -1975,6 +2107,13 @@
       "path": "system.runtime.numerics/4.3.0",
       "hashPath": "system.runtime.numerics.4.3.0.nupkg.sha512"
     },
+    "System.Security.AccessControl/4.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-JECvTt5aFF3WT3gHpfofL2MNNP6v84sxtXxpqhLBCcDRzqsPBmHhQ6shv4DwwN2tRlzsUxtb3G9M3763rbXKDg==",
+      "path": "system.security.accesscontrol/4.7.0",
+      "hashPath": "system.security.accesscontrol.4.7.0.nupkg.sha512"
+    },
     "System.Security.Cryptography.Algorithms/4.3.0": {
       "type": "package",
       "serviceable": true,
@@ -2023,6 +2162,13 @@
       "sha512": "sha512-t2Tmu6Y2NtJ2um0RtcuhP7ZdNNxXEgUm2JeoA/0NvlMjAhKCnM1NX07TDl3244mVp3QU6LPEhT3HTtH1uF7IYw==",
       "path": "system.security.cryptography.x509certificates/4.3.0",
       "hashPath": "system.security.cryptography.x509certificates.4.3.0.nupkg.sha512"
+    },
+    "System.Security.Principal.Windows/4.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-ojD0PX0XhneCsUbAZVKdb7h/70vyYMDYs85lwEI+LngEONe/17A0cFaRFqZU+sOEidcVswYWikYOQ9PPfjlbtQ==",
+      "path": "system.security.principal.windows/4.7.0",
+      "hashPath": "system.security.principal.windows.4.7.0.nupkg.sha512"
     },
     "System.Text.Encoding/4.3.0": {
       "type": "package",

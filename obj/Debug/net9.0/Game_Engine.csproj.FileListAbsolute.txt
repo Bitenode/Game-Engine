@@ -108,3 +108,9 @@ C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net9.0\refint\Game
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net9.0\Game_Engine.pdb
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net9.0\Game_Engine.genruntimeconfig.cache
 C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\obj\Debug\net9.0\ref\Game_Engine.dll
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\bin\Debug\net9.0\NAudio.dll
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\bin\Debug\net9.0\NAudio.Asio.dll
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\bin\Debug\net9.0\NAudio.Core.dll
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\bin\Debug\net9.0\NAudio.Midi.dll
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\bin\Debug\net9.0\NAudio.Wasapi.dll
+C:\Users\Bitenode\Desktop\Github Engine\Game-Engine\bin\Debug\net9.0\NAudio.WinMM.dll

@@ -49,6 +49,15 @@ namespace Game_Engine.Core
             }
         }
 
+        /// <summary>
+        /// Set Enabled without firing OnEnable/OnDisable, SceneService.NotifyChanged, or EnabledChanged.
+        /// Used by culling systems (e.g. VegetationPainter) that toggle visibility every frame.
+        /// </summary>
+        internal void SetEnabledSilent(bool value)
+        {
+            _enabled = value;
+        }
+
         // ---- attach-time auto require (editor-time) --------------------------
         GameObject? _owner;
         [Persist]
@@ -111,6 +120,14 @@ namespace Game_Engine.Core
         {
             if (_destroyed) return;
             _destroyed = true;
+            // Ensure OnDisable runs before OnDestroy so that components
+            // can clean up static registries (e.g., PostProcessVolume._volumes).
+            if (_enabled)
+            {
+                _enabled = false;
+                SafeCall(OnDisable, nameof(OnDisable));
+                if (LogLifecycle) LogDebug("Disabled (via Destroy)");
+            }
             SafeCall(OnDestroy, nameof(OnDestroy));
             if (LogLifecycle) LogDebug("OnDestroy");
         }

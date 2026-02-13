@@ -36,8 +36,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private ShaderProgram? _gridShader;
     private ShaderProgram? _wireShader;
     private ShaderProgram? _terrainShader;
+    private ShaderProgram? _particleShader;
+    private ShaderProgram? _waterShader;
+    private ShaderProgram? _postProcessShader;
     private FullscreenQuad? _fsQuad;
     private ResourceCache? _cache;
+    private GPUFramebuffer? _sceneFBO;
+    private int _sceneFBO_W, _sceneFBO_H;
 
 
     private ShadowMapGPU? _shadow;
@@ -995,6 +1000,24 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
             DiagLog("[SceneView] Terrain shader OK");
 
+            DiagLog("[SceneView] Compiling particle shader...");
+            _particleShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.ParticleVert, es),
+                ShaderSources.Adapt(ShaderSources.ParticleFrag, es));
+            DiagLog("[SceneView] Particle shader OK");
+
+            DiagLog("[SceneView] Compiling water shader...");
+            _waterShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.WaterVert, es),
+                ShaderSources.Adapt(ShaderSources.WaterFrag, es));
+            DiagLog("[SceneView] Water shader OK");
+
+            DiagLog("[SceneView] Compiling post-process shader...");
+            _postProcessShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
+                ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
+            DiagLog("[SceneView] Post-process shader OK");
+
             _fsQuad = new FullscreenQuad(g);
             _cache = new ResourceCache(g);
 
@@ -1031,6 +1054,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             if (_gizmoVao != 0) { g.DeleteVertexArray(_gizmoVao); _gizmoVao = 0; }
             if (_gizmoVbo != 0) { g.DeleteBuffer(_gizmoVbo); _gizmoVbo = 0; }
         }
+        _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
+        _postProcessShader?.Dispose(); _postProcessShader = null;
+        _waterShader?.Dispose(); _waterShader = null;
+        _particleShader?.Dispose(); _particleShader = null;
         _shadow?.Dispose();
         _cache?.Dispose();
         _fsQuad?.Dispose();
@@ -1052,6 +1079,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         var g = _glCtx.GL;
 
+        // Flush any GL errors accumulated by the other view's rendering.
+        // Both views share the same GL context; stale errors can confuse drivers.
+        while (g.GetError() != GLEnum.NoError) { }
+
         _frameTimer.Restart();
         double _tSetup = 0, _tShadow = 0, _tScene = 0, _tGizmo = 0;
         var _sec = Stopwatch.StartNew();
@@ -1072,9 +1103,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         int pxW = Math.Max(1, (int)(size.Width * scaling));
         int pxH = Math.Max(1, (int)(size.Height * scaling));
 
-        // Bind Avalonia's framebuffer
+        // Bind Avalonia's framebuffer and reset essential GL state.
+        // The other view may have left the context in an unexpected state.
         g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         g.Viewport(0, 0, (uint)pxW, (uint)pxH);
+        g.Enable(EnableCap.DepthTest);
+        g.DepthFunc(DepthFunction.Less);
+        g.Disable(EnableCap.Blend);
+        g.ColorMask(true, true, true, true);
+        g.DepthMask(true);
 
         // Use DIP size for projection (aspect ratio is the same, but cameras may use it)
         int W = Math.Max(1, (int)size.Width);
@@ -1189,6 +1226,31 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         _tShadow = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
 
+        // --- POST-PROCESSING FBO setup ---
+        // If a PostProcessVolume is active, render the scene to an offscreen FBO
+        // so we can apply screen-space effects before blitting to Avalonia's FB.
+        var postVolume = PostProcessVolume.GetActive();
+        bool usePostFX = postVolume != null && _postProcessShader != null && !ShowWire;
+
+        if (usePostFX)
+        {
+            // Create / resize the scene FBO as needed
+            if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
+            if (_sceneFBO_W != pxW || _sceneFBO_H != pxH)
+            {
+                _sceneFBO.SetupColorDepth(pxW, pxH);
+                _sceneFBO_W = pxW; _sceneFBO_H = pxH;
+            }
+
+            _sceneFBO.Bind();
+            g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+            g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+            // Re-render sky into the FBO
+            Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
+                skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw);
+        }
+
         // --- SCENE PASS (GPU draw calls) ---
         if (!ShowWire)
         {
@@ -1205,6 +1267,42 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, camPos, sunSD,
                 terrainShader: _terrainShader);
+
+            // --- WATER ---
+            if (_waterShader != null)
+            {
+                var skyC = sky != null
+                    ? new SN.Vector3(sky.Top.R / 255f, sky.Top.G / 255f, sky.Top.B / 255f)
+                    : new SN.Vector3(0.5f, 0.6f, 0.8f);
+                SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
+                    SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
+            }
+
+            // --- PARTICLES ---
+            if (_particleShader != null)
+                SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
+        }
+
+        // --- POST-PROCESSING BLIT ---
+        if (usePostFX && _sceneFBO?.ColorTexture != null)
+        {
+            // Bind Avalonia's framebuffer as the output target
+            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+            g.Viewport(0, 0, (uint)pxW, (uint)pxH);
+            g.Disable(EnableCap.DepthTest);
+
+            g.BindVertexArray(_fsQuad!.VAO);
+            SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, pxW, pxH, postVolume);
+            g.BindVertexArray(0);
+
+            g.Enable(EnableCap.DepthTest);
+
+            // Blit depth from scene FBO so gizmos occlude correctly
+            g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _sceneFBO.Handle);
+            g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, (uint)fb);
+            g.BlitFramebuffer(0, 0, pxW, pxH, 0, 0, pxW, pxH,
+                ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
+            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         }
 
         _tScene = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
@@ -1272,11 +1370,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             CameraOverlay.DrawCameraFrustums(ctx, view, proj, size, active.Cam);
 
         // Wireframe overlay (Avalonia 2D lines)
-        if (ShowWire)
-        {
-            foreach (var root in SceneService.Root)
-                DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, true);
-        }
+        // Always traverse the scene so per-object MeshRenderer.Wireframe draws even
+        // when the global ShowWire toggle is off (the GL renderer already skips those meshes).
+        foreach (var root in SceneService.Root)
+            DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
 
         // Collider gizmos
         if (GizmoLocal)
@@ -1309,7 +1406,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             var mainColor = col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue;
             if (col is CapsuleCollider capCol)
             {
-                var W = TransformUtil.WorldFromTransform(go.Transform);
+                var W = SceneGraphUtil.AccumulateWorld(go);
                 var c = new SN.Vector3((float)capCol.Center.X, (float)capCol.Center.Y, (float)capCol.Center.Z);
                 var rr = Math.Max(0.0001f, capCol.Radius);
                 var hh = Math.Max(2f * rr, capCol.Height);
@@ -1353,25 +1450,147 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     }
     #endregion
 
+    // ── Multi-select support ──
+    readonly List<GameObject> _multiSelected = new();
+    public IReadOnlyList<GameObject> MultiSelected => _multiSelected;
+
+    // ── Clipboard for copy/paste ──
+    private static string? _clipboardJson;
+
     #region Input: orbit/pan & gizmo drag
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+
+        // F = Focus on selected
         if (e.Key == Key.F && _selected != null) { FrameSelected(_selected); e.Handled = true; }
+
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
+            // Ctrl+Z = Undo
             if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift)) { UndoService.Undo(); e.Handled = true; }
+            // Ctrl+Y / Ctrl+Shift+Z = Redo
             else if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
             { UndoService.Redo(); e.Handled = true; }
+
+            // Ctrl+C = Copy selected GameObject(s)
+            else if (e.Key == Key.C && !e.KeyModifiers.HasFlag(KeyModifiers.Shift) && _selected != null)
+            {
+                CopySelected(); e.Handled = true;
+            }
+            // Ctrl+V = Paste
+            else if (e.Key == Key.V && _clipboardJson != null)
+            {
+                PasteFromClipboard(); e.Handled = true;
+            }
+            // Ctrl+D = Duplicate
+            else if (e.Key == Key.D && _selected != null)
+            {
+                DuplicateSelected(); e.Handled = true;
+            }
         }
+
+        // Delete / Backspace = Delete selected
+        if ((e.Key == Key.Delete || e.Key == Key.Back) && _selected != null)
+        {
+            DeleteSelected(); e.Handled = true;
+        }
+
+        // G = toggle snap to grid
+        if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            SnapEnabled = !SnapEnabled; InvalidateVisual(); e.Handled = true;
+        }
+
         if (HandleFlyKeyDown(e.Key)) { e.Handled = true; return; }
-        if (e.Key == Key.C)
+
+        // C = toggle camera preview (only when NOT using Ctrl+C for copy)
+        if (e.Key == Key.C && !e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             if (!_lookThroughCamera)
             { _lastPreviewCam = FindBestCameraForPreview(); _lookThroughCamera = _lastPreviewCam != null; }
             else { _lookThroughCamera = false; _lastPreviewCam = null; }
             InvalidateVisual(); e.Handled = true;
         }
+    }
+
+    // ── Copy/Paste/Duplicate/Delete helpers ──
+
+    void CopySelected()
+    {
+        if (_selected == null) return;
+        try
+        {
+            _clipboardJson = System.Text.Json.JsonSerializer.Serialize(_selected, SceneSerialization.JsonOptions);
+            Log.Info($"[SceneView] Copied: {_selected.Name}");
+        }
+        catch (Exception ex) { Log.Error($"[SceneView] Copy failed: {ex.Message}"); }
+    }
+
+    void PasteFromClipboard()
+    {
+        if (_clipboardJson == null) return;
+        try
+        {
+            var go = System.Text.Json.JsonSerializer.Deserialize<GameObject>(_clipboardJson, SceneSerialization.JsonOptions);
+            if (go == null) return;
+            go.Name += " (Copy)";
+            // Offset position slightly so it doesn't overlap
+            go.Transform.Position = new Vector3(
+                go.Transform.Position.X + 1f,
+                go.Transform.Position.Y,
+                go.Transform.Position.Z + 1f);
+            SceneService.Add(go);
+            SelectionService.Set(go);
+            _selected = go;
+            SceneService.NotifyChanged();
+            Log.Info($"[SceneView] Pasted: {go.Name}");
+        }
+        catch (Exception ex) { Log.Error($"[SceneView] Paste failed: {ex.Message}"); }
+    }
+
+    void DuplicateSelected()
+    {
+        if (_selected == null) return;
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(_selected, SceneSerialization.JsonOptions);
+            var go = System.Text.Json.JsonSerializer.Deserialize<GameObject>(json, SceneSerialization.JsonOptions);
+            if (go == null) return;
+            go.Name += " (Dup)";
+            go.Transform.Position = new Vector3(
+                go.Transform.Position.X + 0.5f,
+                go.Transform.Position.Y,
+                go.Transform.Position.Z + 0.5f);
+
+            if (_selected.Parent != null)
+                _selected.Parent.AddChild(go);
+            else
+                SceneService.Add(go);
+
+            SelectionService.Set(go);
+            _selected = go;
+            SceneService.NotifyChanged();
+            Log.Info($"[SceneView] Duplicated: {go.Name}");
+        }
+        catch (Exception ex) { Log.Error($"[SceneView] Duplicate failed: {ex.Message}"); }
+    }
+
+    void DeleteSelected()
+    {
+        if (_selected == null) return;
+        var go = _selected;
+        SelectionService.Set(null);
+        _selected = null;
+
+        if (go.Parent != null)
+            go.Parent.Children.Remove(go);
+        else
+            SceneService.Remove(go);
+
+        SceneService.NotifyChanged();
+        InvalidateVisual();
+        Log.Info($"[SceneView] Deleted: {go.Name}");
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
@@ -1705,7 +1924,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     #region Wireframe helper (Avalonia 2D)
     void DrawNodeWire(DrawingContext ctx, in SN.Matrix4x4 vp, Size sz, GameObject go, in SN.Matrix4x4 parentWorld, bool globalWire)
     {
-        var world = parentWorld * WorldFromTransform(go.Transform);
+        var world = WorldFromTransform(go.Transform) * parentWorld;
         var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
         var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
         int n = Math.Min(filters.Count, renderers.Count);

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Game_Engine.Core.Physics;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -13,6 +14,8 @@ namespace Game_Engine.Core.Component
     ///  - Kinematic horiz motion w/ CCD ray + wall slide + AABB unstick
     ///  - Gravity/jump integration (no input here; call Simulate from your player)
     ///  - Uses O(1) heightmap collision for Terrain instead of brute-force mesh tests
+    ///  - Pushes Rigidbody objects on contact
+    ///  - OnTriggerEnter/Stay/Exit events for trigger volumes
     /// </summary>
     public sealed class CharacterController : Behavior
     {
@@ -45,6 +48,10 @@ namespace Game_Engine.Core.Component
         [Persist] public float UnstickMaxExtent { get; set; } = 5f;
         [Persist] public bool UnstickSkipIfInside { get; set; } = true;
 
+        // ── Push interaction ──
+        /// <summary>Force multiplier when pushing Rigidbody objects on contact.</summary>
+        [Persist] public float PushForce { get; set; } = 3.0f;
+
         // ---------------- Runtime (read-only) ----------------
         public bool IsGrounded { get; private set; }
         public SN.Vector3 GroundNormal { get; private set; } = SN.Vector3.UnitY;
@@ -58,11 +65,16 @@ namespace Game_Engine.Core.Component
 
         CapsuleCollider? _capsule;
 
-        // Per-frame caches to avoid repeated scene traversals
-        private readonly List<Terrain> _terrainCache = new();
-        private readonly HashSet<GameObject> _terrainGOs = new();
-        private readonly List<MeshCollider> _meshColliderCache = new();
-        private readonly List<Collider> _nonMeshColliderCache = new();
+        // ── Trigger tracking ──
+        private readonly HashSet<Collider> _currentTriggers = new();
+        private readonly HashSet<Collider> _previousTriggers = new();
+
+        /// <summary>Fired when the player enters a trigger volume.</summary>
+        public event Action<Collider>? OnTriggerEnter;
+        /// <summary>Fired every frame while the player stays inside a trigger volume.</summary>
+        public event Action<Collider>? OnTriggerStay;
+        /// <summary>Fired when the player exits a trigger volume.</summary>
+        public event Action<Collider>? OnTriggerExit;
 
         public override void Awake() => RefreshCapsule();
         public override void OnEnable() => RefreshCapsule();
@@ -77,50 +89,13 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>
-        /// Refresh per-frame caches of terrains, mesh colliders, and non-mesh colliders.
-        /// Called once at the start of Simulate to avoid repeated FindBehaviors traversals.
-        /// </summary>
-        void RefreshCollisionCaches()
-        {
-            _terrainCache.Clear();
-            _terrainGOs.Clear();
-            _meshColliderCache.Clear();
-            _nonMeshColliderCache.Clear();
-
-            foreach (var t in SceneQuery.FindBehaviors<Terrain>())
-            {
-                if (t.Enabled && t.gameObject != null)
-                {
-                    _terrainCache.Add(t);
-                    // Mark terrain GO and all chunk children so we skip their MeshColliders
-                    _terrainGOs.Add(t.gameObject);
-                    for (int i = 0; i < t.gameObject.Children.Count; i++)
-                        _terrainGOs.Add(t.gameObject.Children[i]);
-                }
-            }
-
-            foreach (var mc in SceneQuery.FindBehaviors<MeshCollider>())
-            {
-                if (!mc.Enabled || mc.IsTrigger || mc.gameObject == this.gameObject) continue;
-                // Skip MeshColliders on terrain GameObjects — use heightmap instead
-                if (_terrainGOs.Contains(mc.gameObject)) continue;
-                _meshColliderCache.Add(mc);
-            }
-
-            foreach (var c in SceneQuery.FindBehaviors<Collider>())
-            {
-                if (!c.Enabled || c.IsTrigger || c.gameObject == this.gameObject || c is MeshCollider) continue;
-                _nonMeshColliderCache.Add(c);
-            }
-        }
-
-        /// <summary>
         /// Call from FixedUpdate. desiredHorizontalDelta is world XZ (meters) built using fixedDeltaTime.
         /// jump=true to attempt jump this step.
         /// </summary>
         public void Simulate(SN.Vector3 desiredHorizontalDelta, bool jump)
         {
-            RefreshCollisionCaches();
+            // Refresh shared physics cache (only rebuilds once per tick)
+            PhysicsCache.RefreshFrame();
 
             var tr = Transform;
             float dt = Math.Max(0.0001f, Time.fixedDeltaTime);
@@ -157,9 +132,11 @@ namespace Game_Engine.Core.Component
             }
 
             float moveLen = new SN.Vector2(deltaXZ.X, deltaXZ.Z).Length();
+            SN.Vector3 moveDir = SN.Vector3.Zero;
             if (moveLen > 0f)
             {
-                var dirXZ = new SN.Vector3(deltaXZ.X, 0, deltaXZ.Z) / moveLen;
+                moveDir = new SN.Vector3(deltaXZ.X, 0, deltaXZ.Z) / moveLen;
+                var dirXZ = moveDir;
                 float stepLen = MathF.Max(0.01f, CapsuleRadius / 4f);
                 int steps = Math.Max(1, (int)MathF.Ceiling(moveLen / stepLen));
                 var micro = dirXZ * (moveLen / steps);
@@ -169,6 +146,9 @@ namespace Game_Engine.Core.Component
                     ResolveHorizontalAABB(ref pos, CapsuleHalfCylinder, CapsuleRadius);
                 }
             }
+
+            // ── Push Rigidbody objects ──
+            PushRigidbodies(pos, moveDir, moveLen, dt);
 
             // Re-probe quickly after horizontal move (helps big steps)
             rayStart = pos + new SN.Vector3(0, Math.Max(StepUpMax, 0.2f) + 0.002f, 0);
@@ -247,11 +227,107 @@ namespace Game_Engine.Core.Component
             tr.Position = p3;
 
             GroundNormal = IsGrounded ? (slopeOk ? hitN : _lastHitN) : SN.Vector3.UnitY;
+
+            // ── Trigger detection (after final position) ──
+            CheckTriggers(pos);
         }
 
         // ---------- External helpers ----------
         public void SetVerticalVelocity(float vy) => VerticalVelocity = vy;
         public void ResetVertical() => VerticalVelocity = 0f;
+
+        // ================= Push Rigidbodies =================
+
+        /// <summary>
+        /// After horizontal movement, check if the player's capsule overlaps any
+        /// Rigidbody-owning colliders. If so, push the Rigidbody with an impulse.
+        /// </summary>
+        void PushRigidbodies(SN.Vector3 pos, SN.Vector3 moveDir, float moveLen, float dt)
+        {
+            if (PushForce <= 0f || moveLen < 1e-6f) return;
+
+            // Build a rough capsule AABB for the player at the current position
+            float r = CapsuleRadius + 0.1f; // slight expansion
+            float halfH = CapsuleHalfCylinder + CapsuleRadius;
+            var playerMin = new SN.Vector3(pos.X - r, pos.Y - halfH, pos.Z - r);
+            var playerMax = new SN.Vector3(pos.X + r, pos.Y + halfH, pos.Z + r);
+
+            for (int i = 0; i < Rigidbody.All.Count; i++)
+            {
+                var rb = Rigidbody.All[i];
+                if (rb.IsKinematic || rb.gameObject == gameObject) continue;
+
+                var rbCollider = rb.gameObject?.Behaviors?.OfType<Collider>().FirstOrDefault();
+                if (rbCollider == null) continue;
+
+                var rbAABB = rbCollider.GetWorldAABB();
+                if (!OverlapsAABB(playerMin, playerMax, rbAABB.Min, rbAABB.Max)) continue;
+
+                // Compute push direction (prefer movement direction, fallback to displacement)
+                var rbPos = new SN.Vector3(
+                    (float)rb.Transform.Position.X,
+                    (float)rb.Transform.Position.Y,
+                    (float)rb.Transform.Position.Z);
+                var pushDir = moveDir;
+                pushDir.Y = 0f;
+                if (pushDir.LengthSquared() < 1e-6f)
+                {
+                    pushDir = rbPos - pos;
+                    pushDir.Y = 0f;
+                    if (pushDir.LengthSquared() < 1e-6f) continue;
+                }
+                pushDir = SN.Vector3.Normalize(pushDir);
+
+                // Impulse proportional to PushForce and inversely proportional to mass
+                float impulseStrength = PushForce / MathF.Max(0.1f, rb.Mass);
+                rb.WakeUp();
+                rb.AddImpulse(pushDir * impulseStrength * dt);
+            }
+        }
+
+        // ================= Trigger System =================
+
+        void CheckTriggers(SN.Vector3 pos)
+        {
+            _currentTriggers.Clear();
+
+            // Build player AABB
+            float r = CapsuleRadius;
+            float halfH = CapsuleHalfCylinder + CapsuleRadius;
+            var playerMin = new SN.Vector3(pos.X - r, pos.Y - halfH, pos.Z - r);
+            var playerMax = new SN.Vector3(pos.X + r, pos.Y + halfH, pos.Z + r);
+
+            for (int i = 0; i < PhysicsCache.TriggerColliders.Count; i++)
+            {
+                var trigger = PhysicsCache.TriggerColliders[i];
+                if (trigger.gameObject == gameObject) continue;
+
+                var trigAABB = trigger.GetWorldAABB();
+                if (OverlapsAABB(playerMin, playerMax, trigAABB.Min, trigAABB.Max))
+                    _currentTriggers.Add(trigger);
+            }
+
+            // Fire events
+            foreach (var t in _currentTriggers)
+            {
+                if (_previousTriggers.Contains(t))
+                    OnTriggerStay?.Invoke(t);
+                else
+                    OnTriggerEnter?.Invoke(t);
+            }
+            foreach (var t in _previousTriggers)
+            {
+                if (!_currentTriggers.Contains(t))
+                    OnTriggerExit?.Invoke(t);
+            }
+            _previousTriggers.Clear();
+            foreach (var t in _currentTriggers) _previousTriggers.Add(t);
+        }
+
+        static bool OverlapsAABB(SN.Vector3 aMin, SN.Vector3 aMax, SN.Vector3 bMin, SN.Vector3 bMax)
+            => (aMin.X <= bMax.X && aMax.X >= bMin.X) &&
+               (aMin.Y <= bMax.Y && aMax.Y >= bMin.Y) &&
+               (aMin.Z <= bMax.Z && aMax.Z >= bMin.Z);
 
         // ================= Grounding / collision helpers =================
 
@@ -290,21 +366,23 @@ namespace Game_Engine.Core.Component
                 if (p.Y > bestY) { bestY = p.Y; bestN = n; anyHit = true; }
             }
 
-            // ---- O(1) Terrain heightmap collision (replaces 131K+ triangle tests) ----
-            for (int ti = 0; ti < _terrainCache.Count; ti++)
+            // ---- O(1) Terrain heightmap collision (from PhysicsCache) ----
+            var terrains = PhysicsCache.Terrains;
+            for (int ti = 0; ti < terrains.Count; ti++)
             {
-                var terrain = _terrainCache[ti];
-                for (int r = 0; r < starts.Length; r++)
+                var terrain = terrains[ti];
+                for (int r2 = 0; r2 < starts.Length; r2++)
                 {
-                    if (terrain.SampleHeightWorld(starts[r].X, starts[r].Z, out float hY, out SN.Vector3 hN))
-                        ConsiderHeight(hY, hN, starts[r].Y);
+                    if (terrain.SampleHeightWorld(starts[r2].X, starts[r2].Z, out float hY, out SN.Vector3 hN))
+                        ConsiderHeight(hY, hN, starts[r2].Y);
                 }
             }
 
             // ---- Non-terrain MeshColliders (buildings, props, etc.) ----
-            for (int mi = 0; mi < _meshColliderCache.Count; mi++)
+            var meshColliders = PhysicsCache.MeshColliders;
+            for (int mi = 0; mi < meshColliders.Count; mi++)
             {
-                var mc = _meshColliderCache[mi];
+                var mc = meshColliders[mi];
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -320,23 +398,25 @@ namespace Game_Engine.Core.Component
                         var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
                         n /= MathF.Sqrt(len2);
 
-                        for (int r = 0; r < starts.Length; r++)
-                            if (RayTri_TwoSided(starts[r], dir, a, b, c, out float t))
-                                ConsiderRay(starts[r], t, n);
+                        for (int r2 = 0; r2 < starts.Length; r2++)
+                            if (RayTri_TwoSided(starts[r2], dir, a, b, c, out float t))
+                                ConsiderRay(starts[r2], t, n);
                     }
                 }
             }
 
             // ---- AABB tops (non-mesh colliders) ----
+            var nonMeshColliders = PhysicsCache.NonMeshColliders;
             if (dir.Y < -1e-6f)
             {
-                for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
+                for (int ci = 0; ci < nonMeshColliders.Count; ci++)
                 {
-                    var col = _nonMeshColliderCache[ci];
+                    var col = nonMeshColliders[ci];
+                    if (col.gameObject == this.gameObject) continue;
                     var aabb = col.GetWorldAABB();
-                    for (int r = 0; r < starts.Length; r++)
+                    for (int r2 = 0; r2 < starts.Length; r2++)
                     {
-                        var s = starts[r];
+                        var s = starts[r2];
                         float t = (aabb.Max.Y - s.Y) / dir.Y;
                         if (t >= 0f && t <= maxDist)
                         {
@@ -382,9 +462,10 @@ namespace Game_Engine.Core.Component
             }
 
             // Non-terrain MeshColliders only (terrain is ground, never ceiling)
-            for (int mi = 0; mi < _meshColliderCache.Count; mi++)
+            var meshColliders = PhysicsCache.MeshColliders;
+            for (int mi = 0; mi < meshColliders.Count; mi++)
             {
-                var mc = _meshColliderCache[mi];
+                var mc = meshColliders[mi];
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -396,23 +477,25 @@ namespace Game_Engine.Core.Component
                         var b = SN.Vector3.Transform(vtx[tri[i + 1]], W);
                         var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
 
-                        for (int r = 0; r < starts.Length; r++)
-                            if (RayTri_TwoSided(starts[r], dir, a, b, c, out float t))
-                                Consider(starts[r], t);
+                        for (int r2 = 0; r2 < starts.Length; r2++)
+                            if (RayTri_TwoSided(starts[r2], dir, a, b, c, out float t))
+                                Consider(starts[r2], t);
                     }
                 }
             }
 
             // AABB bottoms (ceilings)
+            var nonMeshColliders = PhysicsCache.NonMeshColliders;
             if (dir.Y > 1e-6f)
             {
-                for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
+                for (int ci = 0; ci < nonMeshColliders.Count; ci++)
                 {
-                    var col = _nonMeshColliderCache[ci];
+                    var col = nonMeshColliders[ci];
+                    if (col.gameObject == this.gameObject) continue;
                     var aabb = col.GetWorldAABB();
-                    for (int r = 0; r < starts.Length; r++)
+                    for (int r2 = 0; r2 < starts.Length; r2++)
                     {
-                        var s = starts[r];
+                        var s = starts[r2];
                         float t = (aabb.Min.Y - s.Y) / dir.Y;
                         if (t >= 0f && t <= maxDist)
                         {
@@ -507,10 +590,12 @@ namespace Game_Engine.Core.Component
         {
             const float EPS = 1e-5f;
             float pad = Math.Max(0f, WallPush);
+            var nonMeshColliders = PhysicsCache.NonMeshColliders;
 
-            for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
+            for (int ci = 0; ci < nonMeshColliders.Count; ci++)
             {
-                var col = _nonMeshColliderCache[ci];
+                var col = nonMeshColliders[ci];
+                if (col.gameObject == this.gameObject) continue;
                 var aabb = col.GetWorldAABB();
 
                 // ignore "world hulls"
@@ -580,9 +665,10 @@ namespace Game_Engine.Core.Component
             float bandMaxY = start.Y + (0.5f * (CapsuleHalfCylinder + CapsuleRadius));
 
             // Non-terrain MeshColliders only (terrain has no vertical walls)
-            for (int mi = 0; mi < _meshColliderCache.Count; mi++)
+            var meshColliders = PhysicsCache.MeshColliders;
+            for (int mi = 0; mi < meshColliders.Count; mi++)
             {
-                var mc = _meshColliderCache[mi];
+                var mc = meshColliders[mi];
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -613,16 +699,18 @@ namespace Game_Engine.Core.Component
             }
 
             // simple planes of AABBs
-            for (int ci = 0; ci < _nonMeshColliderCache.Count; ci++)
+            var nonMeshColliders = PhysicsCache.NonMeshColliders;
+            for (int ci = 0; ci < nonMeshColliders.Count; ci++)
             {
-                var c = _nonMeshColliderCache[ci];
-                var a = c.GetWorldAABB();
-                if (a.Max.Y < bandMinY || a.Min.Y > bandMaxY) continue;
+                var c = nonMeshColliders[ci];
+                if (c.gameObject == this.gameObject) continue;
+                var a2 = c.GetWorldAABB();
+                if (a2.Max.Y < bandMinY || a2.Min.Y > bandMaxY) continue;
 
-                TestSide(a.Min.X, new SN.Vector3(-1, 0, 0));
-                TestSide(a.Max.X, new SN.Vector3(+1, 0, 0));
-                TestFront(a.Min.Z, new SN.Vector3(0, 0, -1));
-                TestFront(a.Max.Z, new SN.Vector3(0, 0, +1));
+                TestSide(a2.Min.X, new SN.Vector3(-1, 0, 0));
+                TestSide(a2.Max.X, new SN.Vector3(+1, 0, 0));
+                TestFront(a2.Min.Z, new SN.Vector3(0, 0, -1));
+                TestFront(a2.Max.Z, new SN.Vector3(0, 0, +1));
 
                 void TestSide(float xPlane, SN.Vector3 n)
                 {
@@ -630,7 +718,7 @@ namespace Game_Engine.Core.Component
                     float t = (xPlane - start.X) / dir.X;
                     if (t < 0f || t > maxDist) return;
                     var p = start + dir * t;
-                    if (p.Y >= a.Min.Y && p.Y <= a.Max.Y && p.Z >= a.Min.Z && p.Z <= a.Max.Z)
+                    if (p.Y >= a2.Min.Y && p.Y <= a2.Max.Y && p.Z >= a2.Min.Z && p.Z <= a2.Max.Z)
                         if (t < bestT) { bestT = t; bestN = n; any = true; }
                 }
                 void TestFront(float zPlane, SN.Vector3 n)
@@ -639,7 +727,7 @@ namespace Game_Engine.Core.Component
                     float t = (zPlane - start.Z) / dir.Z;
                     if (t < 0f || t > maxDist) return;
                     var p = start + dir * t;
-                    if (p.Y >= a.Min.Y && p.Y <= a.Max.Y && p.X >= a.Min.X && p.X <= a.Max.X)
+                    if (p.Y >= a2.Min.Y && p.Y <= a2.Max.Y && p.X >= a2.Min.X && p.X <= a2.Max.X)
                         if (t < bestT) { bestT = t; bestN = n; any = true; }
                 }
             }

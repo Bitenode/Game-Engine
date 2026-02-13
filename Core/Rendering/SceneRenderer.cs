@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Avalonia;
 using Silk.NET.OpenGL;
 using Game_Engine.Core.Component;
@@ -106,6 +107,284 @@ namespace Game_Engine.Core
             public Terrain? Terrain; // non-null when this mesh belongs to a terrain
             public Tree? Tree;       // non-null for vegetation (wind animation)
             public TreeLOD? TreeLOD;  // non-null for tree LOD management
+            public Water? Water;      // non-null for water rendering
+            public SkinnedMeshRenderer? Skinned; // non-null for GPU skinned meshes
+        }
+
+        // ---------- Particle rendering ----------
+        // Reusable buffers for particle instance data
+        [ThreadStatic] private static SN.Vector4[]? s_particlePositions;
+        [ThreadStatic] private static SN.Vector4[]? s_particleColors;
+
+        /// <summary>
+        /// Render all active particle emitters as billboard quads.
+        /// Call after main scene rendering, before post-processing.
+        /// </summary>
+        public static void RenderParticles(
+            GL gl,
+            ShaderProgram particleShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj)
+        {
+            var positions = s_particlePositions ??= new SN.Vector4[128];
+            var colors = s_particleColors ??= new SN.Vector4[128];
+
+            // Find all particle emitters
+            foreach (var root in SceneService.Root)
+                RenderParticlesRecursive(gl, particleShader, cache, root, view, proj, positions, colors);
+        }
+
+        private static void RenderParticlesRecursive(
+            GL gl, ShaderProgram shader, ResourceCache cache,
+            GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+            SN.Vector4[] positions, SN.Vector4[] colors)
+        {
+            foreach (var b in go.Behaviors)
+            {
+                if (b is ParticleEmitter pe && pe.IsActiveAndEnabled && pe.ActiveParticleCount > 0)
+                {
+                    int count = pe.FillRenderData(positions, colors, 128);
+                    if (count <= 0) continue;
+
+                    shader.Use();
+                    shader.SetMatrix4("uView", view);
+                    shader.SetMatrix4("uProj", proj);
+
+                    // Upload particle data as uniform arrays
+                    for (int i = 0; i < count; i++)
+                    {
+                        shader.SetVector4($"uParticlePos[{i}]", positions[i].X, positions[i].Y, positions[i].Z, positions[i].W);
+                        shader.SetVector4($"uParticleCol[{i}]", colors[i].X, colors[i].Y, colors[i].Z, colors[i].W);
+                    }
+
+                    // Draw instanced billboard quads
+                    gl.Enable(EnableCap.Blend);
+                    gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                    gl.DepthMask(false);
+
+                    DrawBillboardQuads(gl, count);
+
+                    gl.DepthMask(true);
+                    gl.Disable(EnableCap.Blend);
+                }
+            }
+
+            foreach (var child in go.Children)
+                RenderParticlesRecursive(gl, shader, cache, child, view, proj, positions, colors);
+        }
+
+        // Billboard quad VAO (lazy init)
+        [ThreadStatic] private static uint s_billboardVAO;
+        [ThreadStatic] private static uint s_billboardVBO;
+        [ThreadStatic] private static bool s_billboardInit;
+
+        private static unsafe void DrawBillboardQuads(GL gl, int instanceCount)
+        {
+            if (!s_billboardInit)
+            {
+                float[] quadVerts = {
+                    -0.5f, -0.5f,
+                     0.5f, -0.5f,
+                    -0.5f,  0.5f,
+                     0.5f, -0.5f,
+                     0.5f,  0.5f,
+                    -0.5f,  0.5f
+                };
+
+                s_billboardVAO = gl.GenVertexArray();
+                s_billboardVBO = gl.GenBuffer();
+
+                gl.BindVertexArray(s_billboardVAO);
+                gl.BindBuffer(BufferTargetARB.ArrayBuffer, s_billboardVBO);
+
+                fixed (float* ptr = quadVerts)
+                    gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(quadVerts.Length * sizeof(float)), ptr, BufferUsageARB.StaticDraw);
+
+                gl.EnableVertexAttribArray(0);
+                gl.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, 2 * sizeof(float), null);
+
+                gl.BindVertexArray(0);
+                s_billboardInit = true;
+            }
+
+            gl.BindVertexArray(s_billboardVAO);
+            gl.DrawArraysInstanced(PrimitiveType.Triangles, 0, 6, (uint)instanceCount);
+            gl.BindVertexArray(0);
+        }
+
+        // ---------- Water rendering ----------
+
+        /// <summary>
+        /// Render all water components using the water shader.
+        /// Call after opaque pass, before or during transparent pass.
+        /// </summary>
+        public static void RenderWater(
+            GL gl,
+            ShaderProgram waterShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 lightDir,
+            float ambient,
+            float diffuseK,
+            SN.Vector3 camPos,
+            SN.Vector3 skyColor)
+        {
+            foreach (var root in SceneService.Root)
+                RenderWaterRecursive(gl, waterShader, cache, root, SN.Matrix4x4.Identity, view, proj,
+                    lightDir, ambient, diffuseK, camPos, skyColor);
+        }
+
+        private static void RenderWaterRecursive(
+            GL gl, ShaderProgram shader, ResourceCache cache,
+            GameObject go, in SN.Matrix4x4 parentWorld,
+            in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
+            SN.Vector3 lightDir, float ambient, float diffuseK,
+            SN.Vector3 camPos, SN.Vector3 skyColor)
+        {
+            var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
+
+            foreach (var b in go.Behaviors)
+            {
+                if (b is Water water && water.IsActiveAndEnabled)
+                {
+                    // Ensure the water mesh is built (editor doesn't call Awake)
+                    water.EnsureMesh();
+
+                    var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault();
+                    if (mf?.Mesh == null) continue;
+
+                    shader.Use();
+                    shader.SetMatrix4("uModel", world);
+                    shader.SetMatrix4("uView", view);
+                    shader.SetMatrix4("uProj", proj);
+
+                    SN.Matrix4x4.Invert(world, out var invWorld);
+                    shader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
+
+                    // Wave uniforms
+                    shader.SetFloat("uTime", water.AnimTime);
+                    shader.SetFloat("uWaveAmp1", water.WaveAmplitude);
+                    shader.SetFloat("uWaveFreq1", water.WaveFrequency);
+                    shader.SetVector2("uWaveDir1", water.WaveDirection.X, water.WaveDirection.Y);
+                    shader.SetFloat("uWaveSteep1", water.WaveSteepness);
+                    shader.SetFloat("uWaveAmp2", water.Wave2Amplitude);
+                    shader.SetFloat("uWaveFreq2", water.Wave2Frequency);
+                    shader.SetVector2("uWaveDir2", water.Wave2Direction.X, water.Wave2Direction.Y);
+
+                    // Water appearance
+                    shader.SetVector4("uShallowColor", water.ShallowColor.X, water.ShallowColor.Y, water.ShallowColor.Z, water.ShallowColor.W);
+                    shader.SetVector4("uDeepColor", water.DeepColor.X, water.DeepColor.Y, water.DeepColor.Z, water.DeepColor.W);
+                    shader.SetFloat("uFresnelPower", water.FresnelPower);
+                    shader.SetFloat("uReflectivity", water.Reflectivity);
+                    shader.SetFloat("uTransparency", water.Transparency);
+
+                    // Foam
+                    shader.SetInt("uFoamEnabled", water.FoamEnabled ? 1 : 0);
+                    shader.SetFloat("uFoamThreshold", water.FoamDepthThreshold);
+                    shader.SetFloat("uFoamIntensity", water.FoamIntensity);
+                    shader.SetVector3("uFoamColor", new SN.Vector3(water.FoamColor.X, water.FoamColor.Y, water.FoamColor.Z));
+
+                    // Lighting
+                    shader.SetVector3("uLightDir", lightDir);
+                    shader.SetFloat("uAmbient", ambient);
+                    shader.SetFloat("uDiffuseK", diffuseK);
+                    shader.SetVector3("uCamPos", camPos);
+                    shader.SetVector3("uSkyColor", skyColor);
+
+                    // Draw
+                    gl.Enable(EnableCap.Blend);
+                    gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                    gl.Disable(EnableCap.CullFace);
+
+                    var gpuMesh = cache.GetMesh(mf.Mesh);
+                    gpuMesh.Draw();
+
+                    gl.Enable(EnableCap.CullFace);
+                    gl.Disable(EnableCap.Blend);
+                }
+            }
+
+            foreach (var child in go.Children)
+                RenderWaterRecursive(gl, shader, cache, child, world, view, proj,
+                    lightDir, ambient, diffuseK, camPos, skyColor);
+        }
+
+        // ---------- Post-Processing ----------
+
+        /// <summary>
+        /// Apply post-processing effects to the scene texture.
+        /// Renders a fullscreen quad with the post-processing shader.
+        /// The caller MUST pass the volume obtained from GetActive() — this avoids
+        /// a second lookup that could return a different result mid-frame.
+        /// </summary>
+        public static void ApplyPostProcessing(
+            GL gl,
+            ShaderProgram postShader,
+            GPUTexture sceneTexture,
+            int viewportWidth,
+            int viewportHeight,
+            PostProcessVolume? volume = null)
+        {
+            // Always bind the post-process shader, even for passthrough —
+            // rendering without a shader causes a black screen.
+            postShader.Use();
+
+            sceneTexture.Bind(TextureUnit.Texture0);
+            postShader.SetTexture("uScene", 0);
+            postShader.SetVector2("uTexelSize", 1f / viewportWidth, 1f / viewportHeight);
+
+            if (volume == null)
+            {
+                // Pass-through: disable all effects so the shader just copies the texture
+                postShader.SetInt("uBloomEnabled", 0);
+                postShader.SetInt("uFogEnabled", 0);
+                postShader.SetInt("uColorGradingEnabled", 0);
+                postShader.SetInt("uVignetteEnabled", 0);
+                postShader.SetInt("uFXAAEnabled", 0);
+                postShader.SetFloat("uExposure", 1f);
+                postShader.SetFloat("uContrast", 1f);
+                postShader.SetFloat("uSaturation", 1f);
+                postShader.SetFloat("uBrightness", 0f);
+                postShader.SetInt("uToneMap", 0);
+            }
+            else
+            {
+                // Bloom
+                postShader.SetInt("uBloomEnabled", volume.BloomEnabled ? 1 : 0);
+                postShader.SetFloat("uBloomThreshold", volume.BloomThreshold);
+                postShader.SetFloat("uBloomIntensity", volume.BloomIntensity);
+
+                // Fog
+                postShader.SetInt("uFogEnabled", volume.FogEnabled ? 1 : 0);
+                postShader.SetVector3("uFogColor", volume.FogColor);
+                postShader.SetFloat("uFogDensity", volume.FogDensity);
+                postShader.SetFloat("uFogStart", volume.FogStart);
+                postShader.SetFloat("uFogEnd", volume.FogEnd);
+
+                // Color Grading
+                postShader.SetInt("uColorGradingEnabled", volume.ColorGradingEnabled ? 1 : 0);
+                postShader.SetFloat("uBrightness", volume.Brightness);
+                postShader.SetFloat("uContrast", volume.Contrast);
+                postShader.SetFloat("uSaturation", volume.Saturation);
+                postShader.SetFloat("uExposure", volume.Exposure);
+                postShader.SetInt("uToneMap", (int)volume.ToneMap);
+
+                // Vignette
+                postShader.SetInt("uVignetteEnabled", volume.VignetteEnabled ? 1 : 0);
+                postShader.SetFloat("uVignetteIntensity", volume.VignetteIntensity);
+                postShader.SetFloat("uVignetteSmoothness", volume.VignetteSmoothness);
+
+                // FXAA
+                postShader.SetInt("uFXAAEnabled", volume.FXAAEnabled ? 1 : 0);
+            }
+
+            // Draw fullscreen triangle (covers entire screen with a single triangle)
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.Blend);
+            gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
+            gl.Enable(EnableCap.DepthTest);
         }
 
         // ---------- GPU RENDER ENTRY POINT ----------
@@ -173,8 +452,8 @@ namespace Game_Engine.Core
                 standardShader.SetMatrix4("uShadowVP", shadowVP);
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO.DepthTexture.Bind(TextureUnit.Texture3);
-                standardShader.SetTexture("uShadowMap", 3);
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                standardShader.SetTexture("uShadowMap", 7);
             }
             else
             {
@@ -196,8 +475,8 @@ namespace Game_Engine.Core
                     standardShader.Use();
                     if (shadowFBO?.DepthTexture != null)
                     {
-                        shadowFBO.DepthTexture.Bind(TextureUnit.Texture3);
-                        standardShader.SetTexture("uShadowMap", 3);
+                        shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                        standardShader.SetTexture("uShadowMap", 7);
                     }
                     terrainShaderActive = false;
                 }
@@ -258,8 +537,8 @@ namespace Game_Engine.Core
                 standardShader.Use();
                 if (shadowFBO?.DepthTexture != null)
                 {
-                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture3);
-                    standardShader.SetTexture("uShadowMap", 3);
+                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                    standardShader.SetTexture("uShadowMap", 7);
                 }
 
                 foreach (var item in transparentItems)
@@ -310,7 +589,16 @@ namespace Game_Engine.Core
             List<DrawItem> opaque,
             List<DrawItem> transparent)
         {
-            var world = parentWorld * TransformUtil.WorldFromTransform(go.Transform);
+            // Fast skip for vegetation chunks whose MeshRenderer was disabled by distance culling.
+            // Avoids expensive matrix computation and behavior iteration for distant grass.
+            if (go.Name.StartsWith("chunk_"))
+            {
+                var bh = go.Behaviors;
+                for (int k = 0; k < bh.Count; k++)
+                    if (bh[k] is MeshRenderer cmr) { if (!cmr.Enabled) return; break; }
+            }
+
+            var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
 
             // Detect terrain component on this GO or its parent (for splatmap shader path)
             // Chunks are children of the terrain GO but don't have a Terrain component themselves.
@@ -383,7 +671,8 @@ namespace Game_Engine.Core
                         IsTransparent = isTransparent,
                         Terrain = terrain,
                         Tree = tree,
-                        TreeLOD = treeLod
+                        TreeLOD = treeLod,
+                        Skinned = mr as SkinnedMeshRenderer
                     };
 
                     if (isTransparent)
@@ -420,7 +709,7 @@ namespace Game_Engine.Core
             // Material properties
             var mat = item.Mat;
             float r = 1f, g2 = 1f, b = 1f, a = 1f;
-            float roughness = 0.5f, metallic = 0f, alphaCutoff = 0.5f;
+            float roughness = 0.5f, metallic = 0f, alphaCutoff = 0f;
             bool transparent = item.IsTransparent;
             bool doubleSided = item.MR.DoubleSided;
 
@@ -461,6 +750,18 @@ namespace Game_Engine.Core
             shader.SetInt("uTransparent", transparent ? 1 : 0);
             shader.SetInt("uDoubleSided", doubleSided ? 1 : 0);
 
+            // Emissive
+            float emR = 0f, emG = 0f, emB = 0f, emIntensity = 0f;
+            if (mat != null && mat.EmissiveIntensity > 0f)
+            {
+                emR = mat.EmissiveColor.R / 255f;
+                emG = mat.EmissiveColor.G / 255f;
+                emB = mat.EmissiveColor.B / 255f;
+                emIntensity = mat.EmissiveIntensity;
+            }
+            shader.SetVector3("uEmissiveColor", new SN.Vector3(emR, emG, emB));
+            shader.SetFloat("uEmissiveIntensity", emIntensity);
+
             // Cull face
             if (doubleSided)
                 gl.Disable(EnableCap.CullFace);
@@ -481,6 +782,20 @@ namespace Game_Engine.Core
             else
             {
                 shader.SetInt("uIsVegetation", 0);
+            }
+
+            // Bone skinning matrices
+            if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
+            {
+                shader.SetInt("uHasBones", 1);
+                var bones = item.Skinned.BoneMatrices!;
+                int count = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
+                for (int bi = 0; bi < count; bi++)
+                    shader.SetMatrix4($"uBones[{bi}]", bones[bi]);
+            }
+            else
+            {
+                shader.SetInt("uHasBones", 0);
             }
 
             // Albedo texture
@@ -521,6 +836,171 @@ namespace Game_Engine.Core
             }
             shader.SetTexture("uAlbedoTex", 0);
             shader.SetInt("uHasAlbedoTex", hasAlbedo ? 1 : 0);
+
+            // Normal map texture
+            bool hasNormal = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? nTex = null;
+                    var slot = mat.Textures[i];
+
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("normal") || usage.Contains("bump"))
+                            nTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Normal)
+                            nTex = mtex.Texture;
+                    }
+
+                    if (nTex != null)
+                    {
+                        cache.GetTexture(nTex).Bind(TextureUnit.Texture1);
+                        hasNormal = true;
+                        break;
+                    }
+                }
+            }
+            shader.SetTexture("uNormalMap", 1);
+            shader.SetInt("uHasNormalMap", hasNormal ? 1 : 0);
+
+            // Specular texture → Texture2
+            bool hasSpec = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? sTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("specular")) sTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Specular) sTex = mtex.Texture;
+                    }
+                    if (sTex != null) { cache.GetTexture(sTex).Bind(TextureUnit.Texture2); hasSpec = true; break; }
+                }
+            }
+            shader.SetTexture("uSpecularTex", 2);
+            shader.SetInt("uHasSpecularTex", hasSpec ? 1 : 0);
+
+            // Metallic texture → Texture3
+            bool hasMetal = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? mTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("metallic") || usage.Contains("metalness")) mTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Metallic) mTex = mtex.Texture;
+                    }
+                    if (mTex != null) { cache.GetTexture(mTex).Bind(TextureUnit.Texture3); hasMetal = true; break; }
+                }
+            }
+            shader.SetTexture("uMetallicTex", 3);
+            shader.SetInt("uHasMetallicTex", hasMetal ? 1 : 0);
+
+            // Roughness texture → Texture4
+            bool hasRough = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? rTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("rough")) rTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Roughness) rTex = mtex.Texture;
+                    }
+                    if (rTex != null) { cache.GetTexture(rTex).Bind(TextureUnit.Texture4); hasRough = true; break; }
+                }
+            }
+            shader.SetTexture("uRoughnessTex", 4);
+            shader.SetInt("uHasRoughnessTex", hasRough ? 1 : 0);
+
+            // Ambient occlusion texture → Texture5
+            bool hasAO = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? aoTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("occlusion") || usage.Contains("ao")) aoTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.AmbientOcclusion) aoTex = mtex.Texture;
+                    }
+                    if (aoTex != null) { cache.GetTexture(aoTex).Bind(TextureUnit.Texture5); hasAO = true; break; }
+                }
+            }
+            shader.SetTexture("uAOTex", 5);
+            shader.SetInt("uHasAOTex", hasAO ? 1 : 0);
+
+            // Emissive texture → Texture6
+            bool hasEmissiveTex = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? eTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("emissive") || usage.Contains("emission")) eTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Emissive) eTex = mtex.Texture;
+                    }
+                    if (eTex != null) { cache.GetTexture(eTex).Bind(TextureUnit.Texture6); hasEmissiveTex = true; break; }
+                }
+            }
+            shader.SetTexture("uEmissiveTex", 6);
+            shader.SetInt("uHasEmissiveTex", hasEmissiveTex ? 1 : 0);
+
+            // Emissive (update the values set earlier if we now have an emissive texture)
+            if (mat != null && (mat.EmissiveIntensity > 0f || hasEmissiveTex))
+            {
+                shader.SetVector3("uEmissiveColor", new SN.Vector3(
+                    mat.EmissiveColor.R / 255f,
+                    mat.EmissiveColor.G / 255f,
+                    mat.EmissiveColor.B / 255f));
+                // Ensure at least 1.0 intensity when an emissive texture is present
+                float emI = mat.EmissiveIntensity;
+                if (hasEmissiveTex && emI < 1f) emI = 1f;
+                shader.SetFloat("uEmissiveIntensity", emI);
+            }
+            else
+            {
+                shader.SetVector3("uEmissiveColor", SN.Vector3.Zero);
+                shader.SetFloat("uEmissiveIntensity", 0f);
+            }
 
             // Draw
             gpuMesh.Draw();
@@ -657,7 +1137,15 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 lightVP,
             Plane[] planes)
         {
-            var world = parentWorld * TransformUtil.WorldFromTransform(go.Transform);
+            // Fast skip for culled vegetation chunks
+            if (go.Name.StartsWith("chunk_"))
+            {
+                var bh = go.Behaviors;
+                for (int k = 0; k < bh.Count; k++)
+                    if (bh[k] is MeshRenderer cmr) { if (!cmr.Enabled) return; break; }
+            }
+
+            var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
 
             // Pair MeshFilters with MeshRenderers in order (no allocations).
             var behaviors = go.Behaviors;

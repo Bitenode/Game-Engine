@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
+using Game_Engine.Core.Physics;
 using Game_Engine.Core.Rendering.GPU;
 using Silk.NET.OpenGL;
 using System;
@@ -46,9 +47,14 @@ namespace Game_Engine.Views
         private ShaderProgram? _skyShader;
         private ShaderProgram? _gridShader;
         private ShaderProgram? _terrainShader;
+        private ShaderProgram? _particleShader;
+        private ShaderProgram? _waterShader;
+        private ShaderProgram? _postProcessShader;
         private FullscreenQuad? _fsQuad;
         private ResourceCache? _cache;
         private ShadowMapGPU? _shadow;
+        private GPUFramebuffer? _sceneFBO;
+        private int _sceneFBO_W, _sceneFBO_H;
         #endregion
 
         #region Clocks & State
@@ -182,6 +188,15 @@ namespace Game_Engine.Views
                 _terrainShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.TerrainVert, es),
                     ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
+                _particleShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.ParticleVert, es),
+                    ShaderSources.Adapt(ShaderSources.ParticleFrag, es));
+                _waterShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.WaterVert, es),
+                    ShaderSources.Adapt(ShaderSources.WaterFrag, es));
+                _postProcessShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
+                    ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
                 _fsQuad = new FullscreenQuad(g);
                 _cache = new ResourceCache(g);
                 _shadow = new ShadowMapGPU(g, 1024, 1024);
@@ -196,6 +211,10 @@ namespace Game_Engine.Views
 
         protected override void OnOpenGlDeinit(GlInterface gl)
         {
+            _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
+            _postProcessShader?.Dispose(); _postProcessShader = null;
+            _waterShader?.Dispose(); _waterShader = null;
+            _particleShader?.Dispose(); _particleShader = null;
             _terrainShader?.Dispose();
             _shadow?.Dispose();
             _cache?.Dispose();
@@ -238,6 +257,9 @@ namespace Game_Engine.Views
 
             var g = _glCtx.GL;
 
+            // Flush any GL errors accumulated by the other view's rendering.
+            while (g.GetError() != GLEnum.NoError) { }
+
             _frameWatch.Restart();
             var sec = Stopwatch.StartNew();
 
@@ -254,15 +276,34 @@ namespace Game_Engine.Views
             int W = Math.Max(1, (int)(Wdip * scaling));
             int H = Math.Max(1, (int)(Hdip * scaling));
 
-            // Bind Avalonia's framebuffer
+            // Bind Avalonia's framebuffer and reset essential GL state.
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             g.Viewport(0, 0, (uint)W, (uint)H);
+            g.Enable(EnableCap.DepthTest);
+            g.DepthFunc(DepthFunction.Less);
+            g.Disable(EnableCap.Blend);
+            g.ColorMask(true, true, true, true);
+            g.DepthMask(true);
 
             // --- EDITOR MODE: dark screen ---
             if (State != GamePanel.GameState.Playing)
             {
                 g.ClearColor(0.07f, 0.08f, 0.09f, 1f);
                 g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+                // IMPORTANT: Clean up GL state even on early return.
+                // Both views share the same GL context; dirty state here
+                // can permanently corrupt the SceneView's rendering.
+                g.UseProgram(0);
+                g.BindVertexArray(0);
+                g.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+                g.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
+                g.Disable(EnableCap.DepthTest);
+                g.Disable(EnableCap.CullFace);
+                g.Disable(EnableCap.Blend);
+                g.ActiveTexture(TextureUnit.Texture0);
+                g.BindTexture(TextureTarget.Texture2D, 0);
+
                 _frameWatch.Stop();
                 _msFrameLast = _frameWatch.Elapsed.TotalMilliseconds;
                 Ema(ref _msFrameEma, _msFrameLast, 0.18);
@@ -373,6 +414,28 @@ namespace Game_Engine.Views
 
             _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
+            // --- POST-PROCESSING FBO setup ---
+            var postVolume = PostProcessVolume.GetActive();
+            bool usePostFX = postVolume != null && _postProcessShader != null;
+
+            if (usePostFX)
+            {
+                if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
+                if (_sceneFBO_W != W || _sceneFBO_H != H)
+                {
+                    _sceneFBO.SetupColorDepth(W, H);
+                    _sceneFBO_W = W; _sceneFBO_H = H;
+                }
+
+                _sceneFBO.Bind();
+                g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+                g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+                // Re-render sky into the FBO
+                Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
+                    skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
+            }
+
             // Update terrain LOD per frame
             foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
             // Update tree LOD per frame
@@ -386,6 +449,42 @@ namespace Game_Engine.Views
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, camPos, sunSD,
                 terrainShader: _terrainShader);
+
+            // --- WATER ---
+            if (_waterShader != null)
+            {
+                var skyC = _sky != null
+                    ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
+                    : new SN.Vector3(0.5f, 0.6f, 0.8f);
+                SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
+                    SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
+            }
+
+            // --- PARTICLES ---
+            if (_particleShader != null)
+                SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
+
+            // --- POST-PROCESSING BLIT ---
+            if (usePostFX && _sceneFBO?.ColorTexture != null)
+            {
+                // Bind Avalonia's framebuffer as the output target
+                g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+                g.Viewport(0, 0, (uint)W, (uint)H);
+                g.Disable(EnableCap.DepthTest);
+
+                g.BindVertexArray(_fsQuad!.VAO);
+                SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, W, H, postVolume);
+                g.BindVertexArray(0);
+
+                g.Enable(EnableCap.DepthTest);
+
+                // Blit depth from scene FBO so any overlays occlude correctly
+                g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _sceneFBO.Handle);
+                g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, (uint)fb);
+                g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
+                    ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
+                g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+            }
 
             _tScene = sec.Elapsed.TotalMilliseconds;
 
@@ -533,7 +632,11 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Stopped:
                     _fixedTimer.Stop(); _updateTimer.Stop();
                     _updateWatch.Reset(); _fixedWatch.Reset();
-                    CallOnDestroyAll(); RestorePlaySnapshot();
+                    Game_Engine.Core.AudioBackend.StopAll();   // kill all audio immediately
+                    CallOnDestroyAll();
+                    // Purge static component registries that __OnDestroy may have missed
+                    PostProcessVolume.ClearAll();
+                    RestorePlaySnapshot();
                     // After scene restore, the old selected GO no longer exists in the new scene tree.
                     // Try to re-select a GO with the same name, or clear the selection.
                     ReSelectAfterRestore();
@@ -568,6 +671,7 @@ namespace Game_Engine.Views
             }
             try { System.IO.File.Delete(_playSnapshotPath); } catch { }
             _playSnapshotPath = null; _collidersWarm = false; _needsWarm = true;
+
         }
 
         /// <summary>
@@ -727,6 +831,7 @@ namespace Game_Engine.Views
             while (_fixedAccum >= FIXED_DT)
             {
                 Core.Time.BeginFixedUpdate(FIXED_DT);
+                Core.Physics.PhysicsCache.Tick();
                 ForEachBehavior(b => b.__FixedUpdate());
                 _fixedAccum -= FIXED_DT;
             }

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
 using SkiaSharp;
@@ -19,36 +20,38 @@ namespace Game_Engine.Core
 
         public static Texture2D FromFile(string path)
         {
-            using (var bmp = SKBitmap.Decode(path))
-            {
-                if (bmp == null) throw new Exception("Failed to decode image: " + path);
-                var rgba = new byte[bmp.Width * bmp.Height * 4];
-                int i = 0;
-                for (int y = 0; y < bmp.Height; y++)
-                    for (int x = 0; x < bmp.Width; x++)
-                    {
-                        var c = bmp.GetPixel(x, y);
-                        rgba[i++] = c.Red; rgba[i++] = c.Green; rgba[i++] = c.Blue; rgba[i++] = c.Alpha;
-                    }
-                return new Texture2D(bmp.Width, bmp.Height, rgba);
-            }
+            // Decode with unpremultiplied alpha to preserve transparency correctly
+            using var codec = SKCodec.Create(path);
+            if (codec == null) throw new Exception("Failed to decode image: " + path);
+
+            var info = new SKImageInfo(codec.Info.Width, codec.Info.Height,
+                                       SKColorType.Rgba8888, SKAlphaType.Unpremul);
+            using var bmp = SKBitmap.Decode(codec, info);
+            if (bmp == null) throw new Exception("Failed to decode image: " + path);
+
+            // With Rgba8888 + Unpremul, raw pixels are already in the format we need
+            var pixels = bmp.GetPixelSpan();
+            var rgba = new byte[bmp.Width * bmp.Height * 4];
+            pixels.CopyTo(rgba);
+
+            return new Texture2D(bmp.Width, bmp.Height, rgba);
         }
 
         public static Texture2D FromBytes(byte[] encoded)
         {
-            using (var bmp = SKBitmap.Decode(encoded))
-            {
-                if (bmp == null) throw new Exception("Failed to decode image bytes.");
-                var rgba = new byte[bmp.Width * bmp.Height * 4];
-                int i = 0;
-                for (int y = 0; y < bmp.Height; y++)
-                    for (int x = 0; x < bmp.Width; x++)
-                    {
-                        var c = bmp.GetPixel(x, y);
-                        rgba[i++] = c.Red; rgba[i++] = c.Green; rgba[i++] = c.Blue; rgba[i++] = c.Alpha;
-                    }
-                return new Texture2D(bmp.Width, bmp.Height, rgba);
-            }
+            using var codec = SKCodec.Create(new MemoryStream(encoded));
+            if (codec == null) throw new Exception("Failed to decode image bytes.");
+
+            var info = new SKImageInfo(codec.Info.Width, codec.Info.Height,
+                                       SKColorType.Rgba8888, SKAlphaType.Unpremul);
+            using var bmp = SKBitmap.Decode(codec, info);
+            if (bmp == null) throw new Exception("Failed to decode image bytes.");
+
+            var pixels = bmp.GetPixelSpan();
+            var rgba = new byte[bmp.Width * bmp.Height * 4];
+            pixels.CopyTo(rgba);
+
+            return new Texture2D(bmp.Width, bmp.Height, rgba);
         }
     }
 
@@ -143,6 +146,15 @@ namespace Game_Engine.Core
         [Persist] public float Metallic { get; set; } = 0f;
 
         // Optional shader asset hook for the “aspect-driven by shaders” plan
+        // ── Emissive ──
+        /// <summary>Emissive color (self-illumination, not affected by lighting).</summary>
+        [Persist] public Color EmissiveColor { get; set; } = Colors.Black;
+        /// <summary>Emissive intensity multiplier (0 = no glow).</summary>
+        [Persist] public float EmissiveIntensity { get; set; } = 0f;
+        // ── Normal map ──
+        /// <summary>Normal map strength (0 = flat, 1 = full normal map effect).</summary>
+        [Persist] public float NormalStrength { get; set; } = 1f;
+
         [Persist] public string ShaderAssetPath { get; set; }
 
        

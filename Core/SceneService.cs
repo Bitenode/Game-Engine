@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 
@@ -76,7 +76,33 @@ namespace Game_Engine.Core
             var loaded = SceneSerialization.LoadScene(path);
             SceneService.ReplaceAll(loaded);
             MaterialRebind.RepairScene();
+            RebuildVegetation();
             NotifyChanged();
+        }
+
+        /// <summary>Rebuild grass for any VegetationPainter with GrassBuilt=true (grass is not serialized).</summary>
+        private static void RebuildVegetation()
+        {
+            try
+            {
+                foreach (var root in Root)
+                    RebuildVegetationRecursive(root);
+            }
+            catch { }
+        }
+
+        private static void RebuildVegetationRecursive(GameObject go)
+        {
+            foreach (var b in go.Behaviors)
+            {
+                if (b is Component.VegetationPainter vp && vp.GrassBuilt)
+                {
+                    try { vp.BuildOnTerrain(); }
+                    catch (System.Exception ex) { Log.Warning($"[VegetationPainter] Rebuild failed: {ex.Message}"); }
+                }
+            }
+            foreach (var child in go.Children)
+                RebuildVegetationRecursive(child);
         }
 
 

@@ -1,9 +1,9 @@
-﻿using Avalonia.Media;
+using Avalonia.Media;
 using Game_Engine.Core.Rendering;
 
 namespace Game_Engine.Core.Component
 {
-    public sealed class MeshRenderer : Behavior
+    public class MeshRenderer : Behavior
     {
         [Persist] public Color Color { get; set; } = Colors.White;
         [Persist] public bool Wireframe { get; set; } = false;
@@ -44,19 +44,49 @@ namespace Game_Engine.Core.Component
             // Ensure at least one default
             if (ResolvedMaterials.Count == 0)
                 ResolvedMaterials.Add(DefaultMaterial());
+
+            // When MaterialPaths explicitly reference .material files, promote
+            // the first successfully loaded material to be the primary Material
+            // so the SceneRenderer uses it (it only reads mr.Material, not
+            // ResolvedMaterials).
+            if (count > 0 && ResolvedMaterials.Count > 0)
+            {
+                Material = ResolvedMaterials[0];
+            }
         }
 
         private Material TryLoadRuntimeMaterial(string rel)
         {
             if (string.IsNullOrWhiteSpace(rel)) return null;
 
-            var matAsset = ProjectService.LoadMaterialAsset(rel);      
-            if (matAsset == null) return null;
+            // Path 1: Asset pipeline (new format with ShaderPath + Properties).
+            // The ShaderPath presence distinguishes from the simpler old format.
+            // Build() handles null shader gracefully (defaults to unlit), and now
+            // also processes Texture2D properties into RuntimeTexSlot entries.
+            try
+            {
+                var matAsset = ProjectService.LoadMaterialAsset(rel);
+                if (matAsset != null && !string.IsNullOrWhiteSpace(matAsset.ShaderPath))
+                {
+                    var shader = ProjectService.LoadShaderAsset(matAsset.ShaderPath);
+                    var m = MaterialRuntimeBuilder.Build(matAsset, shader);
+                    if (m != null) return m;
+                }
+            }
+            catch { /* fall through to simpler format */ }
 
-            var shader = ProjectService.LoadShaderAsset(matAsset.ShaderPath);
-            if (shader == null) return null;
+            // Path 2: Simple JSON format with direct texture references.
+            // Supports: { "textures": { "Albedo": "path.png", "Normal": "path.png" } }
+            // This is the common format for hand-authored material files and
+            // properly loads textures into RuntimeTexSlot entries.
+            try
+            {
+                var m = ProjectService.MaterialsLoad(rel);
+                if (m != null) return m;
+            }
+            catch { /* ignore */ }
 
-            return MaterialRuntimeBuilder.Build(matAsset, shader);
+            return null;
         }
 
         private Material DefaultMaterial()

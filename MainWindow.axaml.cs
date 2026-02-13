@@ -40,6 +40,7 @@ public partial class MainWindow : Window
             [typeof(ProjectPanel)] = ("Project", DockRegion.BottomLeft, () => new ProjectPanel()),
             [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
             [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
+            [typeof(AnimationPanel)] = ("Animation", DockRegion.Bottom, () => new AnimationPanel()),
         };
 
         // Defaults
@@ -69,6 +70,7 @@ public partial class MainWindow : Window
         BindNew("NewHierarchyTab", typeof(HierarchyPanel), DockRegion.Left);
         BindNew("NewProjectTab", typeof(ProjectPanel), DockRegion.BottomLeft);
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
+        BindNew("NewAnimationTab", typeof(AnimationPanel), DockRegion.Bottom);
         BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
 
         if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
@@ -175,6 +177,7 @@ public partial class MainWindow : Window
         AddPanel(typeof(ProjectPanel));
         AddPanel(typeof(ConsolePanel));
         AddPanel(typeof(GamePanel));
+        AddPanel(typeof(AnimationPanel));
     }
 
     private string NextTitle(string baseTitle)

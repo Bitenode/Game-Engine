@@ -81,6 +81,10 @@
               "target": "Package",
               "version": "[4.14.0, )"
             },
+            "NAudio": {
+              "target": "Package",
+              "version": "[2.2.1, )"
+            },
             "Silk.NET.OpenGL": {
               "target": "Package",
               "version": "[2.23.0, )"

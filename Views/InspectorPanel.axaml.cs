@@ -137,12 +137,715 @@ public partial class InspectorPanel : UserControl
         var panel = new StackPanel { Spacing = 8 };
         foreach (var p in InspectableProps(b))
         {
+            // ── AudioSource.ClipPath: custom row with Import + drag-and-drop ──
+            if (b is Game_Engine.Core.Component.AudioSource && p.Name == "ClipPath")
+            {
+                panel.Children.Add(BuildAudioClipRow(b, p));
+                continue;
+            }
+
+            // ── Decal.TexturePath: custom row with Import + drag-and-drop ──
+            if (b is Game_Engine.Core.Component.Decal && p.Name == "TexturePath")
+            {
+                panel.Children.Add(BuildDecalTextureRow(b, p));
+                continue;
+            }
+
+            // ── VegetationPainter.CustomMeshPath: custom row with Import + drag-and-drop ──
+            if (b is Game_Engine.Core.Component.VegetationPainter && p.Name == "CustomMeshPath")
+            {
+                panel.Children.Add(BuildVegetationMeshRow(b, p));
+                continue;
+            }
+
+            // ── VegetationPainter.TexturePath: custom row with Import + drag-and-drop ──
+            if (b is Game_Engine.Core.Component.VegetationPainter && p.Name == "TexturePath")
+            {
+                panel.Children.Add(BuildVegetationTextureRow(b, p));
+                continue;
+            }
+
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             row.Children.Add(new TextBlock { Text = p.Name, Width = 120, VerticalAlignment = VerticalAlignment.Center });
             row.Children.Add(PropertyEditor(b, p));
             panel.Children.Add(row);
         }
+
+        // ── VegetationPainter: Build / Rebuild / Clear buttons + instance count ──
+        if (b is Game_Engine.Core.Component.VegetationPainter vp)
+        {
+            panel.Children.Add(BuildVegetationActionsPanel(vp));
+        }
+
         return panel;
+    }
+
+    /// <summary>Convert an absolute path to a project-relative path, if possible.</summary>
+    static string AudioAbsToRel(string abs)
+    {
+        var root = ProjectService.Current?.RootPath;
+        if (string.IsNullOrWhiteSpace(root)) return abs.Replace('\\', '/');
+        try
+        {
+            var full = Path.GetFullPath(abs);
+            var projFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                           + Path.DirectorySeparatorChar;
+            if (full.StartsWith(projFull, StringComparison.OrdinalIgnoreCase))
+                return full.Substring(projFull.Length).Replace('\\', '/');
+            return full.Replace('\\', '/');
+        }
+        catch { return abs.Replace('\\', '/'); }
+    }
+
+    /// <summary>Builds a custom Inspector row for AudioSource.ClipPath with Import button + drag-and-drop.</summary>
+    Control BuildAudioClipRow(Behavior audioSource, PropertyInfo clipPathProp)
+    {
+        var container = new StackPanel { Spacing = 4 };
+
+        // ── Row 1: Label + path text + Import + Clear ──
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = "ClipPath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
+
+        var tbPath = new TextBox
+        {
+            Width = 200,
+            Watermark = "(none — import or drop audio file)",
+            Text = (clipPathProp.GetValue(audioSource) as string) ?? ""
+        };
+        tbPath.GotFocus += (_, __) => BeginPropertyEdit(audioSource, clipPathProp);
+        tbPath.LostFocus += (_, __) =>
+        {
+            clipPathProp.SetValue(audioSource, tbPath.Text);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(audioSource, clipPathProp);
+        };
+
+        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
+        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
+
+        row.Children.Add(tbPath);
+        row.Children.Add(btnImport);
+        row.Children.Add(btnClear);
+        container.Children.Add(row);
+
+        // ── Row 2: Drag-and-drop zone ──
+        var dropText = new TextBlock
+        {
+            Text = "Drop audio file here  (.wav, .ogg, .mp3)",
+            Opacity = 0.6,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+        };
+        var dropZone = new Border
+        {
+            Margin = new Thickness(120, 0, 0, 0),  // indent to match label column
+            Padding = new Thickness(10, 6),
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Background = Brushes.Transparent,
+            MinWidth = 280,
+            MinHeight = 32,
+            Child = dropText
+        };
+        DragDrop.SetAllowDrop(dropZone, true);
+        container.Children.Add(dropZone);
+
+        // Audio file extensions
+        var audioExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".wav", ".ogg", ".mp3", ".flac", ".aiff", ".aif", ".wma", ".m4a" };
+
+        // ── Import button handler ──
+        btnImport.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            // Start in the project's Assets folder (like all other importers)
+            var assetsDir = ProjectService.Current?.AssetsPath;
+
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import Audio Clip",
+                AllowMultiple = false,
+                Directory = assetsDir,
+                Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "Audio Files", Extensions = { "wav", "ogg", "mp3", "flac", "aiff" } },
+                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            var picked = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(picked)) return;
+
+            var relPath = AudioAbsToRel(picked);
+            tbPath.Text = relPath;
+            clipPathProp.SetValue(audioSource, relPath);
+            SceneService.NotifyChanged();
+        };
+
+        // ── Clear button handler ──
+        btnClear.Click += (_, __) =>
+        {
+            tbPath.Text = "";
+            clipPathProp.SetValue(audioSource, "");
+            SceneService.NotifyChanged();
+        };
+
+        // ── Drag-over handler ──
+        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+        {
+            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+                e.DragEffects = DragDropEffects.Copy;
+            else
+                e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        // ── Drop handler ──
+        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
+        {
+            string? pickedPath = null;
+
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var names = e.Data.GetFileNames();
+                if (names != null) pickedPath = names.FirstOrDefault();
+            }
+
+            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            {
+                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                if (items != null)
+                {
+                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
+                    if (file != null)
+                    {
+                        var local = file.TryGetLocalPath();
+                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(pickedPath)) return;
+            if (!audioExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
+
+            var relPath = AudioAbsToRel(pickedPath);
+            tbPath.Text = relPath;
+            clipPathProp.SetValue(audioSource, relPath);
+            SceneService.NotifyChanged();
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        return container;
+    }
+
+    /// <summary>Builds a custom Inspector row for Decal.TexturePath with Import button + drag-and-drop.</summary>
+    Control BuildDecalTextureRow(Behavior decal, PropertyInfo texPathProp)
+    {
+        var container = new StackPanel { Spacing = 4 };
+
+        // ── Row 1: Label + path text + Import + Clear ──
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = "TexturePath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
+
+        var tbPath = new TextBox
+        {
+            Width = 200,
+            Watermark = "(none — import or drop image)",
+            Text = (texPathProp.GetValue(decal) as string) ?? ""
+        };
+        tbPath.GotFocus += (_, __) => BeginPropertyEdit(decal, texPathProp);
+        tbPath.LostFocus += (_, __) =>
+        {
+            texPathProp.SetValue(decal, tbPath.Text);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(decal, texPathProp);
+        };
+
+        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
+        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
+
+        row.Children.Add(tbPath);
+        row.Children.Add(btnImport);
+        row.Children.Add(btnClear);
+        container.Children.Add(row);
+
+        // ── Row 2: Drag-and-drop zone ──
+        var dropText = new TextBlock
+        {
+            Text = "Drop image file here  (.png, .jpg, .tga, .bmp)",
+            Opacity = 0.6,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+        };
+        var dropZone = new Border
+        {
+            Margin = new Thickness(120, 0, 0, 0),
+            Padding = new Thickness(10, 6),
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Background = Brushes.Transparent,
+            MinWidth = 280,
+            MinHeight = 32,
+            Child = dropText
+        };
+        DragDrop.SetAllowDrop(dropZone, true);
+        container.Children.Add(dropZone);
+
+        var imageExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp" };
+
+        // ── Import button handler ──
+        btnImport.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            var assetsDir = ProjectService.Current?.AssetsPath;
+
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import Decal Texture",
+                AllowMultiple = false,
+                Directory = assetsDir,
+                Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "Image Files", Extensions = { "png", "jpg", "jpeg", "tga", "bmp", "tiff" } },
+                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            var picked = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(picked)) return;
+
+            var relPath = AudioAbsToRel(picked);
+            tbPath.Text = relPath;
+            texPathProp.SetValue(decal, relPath);
+            SceneService.NotifyChanged();
+        };
+
+        // ── Clear button handler ──
+        btnClear.Click += (_, __) =>
+        {
+            tbPath.Text = "";
+            texPathProp.SetValue(decal, "");
+            SceneService.NotifyChanged();
+        };
+
+        // ── Drag-over handler ──
+        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+        {
+            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+                e.DragEffects = DragDropEffects.Copy;
+            else
+                e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        // ── Drop handler ──
+        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
+        {
+            string? pickedPath = null;
+
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var names = e.Data.GetFileNames();
+                if (names != null) pickedPath = names.FirstOrDefault();
+            }
+
+            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            {
+                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                if (items != null)
+                {
+                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
+                    if (file != null)
+                    {
+                        var local = file.TryGetLocalPath();
+                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(pickedPath)) return;
+            if (!imageExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
+
+            var relPath = AudioAbsToRel(pickedPath);
+            tbPath.Text = relPath;
+            texPathProp.SetValue(decal, relPath);
+            SceneService.NotifyChanged();
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        return container;
+    }
+
+    /// <summary>Builds action buttons for VegetationPainter: Build / Rebuild / Clear + instance count.</summary>
+    Control BuildVegetationActionsPanel(Game_Engine.Core.Component.VegetationPainter vp)
+    {
+        var container = new StackPanel { Spacing = 6, Margin = new Thickness(0, 8, 0, 0) };
+
+        // ── Separator ──
+        container.Children.Add(new Border
+        {
+            Height = 1,
+            Background = Brushes.Gray,
+            Opacity = 0.4,
+            Margin = new Thickness(0, 2)
+        });
+
+        // ── Instance count label ──
+        var lblCount = new TextBlock
+        {
+            Text = $"Instances: {vp.InstanceCount}",
+            FontWeight = Avalonia.Media.FontWeight.SemiBold,
+            Margin = new Thickness(0, 2)
+        };
+        container.Children.Add(lblCount);
+
+        // ── Button row ──
+        var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+
+        var btnBuild = new Button
+        {
+            Content = "Build Grass",
+            Padding = new Thickness(12, 4),
+            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(40, 120, 40))
+        };
+        var btnRebuild = new Button
+        {
+            Content = "Rebuild",
+            Padding = new Thickness(12, 4)
+        };
+        var btnClear = new Button
+        {
+            Content = "Clear All",
+            Padding = new Thickness(12, 4),
+            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(160, 50, 50))
+        };
+
+        btnRow.Children.Add(btnBuild);
+        btnRow.Children.Add(btnRebuild);
+        btnRow.Children.Add(btnClear);
+        container.Children.Add(btnRow);
+
+        // ── Build handler ──
+        btnBuild.Click += (_, __) =>
+        {
+            int count = vp.BuildOnTerrain();
+            lblCount.Text = $"Instances: {count}";
+        };
+
+        // ── Rebuild handler (clear + build) ──
+        btnRebuild.Click += (_, __) =>
+        {
+            vp.ClearAll();
+            int count = vp.BuildOnTerrain();
+            lblCount.Text = $"Instances: {count}";
+        };
+
+        // ── Clear handler ──
+        btnClear.Click += (_, __) =>
+        {
+            vp.ClearAll();
+            lblCount.Text = $"Instances: {vp.InstanceCount}";
+        };
+
+        return container;
+    }
+
+    /// <summary>Builds a custom Inspector row for VegetationPainter.CustomMeshPath with Import button + drag-and-drop.</summary>
+    Control BuildVegetationMeshRow(Behavior painter, PropertyInfo meshPathProp)
+    {
+        var container = new StackPanel { Spacing = 4 };
+
+        // ── Row 1: Label + path text + Import + Clear ──
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = "CustomMeshPath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
+
+        var tbPath = new TextBox
+        {
+            Width = 200,
+            Watermark = "(none — import or drop 3D model / texture)",
+            Text = (meshPathProp.GetValue(painter) as string) ?? ""
+        };
+        tbPath.GotFocus += (_, __) => BeginPropertyEdit(painter, meshPathProp);
+        tbPath.LostFocus += (_, __) =>
+        {
+            meshPathProp.SetValue(painter, tbPath.Text);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(painter, meshPathProp);
+        };
+
+        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
+        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
+
+        row.Children.Add(tbPath);
+        row.Children.Add(btnImport);
+        row.Children.Add(btnClear);
+        container.Children.Add(row);
+
+        // ── Row 2: Drag-and-drop zone ──
+        var dropText = new TextBlock
+        {
+            Text = "Drop grass model or texture  (.fbx .obj .glb .png .jpg)",
+            Opacity = 0.6,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+        };
+        var dropZone = new Border
+        {
+            Margin = new Thickness(120, 0, 0, 0),
+            Padding = new Thickness(10, 6),
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Background = Brushes.Transparent,
+            MinWidth = 280,
+            MinHeight = 32,
+            Child = dropText
+        };
+        DragDrop.SetAllowDrop(dropZone, true);
+        container.Children.Add(dropZone);
+
+        // Accept both 3D models and texture images
+        var validExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 3D models
+            ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds",
+            // Textures
+            ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp"
+        };
+
+        // ── Import button handler ──
+        btnImport.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            var assetsDir = ProjectService.Current?.AssetsPath;
+
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import Grass Model or Texture",
+                AllowMultiple = false,
+                Directory = assetsDir,
+                Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "3D Models", Extensions = { "fbx", "obj", "gltf", "glb", "dae", "3ds" } },
+                    new FileDialogFilter { Name = "Textures", Extensions = { "png", "jpg", "jpeg", "tga", "bmp", "tiff" } },
+                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            var picked = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(picked)) return;
+
+            var relPath = AudioAbsToRel(picked);
+            tbPath.Text = relPath;
+            meshPathProp.SetValue(painter, relPath);
+            SceneService.NotifyChanged();
+        };
+
+        // ── Clear button handler ──
+        btnClear.Click += (_, __) =>
+        {
+            tbPath.Text = "";
+            meshPathProp.SetValue(painter, "");
+            SceneService.NotifyChanged();
+        };
+
+        // ── Drag-over handler ──
+        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+        {
+            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+                e.DragEffects = DragDropEffects.Copy;
+            else
+                e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        // ── Drop handler ──
+        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
+        {
+            string? pickedPath = null;
+
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var names = e.Data.GetFileNames();
+                if (names != null) pickedPath = names.FirstOrDefault();
+            }
+
+            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            {
+                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                if (items != null)
+                {
+                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
+                    if (file != null)
+                    {
+                        var local = file.TryGetLocalPath();
+                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(pickedPath)) return;
+            if (!validExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
+
+            var relPath = AudioAbsToRel(pickedPath);
+            tbPath.Text = relPath;
+            meshPathProp.SetValue(painter, relPath);
+            SceneService.NotifyChanged();
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        return container;
+    }
+
+    /// <summary>Builds a custom Inspector row for VegetationPainter.TexturePath with Import button + drag-and-drop.</summary>
+    Control BuildVegetationTextureRow(Behavior painter, PropertyInfo texPathProp)
+    {
+        var container = new StackPanel { Spacing = 4 };
+
+        // ── Row 1: Label + path text + Import + Clear ──
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = "TexturePath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
+
+        var tbPath = new TextBox
+        {
+            Width = 200,
+            Watermark = "(none — import or drop texture)",
+            Text = (texPathProp.GetValue(painter) as string) ?? ""
+        };
+        tbPath.GotFocus += (_, __) => BeginPropertyEdit(painter, texPathProp);
+        tbPath.LostFocus += (_, __) =>
+        {
+            texPathProp.SetValue(painter, tbPath.Text);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(painter, texPathProp);
+        };
+
+        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
+        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
+
+        row.Children.Add(tbPath);
+        row.Children.Add(btnImport);
+        row.Children.Add(btnClear);
+        container.Children.Add(row);
+
+        // ── Row 2: Drag-and-drop zone ──
+        var dropText = new TextBlock
+        {
+            Text = "Drop texture here  (.png, .jpg, .tga, .bmp)",
+            Opacity = 0.6,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+        };
+        var dropZone = new Border
+        {
+            Margin = new Thickness(120, 0, 0, 0),
+            Padding = new Thickness(10, 6),
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Background = Brushes.Transparent,
+            MinWidth = 280,
+            MinHeight = 32,
+            Child = dropText
+        };
+        DragDrop.SetAllowDrop(dropZone, true);
+        container.Children.Add(dropZone);
+
+        var imageExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp" };
+
+        // ── Import button handler ──
+        btnImport.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            var assetsDir = ProjectService.Current?.AssetsPath;
+
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import Grass Texture",
+                AllowMultiple = false,
+                Directory = assetsDir,
+                Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "Image Files", Extensions = { "png", "jpg", "jpeg", "tga", "bmp", "tiff" } },
+                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            var picked = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(picked)) return;
+
+            var relPath = AudioAbsToRel(picked);
+            tbPath.Text = relPath;
+            texPathProp.SetValue(painter, relPath);
+            SceneService.NotifyChanged();
+        };
+
+        // ── Clear button handler ──
+        btnClear.Click += (_, __) =>
+        {
+            tbPath.Text = "";
+            texPathProp.SetValue(painter, "");
+            SceneService.NotifyChanged();
+        };
+
+        // ── Drag-over handler ──
+        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+        {
+            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+                e.DragEffects = DragDropEffects.Copy;
+            else
+                e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        // ── Drop handler ──
+        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
+        {
+            string? pickedPath = null;
+
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var names = e.Data.GetFileNames();
+                if (names != null) pickedPath = names.FirstOrDefault();
+            }
+
+            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            {
+                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                if (items != null)
+                {
+                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
+                    if (file != null)
+                    {
+                        var local = file.TryGetLocalPath();
+                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(pickedPath)) return;
+            if (!imageExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
+
+            var relPath = AudioAbsToRel(pickedPath);
+            tbPath.Text = relPath;
+            texPathProp.SetValue(painter, relPath);
+            SceneService.NotifyChanged();
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+
+        return container;
     }
 
     // Try to obtain a custom inspector UI from the user's script
@@ -2785,6 +3488,7 @@ public partial class InspectorPanel : UserControl
             tbPath.Text = slots[0].RelPath;
             UpdateSummary(tbPath.Text);
         }
+
 
         return box;
     }
