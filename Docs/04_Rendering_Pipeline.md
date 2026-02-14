@@ -2,7 +2,7 @@
 
 ## Overview
 
-The engine uses a GPU-accelerated forward rendering pipeline built on Silk.NET OpenGL (or OpenGL ES 3.0 via ANGLE on Windows). All rendering happens inside Avalonia's `OpenGlControlBase`, which provides a shared GL context for the Scene View and Game View.
+The engine uses a GPU-accelerated **forward rendering pipeline** built on Silk.NET OpenGL (or OpenGL ES 3.0 via ANGLE on Windows). All rendering happens inside Avalonia's `OpenGlControlBase`, which provides a shared GL context for the Scene View and Game View. Each view maintains its own `ResourceCache` instance tied to its GL context to avoid cross-context resource issues.
 
 ---
 
@@ -11,14 +11,19 @@ The engine uses a GPU-accelerated forward rendering pipeline built on Silk.NET O
 Each frame, both SceneView and GameView execute these passes in order:
 
 ```
-1. Material Warm-Up     (MaterialRebind.RepairScene)
-2. Terrain LOD Update   (UpdateLOD per terrain)
-3. Shadow Pass          (depth-only into shadow FBO)
-4. Sky Pass             (fullscreen quad with sky shader)
-5. Grid Pass            (infinite ground grid)
-6. Scene Pass           (opaque → transparent)
-7. Gizmo Pass           (editor overlays, SceneView only)
-8. GL State Cleanup     (restore Avalonia compositor state)
+ 1. Material Warm-Up        (MaterialRebind.RepairScene — resolve null materials)
+ 2. Terrain LOD Update      (UpdateLOD per terrain — distance-based chunk LOD)
+ 3. Skinned Mesh Update     (Compute bone matrices for SkinnedMeshRenderers)
+ 4. Shadow Pass             (Depth-only into 4096x4096 shadow FBO)
+ 5. Sky Pass                (Fullscreen quad — gradient + texture + sun glow)
+ 6. Grid Pass               (Infinite ground grid with distance fade)
+ 7. Opaque Pass             (Frustum-culled — standard/terrain/skinned shaders)
+ 8. Water Pass              (Gerstner wave displacement, Fresnel, foam)
+ 9. Transparent Pass        (Back-to-front sorted, alpha blending)
+10. Particle Pass           (Billboard quads, instanced rendering)
+11. Gizmo Pass              (Editor overlays, collider wireframes — Scene View only)
+12. Post-Processing Pass    (Bloom, Fog, Color Grading, FXAA, Vignette, Underwater)
+13. GL State Cleanup        (Restore Avalonia compositor state)
 ```
 
 ---
@@ -26,152 +31,352 @@ Each frame, both SceneView and GameView execute these passes in order:
 ## Shadow Mapping
 
 ### Setup
-- **Resolution**: 4096 x 4096 depth texture
-- **Type**: Directional light orthographic projection
-- **Implementation**: `ShadowMapGPU` class wraps a depth-only FBO
+- **Resolution:** 4096 x 4096 depth texture (Depth24 format)
+- **Type:** Directional light orthographic projection
+- **Implementation:** `ShadowMapGPU` class wraps a depth-only `GPUFramebuffer`
+- **Light direction:** Computed from `Skybox.SunElevation` and `Skybox.Yaw`
 
 ### Shadow Pass
-1. Compute sun direction from `Skybox.SunElevation` and `Skybox.Yaw`
-2. Build orthographic light view-projection matrix centered on the scene
-3. Bind shadow FBO and render all meshes with the depth-only shader
-4. Front-face culling enabled during shadow pass to reduce self-shadowing (Peter Panning)
+1. Compute sun direction from Skybox elevation and yaw angles
+2. Build an orthographic light view-projection matrix centered on the visible scene
+3. Bind the shadow FBO and clear the depth buffer
+4. Enable **front-face culling** during the shadow pass to reduce self-shadowing artifacts (Peter Panning)
+5. Render all shadow-casting meshes with the **DepthOnly** shader (position-only, no fragment color)
+6. GPU skinning is supported in the shadow pass for animated meshes
 
 ### Shadow Sampling (Fragment Shader)
-- **PCF**: 3x3 Percentage Closer Filtering for soft shadow edges
-- **Slope Bias**: Dynamic bias based on surface-to-light angle to prevent shadow acne
-- **Edge Fadeout**: Smooth falloff near shadow map borders to hide hard boundaries
-- **Minimum Shadow**: 10% minimum to prevent completely black areas
+| Technique | Description |
+|-----------|-------------|
+| **PCF** | 3x3 Percentage Closer Filtering for soft shadow edges |
+| **Slope Bias** | Dynamic bias based on `dot(normal, lightDir)` to prevent shadow acne |
+| **Edge Fadeout** | Smooth falloff near shadow map borders to hide hard boundary artifacts |
+| **Minimum Shadow** | 10% minimum light to prevent completely black shadow areas |
+
+Shadow sampling is shared between the Standard and Terrain shaders via the `ShadowCalc()` GLSL function.
 
 ---
 
 ## Shaders
 
-All GLSL source is stored as `const string` in `ShaderSources.cs`. The `Adapt()` method converts `#version 330 core` to `#version 300 es` for ANGLE compatibility.
+All GLSL source code is stored as `const string` fields in `ShaderSources.cs`. The `Adapt()` method converts desktop GLSL (`#version 330 core`) to OpenGL ES (`#version 300 es`) by replacing the version directive and adding `precision mediump float;` qualifiers for ANGLE compatibility.
 
 ### Standard Shader (StandardVert + StandardFrag)
-Used for most objects. Supports:
-- **PBR Lighting**: Blinn-Phong with roughness/metallic
-- **Directional + Point Lights**: Switchable via `uLightIsPoint`
-- **Shadow Mapping**: Via `uShadowMap` texture and `ShadowCalc()` function
-- **Alpha Testing**: Configurable cutoff for transparent materials
-- **Double-Sided**: Normal flipping for two-sided rendering
 
-**Vertex Attributes:**
-| Location | Attribute   | Type  |
-|----------|-------------|-------|
-| 0        | `aPosition` | vec3  |
-| 1        | `aNormal`   | vec3  |
-| 2        | `aUV`       | vec2  |
+The primary shader for most objects. Full feature set:
 
-**Key Uniforms:**
-| Uniform          | Type      | Description                    |
-|------------------|-----------|--------------------------------|
-| `uModel`         | mat4      | Model (world) matrix           |
-| `uView`          | mat4      | Camera view matrix             |
-| `uProj`          | mat4      | Projection matrix              |
-| `uNormalMatrix`   | mat4     | transpose(inverse(model))      |
-| `uShadowVP`      | mat4     | Light view-projection          |
-| `uBaseColor`      | vec4     | Material base color            |
-| `uRoughness`      | float    | Surface roughness              |
-| `uMetallic`       | float    | Metallic value                 |
-| `uAlbedoTex`      | sampler2D| Albedo texture (unit 0)       |
-| `uShadowMap`      | sampler2D| Shadow depth texture (unit 3) |
-| `uLightDir`       | vec3     | Direction to light             |
-| `uCamPos`         | vec3     | Camera world position          |
+**Vertex shader features:**
+- Standard MVP transformation (model × view × projection)
+- Normal matrix computation for correct normal transformation
+- Shadow coordinate output for shadow mapping
+- **GPU skinning** — when bone matrices are present, transforms vertices and normals by weighted bone matrices
+- **Wind animation** — when `uIsVegetation` is set, applies time-based vertex displacement modulated by vertex height
+
+**Fragment shader features:**
+- **PBR-like lighting:** Blinn-Phong specular with roughness/metallic workflow
+  - Diffuse: `baseColor * max(dot(N, L), 0)` with shadow attenuation
+  - Specular: `pow(max(dot(N, H), 0), shininess)` where shininess = `(1 - roughness) * 128`
+  - Metallic blending between dielectric and metallic reflectance
+- **Directional + Point lights:** Switchable via `uLightIsPoint` uniform
+- **Shadow mapping:** PCF shadow sampling via `ShadowCalc()` function
+- **Alpha testing:** Configurable `uAlphaCutoff` for transparent materials
+- **Double-sided rendering:** Normal flipping based on `gl_FrontFacing` when `uDoubleSided` is set
+- **Ambient lighting:** Global ambient from Skybox `Ambient` property
+
+**Vertex attributes:**
+
+| Location | Attribute     | Type  | Layout   |
+|----------|---------------|-------|----------|
+| 0        | `aPosition`   | vec3  | Static + Skinned |
+| 1        | `aNormal`     | vec3  | Static + Skinned |
+| 2        | `aUV`         | vec2  | Static + Skinned |
+| 3        | `aBoneIdx`    | ivec4 | Skinned only |
+| 4        | `aBoneWeight` | vec4  | Skinned only |
+
+**Key uniforms:**
+
+| Uniform            | Type       | Description                        |
+|--------------------|------------|------------------------------------|
+| `uModel`           | mat4       | Model (world) matrix               |
+| `uView`            | mat4       | Camera view matrix                 |
+| `uProj`            | mat4       | Projection matrix                  |
+| `uNormalMatrix`    | mat4       | `transpose(inverse(model))`        |
+| `uShadowVP`       | mat4       | Light view-projection matrix       |
+| `uBaseColor`       | vec4       | Material base color                |
+| `uRoughness`       | float      | Surface roughness (0-1)            |
+| `uMetallic`        | float      | Metallic value (0-1)               |
+| `uAlphaCutoff`     | float      | Alpha test threshold               |
+| `uDoubleSided`     | int        | Enable double-sided rendering      |
+| `uLightDir`        | vec3       | Direction to light                 |
+| `uLightColor`      | vec3       | Light color × intensity            |
+| `uLightIsPoint`    | int        | 0 = directional, 1 = point        |
+| `uLightPos`        | vec3       | Point light world position         |
+| `uLightRange`      | float      | Point light falloff range          |
+| `uCamPos`          | vec3       | Camera world position              |
+| `uAmbient`         | float      | Global ambient level               |
+| `uIsVegetation`    | int        | Enable wind animation              |
+| `uTime`            | float      | Elapsed time for animation         |
+| `uBones[N]`        | mat4[]     | Bone matrices for skinning         |
+| `uAlbedoTex`       | sampler2D  | Albedo texture                     |
+| `uNormalTex`       | sampler2D  | Normal map texture                 |
+| `uShadowMap`       | sampler2D  | Shadow depth texture               |
 
 ### Terrain Shader (TerrainVert + TerrainFrag)
-Used for terrain objects with splatmap layers. Supports:
-- **Up to 8 texture layers** weighted by 2 RGBA splatmap textures
-- **Per-layer UV tiling** for texture repetition control
-- **Triplanar projection** on steep cliff faces to prevent stretching
-- **Full shadow support** (same as standard shader)
-- **Fallback** to standard material when no layers are defined
 
-**Additional Uniforms:**
-| Uniform        | Type      | Description                      |
-|----------------|-----------|----------------------------------|
-| `uSplatmap0`   | sampler2D | Layer weights 0-3 (RGBA float)  |
-| `uSplatmap1`   | sampler2D | Layer weights 4-7 (RGBA float)  |
-| `uLayerCount`  | int       | Number of active layers          |
-| `uLayer0..7`   | sampler2D | Layer albedo textures (units 4-11)|
-| `uTiling0..7`  | float     | Per-layer UV tiling scale        |
+Specialized shader for terrain objects with splatmap-based multi-material blending.
+
+**Features:**
+- **Up to 8 texture layers** — weighted by 2 RGBA splatmap textures
+- **Per-layer UV tiling** — independent texture repetition scale per layer
+- **Triplanar projection** — on steep cliff faces (where the surface normal is mostly horizontal), texture is projected from the side to prevent stretching
+- **Full shadow support** — same PCF shadow sampling as the Standard shader
+- **Fallback** — uses standard material color when no layers are defined
+
+**Additional uniforms:**
+
+| Uniform        | Type       | Description                         |
+|----------------|------------|-------------------------------------|
+| `uSplatmap0`   | sampler2D  | Layer weights 0-3 (RGBA float)     |
+| `uSplatmap1`   | sampler2D  | Layer weights 4-7 (RGBA float)     |
+| `uLayerCount`  | int        | Number of active layers (0-8)      |
+| `uLayer0..7`   | sampler2D  | Layer albedo textures               |
+| `uTiling0..7`  | float      | Per-layer UV tiling scale           |
+
+### Water Shader (WaterVert + WaterFrag)
+
+Renders water surfaces with realistic wave simulation.
+
+**Vertex shader:**
+- **Gerstner wave displacement** — two wave layers with configurable amplitude, frequency, steepness, and direction
+- **Wave normal computation** — analytical normals derived from wave derivatives
+
+**Fragment shader:**
+- **Fresnel effect** — `pow(1.0 - dot(viewDir, normal), 5.0)` for angle-dependent transparency
+- **Sky reflection** — samples the skybox for reflections
+- **Specular highlights** — Blinn-Phong sun specular on the water surface
+- **Foam** — white foam on wave crests based on displacement height
+- **Color blending** — deep vs shallow water color based on depth
+
+### Particle Shader (ParticleVert + ParticleFrag)
+
+Billboard particle rendering with instanced data.
+
+**Vertex shader:**
+- Billboard quads that always face the camera
+- Per-particle position, size, color, and alpha from uniform arrays
+- Instancing via uniform arrays (not vertex instancing)
+
+**Fragment shader:**
+- Soft circular particles with alpha falloff from center to edge
+- `smoothstep` distance-based alpha for soft edges
+
+### PostProcess Shader (PostProcessVert + PostProcessFrag)
+
+Full-screen post-processing composite pass.
+
+**Features (all optional, controlled by uniforms):**
+
+| Effect | Implementation |
+|--------|---------------|
+| **FXAA** | Fast approximate anti-aliasing — edge detection and directional blur |
+| **Bloom** | Simplified single-pass bloom — bright pixel extraction + Gaussian-like blur |
+| **Fog** | Depth-based atmospheric fog with configurable color and density |
+| **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |
+| **Tone Mapping** | HDR to LDR conversion — Reinhard or ACES filmic methods |
+| **Vignette** | Darkened edges — configurable intensity and smoothness |
+| **Underwater** | Wave distortion, underwater fog, caustic patterns, color absorption (blue channel boosted, red absorbed) |
 
 ### Other Shaders
-| Shader         | Purpose                                     |
-|----------------|---------------------------------------------|
-| **DepthOnly**  | Shadow map generation (position only)        |
-| **Sky**        | Gradient + equirectangular texture + sun glow|
-| **Grid**       | Infinite ground grid with depth writing      |
-| **Wireframe**  | Solid color lines (collider gizmos, etc.)    |
+
+| Shader        | Purpose                                                |
+|---------------|--------------------------------------------------------|
+| **DepthOnly** | Shadow map generation — position only, dummy fragment output. Supports GPU skinning for animated shadow casters. |
+| **Sky**       | Fullscreen sky rendering — gradient blend + equirectangular texture sampling + sun glow disc at configurable elevation/yaw |
+| **Grid**      | Infinite ground grid — per-pixel raycast to Y=0 plane, distance fade, colored axis lines (red X, blue Z), major/minor grid lines |
+| **Wireframe** | Solid color lines — used for collider gizmos, selection outlines, and wireframe mode |
+| **Blit**      | Fullscreen texture copy — used for post-processing ping-pong and final output |
 
 ---
 
 ## GPU Resource Management
 
-### ResourceCache
-Maps engine objects to GPU resources, handles lazy upload and disposal. Each view (SceneView, GameView) has its own `ResourceCache` instance tied to its OpenGL context.
+### GLContext
+Wraps the Silk.NET `GL` instance obtained from Avalonia's OpenGL control. Detects whether the context is OpenGL ES (ANGLE on Windows) or desktop OpenGL by checking the version string. The `Adapt()` method on `ShaderSources` uses this detection to generate the correct GLSL version directive.
 
-- `GetMesh(Mesh)` → `GPUMesh` (VAO/VBO/EBO, auto-upload)
-- `GetTexture(Texture2D)` → `GPUTexture` (RGBA8, mipmapped)
-- `GetWhiteTexture()` → 1x1 white fallback
-- `MarkMeshDirty(Mesh)` → force re-upload after terrain edit
-- `GetTerrainSplatTextures(Terrain)` → per-context splatmap GPU textures with version tracking
-- `SetTerrainSplatVersion(Terrain, version)` → mark a context as up-to-date
+### ResourceCache
+Maps engine objects to GPU resources, handles lazy upload and disposal. **Each view** (SceneView, GameView) has its own `ResourceCache` instance tied to its OpenGL context.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `GetMesh(Mesh)` | `GPUMesh` | Upload mesh to VAO/VBO/EBO (auto-upload on first use) |
+| `GetTexture(Texture2D)` | `GPUTexture` | Upload RGBA8 texture with mipmaps |
+| `GetWhiteTexture()` | `GPUTexture` | 1x1 white fallback texture |
+| `MarkMeshDirty(Mesh)` | — | Force re-upload after terrain edit |
+| `GetTerrainSplatTextures(Terrain)` | GPU textures | Per-context splatmap textures with version tracking |
+| `SetTerrainSplatVersion(Terrain, v)` | — | Mark a context as up-to-date |
+
+**Orphan eviction:** Periodically cleans up cached resources for meshes/textures that are no longer referenced.
 
 ### Per-Context Splatmap Versioning
-Terrain splatmap textures are managed per-GL-context to avoid cross-context OpenGL handle issues. Each context tracks the last uploaded `SplatmapVersion` counter. When the terrain's version is ahead (i.e., the user painted new data), the context re-uploads the splatmap independently. This ensures both SceneView and GameView always display the correct splatmap data without one view's upload "stealing" the dirty flag from the other.
+Terrain splatmap textures are managed **per-GL-context** to avoid cross-context OpenGL handle issues. Each context tracks the last uploaded `SplatmapVersion` counter. When the terrain's version advances (i.e., the user painted new data), the context independently re-uploads the splatmap. This ensures both SceneView and GameView always display the correct splatmap data without one view's upload "stealing" the dirty flag from the other.
 
 ### GPUMesh
-Interleaved vertex buffer: Position (3f) + Normal (3f) + UV (2f) = 32 bytes/vertex.
-Separate index buffers for triangles (GL_TRIANGLES) and wireframe lines (GL_LINES).
+Manages VAO (Vertex Array Object), VBO (Vertex Buffer Object), and EBO (Element Buffer Object) for mesh rendering.
+
+**Two vertex layouts:**
+
+| Layout | Stride | Attributes | Usage |
+|--------|--------|------------|-------|
+| **Static** | 32 bytes | Position(3f) + Normal(3f) + UV(2f) | Standard meshes |
+| **Skinned** | 64 bytes | Position(3f) + Normal(3f) + UV(2f) + BoneIdx(4i) + BoneWeight(4f) | Skeletal meshes |
+
+**Index buffers:**
+- Triangle EBO — `GL_TRIANGLES` for filled rendering
+- Line EBO — `GL_LINES` for wireframe rendering
+
+The `Upload()` method auto-detects whether the mesh has bone data and selects the appropriate layout.
 
 ### GPUTexture
-Supports three upload modes:
-- `Upload(Texture2D)` — RGBA8 bytes with mipmaps (standard textures)
-- `UploadFloat(float[], w, h)` — RGBA32F floats (splatmap data)
-- `CreateDepth(w, h)` — Depth24 for shadow maps
+Supports multiple upload modes for different texture types:
+
+| Method | Format | Description |
+|--------|--------|-------------|
+| `Upload(Texture2D)` | RGBA8 | Standard textures with mipmap generation |
+| `UploadFloat(float[], w, h)` | RGBA32F | Float textures for splatmap data |
+| `CreateDepth(w, h)` | Depth24 | Depth textures for shadow maps |
+| `CreateColor(w, h)` | RGBA8 | Color textures for FBO attachments |
+
+**Default filtering:** Trilinear (linear mipmap for minification, linear for magnification)
+**Default wrapping:** Repeat on both axes
 
 ### GPUFramebuffer
-Off-screen render targets. Supports:
-- Depth-only (shadow maps) with `DrawBuffers(None)`
-- Color + Depth (post-processing)
-- OpenGL ES 3.0 compatible
+Off-screen render targets for shadow mapping and post-processing.
+
+| Configuration | Usage |
+|---------------|-------|
+| Depth-only | Shadow maps — `DrawBuffers(None)` for no color output |
+| Color + Depth | Post-processing ping-pong buffers |
+| OpenGL ES 3.0 compatible | Works with ANGLE on Windows |
+
+### FullscreenQuad
+A single triangle that covers the entire screen, used for:
+- Sky rendering
+- Post-processing passes
+- Blit (texture copy) operations
+- Grid rendering (per-pixel raycast)
+
+Using a single oversized triangle instead of a quad avoids the diagonal seam artifact.
+
+### ShaderProgram
+Compiles and links GLSL vertex + fragment shaders. Provides:
+- Uniform location caching (dictionary lookup)
+- Type-safe uniform setters: `SetInt`, `SetFloat`, `SetVec2/3/4`, `SetMat4`, `SetTexture`
+- Matrix upload with `transpose=false` (row-major to column-major conversion)
 
 ---
 
 ## Rendering Passes Detail
 
 ### Opaque Pass
-1. Enable depth test (LESS), depth write ON, blending OFF
-2. Set standard shader + global uniforms (view, proj, light, shadow)
-3. For each visible opaque mesh:
-   - If terrain with layers → switch to terrain shader, bind splatmaps + layer textures
-   - Else → use standard shader, bind albedo texture
+1. Enable depth test (`GL_LESS`), depth write ON, blending OFF
+2. Set the Standard shader + global uniforms (view, projection, light direction/color, shadow VP, camera position, ambient)
+3. For each visible opaque mesh (frustum-culled):
+   - **If terrain with layers** → switch to Terrain shader, bind splatmaps (units 0-1) + layer textures (units 4-11), set per-layer tiling uniforms
+   - **If skinned mesh** → compute and upload bone matrices, use skinned vertex layout
+   - **Else** → use Standard shader, bind albedo/normal/metallic/roughness/AO/emissive textures
    - Set per-object uniforms (model matrix, normal matrix, material properties)
-   - Set cull face mode (back-face or disabled for double-sided)
-   - Draw
+   - Set cull face mode (back-face culling, or disabled for double-sided materials)
+   - Draw call
+
+**Terrain batching optimization:** Terrain chunks are grouped by their parent `Terrain` reference. Splatmap textures and layer textures are bound once per terrain, not per chunk. Only per-chunk model matrix changes between draw calls.
+
+### Water Pass
+1. Bind the Water shader
+2. Set wave parameters (amplitude, frequency, steepness, direction for 2 wave layers)
+3. Set elapsed time for wave animation
+4. Set camera position and sky texture for reflections
+5. Enable alpha blending for water transparency
+6. Draw the water surface mesh
 
 ### Transparent Pass
-1. Sort transparent items back-to-front by view-space Z
-2. Enable blending (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), depth write OFF
-3. Draw each item with the standard shader
-4. Restore depth write
+1. Sort all transparent items **back-to-front** by view-space Z distance
+2. Enable blending (`GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA`), depth write OFF
+3. Draw each item with the Standard shader
+4. Restore depth write after all transparent items are drawn
+
+### Particle Pass
+1. Bind the Particle shader
+2. For each active `ParticleEmitter`:
+   - Upload per-particle data (positions, sizes, colors, alphas) as uniform arrays
+   - Set billboard orientation from camera view matrix
+   - Draw instanced billboard quads
+3. Particles are rendered with alpha blending enabled
+
+### Post-Processing Pass
+1. The scene is rendered to an off-screen framebuffer (color + depth)
+2. Bind the PostProcess shader
+3. Read the scene color texture and depth texture
+4. Apply enabled effects in order: FXAA → Bloom → Fog → Color Grading → Tone Mapping → Vignette → Underwater
+5. Blit the final result to the screen
 
 ### Frustum Culling
-Each mesh has a bounding sphere. Before drawing, the sphere is tested against the 6 frustum planes extracted from the view-projection matrix. Meshes outside the frustum are skipped entirely.
+Each mesh has a bounding sphere computed from its vertices. Before drawing, the sphere (transformed to world space) is tested against the 6 frustum planes extracted from the view-projection matrix. Meshes outside the frustum are skipped entirely.
 
-### LOD (Level of Detail)
-- **MeshLod**: Procedural LOD for standard meshes based on screen-space size
-- **Terrain LOD**: Per-chunk LOD with 3 levels (full, half, quarter resolution) selected by camera distance
+**Optimization:** Frustum sphere results are cached. Vegetation chunks (with `Chunk_` prefix) are fast-skipped if culled.
+
+### Level of Detail (LOD)
+
+**Procedural Mesh LOD (`MeshLod`):**
+- Uses `Projection.EstimateProjectedRadiusPx()` to determine screen-space size
+- Default surface size: 1920 x 1080
+- Adjusts tessellation for Sphere, Cylinder, and Cone primitives
+- `MeshFilter.Mesh` is upgraded in-place when the projected size increases
+
+**Terrain LOD:**
+- Per-chunk, 3 levels (LOD 0 = full, LOD 1 = half, LOD 2 = quarter resolution)
+- Selected by camera distance to chunk center
+- Thresholds scale with chunk size and terrain dimensions
+
+**Tree LOD (`TreeLOD`):**
+- 4 levels: LOD 0 (full mesh), LOD 1 (medium), LOD 2 (low), LOD 3 (billboard impostor)
+- Distance thresholds: configurable per tree (default 15m, 30m, 55m)
+- Billboard uses yaw-sliced texture atlas for view-dependent appearance
 
 ---
 
 ## Texture Units Layout
 
-| Unit    | Standard Shader | Terrain Shader          |
-|---------|-----------------|-------------------------|
-| 0       | Albedo texture  | Splatmap 0 (layers 0-3) |
-| 1       | (unused)        | Splatmap 1 (layers 4-7) |
-| 2       | (unused)        | Shadow map              |
-| 3       | Shadow map      | (unused)                |
-| 4-11    | (unused)        | Layer albedo textures   |
+### Standard Shader
+| Unit | Texture Type       |
+|------|--------------------|
+| 0    | Albedo             |
+| 1    | Normal map         |
+| 2    | Specular           |
+| 3    | Metallic           |
+| 4    | Roughness          |
+| 5    | Ambient Occlusion  |
+| 6    | Emissive           |
+| 7    | Shadow map         |
+
+### Terrain Shader
+| Unit   | Texture Type                |
+|--------|-----------------------------|
+| 0      | Splatmap 0 (layers 0-3)    |
+| 1      | Splatmap 1 (layers 4-7)    |
+| 2      | Shadow map                  |
+| 4-11   | Layer albedo textures (0-7) |
+
+---
+
+## Rendering Optimizations
+
+| Optimization | Description |
+|--------------|-------------|
+| **Frustum culling** | Bounding sphere test against 6 frustum planes |
+| **Thread-static buffers** | Reuse draw-item buffers to reduce GC pressure |
+| **Terrain batching** | Group chunks by terrain, bind splatmaps once per terrain |
+| **Vegetation fast-skip** | Skip culled vegetation chunks by `Chunk_` prefix check |
+| **LOD** | Per-mesh procedural LOD, per-chunk terrain LOD, per-tree billboard LOD |
+| **Lazy upload** | Meshes and textures are uploaded to GPU on first use |
+| **Dirty tracking** | Only re-upload modified meshes (terrain edits, splatmap changes) |
+| **Splatmap versioning** | Per-context version counter avoids redundant GPU uploads |
+| **Index tracking** | MeshRenderer/MeshFilter pairing via index for fast component lookup |

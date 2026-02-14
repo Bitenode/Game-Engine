@@ -1,11 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Data.Converters;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
@@ -116,6 +121,9 @@ namespace Game_Engine.Views
         private GameObject _pressedItem;
         private bool _isDragging;
 
+        // Re-entrancy guard so TreeView ↔ SelectionService don't fight
+        private bool _syncingSelection;
+
         public HierarchyPanel()
         {
             InitializeComponent();
@@ -123,13 +131,81 @@ namespace Game_Engine.Views
             _vm = new HierarchyViewModel();
             DataContext = _vm;
 
-            // Selection -> engine selection
+            // Selection -> engine selection (supports multi-select)
             Tree.SelectionChanged += (_, __) =>
             {
-                var selected =
-                    Tree.SelectedItem as GameObject
-                    ?? (Tree.SelectedItem as TreeViewItem)?.DataContext as GameObject;
-                SelectionService.Set(selected);
+                if (_syncingSelection) return;         // break the loop
+
+                _syncingSelection = true;
+                try
+                {
+                    if (Tree.SelectedItems == null || Tree.SelectedItems.Count == 0)
+                    {
+                        SelectionService.Clear();
+                        return;
+                    }
+
+                    var selectedGOs = new List<GameObject>();
+                    foreach (var item in Tree.SelectedItems)
+                    {
+                        var go = item as GameObject
+                            ?? (item as TreeViewItem)?.DataContext as GameObject;
+                        if (go != null)
+                            selectedGOs.Add(go);
+                    }
+
+                    if (selectedGOs.Count == 1)
+                        SelectionService.Set(selectedGOs[0]);
+                    else if (selectedGOs.Count > 1)
+                        SelectionService.SetMultiple(selectedGOs);
+                    else
+                        SelectionService.Clear();
+                }
+                finally { _syncingSelection = false; }
+            };
+
+            // Listen for selection changes from other sources and sync hierarchy
+            SelectionService.Changed += () =>
+            {
+                if (_syncingSelection) return;         // we are the source, skip
+
+                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    if (_syncingSelection) return;
+                    _syncingSelection = true;
+                    try
+                    {
+                        var wanted = SelectionService.Selected;
+                        if (wanted.Count == 0)
+                        {
+                            Tree.UnselectAll();
+                            return;
+                        }
+
+                        // Build a set of currently selected in tree
+                        var already = new HashSet<GameObject>();
+                        if (Tree.SelectedItems != null)
+                            foreach (var item in Tree.SelectedItems)
+                            {
+                                var go = item as GameObject
+                                    ?? (item as TreeViewItem)?.DataContext as GameObject;
+                                if (go != null) already.Add(go);
+                            }
+
+                        // Check if they already match
+                        if (already.Count == wanted.Count && wanted.All(w => already.Contains(w)))
+                            return;
+
+                        // Sync: clear and re-select all
+                        Tree.UnselectAll();
+                        foreach (var go in wanted)
+                        {
+                            // SelectedItems.Add works for TreeView with Multiple selection mode
+                            try { Tree.SelectedItems!.Add(go); } catch { }
+                        }
+                    }
+                    finally { _syncingSelection = false; }
+                });
             };
 
             // Drag & drop wiring
@@ -226,6 +302,129 @@ namespace Game_Engine.Views
             SceneService.NotifyChanged();
         }
 
+        // ---------------- Prefab handlers ----------------
+
+        private async void OnCreatePrefab(object sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null) return;
+
+            var win = this.GetVisualRoot() as Window;
+            if (win == null) return;
+
+            var sfd = new SaveFileDialog
+            {
+                Title = "Create Prefab",
+                InitialFileName = (_contextTarget.Name ?? "NewPrefab") + ".prefab",
+                Filters = { new FileDialogFilter { Name = "Prefab", Extensions = { "prefab" } } }
+            };
+
+            var proj = ProjectService.Current;
+            if (proj != null)
+            {
+                var prefabDir = System.IO.Path.Combine(proj.RootPath, "Assets", "Prefabs");
+                if (!System.IO.Directory.Exists(prefabDir))
+                    System.IO.Directory.CreateDirectory(prefabDir);
+                sfd.Directory = prefabDir;
+            }
+
+            var dest = await sfd.ShowAsync(win);
+            if (string.IsNullOrWhiteSpace(dest)) return;
+
+            // Make project-relative
+            string relPath = dest;
+            if (proj != null)
+                relPath = System.IO.Path.GetRelativePath(proj.RootPath, System.IO.Path.GetFullPath(dest));
+
+            var prefab = Prefab.CreateFrom(_contextTarget, relPath);
+            prefab.Save();
+
+            SceneService.NotifyChanged();
+            Log.Success($"Created prefab: {prefab.Name} → {relPath}");
+        }
+
+        private async void OnInstantiatePrefab(object sender, RoutedEventArgs e)
+        {
+            var win = this.GetVisualRoot() as Window;
+            if (win == null) return;
+
+            var ofd = new OpenFileDialog
+            {
+                Title = "Instantiate Prefab",
+                AllowMultiple = false,
+                Filters = { new FileDialogFilter { Name = "Prefab", Extensions = { "prefab" } } }
+            };
+
+            var files = await ofd.ShowAsync(win);
+            if (files == null || files.Length == 0) return;
+
+            // Make project-relative
+            string relPath = files[0];
+            var proj = ProjectService.Current;
+            if (proj != null)
+            {
+                var abs = System.IO.Path.GetFullPath(files[0]);
+                var root = System.IO.Path.GetFullPath(proj.RootPath);
+                if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    relPath = System.IO.Path.GetRelativePath(root, abs);
+            }
+
+            var prefab = Prefab.Load(relPath);
+            if (prefab == null)
+            {
+                Log.Warning($"Failed to load prefab: {relPath}");
+                return;
+            }
+
+            var instance = prefab.Instantiate(_contextTarget);
+            if (instance != null)
+            {
+                SelectionService.Set(instance);
+                SceneService.NotifyChanged();
+            }
+        }
+
+        private void OnApplyToPrefab(object sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null || !Prefab.IsPrefabInstance(_contextTarget))
+            {
+                Log.Warning("Selected object is not a prefab instance.");
+                return;
+            }
+
+            var prefab = Prefab.Load(_contextTarget.PrefabPath);
+            if (prefab == null)
+            {
+                Log.Warning($"Could not load prefab: {_contextTarget.PrefabPath}");
+                return;
+            }
+
+            prefab.UpdateFromInstance(_contextTarget);
+            prefab.ApplyToInstances();
+            SceneService.NotifyChanged();
+        }
+
+        private void OnRevertToPrefab(object sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null || !Prefab.IsPrefabInstance(_contextTarget))
+            {
+                Log.Warning("Selected object is not a prefab instance.");
+                return;
+            }
+
+            Prefab.RevertInstance(_contextTarget);
+        }
+
+        private void OnUnpackPrefab(object sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null || !Prefab.IsPrefabInstance(_contextTarget))
+            {
+                Log.Warning("Selected object is not a prefab instance.");
+                return;
+            }
+
+            Prefab.Unpack(_contextTarget);
+        }
+
         private void OnExpandAll(object sender, RoutedEventArgs e) => SetExpandedForScope(true);
         private void OnCollapseAll(object sender, RoutedEventArgs e) => SetExpandedForScope(false);
 
@@ -292,49 +491,151 @@ namespace Game_Engine.Views
             _pressedItem = null;
         }
 
-        // ---------------- DnD parenting ----------------
+        // ---------------- DnD parenting + prefab drop ----------------
         private void OnDragOver(object sender, DragEventArgs e)
         {
+            // Accept internal GO reparenting
             var dragged = e.Data.Get(DragFormat) as GameObject;
-            if (dragged == null) return;
-
-            var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-            var target = tvi?.DataContext as GameObject;
-
-            var ok = true;
-            if (target != null)
+            if (dragged != null)
             {
-                if (ReferenceEquals(target, dragged) || dragged.IsAncestorOf(target))
-                    ok = false;
+                var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+                var target = tvi?.DataContext as GameObject;
+
+                var ok = true;
+                if (target != null)
+                {
+                    if (ReferenceEquals(target, dragged) || dragged.IsAncestorOf(target))
+                        ok = false;
+                }
+
+                e.DragEffects = ok ? DragDropEffects.Move : DragDropEffects.None;
+                e.Handled = true;
+                return;
             }
 
-            e.DragEffects = ok ? DragDropEffects.Move : DragDropEffects.None;
-            e.Handled = true;
+            // Accept .prefab files from ProjectPanel (or OS file drop)
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var files = e.Data.GetFileNames()?.ToList();
+                if (files != null && files.Any(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
+                {
+                    e.DragEffects = DragDropEffects.Copy;
+                    e.Handled = true;
+                    return;
+                }
+            }
+
+            // Also accept the project-node-path format (ProjectPanel internal format)
+            if (e.Data.Contains("project-node-path"))
+            {
+                var path = e.Data.Get("project-node-path") as string;
+                if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                {
+                    e.DragEffects = DragDropEffects.Copy;
+                    e.Handled = true;
+                    return;
+                }
+            }
         }
 
         private void OnDrop(object sender, DragEventArgs e)
         {
+            // Internal GO reparenting
             var dragged = e.Data.Get(DragFormat) as GameObject;
-            if (dragged == null) return;
-
-            var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
-            var target = tvi?.DataContext as GameObject;
-
-            if (target == null)
+            if (dragged != null)
             {
-                if (dragged.Parent != null)
-                    _vm.Unparent(dragged);
+                var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+                var target = tvi?.DataContext as GameObject;
+
+                if (target == null)
+                {
+                    if (dragged.Parent != null)
+                        _vm.Unparent(dragged);
+                }
+                else
+                {
+                    if (dragged.Parent == null)
+                        _vm.Root.Remove(dragged);
+
+                    target.AddChild(dragged);
+                }
+
+                e.Handled = true;
+                SceneService.NotifyChanged();
+                return;
             }
-            else
+
+            // Prefab file drop
+            string prefabPath = null;
+
+            if (e.Data.Contains(DataFormats.FileNames))
             {
-                if (dragged.Parent == null)
-                    _vm.Root.Remove(dragged);
-
-                target.AddChild(dragged);
+                var files = e.Data.GetFileNames()?.ToList();
+                prefabPath = files?.FirstOrDefault(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase));
+            }
+            if (prefabPath == null && e.Data.Contains("project-node-path"))
+            {
+                var path = e.Data.Get("project-node-path") as string;
+                if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                    prefabPath = path;
             }
 
-            e.Handled = true;
-            SceneService.NotifyChanged();
+            if (prefabPath != null)
+            {
+                // Make project-relative
+                string relPath = prefabPath;
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var abs = Path.GetFullPath(prefabPath);
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        relPath = Path.GetRelativePath(root, abs);
+                }
+
+                var prefab = Prefab.Load(relPath);
+                if (prefab == null)
+                {
+                    Log.Warning($"Failed to load prefab: {relPath}");
+                    return;
+                }
+
+                // Drop target
+                var dropTvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+                var dropParent = dropTvi?.DataContext as GameObject;
+
+                var instance = prefab.Instantiate(dropParent);
+                if (instance != null)
+                {
+                    SelectionService.Set(instance);
+                    SceneService.NotifyChanged();
+                    Log.Success($"Instantiated prefab: {prefab.Name}");
+                }
+
+                e.Handled = true;
+            }
         }
+    }
+
+    /// <summary>
+    /// Converts a GameObject's PrefabId to a foreground brush.
+    /// Blue (#5599FF) for prefab instances, unset (theme default) for normal objects.
+    /// </summary>
+    public class PrefabColorConverter : IValueConverter
+    {
+        public static readonly PrefabColorConverter Instance = new();
+
+        private static readonly IBrush PrefabBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x99, 0xFF));
+
+        public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        {
+            var id = value as string;
+            if (!string.IsNullOrEmpty(id))
+                return PrefabBrush;
+            return AvaloniaProperty.UnsetValue;  // let the theme decide the default color
+        }
+
+        public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+            => throw new NotSupportedException();
     }
 }

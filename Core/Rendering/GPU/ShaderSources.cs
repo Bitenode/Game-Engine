@@ -776,6 +776,15 @@ uniform float uVignetteSmoothness;
 // FXAA
 uniform bool  uFXAAEnabled;
 
+// Underwater
+uniform bool  uUnderwaterEnabled;
+uniform vec3  uUnderwaterTint;
+uniform float uUnderwaterFogDensity;
+uniform float uUnderwaterCausticStr;
+uniform float uUnderwaterDistortion;
+uniform float uUnderwaterTime;
+uniform float uUnderwaterDepth;    // how far below the surface (0 = at surface)
+
 out vec4 FragColor;
 
 vec3 ACESFilm(vec3 x)
@@ -889,6 +898,57 @@ void main()
         float dist = distance(vUV, vec2(0.5));
         float vig = smoothstep(0.5 - uVignetteSmoothness, 0.5, dist);
         color *= 1.0 - vig * uVignetteIntensity;
+    }
+
+    // ── Underwater effect ──
+    if (uUnderwaterEnabled)
+    {
+        // Screen-space distortion (wavy wobble)
+        float wobbleX = sin(vUV.y * 25.0 + uUnderwaterTime * 2.3) * uUnderwaterDistortion;
+        float wobbleY = cos(vUV.x * 20.0 + uUnderwaterTime * 1.7) * uUnderwaterDistortion;
+        vec2 distortedUV = vUV + vec2(wobbleX, wobbleY);
+        distortedUV = clamp(distortedUV, 0.001, 0.999);
+        color = texture(uScene, distortedUV).rgb;
+
+        // Re-apply tone mapping on distorted sample if color grading is active
+        if (uColorGradingEnabled)
+        {
+            color *= uExposure;
+            color += vec3(uBrightness);
+            color = ((color - 0.5) * uContrast) + 0.5;
+            float grayUW = dot(color, vec3(0.299, 0.587, 0.114));
+            color = mix(vec3(grayUW), color, uSaturation);
+            if (uToneMap == 1) color = ReinhardTonemap(color);
+            else if (uToneMap == 2) color = ACESFilm(color);
+        }
+
+        // Underwater fog (depth-based tinting — stronger further below surface)
+        float depthFactor = clamp(uUnderwaterDepth * uUnderwaterFogDensity, 0.0, 0.85);
+        // Also apply screen-space depth fog (objects far from camera appear foggier)
+        float screenDepth = dot(color, vec3(0.299, 0.587, 0.114));
+        float screenFog = 1.0 - exp(-uUnderwaterFogDensity * 8.0 * screenDepth);
+        float totalFog = clamp(depthFactor + screenFog * 0.5, 0.0, 0.9);
+        color = mix(color, uUnderwaterTint, totalFog);
+
+        // Caustic light patterns (animated)
+        vec2 cUV = vUV * 8.0;
+        float c1 = sin(cUV.x * 3.0 + uUnderwaterTime * 1.1) * cos(cUV.y * 2.7 + uUnderwaterTime * 0.9);
+        float c2 = sin(cUV.x * 2.1 - uUnderwaterTime * 0.7) * cos(cUV.y * 3.3 + uUnderwaterTime * 1.3);
+        float caustic = (c1 + c2) * 0.5 + 0.5;
+        caustic = pow(caustic, 3.0);
+        // Caustics are brighter near the surface
+        float causticFade = clamp(1.0 - uUnderwaterDepth * 0.15, 0.1, 1.0);
+        color += vec3(caustic) * uUnderwaterCausticStr * causticFade;
+
+        // Color absorption (reds fade first, then greens, leaving blues)
+        float absorption = clamp(uUnderwaterDepth * 0.08, 0.0, 0.7);
+        color.r *= 1.0 - absorption;
+        color.g *= 1.0 - absorption * 0.5;
+
+        // Underwater vignette (stronger than normal)
+        float uwDist = distance(vUV, vec2(0.5));
+        float uwVig = smoothstep(0.3, 0.7, uwDist);
+        color *= 1.0 - uwVig * 0.4;
     }
 
     color = clamp(color, 0.0, 1.0);

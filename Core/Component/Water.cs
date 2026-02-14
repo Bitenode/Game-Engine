@@ -62,6 +62,11 @@ namespace Game_Engine.Core.Component
         // ── Underwater ──
         [Persist] public SN.Vector3 UnderwaterTint { get; set; } = new SN.Vector3(0.1f, 0.3f, 0.5f);
         [Persist] public float UnderwaterFogDensity { get; set; } = 0.05f;
+        [Persist] public float UnderwaterCausticStrength { get; set; } = 0.3f;
+        [Persist] public float UnderwaterDistortion { get; set; } = 0.003f;
+        [Persist] public float UnderwaterBuoyancy { get; set; } = 6f;
+        [Persist] public float UnderwaterDrag { get; set; } = 3f;
+        [Persist] public float SwimSpeed { get; set; } = 0.6f;
 
         // ── Normal map ──
         [Persist] public float NormalStrength { get; set; } = 1f;
@@ -202,6 +207,48 @@ namespace Game_Engine.Core.Component
             };
             mf.Mesh = mesh;
         }
+
+        // ── Static underwater detection ──
+
+        /// <summary>
+        /// Check if a world position is below any active water surface.
+        /// Returns the Water component the point is under, or null if above water.
+        /// </summary>
+        public static Water? GetUnderwaterWater(SN.Vector3 worldPos)
+        {
+            for (int i = 0; i < _all.Count; i++)
+            {
+                var w = _all[i];
+                if (!w.IsActiveAndEnabled || w.gameObject == null) continue;
+
+                // Check if the point is within the water plane's XZ bounds
+                var wPos = new SN.Vector3(
+                    (float)w.Transform.Position.X,
+                    (float)w.Transform.Position.Y,
+                    (float)w.Transform.Position.Z);
+
+                float halfW = w.Width * 0.5f;
+                float halfL = w.Length * 0.5f;
+
+                float localX = worldPos.X - wPos.X;
+                float localZ = worldPos.Z - wPos.Z;
+
+                // Allow some margin beyond the water plane so the effect doesn't pop
+                float margin = 2f;
+                if (localX < -halfW - margin || localX > halfW + margin) continue;
+                if (localZ < -halfL - margin || localZ > halfL + margin) continue;
+
+                // Sample the water surface height at this XZ position
+                float surfaceY = w.SampleHeight(worldPos.X, worldPos.Z);
+
+                if (worldPos.Y < surfaceY)
+                    return w;
+            }
+            return null;
+        }
+
+        /// <summary>Check if a world position is underwater (convenience).</summary>
+        public static bool IsUnderwater(SN.Vector3 worldPos) => GetUnderwaterWater(worldPos) != null;
 
         /// <summary>Compute Gerstner wave displacement at a world XZ position.</summary>
         public float SampleHeight(float worldX, float worldZ)

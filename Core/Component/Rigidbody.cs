@@ -34,6 +34,8 @@ namespace Game_Engine.Core.Component
         public SN.Vector3 AngularVelocity { get; set; } = SN.Vector3.Zero;
         public bool IsGrounded { get; private set; }
         public bool IsSleeping { get; private set; }
+        public bool IsUnderwater { get; private set; }
+        public float UnderwaterDepth { get; private set; }
         public SN.Vector3 GroundNormal { get; private set; } = SN.Vector3.UnitY;
 
         private SN.Vector3 _forceAccum = SN.Vector3.Zero;
@@ -110,9 +112,44 @@ namespace Game_Engine.Core.Component
                 return;
             }
 
-            // Gravity
+            // ── Underwater detection ──
+            var pos0 = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var waterComp = Water.GetUnderwaterWater(pos0);
+            IsUnderwater = waterComp != null;
+            if (waterComp != null)
+            {
+                float surfaceY = waterComp.SampleHeight(pos0.X, pos0.Z);
+                UnderwaterDepth = MathF.Max(0f, surfaceY - pos0.Y);
+            }
+            else
+            {
+                UnderwaterDepth = 0f;
+            }
+
+            // Gravity (reduced underwater)
             if (UseGravity)
-                Velocity += new SN.Vector3(0f, -9.81f, 0f) * dt;
+            {
+                float gravityScale = IsUnderwater ? 0.15f : 1f;  // 85% gravity reduction underwater
+                Velocity += new SN.Vector3(0f, -9.81f * gravityScale, 0f) * dt;
+            }
+
+            // Buoyancy: upward force when underwater, stronger the deeper you go
+            if (IsUnderwater && waterComp != null)
+            {
+                float buoyancy = waterComp.UnderwaterBuoyancy;
+                // Buoyancy scales with submersion depth (clamped)
+                float submersionFactor = MathF.Min(UnderwaterDepth / 2f, 1f);
+                Velocity += new SN.Vector3(0f, buoyancy * submersionFactor, 0f) * dt;
+
+                // Surface bobbing: when near the surface, gently push toward surface height
+                if (UnderwaterDepth < 1.5f)
+                {
+                    float surfaceY = waterComp.SampleHeight(pos0.X, pos0.Z);
+                    float pullStrength = 2f * (1f - UnderwaterDepth / 1.5f);
+                    float yDiff = surfaceY - pos0.Y;
+                    Velocity += new SN.Vector3(0f, yDiff * pullStrength, 0f) * dt;
+                }
+            }
 
             // Apply accumulated forces (F = ma → a = F/m)
             if (Mass > 0.001f)
@@ -121,8 +158,9 @@ namespace Game_Engine.Core.Component
             _forceAccum = SN.Vector3.Zero;
             _impulseAccum = SN.Vector3.Zero;
 
-            // Drag
-            Velocity *= (1f - Drag * dt);
+            // Drag (greatly increased underwater)
+            float dragMultiplier = IsUnderwater && waterComp != null ? waterComp.UnderwaterDrag : 1f;
+            Velocity *= (1f - Drag * dragMultiplier * dt);
             if (!FreezeRotation)
                 AngularVelocity *= (1f - AngularDrag * dt);
 

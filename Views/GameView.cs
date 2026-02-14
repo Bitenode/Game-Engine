@@ -414,9 +414,19 @@ namespace Game_Engine.Views
 
             _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
+            // --- UNDERWATER DETECTION ---
+            var underwaterWater = Water.GetUnderwaterWater(camPos);
+            float underwaterDepth = 0f;
+            if (underwaterWater != null)
+            {
+                float surfaceY = underwaterWater.SampleHeight(camPos.X, camPos.Z);
+                underwaterDepth = Math.Max(0f, surfaceY - camPos.Y);
+            }
+
             // --- POST-PROCESSING FBO setup ---
             var postVolume = PostProcessVolume.GetActive();
-            bool usePostFX = postVolume != null && _postProcessShader != null;
+            // Force post-processing on when underwater (even without a PostProcessVolume)
+            bool usePostFX = (postVolume != null || underwaterWater != null) && _postProcessShader != null;
 
             if (usePostFX)
             {
@@ -473,7 +483,8 @@ namespace Game_Engine.Views
                 g.Disable(EnableCap.DepthTest);
 
                 g.BindVertexArray(_fsQuad!.VAO);
-                SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, W, H, postVolume);
+                SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, W, H,
+                    postVolume, underwaterWater, underwaterDepth, (float)Core.Time.time);
                 g.BindVertexArray(0);
 
                 g.Enable(EnableCap.DepthTest);

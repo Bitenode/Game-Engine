@@ -1401,7 +1401,17 @@ public partial class InspectorPanel : UserControl
             }
 
             _target = SelectionService.Current;
-            Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildUI(_target));
+            var all = SelectionService.Selected;
+            if (all.Count > 1)
+            {
+                // Multi-select: show all GameObjects
+                var snapshot = new List<GameObject>(all);
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildMultiUI(snapshot));
+            }
+            else
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildUI(_target));
+            }
         };
 
         SelectionService.Changed += _onSelChanged;
@@ -1568,9 +1578,89 @@ public partial class InspectorPanel : UserControl
         addRow.Children.Add(addBtn);
         Host.Children.Add(addRow);
 
+        // ---- Separator before components ------------------------------------
+        Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
+
         // ---- Other behaviors -----------------------------------------------
-        foreach (var b in go.Behaviors.ToList())
-            Host.Children.Add(EditorForBehavior(go, b));
+        var behaviors = go.Behaviors.ToList();
+        for (int i = 0; i < behaviors.Count; i++)
+        {
+            Host.Children.Add(EditorForBehavior(go, behaviors[i]));
+
+            // Add a separator between components (not after the last one)
+            if (i < behaviors.Count - 1)
+                Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
+        }
+    }
+
+    /// <summary>Build the inspector for multiple selected GameObjects, each with a separator between them.</summary>
+    void BuildMultiUI(List<GameObject> objects)
+    {
+        Host.Children.Clear();
+
+        if (objects.Count == 0)
+        {
+            Host.Children.Add(new TextBlock { Text = "No selection", Opacity = 0.6, Margin = new Thickness(6) });
+            return;
+        }
+
+        Host.Children.Add(new TextBlock
+        {
+            Text = $"{objects.Count} objects selected",
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            Opacity = 0.7,
+            Margin = new Thickness(6, 2, 6, 6)
+        });
+
+        for (int idx = 0; idx < objects.Count; idx++)
+        {
+            var go = objects[idx];
+
+            // ---- Thick divider line between GameObjects ----
+            Host.Children.Add(new Border
+            {
+                Height = 2,
+                Background = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                Margin = new Thickness(0, 8),
+                CornerRadius = new CornerRadius(1)
+            });
+
+            // ---- Name header (bold, slightly larger) ----
+            var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var nameLabel = new TextBlock
+            {
+                Text = go.Name,
+                FontSize = 14,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            nameRow.Children.Add(nameLabel);
+
+            // Small editable name box
+            var nameBox = new TextBox { Width = 160, FontSize = 12 };
+            nameBox.Bind(TextBox.TextProperty, new Binding("Name") { Source = go, Mode = BindingMode.TwoWay });
+            nameRow.Children.Add(nameBox);
+
+            Host.Children.Add(nameRow);
+
+            // ---- Transform ----
+            Host.Children.Add(SectionHeader("Transform"));
+            Host.Children.Add(EditorForTransform(go.Transform));
+
+            // ---- Behaviors ----
+            var behaviors = go.Behaviors.ToList();
+            if (behaviors.Count > 0)
+                Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
+
+            for (int i = 0; i < behaviors.Count; i++)
+            {
+                Host.Children.Add(EditorForBehavior(go, behaviors[i]));
+
+                if (i < behaviors.Count - 1)
+                    Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
+            }
+        }
     }
 
     private void OnAssetSelected(string absPath)
@@ -1595,8 +1685,30 @@ public partial class InspectorPanel : UserControl
             string name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "Material" : "Material";
             string shader = root.TryGetProperty("shader", out var s) ? s.GetString() ?? "" : "";
             var p = root.TryGetProperty("parameters", out var pp) ? pp : default;
-            string tintHex = (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("Tint", out var tEl))
-                             ? (tEl.GetString() ?? "#FFFFFFFF") : "#FFFFFFFF";
+
+            // Tint: support both hex string "#RRGGBBAA" and float array [r,g,b,a]
+            string tintHex = "#FFFFFFFF";
+            if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("Tint", out var tEl))
+            {
+                if (tEl.ValueKind == JsonValueKind.String)
+                {
+                    tintHex = tEl.GetString() ?? "#FFFFFFFF";
+                }
+                else if (tEl.ValueKind == JsonValueKind.Array && tEl.GetArrayLength() >= 3)
+                {
+                    float tr = (float)tEl[0].GetDouble();
+                    float tg = (float)tEl[1].GetDouble();
+                    float tb = (float)tEl[2].GetDouble();
+                    float ta = tEl.GetArrayLength() >= 4 ? (float)tEl[3].GetDouble() : 1f;
+                    int ir = Math.Clamp((int)(tr * 255f), 0, 255);
+                    int ig = Math.Clamp((int)(tg * 255f), 0, 255);
+                    int ib = Math.Clamp((int)(tb * 255f), 0, 255);
+                    int ia = Math.Clamp((int)(ta * 255f), 0, 255);
+                    // Format as #RRGGBBAA to match parseHex in BuildMaterialInspectorUI
+                    tintHex = $"#{ir:X2}{ig:X2}{ib:X2}{ia:X2}";
+                }
+            }
+
             float metallic = ReadF(p, "Metallic", 0f);
             float roughness = ReadF(p, "Roughness", 0.5f);
             bool transparent = ReadB(p, "Transparent", false);
@@ -1904,7 +2016,7 @@ public partial class InspectorPanel : UserControl
         };
 
         // Load current textures -> show existing values
-        var texturesOrder = new[] { "Albedo", "Normal", "Metallic", "Roughness", "AmbientOcclusion", "Emissive", "Opacity" };
+        var texturesOrder = new[] { "Albedo", "Normal", "Metallic", "Roughness", "Specular", "AmbientOcclusion", "Emissive", "Opacity" };
         var texMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
@@ -1915,13 +2027,15 @@ public partial class InspectorPanel : UserControl
                 System.Text.Json.JsonElement t;
                 if (root.TryGetProperty("textures", out t) && t.ValueKind == System.Text.Json.JsonValueKind.Object)
                 {
+                    // First seed with standard slots (so they appear in order)
                     foreach (var k in texturesOrder)
+                        texMap[k] = null;
+
+                    // Read all keys from the file (handles both standard and custom names)
+                    foreach (var prop2 in t.EnumerateObject())
                     {
-                        System.Text.Json.JsonElement v;
-                        if (t.TryGetProperty(k, out v) && v.ValueKind == System.Text.Json.JsonValueKind.String)
-                            texMap[k] = v.GetString();
-                        else
-                            texMap[k] = null;
+                        if (prop2.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                            texMap[prop2.Name] = prop2.Value.GetString();
                     }
                 }
                 else
@@ -2249,6 +2363,14 @@ public partial class InspectorPanel : UserControl
         for (var i = 0; i < texturesOrder.Length; i++)
             addTextureRow(texturesOrder[i]);
 
+        // Also show any extra texture keys not in the standard list
+        var standardSet = new HashSet<string>(texturesOrder, StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in texMap)
+        {
+            if (!standardSet.Contains(kvp.Key))
+                addTextureRow(kvp.Key);
+        }
+
         // ---------- Save / Revert ----------
         props.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 6) });
 
@@ -2293,12 +2415,23 @@ public partial class InspectorPanel : UserControl
 
                     jw.WritePropertyName("textures");
                     jw.WriteStartObject();
+                    // Write standard keys first (in order)
                     for (var i = 0; i < texturesOrder.Length; i++)
                     {
                         var key = texturesOrder[i];
                         var val = texMap.ContainsKey(key) ? texMap[key] : null;
                         if (string.IsNullOrWhiteSpace(val)) jw.WriteNull(key);
                         else jw.WriteString(key, val);
+                    }
+                    // Write any extra keys not in the standard list
+                    var stdSet = new HashSet<string>(texturesOrder, StringComparer.OrdinalIgnoreCase);
+                    foreach (var kvp in texMap)
+                    {
+                        if (!stdSet.Contains(kvp.Key))
+                        {
+                            if (string.IsNullOrWhiteSpace(kvp.Value)) jw.WriteNull(kvp.Key);
+                            else jw.WriteString(kvp.Key, kvp.Value);
+                        }
                     }
                     jw.WriteEndObject();
 
@@ -2780,8 +2913,11 @@ public partial class InspectorPanel : UserControl
 
         var btnAdd = new Button { Content = "Add from file…" };
         var btnAddNew = new Button { Content = "New material…" };
+        var btnSaveAsset = new Button { Content = "Save as Asset…" };
+        ToolTip.SetTip(btnSaveAsset, "Save the current runtime material as a .material file");
         slotsToolbar.Children.Add(btnAdd);
         slotsToolbar.Children.Add(btnAddNew);
+        slotsToolbar.Children.Add(btnSaveAsset);
         panel.Children.Add(slotsToolbar);
 
         // internal model: (Material Mat, string RelPath, int Side)
@@ -3478,6 +3614,120 @@ public partial class InspectorPanel : UserControl
             }
 
             AddExtraSlot(dest, S_Right);
+        };
+
+        // Save current runtime material as a .material asset file
+        btnSaveAsset.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            // Get the primary material from the MeshRenderer
+            var matForSave = GetPrimaryMaterial(GetListTarget(owner, prop), prop);
+            if (matForSave == null)
+            {
+                summary.Children.Clear();
+                summary.Children.Add(new TextBlock { Text = "No runtime material to save.", Foreground = Brushes.OrangeRed });
+                return;
+            }
+
+            // Determine default directory and name
+            string defaultDir = null;
+            string defaultName = matForSave.Name ?? "SavedMaterial";
+            try
+            {
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    defaultDir = System.IO.Path.Combine(proj.RootPath, "Assets", "Materials");
+                    if (!System.IO.Directory.Exists(defaultDir))
+                        System.IO.Directory.CreateDirectory(defaultDir);
+                }
+            }
+            catch { }
+
+            var sfd = new SaveFileDialog
+            {
+                Title = "Save Material As",
+                InitialFileName = defaultName + ".material",
+                Directory = defaultDir,
+                Filters = { new FileDialogFilter { Name = "Material", Extensions = { "material" } } }
+            };
+
+            var dest = await sfd.ShowAsync(win);
+            if (string.IsNullOrWhiteSpace(dest)) return;
+
+            try
+            {
+                // Build texture dictionary from RuntimeTexSlots
+                var texDict = new Dictionary<string, string>();
+                if (matForSave.Textures != null)
+                {
+                    foreach (var slot in matForSave.Textures)
+                    {
+                        if (slot is RuntimeTexSlot rts && !string.IsNullOrWhiteSpace(rts.SourcePath))
+                        {
+                            var usage = rts.Usage ?? "Albedo";
+                            if (!texDict.ContainsKey(usage))
+                                texDict[usage] = rts.SourcePath;
+                        }
+                    }
+                }
+
+                var jsonObj = new Dictionary<string, object>
+                {
+                    ["name"] = matForSave.Name ?? defaultName,
+                    ["type"] = "Material",
+                    ["version"] = 1,
+                    ["shader"] = matForSave.ShaderAssetPath ?? "",
+                    ["parameters"] = new Dictionary<string, object>
+                    {
+                        ["Tint"] = new float[] { matForSave.BaseColor.R / 255f, matForSave.BaseColor.G / 255f, matForSave.BaseColor.B / 255f, matForSave.BaseColor.A / 255f },
+                        ["Metallic"] = matForSave.Metallic,
+                        ["Roughness"] = matForSave.Roughness,
+                        ["Transparent"] = matForSave.Transparent,
+                        ["AlphaCutoff"] = matForSave.AlphaCutoff
+                    },
+                    ["textures"] = texDict
+                };
+
+                var json = System.Text.Json.JsonSerializer.Serialize(jsonObj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(dest, json);
+
+                // Make project-relative and update MaterialPaths on the renderer
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var relPath = System.IO.Path.GetRelativePath(proj.RootPath, System.IO.Path.GetFullPath(dest));
+                    tbPath.Text = relPath;
+                    UpdateSummary(relPath);
+
+                    // Update the owner's MaterialPaths if possible
+                    try
+                    {
+                        var listTarget = GetListTarget(owner, prop);
+                        var mr = listTarget as MeshRenderer;
+                        if (mr != null)
+                        {
+                            if (mr.MaterialPaths.Count == 0)
+                                mr.MaterialPaths.Add(relPath);
+                            else
+                                mr.MaterialPaths[0] = relPath;
+                        }
+                    }
+                    catch { }
+                }
+                else
+                {
+                    tbPath.Text = dest;
+                    UpdateSummary(dest);
+                }
+            }
+            catch (Exception ex)
+            {
+                summary.Children.Clear();
+                summary.Children.Add(new TextBlock { Text = "Save failed: " + ex.Message, Foreground = Brushes.OrangeRed });
+            }
         };
 
         // ---------- initial render ----------
@@ -4818,8 +5068,243 @@ public partial class InspectorPanel : UserControl
         if (t == typeof(Material))
             return MaterialEditor(target, p);
 
+        // ---- GameObject reference ----------------------------------------------
+        if (t == typeof(GameObject))
+            return GameObjectRefEditor(target, p);
+
         // ---- fallback: read-only type name -----------------------------------
         return new TextBlock { Text = t.Name, Opacity = 0.6 };
+    }
+
+    /// <summary>
+    /// Builds a GameObject reference editor: dropdown of all scene objects (+ prefabs), drag-and-drop zone, and clear button.
+    /// </summary>
+    Control GameObjectRefEditor(object target, PropertyInfo prop)
+    {
+        var container = new StackPanel { Spacing = 4 };
+
+        // ── Row 1: Dropdown + Clear ──
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        // Gather all GameObjects in the scene (flat list with path labels)
+        var goList = new List<GameObjectRefItem> { new() { Label = "(None)", GO = null } };
+        foreach (var root in SceneService.Root)
+            CollectGameObjectsRecursive(root, "", goList);
+
+        var combo = new ComboBox
+        {
+            Width = 220,
+            ItemsSource = goList,
+            DisplayMemberBinding = new Binding(nameof(GameObjectRefItem.Label))
+        };
+
+        // Pre-select current value
+        var current = prop.GetValue(target) as GameObject;
+        if (current == null)
+            combo.SelectedIndex = 0;
+        else
+        {
+            var idx = goList.FindIndex(i => ReferenceEquals(i.GO, current));
+            combo.SelectedIndex = idx >= 0 ? idx : 0;
+        }
+
+        combo.DropDownOpened += (_, __) =>
+        {
+            // Refresh the list each time the dropdown opens to pick up new objects
+            var fresh = new List<GameObjectRefItem> { new() { Label = "(None)", GO = null } };
+            foreach (var root in SceneService.Root)
+                CollectGameObjectsRecursive(root, "", fresh);
+            combo.ItemsSource = fresh;
+
+            // Re-select current
+            var cur = prop.GetValue(target) as GameObject;
+            if (cur == null) combo.SelectedIndex = 0;
+            else
+            {
+                var i = fresh.FindIndex(x => ReferenceEquals(x.GO, cur));
+                combo.SelectedIndex = i >= 0 ? i : 0;
+            }
+
+            BeginPropertyEdit(target, prop);
+        };
+
+        combo.SelectionChanged += (_, __) =>
+        {
+            var sel = combo.SelectedItem as GameObjectRefItem;
+            prop.SetValue(target, sel?.GO);
+            SceneService.NotifyChanged();
+            CommitPropertyEdit(target, prop);
+        };
+
+        var btnClear = new Button { Content = "Clear", Padding = new Thickness(6, 2) };
+        btnClear.Click += (_, __) =>
+        {
+            prop.SetValue(target, null);
+            combo.SelectedIndex = 0;
+            SceneService.NotifyChanged();
+        };
+
+        row.Children.Add(combo);
+        row.Children.Add(btnClear);
+        container.Children.Add(row);
+
+        // ── Row 2: Current reference display ──
+        var refLabel = new TextBlock
+        {
+            Text = current != null ? $"→ {current.Name}" : "(no reference)",
+            Opacity = 0.6,
+            FontSize = 11,
+            Margin = new Thickness(2, 0, 0, 0)
+        };
+        container.Children.Add(refLabel);
+
+        // Update the label when selection changes
+        combo.SelectionChanged += (_, __) =>
+        {
+            var sel = combo.SelectedItem as GameObjectRefItem;
+            refLabel.Text = sel?.GO != null ? $"→ {sel.GO.Name}" : "(no reference)";
+        };
+
+        // ── Row 3: Drag-and-drop zone ──
+        var dropText = new TextBlock
+        {
+            Text = "Drop GameObject or .prefab here",
+            Opacity = 0.5,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+        };
+        var dropZone = new Border
+        {
+            Padding = new Thickness(8, 4),
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Background = Brushes.Transparent,
+            MinWidth = 240,
+            MinHeight = 28,
+            Child = dropText
+        };
+        DragDrop.SetAllowDrop(dropZone, true);
+
+        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
+        {
+            // Accept GameObjects from hierarchy
+            if (e.Data.Contains("application/x-gameobject"))
+            {
+                e.DragEffects = DragDropEffects.Link;
+                e.Handled = true;
+                return;
+            }
+            // Accept .prefab files from project panel or OS
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var files = e.Data.GetFileNames()?.ToList();
+                if (files != null && files.Any(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
+                {
+                    e.DragEffects = DragDropEffects.Copy;
+                    e.Handled = true;
+                    return;
+                }
+            }
+            if (e.Data.Contains("project-node-path"))
+            {
+                var path = e.Data.Get("project-node-path") as string;
+                if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                {
+                    e.DragEffects = DragDropEffects.Copy;
+                    e.Handled = true;
+                    return;
+                }
+            }
+            e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+        }, RoutingStrategies.Tunnel);
+
+        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
+        {
+            // Handle GameObject drop from hierarchy
+            if (e.Data.Contains("application/x-gameobject"))
+            {
+                var go = e.Data.Get("application/x-gameobject") as GameObject;
+                if (go != null)
+                {
+                    prop.SetValue(target, go);
+                    refLabel.Text = $"→ {go.Name}";
+                    // Update combo selection
+                    var items = combo.ItemsSource as List<GameObjectRefItem>;
+                    if (items != null)
+                    {
+                        var idx = items.FindIndex(x => ReferenceEquals(x.GO, go));
+                        if (idx >= 0) combo.SelectedIndex = idx;
+                    }
+                    SceneService.NotifyChanged();
+                    e.Handled = true;
+                    return;
+                }
+            }
+
+            // Handle .prefab file drop — instantiate and assign
+            string prefabPath = null;
+            if (e.Data.Contains(DataFormats.FileNames))
+            {
+                var files = e.Data.GetFileNames()?.ToList();
+                prefabPath = files?.FirstOrDefault(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase));
+            }
+            if (prefabPath == null && e.Data.Contains("project-node-path"))
+            {
+                var p2 = e.Data.Get("project-node-path") as string;
+                if (p2 != null && p2.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                    prefabPath = p2;
+            }
+
+            if (prefabPath != null)
+            {
+                // Make project-relative
+                string relPath = prefabPath;
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var abs = Path.GetFullPath(prefabPath);
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        relPath = Path.GetRelativePath(root, abs);
+                }
+
+                var prefab = Prefab.Load(relPath);
+                if (prefab != null)
+                {
+                    var instance = prefab.Instantiate();
+                    if (instance != null)
+                    {
+                        prop.SetValue(target, instance);
+                        refLabel.Text = $"→ {instance.Name} (prefab)";
+                        SceneService.NotifyChanged();
+                        Log.Info($"Instantiated prefab '{prefab.Name}' and assigned to {prop.Name}");
+                    }
+                }
+                e.Handled = true;
+            }
+        }, RoutingStrategies.Tunnel);
+
+        container.Children.Add(dropZone);
+        return container;
+    }
+
+    /// <summary>Helper item for the GameObject reference dropdown.</summary>
+    class GameObjectRefItem
+    {
+        public string Label { get; set; } = "";
+        public GameObject? GO { get; set; }
+    }
+
+    /// <summary>Recursively collect all GameObjects in the scene with indented path labels.</summary>
+    static void CollectGameObjectsRecursive(GameObject go, string prefix, List<GameObjectRefItem> list)
+    {
+        var label = string.IsNullOrEmpty(prefix) ? go.Name : $"{prefix}/{go.Name}";
+        list.Add(new GameObjectRefItem { Label = label, GO = go });
+        foreach (var child in go.Children)
+            CollectGameObjectsRecursive(child, label, list);
     }
 
     // ═══════════════════════ Tree Inspector UI ═══════════════════════

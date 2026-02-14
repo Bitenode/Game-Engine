@@ -40,9 +40,8 @@ namespace Game_Engine.Core
                 SerializedData = SerializeGameObject(go)
             };
 
-            // Mark the source GO as a prefab instance
-            go.PrefabId = prefab.PrefabId;
-            go.PrefabPath = savePath;
+            // Mark the source GO and all its children as part of this prefab
+            StampPrefabRecursive(go, prefab.PrefabId, savePath);
 
             return prefab;
         }
@@ -112,8 +111,7 @@ namespace Game_Engine.Core
                 if (go == null) return null;
 
                 go.Name = Name;
-                go.PrefabId = PrefabId;
-                go.PrefabPath = FilePath;
+                StampPrefabRecursive(go, PrefabId, FilePath);
 
                 if (parent != null)
                     parent.AddChild(go);
@@ -131,7 +129,7 @@ namespace Game_Engine.Core
         }
 
         /// <summary>
-        /// Apply prefab changes to all instances in the current scene.
+        /// Apply prefab changes to all instances in the current scene (deep apply including children).
         /// </summary>
         public void ApplyToInstances()
         {
@@ -152,6 +150,20 @@ namespace Game_Engine.Core
                 foreach (var b in fresh.Behaviors)
                     inst.AddBehavior(b);
 
+                // Deep apply: rebuild children hierarchy
+                // Remove old children that are not prefab-overridden
+                var oldChildren = new List<GameObject>(inst.Children);
+                foreach (var child in oldChildren)
+                    child.RemoveFromParent();
+
+                // Add children from fresh prefab data
+                foreach (var freshChild in fresh.Children)
+                {
+                    freshChild.PrefabId = PrefabId;
+                    freshChild.PrefabPath = FilePath;
+                    inst.AddChild(freshChild);
+                }
+
                 // Restore instance transform
                 inst.Transform.Position = pos;
                 inst.Transform.Rotation = rot;
@@ -160,6 +172,57 @@ namespace Game_Engine.Core
 
             SceneService.NotifyChanged();
             Log.Info($"[Prefab] Applied changes to {instances.Count} instances of {Name}");
+        }
+
+        /// <summary>
+        /// Revert a prefab instance to its prefab state (reload from file).
+        /// </summary>
+        public static bool RevertInstance(GameObject go)
+        {
+            if (string.IsNullOrEmpty(go.PrefabPath)) return false;
+
+            var prefab = Load(go.PrefabPath);
+            if (prefab == null) return false;
+
+            var fresh = DeserializeGameObject(prefab.SerializedData);
+            if (fresh == null) return false;
+
+            // Preserve transform
+            var pos = go.Transform.Position;
+            var rot = go.Transform.Rotation;
+            var scale = go.Transform.Scale;
+
+            // Replace behaviors
+            go.Behaviors.Clear();
+            foreach (var b in fresh.Behaviors)
+                go.AddBehavior(b);
+
+            // Replace children
+            var oldChildren = new List<GameObject>(go.Children);
+            foreach (var child in oldChildren)
+                child.RemoveFromParent();
+            foreach (var freshChild in fresh.Children)
+                go.AddChild(freshChild);
+
+            // Restore transform
+            go.Transform.Position = pos;
+            go.Transform.Rotation = rot;
+            go.Transform.Scale = scale;
+
+            SceneService.NotifyChanged();
+            Log.Info($"[Prefab] Reverted instance: {go.Name}");
+            return true;
+        }
+
+        /// <summary>
+        /// Update this prefab's data from a live instance (save overrides back to prefab).
+        /// </summary>
+        public void UpdateFromInstance(GameObject instance)
+        {
+            SerializedData = SerializeGameObject(instance);
+            Name = instance.Name;
+            Save();
+            Log.Info($"[Prefab] Updated prefab from instance: {Name}");
         }
 
         /// <summary>Unpack a prefab instance — break the prefab link.</summary>
@@ -178,6 +241,15 @@ namespace Game_Engine.Core
 
         /// <summary>Check if a GameObject is a prefab instance.</summary>
         public static bool IsPrefabInstance(GameObject go) => !string.IsNullOrEmpty(go.PrefabId);
+
+        /// <summary>Recursively set PrefabId and PrefabPath on a GO and all its descendants.</summary>
+        private static void StampPrefabRecursive(GameObject go, string prefabId, string prefabPath)
+        {
+            go.PrefabId = prefabId;
+            go.PrefabPath = prefabPath;
+            foreach (var child in go.Children)
+                StampPrefabRecursive(child, prefabId, prefabPath);
+        }
 
         // ── Helpers ──
 
@@ -199,13 +271,15 @@ namespace Game_Engine.Core
 
         private static string SerializeGameObject(GameObject go)
         {
-            // Use the engine's existing serialization infrastructure
+            // Use the engine's DTO pipeline which properly handles children, behaviors, transforms.
+            // includeAll: true so ALL children are captured (no "Grass"/"chunk_" filtering).
             try
             {
-                return JsonSerializer.Serialize(go, SceneSerialization.JsonOptions);
+                return SceneSerialization.SerializeGameObjectToJson(go, includeAll: true);
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Error($"[Prefab] Serialize failed: {ex.Message}");
                 return "{}";
             }
         }
@@ -214,10 +288,11 @@ namespace Game_Engine.Core
         {
             try
             {
-                return JsonSerializer.Deserialize<GameObject>(json, SceneSerialization.JsonOptions);
+                return SceneSerialization.DeserializeGameObjectFromJson(json);
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Error($"[Prefab] Deserialize failed: {ex.Message}");
                 return null;
             }
         }

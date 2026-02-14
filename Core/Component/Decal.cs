@@ -125,7 +125,13 @@ namespace Game_Engine.Core.Component
             SceneService.NotifyChanged();
         }
 
-        /// <summary>Build a flat quad mesh for the decal.</summary>
+        /// <summary>
+        /// Build a quad mesh for the decal, oriented based on the Projection setting.
+        /// Forward: quad in XY plane (facing -Z), for walls/forward surfaces.
+        /// Up: quad in XZ plane (facing +Y), for floors/ground.
+        /// Down: quad in XZ plane (facing -Y), for ceilings.
+        /// Depth offsets the quad along the projection normal to prevent z-fighting.
+        /// </summary>
         void BuildDecalMesh()
         {
             if (gameObject == null) return;
@@ -135,16 +141,55 @@ namespace Game_Engine.Core.Component
 
             float hw = Width * 0.5f;
             float hh = Height * 0.5f;
+            float depthOffset = Depth * 0.01f; // small offset along normal to prevent z-fighting
 
-            var verts = new SN.Vector3[]
+            SN.Vector3[] verts;
+            SN.Vector3[] normals;
+            SN.Vector2[] uvs;
+
+            switch (Projection)
             {
-                new(-hw, -hh, 0f),
-                new( hw, -hh, 0f),
-                new( hw,  hh, 0f),
-                new(-hw,  hh, 0f),
-            };
-            var normals = new SN.Vector3[] { -SN.Vector3.UnitZ, -SN.Vector3.UnitZ, -SN.Vector3.UnitZ, -SN.Vector3.UnitZ };
-            var uvs = new SN.Vector2[] { new(0, 1), new(1, 1), new(1, 0), new(0, 0) };
+                case DecalProjection.Up:
+                    // Quad in XZ plane, facing +Y (for ground/floors)
+                    verts = new SN.Vector3[]
+                    {
+                        new(-hw, depthOffset, -hh),
+                        new( hw, depthOffset, -hh),
+                        new( hw, depthOffset,  hh),
+                        new(-hw, depthOffset,  hh),
+                    };
+                    normals = new SN.Vector3[] { SN.Vector3.UnitY, SN.Vector3.UnitY, SN.Vector3.UnitY, SN.Vector3.UnitY };
+                    uvs = new SN.Vector2[] { new(0, 1), new(1, 1), new(1, 0), new(0, 0) };
+                    break;
+
+                case DecalProjection.Down:
+                    // Quad in XZ plane, facing -Y (for ceilings)
+                    verts = new SN.Vector3[]
+                    {
+                        new(-hw, -depthOffset,  hh),
+                        new( hw, -depthOffset,  hh),
+                        new( hw, -depthOffset, -hh),
+                        new(-hw, -depthOffset, -hh),
+                    };
+                    normals = new SN.Vector3[] { -SN.Vector3.UnitY, -SN.Vector3.UnitY, -SN.Vector3.UnitY, -SN.Vector3.UnitY };
+                    uvs = new SN.Vector2[] { new(0, 0), new(1, 0), new(1, 1), new(0, 1) };
+                    break;
+
+                case DecalProjection.Forward:
+                default:
+                    // Quad in XY plane, facing -Z (for walls, forward projection)
+                    verts = new SN.Vector3[]
+                    {
+                        new(-hw, -hh, depthOffset),
+                        new( hw, -hh, depthOffset),
+                        new( hw,  hh, depthOffset),
+                        new(-hw,  hh, depthOffset),
+                    };
+                    normals = new SN.Vector3[] { -SN.Vector3.UnitZ, -SN.Vector3.UnitZ, -SN.Vector3.UnitZ, -SN.Vector3.UnitZ };
+                    uvs = new SN.Vector2[] { new(0, 1), new(1, 1), new(1, 0), new(0, 0) };
+                    break;
+            }
+
             var tris = new int[] { 0, 2, 1, 0, 3, 2 };
             var lines = new int[] { 0, 1, 1, 2, 2, 3, 3, 0 };
 

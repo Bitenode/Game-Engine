@@ -9,13 +9,14 @@
 			<MenuItem Header="_Project" x:Name="MI_ProjectRoot">
 				<MenuItem Header="_New Project..."   x:Name="MI_NewProject"/>
 				<MenuItem Header="_Open Project..."  x:Name="MI_OpenProject"/>
-				<MenuItem Header="Open _Folder..."   x:Name="MI_OpenFolder"/>
 				<Separator/>
 				<MenuItem Header="_Save Scene"
 						  x:Name="MI_SaveScene"
+						  IsEnabled="False"
 						  Click="OnMenuSaveScene_Click" />
 				<MenuItem Header="_Load Scene"
 						  x:Name="MI_LoadScene"
+						  IsEnabled="False"
 						  Click="OnMenuLoadScene_Click" />
 				<Separator/>
 				<MenuItem Header="_Close Project"    x:Name="MI_CloseProject"/>

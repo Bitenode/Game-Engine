@@ -73,6 +73,26 @@ namespace Game_Engine.Core
         static bool IsGeneratedChild(GameObject child)
             => child.Name == "Grass" || child.Name.StartsWith("grass_") || child.Name.StartsWith("chunk_");
 
+        /// <summary>Serialize a single GameObject hierarchy to JSON (via the DTO pipeline).
+        /// When <paramref name="includeAll"/> is true, no children are filtered (use for prefabs).</summary>
+        public static string SerializeGameObjectToJson(GameObject go, bool includeAll = false)
+        {
+            var dto = includeAll ? ToDTOFull(go) : ToDTO(go);
+            return JsonSerializer.Serialize(dto, _json);
+        }
+
+        /// <summary>Deserialize a single GameObject hierarchy from JSON (via the DTO pipeline).</summary>
+        public static GameObject? DeserializeGameObjectFromJson(string json)
+        {
+            try
+            {
+                var dto = JsonSerializer.Deserialize<GameObjectDTO>(json, _json);
+                if (dto == null) return null;
+                return FromDTO(dto);
+            }
+            catch { return null; }
+        }
+
         static GameObjectDTO ToDTO(GameObject go)
         {
             var dto = new GameObjectDTO
@@ -85,7 +105,29 @@ namespace Game_Engine.Core
                     LocalScale = go.Transform.Scale
                 },
                 Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
-                Children = go.Children.Where(c => !IsGeneratedChild(c)).Select(ToDTO).ToList()
+                Children = go.Children.Where(c => !IsGeneratedChild(c)).Select(ToDTO).ToList(),
+                PrefabId = go.PrefabId,
+                PrefabPath = go.PrefabPath
+            };
+            return dto;
+        }
+
+        /// <summary>Same as ToDTO but includes ALL children (no generated-child filter). Used for prefabs.</summary>
+        static GameObjectDTO ToDTOFull(GameObject go)
+        {
+            var dto = new GameObjectDTO
+            {
+                Name = go.Name,
+                Transform = new TransformDTO
+                {
+                    LocalPosition = go.Transform.Position,
+                    LocalRotationEuler = go.Transform.Rotation,
+                    LocalScale = go.Transform.Scale
+                },
+                Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
+                Children = go.Children.Select(ToDTOFull).ToList(),
+                PrefabId = go.PrefabId,
+                PrefabPath = go.PrefabPath
             };
             return dto;
         }
@@ -100,6 +142,9 @@ namespace Game_Engine.Core
                 go.Transform.Rotation = dto.Transform.LocalRotationEuler;
                 go.Transform.Scale = dto.Transform.LocalScale;
             }
+
+            go.PrefabId = dto.PrefabId;
+            go.PrefabPath = dto.PrefabPath;
 
             if (dto.Behaviors != null)
                 for (int i = 0; i < dto.Behaviors.Count; i++) RestoreBehavior(go, dto.Behaviors[i]);
@@ -1263,6 +1308,8 @@ namespace Game_Engine.Core
         public TransformDTO? Transform { get; set; }
         public List<BehaviorDTO>? Behaviors { get; set; }
         public List<GameObjectDTO>? Children { get; set; }
+        public string? PrefabId { get; set; }
+        public string? PrefabPath { get; set; }
     }
 
     public class TransformDTO

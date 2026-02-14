@@ -325,7 +325,10 @@ namespace Game_Engine.Core
             GPUTexture sceneTexture,
             int viewportWidth,
             int viewportHeight,
-            PostProcessVolume? volume = null)
+            PostProcessVolume? volume = null,
+            Component.Water? underwaterWater = null,
+            float underwaterDepth = 0f,
+            float underwaterTime = 0f)
         {
             // Always bind the post-process shader, even for passthrough —
             // rendering without a shader causes a black screen.
@@ -378,6 +381,22 @@ namespace Game_Engine.Core
 
                 // FXAA
                 postShader.SetInt("uFXAAEnabled", volume.FXAAEnabled ? 1 : 0);
+            }
+
+            // Underwater
+            if (underwaterWater != null)
+            {
+                postShader.SetInt("uUnderwaterEnabled", 1);
+                postShader.SetVector3("uUnderwaterTint", underwaterWater.UnderwaterTint);
+                postShader.SetFloat("uUnderwaterFogDensity", underwaterWater.UnderwaterFogDensity);
+                postShader.SetFloat("uUnderwaterCausticStr", underwaterWater.UnderwaterCausticStrength);
+                postShader.SetFloat("uUnderwaterDistortion", underwaterWater.UnderwaterDistortion);
+                postShader.SetFloat("uUnderwaterTime", underwaterTime);
+                postShader.SetFloat("uUnderwaterDepth", underwaterDepth);
+            }
+            else
+            {
+                postShader.SetInt("uUnderwaterEnabled", 0);
             }
 
             // Draw fullscreen triangle (covers entire screen with a single triangle)
@@ -661,6 +680,11 @@ namespace Game_Engine.Core
                         sortZ = centerV.Z;
                     }
 
+                    // Ensure bone matrices are computed for skinned meshes (editor doesn't run Start/LateUpdate)
+                    var skinned = mr as SkinnedMeshRenderer;
+                    if (skinned != null)
+                        skinned.EnsureBoneMatrices();
+
                     var item = new DrawItem
                     {
                         SortZ = sortZ,
@@ -672,7 +696,7 @@ namespace Game_Engine.Core
                         Terrain = terrain,
                         Tree = tree,
                         TreeLOD = treeLod,
-                        Skinned = mr as SkinnedMeshRenderer
+                        Skinned = skinned
                     };
 
                     if (isTransparent)
@@ -1175,6 +1199,24 @@ namespace Game_Engine.Core
                     var gpuMesh = cache.GetMesh(mesh);
                     var mvp = world * lightVP;
                     depthShader.SetMatrix4("uMVP", mvp);
+
+                    // Handle skinned mesh bone matrices in shadow pass
+                    var skinned = mr as SkinnedMeshRenderer;
+                    if (skinned != null)
+                        skinned.EnsureBoneMatrices();
+
+                    if (skinned != null && skinned.HasValidBoneMatrices)
+                    {
+                        depthShader.SetInt("uHasBones", 1);
+                        var bones = skinned.BoneMatrices!;
+                        int boneCount = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
+                        for (int bi = 0; bi < boneCount; bi++)
+                            depthShader.SetMatrix4($"uBones[{bi}]", bones[bi]);
+                    }
+                    else
+                    {
+                        depthShader.SetInt("uHasBones", 0);
+                    }
 
                     // Front-face culling: only render back faces into the shadow
                     // map. This prevents self-shadowing (shadow acne) on lit surfaces.

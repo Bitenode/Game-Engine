@@ -189,11 +189,18 @@ namespace Game_Engine.Core.Importers
                     }
                     catch { }
 
-                    // Attach material
+                    // Attach material and save as .material asset for persistence
                     if (pm.Material != null)
                     {
                         smr.Material = pm.Material;
-                        smr.Color = pm.Material.Tint;
+                        // Use white tint — the texture provides color; MR.Color is a user tint multiplier
+                        smr.Color = Avalonia.Media.Colors.White;
+                        smr.MaterialIsFromImporter = true;
+
+                        // Save material to disk and record path for serialization/reload
+                        var matPath = SaveMaterialForImport(pm.Material, relModel, pm.PartIndex, pm.Name);
+                        if (!string.IsNullOrWhiteSpace(matPath))
+                            smr.MaterialPaths.Add(matPath);
                     }
 
                     if (!pm.HadNormals) mesh.RecalculateNormalsSmooth();
@@ -205,9 +212,45 @@ namespace Game_Engine.Core.Importers
                 }
             }
 
-            // Import bone animations (if any)
+            // Import bone animations (if any) and auto-wire Animator
             if (skeleton != null && scene.HasAnimations)
-                ImportAnimations(scene, skeleton, relModel, scaleFactor);
+            {
+                var animPaths = ImportAnimations(scene, skeleton, relModel, scaleFactor);
+
+                // Auto-create Animator with states for each imported animation clip
+                if (animPaths.Count > 0)
+                {
+                    var animator = new Animator { PlayOnAwake = true, Speed = 1f };
+                    string defaultStateName = null;
+
+                    for (int i = 0; i < animPaths.Count; i++)
+                    {
+                        var clipPath = animPaths[i];
+                        var clipName = Path.GetFileNameWithoutExtension(clipPath);
+
+                        // Sanitize the clip name for use as a state name
+                        if (string.IsNullOrWhiteSpace(clipName))
+                            clipName = $"State_{i}";
+
+                        animator.StateList.Add(new Animator.AnimStateDTO
+                        {
+                            Name = clipName,
+                            BoneClipPath = clipPath,
+                            ClipPath = "",
+                            Speed = 1f,
+                            EditorX = i * 200f,
+                            EditorY = 0f
+                        });
+
+                        if (i == 0)
+                            defaultStateName = clipName;
+                    }
+
+                    animator.DefaultStateName = defaultStateName ?? "";
+                    root.AddBehavior(animator);
+                    Log.Info($"[ModelImporter] Auto-created Animator with {animPaths.Count} animation state(s), default='{defaultStateName}'");
+                }
+            }
 
             return root;
         }
@@ -281,12 +324,19 @@ namespace Game_Engine.Core.Importers
                     }
                 }
 
+                // Set material name from Assimp so .material files use the real name
+                m.Name = !string.IsNullOrWhiteSpace(aimat.Name) ? aimat.Name : $"Material_{i}";
+
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // Classic
                 AddAllTexturesOfType(aimat, TextureType.Diffuse, m, sc, modelDir, MaterialTexture.TexUsage.Albedo, seen);
+                AddAllTexturesOfType(aimat, TextureType.Specular, m, sc, modelDir, MaterialTexture.TexUsage.Specular, seen);
                 AddAllTexturesOfType(aimat, TextureType.Emissive, m, sc, modelDir, MaterialTexture.TexUsage.Emissive, seen);
                 AddAllTexturesOfType(aimat, TextureType.Normals, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
+                AddAllTexturesOfType(aimat, TextureType.Height, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
+                AddAllTexturesOfType(aimat, TextureType.Opacity, m, sc, modelDir, MaterialTexture.TexUsage.Opacity, seen);
+                AddAllTexturesOfType(aimat, TextureType.Ambient, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
                 AddAllTexturesOfType(aimat, TextureType.Lightmap, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
 
                 // Some builds use extra enums
@@ -313,6 +363,34 @@ namespace Game_Engine.Core.Importers
                         var guess = GuessUsageFromTypeOrName(t, slot.FilePath);
                         AddTextureFromSlot(m, slot, sc, modelDir, guess, seen);
                     }
+                }
+
+                // Many FBX exporters (especially Unity) set diffuse color to black when
+                // textures provide the actual color. Detect this: if we have an albedo
+                // texture but the base color is very dark, override to white so the
+                // texture is actually visible (the base color acts as a tint multiplier).
+                bool hasAlbedoTex = false;
+                foreach (var texSlot in m.Textures)
+                {
+                    if (texSlot is RuntimeTexSlot rts)
+                    {
+                        var u = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (u.Contains("albedo") || u.Contains("diffuse") || u.Contains("base") || u == "")
+                        { hasAlbedoTex = true; break; }
+                    }
+                }
+                if (hasAlbedoTex)
+                {
+                    // If RGB channels are near-black, the texture provides all color
+                    float maxChannel = Math.Max(m.BaseColor.R, Math.Max(m.BaseColor.G, m.BaseColor.B));
+                    if (maxChannel < 10) // near-black threshold
+                    {
+                        m.BaseColor = Avalonia.Media.Color.FromArgb(255, 255, 255, 255);
+                        Log.Info($"[ModelImporter] Overrode near-black BaseColor to white for material '{m.Name}' (has albedo texture)");
+                    }
+                    // Also ensure alpha is opaque when not explicitly transparent
+                    if (m.BaseColor.A < 10 && !m.Transparent)
+                        m.BaseColor = Avalonia.Media.Color.FromArgb(255, m.BaseColor.R, m.BaseColor.G, m.BaseColor.B);
                 }
 
                 dict[i] = m;
@@ -380,22 +458,55 @@ namespace Game_Engine.Core.Importers
                 case TextureType.Diffuse: return MaterialTexture.TexUsage.Albedo;
                 case TextureType.Emissive: return MaterialTexture.TexUsage.Emissive;
                 case TextureType.Normals: return MaterialTexture.TexUsage.Normal;
+                case TextureType.Height: return MaterialTexture.TexUsage.Normal;  // often used as normal map
                 case TextureType.Lightmap: return MaterialTexture.TexUsage.AmbientOcclusion;
+                case TextureType.Specular: return MaterialTexture.TexUsage.Specular;
+                case TextureType.Shininess: return MaterialTexture.TexUsage.Roughness;
+                case TextureType.Opacity: return MaterialTexture.TexUsage.Opacity;
+                case TextureType.Reflection: return MaterialTexture.TexUsage.Metallic;
+                case TextureType.Ambient: return MaterialTexture.TexUsage.AmbientOcclusion;
             }
 
-            var n = (path ?? "").ToLowerInvariant();
-            if (n.Contains("normal") || n.Contains("_n") || n.Contains("-nrm")) return MaterialTexture.TexUsage.Normal;
-            if (n.Contains("rough") || n.Contains("_r")) return MaterialTexture.TexUsage.Roughness;
-            if (n.Contains("metal") || n.Contains("metallic") || n.Contains("_m")) return MaterialTexture.TexUsage.Metallic;
-            if (n.Contains("ao") || n.Contains("occl") || n.Contains("ambientocclusion")) return MaterialTexture.TexUsage.AmbientOcclusion;
-            if (n.Contains("emit") || n.Contains("emiss")) return MaterialTexture.TexUsage.Emissive;
-            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("diffuse") || n.EndsWith("_c")) return MaterialTexture.TexUsage.Albedo;
+            // Use filename only (no directory noise)
+            var n = Path.GetFileNameWithoutExtension(path ?? "").ToLowerInvariant();
+
+            // Albedo / diffuse / color — check first since "color_map" should be Albedo
+            if (n.Contains("albedo") || n.Contains("basecolor") || n.Contains("base_color") ||
+                n.Contains("diffuse") || n.Contains("color") ||
+                n.EndsWith("_col") || n.EndsWith("_c") || n.EndsWith("_d"))
+                return MaterialTexture.TexUsage.Albedo;
+
+            // Normal map
+            if (n.Contains("normal") || n.Contains("_nrm") || n.Contains("-nrm") ||
+                n.EndsWith("_n") || n.EndsWith("_nor"))
+                return MaterialTexture.TexUsage.Normal;
+
+            // Roughness
+            if (n.Contains("rough") || n.EndsWith("_r"))
+                return MaterialTexture.TexUsage.Roughness;
+
+            // Metallic
+            if (n.Contains("metal") || n.EndsWith("_m"))
+                return MaterialTexture.TexUsage.Metallic;
+
+            // Specular
+            if (n.Contains("specular") || n.Contains("_spec") || n.EndsWith("_s"))
+                return MaterialTexture.TexUsage.Specular;
+
+            // Ambient occlusion
+            if (n.Contains("ao") || n.Contains("occl") || n.Contains("ambientocclusion"))
+                return MaterialTexture.TexUsage.AmbientOcclusion;
+
+            // Emissive
+            if (n.Contains("emit") || n.Contains("emiss"))
+                return MaterialTexture.TexUsage.Emissive;
 
             return MaterialTexture.TexUsage.Albedo;
         }
 
         /// <summary>
-        /// Load texture data; return (Texture2D, absoluteResolvedPathOrNullIfEmbedded)
+        /// Load texture data; return (Texture2D, absoluteResolvedPathOnDisk).
+        /// Embedded textures are saved to disk next to the model so they can be referenced by material files.
         /// </summary>
         static (Texture2D? tex, string? absPath) TryLoadTexture(TextureSlot slot, Scene sc, string dir)
         {
@@ -414,7 +525,27 @@ namespace Game_Engine.Core.Importers
                                 ? emb.CompressedData
                                 : FlattenRawEmbedded(emb);
 
-                            try { return (Texture2D.FromBytes(bytes), null); }
+                            try
+                            {
+                                var tex = Texture2D.FromBytes(bytes);
+
+                                // Save the embedded texture to disk so material files can reference it
+                                string ext = emb.HasCompressedData ? GuessImageExtension(emb.CompressedFormatHint) : ".png";
+                                string fileName = $"embedded_tex_{idx}{ext}";
+
+                                var savePath = Path.Combine(dir, fileName);
+                                if (!File.Exists(savePath))
+                                {
+                                    try
+                                    {
+                                        File.WriteAllBytes(savePath, bytes);
+                                        Log.Info($"[ModelImporter] Saved embedded texture to: {savePath}");
+                                    }
+                                    catch { /* best effort */ }
+                                }
+
+                                return (tex, File.Exists(savePath) ? Path.GetFullPath(savePath) : null);
+                            }
                             catch { /* ignore */ }
                         }
                     }
@@ -443,6 +574,18 @@ namespace Game_Engine.Core.Importers
             }
 
             return (null, null);
+        }
+
+        static string GuessImageExtension(string? formatHint)
+        {
+            if (string.IsNullOrWhiteSpace(formatHint)) return ".png";
+            var h = formatHint.Trim().ToLowerInvariant();
+            if (h.Contains("png")) return ".png";
+            if (h.Contains("jpg") || h.Contains("jpeg")) return ".jpg";
+            if (h.Contains("tga")) return ".tga";
+            if (h.Contains("bmp")) return ".bmp";
+            if (h.Contains("dds")) return ".dds";
+            return ".png";
         }
 
         static byte[] FlattenRawEmbedded(EmbeddedTexture t)
@@ -548,7 +691,14 @@ namespace Game_Engine.Core.Importers
                 if (aim.MaterialIndex >= 0 && materials.TryGetValue(aim.MaterialIndex, out var staticMat))
                 {
                     mr.Material = staticMat.Clone();
-                    mr.Color = mr.Material.Tint;
+                    // Use white tint — the texture provides color; MR.Color is a user tint multiplier
+                    mr.Color = Avalonia.Media.Colors.White;
+
+                    // Save material to disk for persistence
+                    var meshName = !string.IsNullOrWhiteSpace(aim.Name) ? aim.Name : node.Name;
+                    var matPath = SaveMaterialForImport(mr.Material, relModelPathForNode, partIndex, meshName);
+                    if (!string.IsNullOrWhiteSpace(matPath))
+                        mr.MaterialPaths.Add(matPath);
                 }
 
                 if (!hasNormals) mesh.RecalculateNormalsSmooth();
@@ -908,12 +1058,158 @@ namespace Game_Engine.Core.Importers
             );
         }
 
+        // ── Material saving helpers ──────────────────────────────────────────────
+
+        /// <summary>
+        /// Save a runtime Material as a simple .material JSON file.
+        /// Returns the project-relative path to the saved file.
+        /// </summary>
+        static string? SaveMaterialForImport(Material mat, string relModelPath, int partIndex, string meshName)
+        {
+            try
+            {
+                var matDir = Path.ChangeExtension(relModelPath, null) + "_Materials";
+                var safeName = string.IsNullOrWhiteSpace(meshName) ? $"Material_{partIndex}" : SanitizeFileName(meshName);
+                var relPath = Path.Combine(matDir, $"{safeName}.material");
+
+                var absPath = ResolveProjectRelative(relPath);
+                if (absPath == null) return null;
+
+                // If a file with the same name already exists, append partIndex to avoid collisions
+                // (e.g., two meshes both named "Unity_Body_Mesh" in the same FBX)
+                if (File.Exists(absPath))
+                {
+                    relPath = Path.Combine(matDir, $"{safeName}_{partIndex}.material");
+                    absPath = ResolveProjectRelative(relPath);
+                    if (absPath == null) return null;
+                }
+
+                var dir = Path.GetDirectoryName(absPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+
+                // Build a simple JSON material file compatible with ProjectService.MaterialsLoad
+                var texDict = new Dictionary<string, string>();
+                if (mat.Textures != null)
+                {
+                    foreach (var slot in mat.Textures)
+                    {
+                        if (slot is RuntimeTexSlot rts && !string.IsNullOrWhiteSpace(rts.SourcePath))
+                        {
+                            var usage = rts.Usage ?? "Albedo";
+                            if (!texDict.ContainsKey(usage))
+                                texDict[usage] = rts.SourcePath;
+                        }
+                    }
+                }
+
+                var jsonObj = new Dictionary<string, object>
+                {
+                    ["name"] = mat.Name ?? safeName,
+                    ["type"] = "Material",
+                    ["version"] = 1,
+                    ["shader"] = mat.ShaderAssetPath ?? "",
+                    ["parameters"] = new Dictionary<string, object>
+                    {
+                        ["Tint"] = new float[] { mat.BaseColor.R / 255f, mat.BaseColor.G / 255f, mat.BaseColor.B / 255f, mat.BaseColor.A / 255f },
+                        ["Metallic"] = mat.Metallic,
+                        ["Roughness"] = mat.Roughness,
+                        ["Transparent"] = mat.Transparent,
+                        ["AlphaCutoff"] = mat.AlphaCutoff
+                    },
+                    ["textures"] = texDict
+                };
+
+                var json = System.Text.Json.JsonSerializer.Serialize(jsonObj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(absPath, json);
+
+                Log.Info($"[ModelImporter] Saved material asset → {relPath}");
+                return relPath;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ModelImporter] Failed to save material: {ex.Message}");
+                return null;
+            }
+        }
+
+        static string SanitizeFileName(string name)
+        {
+            var chars = name.ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                char ch = chars[i];
+                if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' || ch == ' '))
+                    chars[i] = '_';
+            }
+            return new string(chars).Trim();
+        }
+
+        // ── Bone name matching helpers ──────────────────────────────────────────
+
+        /// <summary>Common bone name prefixes found in FBX/GLTF models (e.g. Mixamo).</summary>
+        private static readonly string[] s_boneNamePrefixes = new[]
+        {
+            "mixamorig:", "mixamorig_", "Armature|", "Armature_",
+            "Bip001_", "Bip01_", "Bip001 ", "Bip01 ",
+            "CC_Base_", "Genesis8_", "Genesis3_"
+        };
+
+        /// <summary>
+        /// Try to find a bone index by name, stripping common prefixes/suffixes if direct lookup fails.
+        /// </summary>
+        static int FindBoneFlexible(Skeleton skeleton, string channelName)
+        {
+            // Direct match first
+            int idx = skeleton.FindBone(channelName);
+            if (idx >= 0) return idx;
+
+            // Strip common prefixes from channel name and try again
+            foreach (var prefix in s_boneNamePrefixes)
+            {
+                if (channelName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    string stripped = channelName.Substring(prefix.Length);
+                    idx = skeleton.FindBone(stripped);
+                    if (idx >= 0) return idx;
+                }
+            }
+
+            // Try stripping common prefixes from bone names to match the channel name
+            for (int i = 0; i < skeleton.BoneCount; i++)
+            {
+                var boneName = skeleton.Bones[i].Name;
+                foreach (var prefix in s_boneNamePrefixes)
+                {
+                    if (boneName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string stripped = boneName.Substring(prefix.Length);
+                        if (string.Equals(stripped, channelName, StringComparison.OrdinalIgnoreCase))
+                            return i;
+                    }
+                }
+            }
+
+            // Last resort: case-insensitive contains match
+            string lower = channelName.ToLowerInvariant();
+            for (int i = 0; i < skeleton.BoneCount; i++)
+            {
+                if (skeleton.Bones[i].Name.ToLowerInvariant().Contains(lower) ||
+                    lower.Contains(skeleton.Bones[i].Name.ToLowerInvariant()))
+                    return i;
+            }
+
+            return -1;
+        }
+
         // ── Animation import ───────────────────────────────────────────────────
 
-        /// <summary>Import all animations from the Assimp scene and save as .boneanim files.</summary>
-        static void ImportAnimations(Scene sc, Skeleton skeleton, string relModelPath, float vertexScale = 1f)
+        /// <summary>Import all animations from the Assimp scene and save as .boneanim files.
+        /// Returns a list of project-relative paths to saved .boneanim files.</summary>
+        static List<string> ImportAnimations(Scene sc, Skeleton skeleton, string relModelPath, float vertexScale = 1f)
         {
-            if (!sc.HasAnimations) return;
+            var savedPaths = new List<string>();
+            if (!sc.HasAnimations) return savedPaths;
 
             var animDir = Path.ChangeExtension(relModelPath, null) + "_Animations";
 
@@ -932,12 +1228,13 @@ namespace Game_Engine.Core.Importers
 
                 foreach (var channel in anim.NodeAnimationChannels)
                 {
-                    int boneIdx = skeleton.FindBone(channel.NodeName);
+                    // Use flexible bone name matching to handle prefixed names (e.g. mixamorig:Hips)
+                    int boneIdx = FindBoneFlexible(skeleton, channel.NodeName);
                     if (boneIdx < 0) continue;
 
                     var track = new BoneTrack
                     {
-                        BoneName = channel.NodeName,
+                        BoneName = skeleton.Bones[boneIdx].Name, // Use the actual bone name from skeleton
                         BoneIndex = boneIdx
                     };
 
@@ -971,6 +1268,7 @@ namespace Game_Engine.Core.Importers
                     try
                     {
                         BoneAnimationClipAsset.Save(clip, relPath);
+                        savedPaths.Add(relPath);
                         Log.Info($"[ModelImporter] Saved bone animation '{clip.Name}' ({clip.Tracks.Count} tracks, {duration:F2}s) → {relPath}");
                     }
                     catch (Exception ex)
@@ -979,6 +1277,8 @@ namespace Game_Engine.Core.Importers
                     }
                 }
             }
+
+            return savedPaths;
         }
 
         static SN.Vector3 SamplePosition(NodeAnimationChannel ch, float ticks)

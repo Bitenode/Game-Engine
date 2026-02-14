@@ -109,7 +109,11 @@ namespace Game_Engine.Core
             {
                 var mr = bs[i] as MeshRenderer;
                 if (mr != null && !hasDecal && !hasParticle)
+                {
+                    // Skinned meshes with MaterialIsFromImporter still need texture warm-up
+                    // and MaterialPaths resolution, so we always call RebindRenderer.
                     changed |= RebindRenderer(mr);
+                }
             }
 
             var ch = go.Children;

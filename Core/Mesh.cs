@@ -12,7 +12,7 @@ public sealed class Mesh
     public SN.Vector3[] Vertices { get; }
     public SN.Vector3[]? Normals { get; set; }
     public System.Numerics.Vector2[]? UVs { get; set; }
-    public int[] LineIndices { get; }   // pairs (a,b)
+    public int[] LineIndices { get; private set; }   // pairs (a,b)
     public int[] TriIndices { get; }   // triples (a,b,c)
 
     // Metadata used by SceneView for procedural LOD
@@ -39,6 +39,18 @@ public sealed class Mesh
         Vertices = v;
         LineIndices = lines;
         TriIndices = tris;
+    }
+
+    /// <summary>
+    /// Lazily generate line indices from triangle indices if they don't exist.
+    /// Called by the wireframe renderer so imported models, terrain, etc. get
+    /// proper wireframe edges without requiring them at construction time.
+    /// </summary>
+    public void EnsureLineIndices()
+    {
+        if (LineIndices != null && LineIndices.Length > 0) return;
+        if (TriIndices == null || TriIndices.Length == 0) return;
+        LineIndices = BuildEdgesFromTriangles(TriIndices);
     }
 
     // --- Helpers -------------------------------------------------------------

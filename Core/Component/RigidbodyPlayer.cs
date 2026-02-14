@@ -26,6 +26,12 @@ namespace Game_Engine.Core.Component
         [Persist] public float GroundDrag { get; set; } = 5f;
         [Persist] public float AirDrag { get; set; } = 0.5f;
 
+        // ── Swimming ──
+        [Persist] public float SwimForce { get; set; } = 30f;
+        [Persist] public float SwimMaxSpeed { get; set; } = 4f;
+        [Persist] public float SwimVerticalSpeed { get; set; } = 3f;
+        [Persist] public float SwimDrag { get; set; } = 4f;
+
         // ── Look / camera ──
         [Persist] public float LookSensitivity { get; set; } = 90f;
         [Persist] public bool FirstPerson { get; set; } = true;
@@ -101,7 +107,9 @@ namespace Game_Engine.Core.Component
             float lookX = GEInput.GetAxis("Mouse X");
             float lookY = GEInput.GetAxis("Mouse Y");
             _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
-            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -89f, 89f);
+            // Allow full vertical look range when swimming
+            float maxPitch = (_rb != null && _rb.IsUnderwater) ? 89f : 89f;
+            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
 
             // ── Move intent ──
             int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
@@ -145,6 +153,13 @@ namespace Game_Engine.Core.Component
 
             float dt = Time.fixedDeltaTime;
             bool grounded = _rb.IsGrounded;
+            bool underwater = _rb.IsUnderwater;
+
+            if (underwater)
+            {
+                FixedUpdateSwimming(dt);
+                return;
+            }
 
             // ── Convert local wish to world direction ──
             float r = Deg2Rad(_yawDeg);
@@ -202,6 +217,72 @@ namespace Game_Engine.Core.Component
             {
                 _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
+        }
+
+        /// <summary>
+        /// Swimming physics: 3D movement following camera direction.
+        /// Space = swim up, Shift = sprint swim, WASD = move in camera-relative direction.
+        /// </summary>
+        void FixedUpdateSwimming(float dt)
+        {
+            if (_rb == null) return;
+
+            // ── Build 3D swim direction from camera look + WASD ──
+            float yawRad = Deg2Rad(_yawDeg);
+            float pitchRad = Deg2Rad(_pitchDeg);
+
+            // Forward vector follows camera pitch (look direction)
+            float cosPitch = MathF.Cos(pitchRad);
+            float sinPitch = MathF.Sin(pitchRad);
+            float cosYaw = MathF.Cos(yawRad);
+            float sinYaw = MathF.Sin(yawRad);
+
+            var forward = new SN.Vector3(
+                sinYaw * cosPitch,
+                -sinPitch,
+                cosYaw * cosPitch);
+            if (forward.LengthSquared() > 1e-6f)
+                forward = SN.Vector3.Normalize(forward);
+
+            // Right vector is always horizontal
+            var right = new SN.Vector3(cosYaw, 0f, -sinYaw);
+
+            // Build wish direction in 3D
+            var wishDir = SN.Vector3.Zero;
+            if (_wishLocal.LengthSquared() > 1e-6f)
+            {
+                // wishLocal.X = strafe (right), wishLocal.Y = forward/back
+                wishDir = right * _wishLocal.X + forward * _wishLocal.Y;
+                if (wishDir.LengthSquared() > 1e-6f)
+                    wishDir = SN.Vector3.Normalize(wishDir);
+            }
+
+            // Vertical swim input: Space = swim up
+            bool jumpHeld = GEInput.GetAction("Jump");
+            if (jumpHeld)
+                wishDir += SN.Vector3.UnitY * SwimVerticalSpeed * 0.5f;
+
+            // Apply swim force
+            float swimSpeed = SwimForce * (_sprintHeld ? SprintMultiplier : 1f);
+            float maxSwimSpd = SwimMaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+
+            if (wishDir.LengthSquared() > 1e-6f)
+            {
+                float currentSpeed = SN.Vector3.Dot(_rb.Velocity, SN.Vector3.Normalize(wishDir));
+                float addSpeed = maxSwimSpd - currentSpeed;
+                if (addSpeed > 0f)
+                {
+                    float accel = MathF.Min(swimSpeed * dt, addSpeed);
+                    _rb.AddForce(wishDir * accel / MathF.Max(dt, 0.001f));
+                }
+            }
+
+            // ── Swim drag (all axes, heavier than air) ──
+            float dragFactor = MathF.Max(0f, 1f - SwimDrag * dt);
+            _rb.Velocity *= dragFactor;
+
+            // Clear jump buffer underwater (jump is swim-up, not a ground jump)
+            _jumpBuf = 0f;
         }
 
         // ── Camera helpers (same as PlayerMovement) ──

@@ -1,16 +1,25 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:core="clr-namespace:Game_Engine.Core"
+             xmlns:views="clr-namespace:Game_Engine.Views"
              x:Class="Game_Engine.Views.HierarchyPanel">
 
 	<!-- Shared menu used by BOTH the Tree root and each TreeViewItem -->
 	<UserControl.Resources>
+		<views:PrefabColorConverter x:Key="PrefabColor"/>
+
 		<ContextMenu x:Key="HierarchyMenu">
 			<MenuItem Header="Create Empty Child" Click="OnCreateChild"/>
 			<MenuItem Header="Create Cube"        Click="OnCreateCube"/>
 			<MenuItem Header="Create Cone"        Click="OnCreateCone"/>
 			<MenuItem Header="Create Cylinder"    Click="OnCreateCylinder"/>
 			<MenuItem Header="Import Model"       Click="OnImportModel"/>
+			<Separator/>
+			<MenuItem Header="Create Prefab"       Click="OnCreatePrefab"/>
+			<MenuItem Header="Instantiate Prefab"  Click="OnInstantiatePrefab"/>
+			<MenuItem Header="Apply to Prefab"     Click="OnApplyToPrefab"/>
+			<MenuItem Header="Revert to Prefab"    Click="OnRevertToPrefab"/>
+			<MenuItem Header="Unpack Prefab"       Click="OnUnpackPrefab"/>
 			<Separator/>
 			<MenuItem Header="Unparent"           Click="OnUnparent"/>
 			<MenuItem Header="Delete"             Click="OnDelete"/>
@@ -25,7 +34,7 @@
 
 		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
 			<TreeView x:Name="Tree"
-					  SelectionMode="Single"
+					  SelectionMode="Multiple"
 					  ItemsSource="{Binding Root}"
 					  ContextMenu="{StaticResource HierarchyMenu}">
 				<TreeView.Styles>
@@ -38,7 +47,8 @@
 				<TreeView.DataTemplates>
 					<TreeDataTemplate DataType="core:GameObject"
 									  ItemsSource="{Binding Children}">
-						<TextBlock Text="{Binding Name}"/>
+						<TextBlock Text="{Binding Name}"
+								   Foreground="{Binding PrefabId, Converter={StaticResource PrefabColor}}"/>
 					</TreeDataTemplate>
 				</TreeView.DataTemplates>
 			</TreeView>

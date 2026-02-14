@@ -50,6 +50,20 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     // Gizmo GL resources (lines + arrowhead cones)
     private uint _gizmoVao;
     private uint _gizmoVbo;
+
+    // Collider gizmo GL resources (dynamic line buffer)
+    private uint _colliderVao;
+    private uint _colliderVbo;
+    private int _colliderVboCapacity;   // current VBO capacity in floats
+    // Reusable per-frame line buffers (avoid GC pressure)
+    private readonly List<float> _colLinesNormal = new();
+    private readonly List<float> _colLinesTrigger = new();
+    private readonly List<float> _colLinesFaintN = new();
+    private readonly List<float> _colLinesFaintT = new();
+    // Terrain brush gizmo line buffers
+    private readonly List<float> _terrainOuter = new();
+    private readonly List<float> _terrainInner = new();
+    private readonly List<float> _terrainCross = new();
     #endregion
 
     #region Camera & selection
@@ -906,7 +920,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Focusable = true;
         ClipToBounds = true;
         _selected = SelectionService.Current;
-        SelectionService.Changed += () => { _selected = SelectionService.Current; InvalidateVisual(); };
+        SelectionService.Changed += () =>
+        {
+            _selected = SelectionService.Current;
+            _multiSelected.Clear();
+            _multiSelected.AddRange(SelectionService.Selected);
+            InvalidateVisual();
+        };
         SceneService.Changed += () => { _cache?.InvalidateAll(); _sceneQueryDirty = true; InvalidateVisual(); };
         AffectsRender<SceneView>(GizmoLocalProperty);
         AddHandler(PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
@@ -1038,6 +1058,19 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             g.BindVertexArray(0);
             DiagLog("[SceneView] Gizmo VAO/VBO OK");
 
+            // Collider gizmo VAO/VBO – dynamic buffer for all collider wireframes
+            _colliderVao = g.GenVertexArray();
+            _colliderVbo = g.GenBuffer();
+            g.BindVertexArray(_colliderVao);
+            g.BindBuffer(BufferTargetARB.ArrayBuffer, _colliderVbo);
+            _colliderVboCapacity = 12000; // initial: ~2000 line segments
+            g.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(_colliderVboCapacity * sizeof(float)),
+                         ReadOnlySpan<byte>.Empty, BufferUsageARB.DynamicDraw);
+            g.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+            g.EnableVertexAttribArray(0);
+            g.BindVertexArray(0);
+            DiagLog("[SceneView] Collider gizmo VAO/VBO OK");
+
             DiagLog("[SceneView] All GPU resources created successfully.");
         }
         catch (Exception ex)
@@ -1053,6 +1086,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             if (_gizmoVao != 0) { g.DeleteVertexArray(_gizmoVao); _gizmoVao = 0; }
             if (_gizmoVbo != 0) { g.DeleteBuffer(_gizmoVbo); _gizmoVbo = 0; }
+            if (_colliderVao != 0) { g.DeleteVertexArray(_colliderVao); _colliderVao = 0; }
+            if (_colliderVbo != 0) { g.DeleteBuffer(_colliderVbo); _colliderVbo = 0; }
         }
         _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
         _postProcessShader?.Dispose(); _postProcessShader = null;
@@ -1311,6 +1346,16 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         RenderGizmoGL(g, view, proj, new Size(W, H));
 
+        // --- WIREFRAME PASS (GL lines — always visible on top) ---
+        RenderWireframeGL(g, view, proj);
+
+        // --- COLLIDER GIZMO PASS (GL lines — always visible on top) ---
+        RenderColliderGizmosGL(g, view, proj);
+
+        // --- TERRAIN BRUSH GIZMO PASS (GL lines — independent of collider toggle) ---
+        if (ShowTerrainGizmos)
+            RenderTerrainGizmosGL(g, view, proj);
+
         // Periodic GPU resource eviction (avoid unbounded cache growth)
         if (++_evictCounter > 300) // roughly every ~5s at 60fps
         {
@@ -1369,85 +1414,11 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (ShowCameras)
             CameraOverlay.DrawCameraFrustums(ctx, view, proj, size, active.Cam);
 
-        // Wireframe overlay (Avalonia 2D lines)
-        // Always traverse the scene so per-object MeshRenderer.Wireframe draws even
-        // when the global ShowWire toggle is off (the GL renderer already skips those meshes).
-        foreach (var root in SceneService.Root)
-            DrawNodeWire(ctx, vp, size, root, SN.Matrix4x4.Identity, ShowWire);
-
-        // Collider gizmos
-        if (GizmoLocal)
-        {
-            foreach (var go in SceneService.Root)
-                DrawCollidersRecursive(ctx, vp, size, go);
-        }
-
-        // Terrain gizmos
-        if (ShowTerrainGizmos && _hasHover && _hoverTerrain != null)
-        {
-            float radius = TerrainBrushRadiusProvider(_hoverTerrain);
-            float strength = Clamp01(TerrainBrushStrengthProvider(_hoverTerrain));
-            byte aOuter = (byte)(80 + 160 * strength);
-            var outer = Avalonia.Media.Color.FromArgb(aOuter, 255, 255, 255);
-            var inner = Avalonia.Media.Color.FromArgb((byte)Math.Max(40, aOuter / 2), 255, 255, 255);
-            TerrainGizmos.DrawBrushWithFalloff(ctx, vp, size, _hoverPointW, radius,
-                Clamp01(TerrainBrushFalloffProvider(_hoverTerrain)), strength, outer, inner, 64);
-        }
+        // Wireframe, collider gizmos, and terrain gizmos are now rendered in the GL pass
+        // (RenderWireframeGL / RenderColliderGizmosGL / RenderTerrainGizmosGL).
         _lastOverlayMs = compSw.Elapsed.TotalMilliseconds;
     }
 
-    // Max triangles for full wireframe display — larger meshes (e.g. terrain) use AABB only
-    const int MaxMeshWireTris = 4000;
-
-    void DrawCollidersRecursive(DrawingContext ctx, in SN.Matrix4x4 viewProj, Size sz, GameObject go)
-    {
-        foreach (var col in go.Behaviors.OfType<Collider>())
-        {
-            var mainColor = col.IsTrigger ? Colors.OrangeRed : Colors.DeepSkyBlue;
-            if (col is CapsuleCollider capCol)
-            {
-                var W = SceneGraphUtil.AccumulateWorld(go);
-                var c = new SN.Vector3((float)capCol.Center.X, (float)capCol.Center.Y, (float)capCol.Center.Z);
-                var rr = Math.Max(0.0001f, capCol.Radius);
-                var hh = Math.Max(2f * rr, capCol.Height);
-                var halfCyl = 0.5f * (hh - 2f * rr);
-                SN.Vector3 axis = capCol.Direction switch
-                {
-                    CapsuleCollider.Axis.X => new SN.Vector3(1, 0, 0),
-                    CapsuleCollider.Axis.Z => new SN.Vector3(0, 0, 1),
-                    _ => new SN.Vector3(0, 1, 0)
-                };
-                ColliderGizmos.DrawCapsule(ctx, W, viewProj, sz, c + axis * halfCyl, c - axis * halfCyl, axis, rr, mainColor, 1f, 32);
-                continue;
-            }
-            if (col is MeshCollider mc)
-            {
-                // For large meshes (terrain, etc.), ONLY draw the AABB — full wireframe
-                // would draw tens of thousands of Avalonia 2D lines and destroy framerate.
-                bool tooLarge = false;
-                foreach (var (mesh, _) in mc.EnumerateTargetMeshesWorld())
-                {
-                    if (mesh?.TriIndices != null && mesh.TriIndices.Length / 3 > MaxMeshWireTris)
-                    { tooLarge = true; break; }
-                }
-
-                if (!tooLarge)
-                {
-                    foreach (var (mesh, Wm) in mc.EnumerateTargetMeshesWorld())
-                        ColliderGizmos.DrawMeshWire(ctx, viewProj, sz, mesh, Wm, mainColor, 1f);
-                }
-
-                var aabb = mc.GetWorldAABB();
-                var faint = mc.IsTrigger
-                    ? Avalonia.Media.Color.FromArgb(64, Colors.OrangeRed.R, Colors.OrangeRed.G, Colors.OrangeRed.B)
-                    : Avalonia.Media.Color.FromArgb(64, Colors.DeepSkyBlue.R, Colors.DeepSkyBlue.G, Colors.DeepSkyBlue.B);
-                ColliderGizmos.DrawAABB(ctx, viewProj, sz, aabb, faint, 1f);
-                continue;
-            }
-            { var aabb = col.GetWorldAABB(); ColliderGizmos.DrawAABB(ctx, viewProj, sz, aabb, mainColor, 1f); }
-        }
-        foreach (var child in go.Children) DrawCollidersRecursive(ctx, viewProj, sz, child);
-    }
     #endregion
 
     // ── Multi-select support ──
@@ -1514,83 +1485,115 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
     }
 
-    // ── Copy/Paste/Duplicate/Delete helpers ──
+    // ── Copy/Paste/Duplicate/Delete helpers (multi-object aware) ──
+
+    private static List<string>? _clipboardJsonList;
 
     void CopySelected()
     {
-        if (_selected == null) return;
+        var targets = _multiSelected.Count > 0 ? _multiSelected : (_selected != null ? new List<GameObject> { _selected } : new List<GameObject>());
+        if (targets.Count == 0) return;
         try
         {
-            _clipboardJson = System.Text.Json.JsonSerializer.Serialize(_selected, SceneSerialization.JsonOptions);
-            Log.Info($"[SceneView] Copied: {_selected.Name}");
+            _clipboardJsonList = new List<string>();
+            foreach (var go in targets)
+            {
+                _clipboardJsonList.Add(System.Text.Json.JsonSerializer.Serialize(go, SceneSerialization.JsonOptions));
+            }
+            // Keep backward-compat single clipboard for simple paste
+            _clipboardJson = _clipboardJsonList.Count > 0 ? _clipboardJsonList[0] : null;
+            Log.Info($"[SceneView] Copied {targets.Count} object(s)");
         }
         catch (Exception ex) { Log.Error($"[SceneView] Copy failed: {ex.Message}"); }
     }
 
     void PasteFromClipboard()
     {
-        if (_clipboardJson == null) return;
+        var jsonList = _clipboardJsonList ?? (_clipboardJson != null ? new List<string> { _clipboardJson } : null);
+        if (jsonList == null || jsonList.Count == 0) return;
         try
         {
-            var go = System.Text.Json.JsonSerializer.Deserialize<GameObject>(_clipboardJson, SceneSerialization.JsonOptions);
-            if (go == null) return;
-            go.Name += " (Copy)";
-            // Offset position slightly so it doesn't overlap
-            go.Transform.Position = new Vector3(
-                go.Transform.Position.X + 1f,
-                go.Transform.Position.Y,
-                go.Transform.Position.Z + 1f);
-            SceneService.Add(go);
-            SelectionService.Set(go);
-            _selected = go;
+            var pasted = new List<GameObject>();
+            foreach (var json in jsonList)
+            {
+                var go = System.Text.Json.JsonSerializer.Deserialize<GameObject>(json, SceneSerialization.JsonOptions);
+                if (go == null) continue;
+                go.Name += " (Copy)";
+                go.Transform.Position = new Vector3(
+                    go.Transform.Position.X + 1f,
+                    go.Transform.Position.Y,
+                    go.Transform.Position.Z + 1f);
+                SceneService.Add(go);
+                pasted.Add(go);
+            }
+            if (pasted.Count > 0)
+            {
+                SelectionService.SetMultiple(pasted);
+                _selected = pasted[^1];
+            }
             SceneService.NotifyChanged();
-            Log.Info($"[SceneView] Pasted: {go.Name}");
+            Log.Info($"[SceneView] Pasted {pasted.Count} object(s)");
         }
         catch (Exception ex) { Log.Error($"[SceneView] Paste failed: {ex.Message}"); }
     }
 
     void DuplicateSelected()
     {
-        if (_selected == null) return;
+        var targets = _multiSelected.Count > 0 ? _multiSelected : (_selected != null ? new List<GameObject> { _selected } : new List<GameObject>());
+        if (targets.Count == 0) return;
         try
         {
-            var json = System.Text.Json.JsonSerializer.Serialize(_selected, SceneSerialization.JsonOptions);
-            var go = System.Text.Json.JsonSerializer.Deserialize<GameObject>(json, SceneSerialization.JsonOptions);
-            if (go == null) return;
-            go.Name += " (Dup)";
-            go.Transform.Position = new Vector3(
-                go.Transform.Position.X + 0.5f,
-                go.Transform.Position.Y,
-                go.Transform.Position.Z + 0.5f);
+            var duplicated = new List<GameObject>();
+            foreach (var src in targets)
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(src, SceneSerialization.JsonOptions);
+                var go = System.Text.Json.JsonSerializer.Deserialize<GameObject>(json, SceneSerialization.JsonOptions);
+                if (go == null) continue;
+                go.Name += " (Dup)";
+                go.Transform.Position = new Vector3(
+                    go.Transform.Position.X + 0.5f,
+                    go.Transform.Position.Y,
+                    go.Transform.Position.Z + 0.5f);
 
-            if (_selected.Parent != null)
-                _selected.Parent.AddChild(go);
-            else
-                SceneService.Add(go);
+                if (src.Parent != null)
+                    src.Parent.AddChild(go);
+                else
+                    SceneService.Add(go);
 
-            SelectionService.Set(go);
-            _selected = go;
+                duplicated.Add(go);
+            }
+            if (duplicated.Count > 0)
+            {
+                SelectionService.SetMultiple(duplicated);
+                _selected = duplicated[^1];
+            }
             SceneService.NotifyChanged();
-            Log.Info($"[SceneView] Duplicated: {go.Name}");
+            Log.Info($"[SceneView] Duplicated {duplicated.Count} object(s)");
         }
         catch (Exception ex) { Log.Error($"[SceneView] Duplicate failed: {ex.Message}"); }
     }
 
     void DeleteSelected()
     {
-        if (_selected == null) return;
-        var go = _selected;
-        SelectionService.Set(null);
+        var targets = _multiSelected.Count > 0
+            ? new List<GameObject>(_multiSelected)
+            : (_selected != null ? new List<GameObject> { _selected } : new List<GameObject>());
+        if (targets.Count == 0) return;
+
+        SelectionService.Clear();
         _selected = null;
 
-        if (go.Parent != null)
-            go.Parent.Children.Remove(go);
-        else
-            SceneService.Remove(go);
+        foreach (var go in targets)
+        {
+            if (go.Parent != null)
+                go.Parent.Children.Remove(go);
+            else
+                SceneService.Remove(go);
+        }
 
         SceneService.NotifyChanged();
         InvalidateVisual();
-        Log.Info($"[SceneView] Deleted: {go.Name}");
+        Log.Info($"[SceneView] Deleted {targets.Count} object(s)");
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
@@ -1625,9 +1628,120 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             if (BeginAxisDrag(_last, view2, proj2, Bounds.Size))
             { e.Pointer.Capture(this); e.Handled = true; return; }
         }
+        // Left-click: try to pick a scene object before falling through to orbit
+        if (p.IsLeftButtonPressed && !p.IsRightButtonPressed)
+        {
+            var (pickView, pickProj) = GetViewProj(Bounds.Size);
+            var picked = PickSceneObject(_last, pickView, pickProj, Bounds.Size);
+            if (picked != null)
+            {
+                if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                    SelectionService.Toggle(picked);
+                else
+                    SelectionService.Set(picked);
+                _selected = SelectionService.Current;
+                InvalidateVisual();
+                // Don't start orbiting when we picked an object
+                e.Pointer.Capture(this); e.Handled = true;
+                return;
+            }
+            // Nothing picked and no Ctrl held: clear selection
+            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+            {
+                // Only clear if we didn't hit a gizmo and we're in hand mode or the click is not a gizmo hit
+                // (gizmo hits are already handled above)
+            }
+        }
+
         if (p.IsLeftButtonPressed || p.IsRightButtonPressed) _orbiting = true;
         if (p.IsMiddleButtonPressed) _panning = true;
         e.Pointer.Capture(this); e.Handled = true;
+    }
+
+    /// <summary>
+    /// Pick the nearest scene object at the given screen position using bounding sphere tests.
+    /// Returns null if nothing was hit.
+    /// </summary>
+    GameObject? PickSceneObject(Point screenPos, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz)
+    {
+        Picking.BuildPickRay(screenPos, view, proj, sz, out var ro, out var rd);
+
+        GameObject? closest = null;
+        float closestDist = float.MaxValue;
+
+        foreach (var root in SceneService.Root)
+            PickRecursive(root, SN.Matrix4x4.Identity, ro, rd, ref closest, ref closestDist);
+
+        return closest;
+    }
+
+    void PickRecursive(GameObject go, SN.Matrix4x4 parentWorld, SN.Vector3 ro, SN.Vector3 rd,
+        ref GameObject? closest, ref float closestDist)
+    {
+        var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
+
+        bool hasMesh = false;
+
+        // Check MeshFilter for bounds
+        foreach (var b in go.Behaviors)
+        {
+            if (b is MeshFilter mf && mf.Mesh != null)
+            {
+                hasMesh = true;
+                var mesh = mf.Mesh;
+                var verts = mesh.Vertices;
+                if (verts != null && verts.Length > 0)
+                {
+                    // Compute bounding sphere in local space
+                    SN.Vector3 center = SN.Vector3.Zero;
+                    for (int i = 0; i < verts.Length; i++)
+                        center += verts[i];
+                    center /= verts.Length;
+
+                    float r2 = 0f;
+                    for (int i = 0; i < verts.Length; i++)
+                    {
+                        var d = verts[i] - center;
+                        float d2 = d.X * d.X + d.Y * d.Y + d.Z * d.Z;
+                        if (d2 > r2) r2 = d2;
+                    }
+                    float radius = MathF.Sqrt(r2);
+
+                    // Transform center to world space
+                    var worldCenter = SN.Vector3.Transform(center, world);
+                    // Scale radius by max scale axis
+                    float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                    float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                    float sz2 = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                    float worldRadius = radius * MathF.Max(sx, MathF.Max(sy, sz2));
+
+                    float t = Picking.RayIntersectSphere(ro, rd, worldCenter, worldRadius);
+                    if (t < closestDist)
+                    {
+                        closestDist = t;
+                        closest = go;
+                    }
+                }
+                break; // only test first mesh per GO
+            }
+        }
+
+        // Fallback: if no mesh, use a small sphere at the object's world position
+        // so lights, cameras, and empty objects are still pickable
+        if (!hasMesh)
+        {
+            var worldPos = new SN.Vector3(world.M41, world.M42, world.M43);
+            const float defaultPickRadius = 0.5f;
+            float t = Picking.RayIntersectSphere(ro, rd, worldPos, defaultPickRadius);
+            if (t < closestDist)
+            {
+                closestDist = t;
+                closest = go;
+            }
+        }
+
+        foreach (var child in go.Children)
+            PickRecursive(child, world, ro, rd, ref closest, ref closestDist);
     }
 
     void OnPointerMoved(object? s, PointerEventArgs e)
@@ -1734,23 +1848,62 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (!Picking.RayIntersectPlane(ro, rd, _dragPlaneN, _dragAnchorW, out var hitW)) return;
         float delta = SN.Vector3.Dot(hitW - _dragAnchorW, _dragAxisW);
         if (SnapEnabled && SnapStep > 1e-6f) delta = MathF.Round(delta / SnapStep) * SnapStep;
+
+        // Apply transform to primary selection
+        ApplyGizmoDelta(_selected, delta, axisOnly);
+
+        // Apply same delta to all multi-selected objects
+        foreach (var go in _multiSelected)
+        {
+            if (go == _selected) continue;
+            ApplyGizmoDelta(go, delta, axisOnly);
+        }
+
+        SceneService.NotifyChanged(); SelectionService.Touch(); InvalidateVisual();
+    }
+
+    void ApplyGizmoDelta(GameObject go, float delta, bool axisOnly)
+    {
         switch (Tool)
         {
             case ToolMode.Move:
-                SceneGraphUtil.SetPositionWorld(_selected, _dragObjStartW + _dragAxisW * delta);
+                if (go == _selected)
+                    SceneGraphUtil.SetPositionWorld(go, _dragObjStartW + _dragAxisW * delta);
+                else
+                {
+                    // For multi-select: apply the same world-space delta as the primary
+                    var worldDelta = _dragAxisW * delta;
+                    go.Transform.Position = new CoreVec3(
+                        go.Transform.Position.X + worldDelta.X,
+                        go.Transform.Position.Y + worldDelta.Y,
+                        go.Transform.Position.Z + worldDelta.Z);
+                }
                 break;
             case ToolMode.Rotate:
-                float deg = delta * 90f; var start = _dragStartRotation; var r = new CoreVec3(start.X, start.Y, start.Z);
-                if (_dragAxis == Axis.X) r.X = start.X + deg; else if (_dragAxis == Axis.Y) r.Y = start.Y + deg; else r.Z = start.Z + deg;
-                _selected.Transform.Rotation = r; break;
+                float deg = delta * 90f;
+                var start = go == _selected ? _dragStartRotation : go.Transform.Rotation;
+                var r = new CoreVec3(start.X, start.Y, start.Z);
+                if (_dragAxis == Axis.X) r.X = start.X + deg;
+                else if (_dragAxis == Axis.Y) r.Y = start.Y + deg;
+                else r.Z = start.Z + deg;
+                go.Transform.Rotation = r;
+                break;
             case ToolMode.Scale:
                 float f = MathF.Pow(2f, delta * 0.25f); f = MathF.Max(0.001f, f); double F = f;
-                var sc = _dragStartScale;
-                if (axisOnly) { switch (_dragAxis) { case Axis.X: sc.X = Math.Max(0.001, sc.X * F); break; case Axis.Y: sc.Y = Math.Max(0.001, sc.Y * F); break; case Axis.Z: sc.Z = Math.Max(0.001, sc.Z * F); break; } }
+                var sc = go == _selected ? _dragStartScale : go.Transform.Scale;
+                if (axisOnly)
+                {
+                    switch (_dragAxis)
+                    {
+                        case Axis.X: sc.X = Math.Max(0.001, sc.X * F); break;
+                        case Axis.Y: sc.Y = Math.Max(0.001, sc.Y * F); break;
+                        case Axis.Z: sc.Z = Math.Max(0.001, sc.Z * F); break;
+                    }
+                }
                 else { sc.X = Math.Max(0.001, sc.X * F); sc.Y = Math.Max(0.001, sc.Y * F); sc.Z = Math.Max(0.001, sc.Z * F); }
-                _selected!.Transform.Scale = sc; break;
+                go.Transform.Scale = sc;
+                break;
         }
-        SceneService.NotifyChanged(); SelectionService.Touch(); InvalidateVisual();
     }
     #endregion
 
@@ -1857,6 +2010,285 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         g.BindVertexArray(0);
     }
 
+    /// <summary>
+    /// Renders collider gizmos (box, capsule, mesh wireframes) using GL lines.
+    /// Drawn inside OnOpenGlRender so they are part of the GL surface and always visible.
+    /// </summary>
+    unsafe void RenderColliderGizmosGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj)
+    {
+        if (!GizmoLocal || _wireShader == null || _colliderVao == 0) return;
+
+        // Clear per-frame buffers
+        _colLinesNormal.Clear();
+        _colLinesTrigger.Clear();
+        _colLinesFaintN.Clear();
+        _colLinesFaintT.Clear();
+
+        // Gather all collider line segments from the scene hierarchy
+        foreach (var go in SceneService.Root)
+            GatherColliderLinesRecursive(go);
+
+        bool hasAny = _colLinesNormal.Count > 0 || _colLinesTrigger.Count > 0 ||
+                      _colLinesFaintN.Count > 0 || _colLinesFaintT.Count > 0;
+        if (!hasAny) return;
+
+        // Set up shared GL state
+        var mvp = view * proj;
+        _wireShader.Use();
+        _wireShader.SetMatrix4("uMVP", mvp);
+        g.Disable(EnableCap.DepthTest);
+        g.Disable(EnableCap.CullFace);
+        g.Enable(EnableCap.Blend);
+        g.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+        g.BindVertexArray(_colliderVao);
+        g.BindBuffer(BufferTargetARB.ArrayBuffer, _colliderVbo);
+
+        // DeepSkyBlue (#00BFFF) - regular colliders
+        g.LineWidth(1.5f);
+        DrawColliderLineBatch(g, _colLinesNormal, 0f, 191f / 255f, 1f, 1f);
+        // OrangeRed (#FF4500) - trigger colliders
+        DrawColliderLineBatch(g, _colLinesTrigger, 1f, 69f / 255f, 0f, 1f);
+        // Faint AABB overlays for mesh colliders
+        DrawColliderLineBatch(g, _colLinesFaintN, 0f, 191f / 255f, 1f, 0.25f);
+        DrawColliderLineBatch(g, _colLinesFaintT, 1f, 69f / 255f, 0f, 0.25f);
+
+        g.BindVertexArray(0);
+        g.Disable(EnableCap.Blend);
+    }
+
+    /// <summary>
+    /// Uploads a batch of line vertices to the VBO and draws them.
+    /// </summary>
+    unsafe void DrawColliderLineBatch(GL g, List<float> verts, float r, float gr, float b, float a)
+    {
+        if (verts.Count == 0) return;
+
+        // Grow VBO if needed
+        if (verts.Count > _colliderVboCapacity)
+        {
+            _colliderVboCapacity = verts.Count * 2;
+            g.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(_colliderVboCapacity * sizeof(float)),
+                         ReadOnlySpan<byte>.Empty, BufferUsageARB.DynamicDraw);
+        }
+
+        // Upload vertex data
+        var span = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(verts);
+        fixed (float* ptr = span)
+        {
+            g.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(verts.Count * sizeof(float)), ptr);
+        }
+
+        _wireShader!.SetVector4("uColor", r, gr, b, a);
+        g.DrawArrays(PrimitiveType.Lines, 0, (uint)(verts.Count / 3));
+    }
+
+    // Max triangles for full wireframe display — larger meshes use AABB only
+    const int MaxColliderWireTris = 4000;
+
+    /// <summary>
+    /// Recursively gathers line segments for all colliders in the scene graph.
+    /// </summary>
+    void GatherColliderLinesRecursive(GameObject go)
+    {
+        foreach (var col in go.Behaviors.OfType<Collider>())
+        {
+            bool isTrigger = col.IsTrigger;
+            var mainBuf = isTrigger ? _colLinesTrigger : _colLinesNormal;
+
+            if (col is CapsuleCollider capCol)
+            {
+                var W = SceneGraphUtil.AccumulateWorld(go);
+                var c = new SN.Vector3((float)capCol.Center.X, (float)capCol.Center.Y, (float)capCol.Center.Z);
+                var rr = Math.Max(0.0001f, capCol.Radius);
+                var hh = Math.Max(2f * rr, capCol.Height);
+                var halfCyl = 0.5f * (hh - 2f * rr);
+                SN.Vector3 axis = capCol.Direction switch
+                {
+                    CapsuleCollider.Axis.X => new SN.Vector3(1, 0, 0),
+                    CapsuleCollider.Axis.Z => new SN.Vector3(0, 0, 1),
+                    _ => new SN.Vector3(0, 1, 0)
+                };
+                ColliderGizmos.CollectCapsule(mainBuf, W, c + axis * halfCyl, c - axis * halfCyl, axis, rr, 32);
+                continue;
+            }
+
+            if (col is BoxCollider boxCol)
+            {
+                var W = SceneGraphUtil.AccumulateWorld(go);
+                var center = new SN.Vector3((float)boxCol.Center.X, (float)boxCol.Center.Y, (float)boxCol.Center.Z);
+                var size = new SN.Vector3(
+                    (float)Math.Max(1e-6, boxCol.Size.X),
+                    (float)Math.Max(1e-6, boxCol.Size.Y),
+                    (float)Math.Max(1e-6, boxCol.Size.Z));
+                ColliderGizmos.CollectOBB(mainBuf, center, size, W);
+                continue;
+            }
+
+            if (col is MeshCollider mc)
+            {
+                // Check if any mesh is too large for full wireframe
+                bool tooLarge = false;
+                foreach (var (mesh, _) in mc.EnumerateTargetMeshesWorld())
+                {
+                    if (mesh?.TriIndices != null && mesh.TriIndices.Length / 3 > MaxColliderWireTris)
+                    { tooLarge = true; break; }
+                }
+
+                if (!tooLarge)
+                {
+                    foreach (var (mesh, Wm) in mc.EnumerateTargetMeshesWorld())
+                        ColliderGizmos.CollectMeshWire(mainBuf, mesh, Wm);
+                }
+
+                // Always show faint AABB overlay for mesh colliders
+                var faintBuf = isTrigger ? _colLinesFaintT : _colLinesFaintN;
+                var aabb = mc.GetWorldAABB();
+                ColliderGizmos.CollectAABB(faintBuf, aabb);
+                continue;
+            }
+
+            // Fallback for any other collider type: draw world AABB
+            {
+                var aabb = col.GetWorldAABB();
+                ColliderGizmos.CollectAABB(mainBuf, aabb);
+            }
+        }
+
+        foreach (var child in go.Children)
+            GatherColliderLinesRecursive(child);
+    }
+
+    /// <summary>
+    /// Renders terrain brush gizmos (outer ring, inner falloff ring, center crosshair)
+    /// using GL lines. Independent of the collider gizmo toggle — controlled by ShowTerrainGizmos.
+    /// </summary>
+    unsafe void RenderTerrainGizmosGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj)
+    {
+        if (!_hasHover || _hoverTerrain == null || _wireShader == null || _colliderVao == 0) return;
+
+        _terrainOuter.Clear();
+        _terrainInner.Clear();
+        _terrainCross.Clear();
+
+        float radius = TerrainBrushRadiusProvider(_hoverTerrain);
+        float falloff = Clamp01(TerrainBrushFalloffProvider(_hoverTerrain));
+        float strength = Clamp01(TerrainBrushStrengthProvider(_hoverTerrain));
+
+        TerrainGizmos.CollectBrushWithFalloff(
+            _terrainOuter, _terrainInner, _terrainCross,
+            _hoverPointW, radius, falloff, 64);
+
+        if (_terrainOuter.Count == 0 && _terrainInner.Count == 0 && _terrainCross.Count == 0) return;
+
+        var mvp = view * proj;
+        _wireShader.Use();
+        _wireShader.SetMatrix4("uMVP", mvp);
+        g.Disable(EnableCap.DepthTest);
+        g.Disable(EnableCap.CullFace);
+        g.Enable(EnableCap.Blend);
+        g.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+        g.BindVertexArray(_colliderVao);
+        g.BindBuffer(BufferTargetARB.ArrayBuffer, _colliderVbo);
+
+        // Outer ring — bright white, opacity scales with strength
+        byte aOuter = (byte)(80 + 160 * strength);
+        g.LineWidth(2f);
+        DrawColliderLineBatch(g, _terrainOuter,
+            1f, 1f, 1f, aOuter / 255f);
+
+        // Inner ring — softer
+        byte aInner = (byte)Math.Max(40, aOuter / 2);
+        g.LineWidth(1.5f);
+        DrawColliderLineBatch(g, _terrainInner,
+            1f, 1f, 1f, aInner / 255f);
+
+        // Crosshair — white, opacity scales with strength
+        float aCross = (40 + 180 * strength) / 255f;
+        g.LineWidth(1f);
+        DrawColliderLineBatch(g, _terrainCross,
+            1f, 1f, 1f, aCross);
+
+        g.BindVertexArray(0);
+        g.Disable(EnableCap.Blend);
+    }
+
+    /// <summary>
+    /// Renders mesh wireframes using the GPU wireframe shader + GPUMesh.DrawWireframe().
+    /// Handles both the global ShowWire toggle and per-object MeshRenderer.Wireframe.
+    /// Drawn inside OnOpenGlRender so wireframes are always visible (no alpha compositing issues).
+    /// </summary>
+    void RenderWireframeGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj)
+    {
+        if (_wireShader == null || _cache == null) return;
+
+        bool globalWire = ShowWire;
+
+        _wireShader.Use();
+        g.Disable(EnableCap.DepthTest);
+        g.Disable(EnableCap.CullFace);
+        g.LineWidth(1f);
+
+        foreach (var go in SceneService.Root)
+            RenderWireframeRecursive(g, view, proj, go, SN.Matrix4x4.Identity, globalWire);
+    }
+
+    void RenderWireframeRecursive(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj,
+        GameObject go, SN.Matrix4x4 parentWorld, bool globalWire)
+    {
+        var world = WorldFromTransform(go.Transform) * parentWorld;
+
+        // Pair MeshFilters with MeshRenderers in order (same pairing logic as SceneRenderer)
+        var behaviors = go.Behaviors;
+        int nextMR = 0;
+        for (int i = 0; i < behaviors.Count; i++)
+        {
+            if (behaviors[i] is MeshFilter mf && mf.Enabled && mf.Mesh != null)
+            {
+                // Find the matching MeshRenderer
+                MeshRenderer? mr = null;
+                for (int j = nextMR; j < behaviors.Count; j++)
+                {
+                    if (behaviors[j] is MeshRenderer r && r.Enabled)
+                    {
+                        mr = r;
+                        nextMR = j + 1;
+                        break;
+                    }
+                }
+                if (mr == null) continue;
+                if (!globalWire && !mr.Wireframe) continue;
+
+                var mesh = mf.Mesh;
+
+                // Lazily generate line indices for meshes that don't have them
+                // (imported models, terrain chunks, vegetation, etc.)
+                mesh.EnsureLineIndices();
+
+                var gpuMesh = _cache!.GetMesh(mesh);
+
+                // If GPUMesh was cached before line indices were generated, re-upload
+                if (gpuMesh.LineIndexCount <= 0 && mesh.LineIndices.Length > 0)
+                    gpuMesh.Upload(mesh);
+
+                if (gpuMesh.LineIndexCount <= 0) continue;
+
+                var mvp = world * view * proj;
+                _wireShader!.SetMatrix4("uMVP", mvp);
+
+                var c = mr.Color;
+                _wireShader.SetVector4("uColor", c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
+
+                gpuMesh.DrawWireframe();
+            }
+        }
+
+        var children = go.Children;
+        for (int i = 0; i < children.Count; i++)
+            RenderWireframeRecursive(g, view, proj, children[i], world, globalWire);
+    }
+
     void DrawTranslateGizmo(DrawingContext ctx, SN.Matrix4x4 view, SN.Matrix4x4 proj, Size sz)
     {
         if (_selected is null) return;
@@ -1918,40 +2350,6 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         double t = denom > 1e-9 ? Math.Clamp((apx * abx + apy * aby) / denom, 0.0, 1.0) : 0.0;
         double cx = a.X + abx * t, cy = a.Y + aby * t;
         return Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy));
-    }
-    #endregion
-
-    #region Wireframe helper (Avalonia 2D)
-    void DrawNodeWire(DrawingContext ctx, in SN.Matrix4x4 vp, Size sz, GameObject go, in SN.Matrix4x4 parentWorld, bool globalWire)
-    {
-        var world = WorldFromTransform(go.Transform) * parentWorld;
-        var filters = go.Behaviors.OfType<MeshFilter>().Where(b => b.Enabled).ToList();
-        var renderers = go.Behaviors.OfType<MeshRenderer>().Where(b => b.Enabled).ToList();
-        int n = Math.Min(filters.Count, renderers.Count);
-        for (int i = 0; i < n; i++)
-        {
-            var mf = filters[i]; var mr = renderers[i];
-            if (mf.Mesh != null && (globalWire || mr.Wireframe))
-                DrawMeshWire(ctx, mf.Mesh, world, vp, sz, mr.Color, (float)mr.LineWidth);
-        }
-        foreach (var child in go.Children) DrawNodeWire(ctx, vp, sz, child, world, globalWire);
-    }
-
-    void DrawMeshWire(DrawingContext ctx, Mesh mesh, in SN.Matrix4x4 world, in SN.Matrix4x4 vp, Size sz, Avalonia.Media.Color color, float lineWidth)
-    {
-        if (mesh?.Vertices == null || mesh.TriIndices == null) return;
-        var pen = new Pen(new SolidColorBrush(color), lineWidth <= 0 ? 1 : lineWidth);
-        var v = mesh.Vertices; var tri = mesh.TriIndices;
-        for (int i = 0; i < tri.Length; i += 3)
-        {
-            var p0w = SN.Vector3.Transform(v[tri[i]], world);
-            var p1w = SN.Vector3.Transform(v[tri[i + 1]], world);
-            var p2w = SN.Vector3.Transform(v[tri[i + 2]], world);
-            if (!Core.Projection.ProjectToScreenVP(p0w, vp, sz, out var s0)) continue;
-            if (!Core.Projection.ProjectToScreenVP(p1w, vp, sz, out var s1)) continue;
-            if (!Core.Projection.ProjectToScreenVP(p2w, vp, sz, out var s2)) continue;
-            ctx.DrawLine(pen, s0, s1); ctx.DrawLine(pen, s1, s2); ctx.DrawLine(pen, s2, s0);
-        }
     }
     #endregion
 }

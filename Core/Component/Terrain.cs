@@ -984,8 +984,15 @@ namespace Game_Engine.Core.Component
             return (r > 0) ? r : len;
         }
 
-        /// <summary>Clamp height to [-1, 1]. Negative values allow digging below the initial flatland.</summary>
-        private static float ClampHeight(float v) => v < -1f ? -1f : (v > 1f ? 1f : v);
+        /// <summary>Maximum depth (in world units) that terrain can be dug below the initial flatland (height 0).</summary>
+        private const float MaxDepthBelowFlatland = 30f;
+
+        /// <summary>Clamp height. Negative values allow digging below the initial flatland up to MaxDepthBelowFlatland.</summary>
+        private float ClampHeight(float v)
+        {
+            float minH = -MaxDepthBelowFlatland / Math.Max(0.001f, _heightScale);
+            return v < minH ? minH : (v > 1f ? 1f : v);
+        }
         private static bool InRange(int v, int min, int max) => v >= min && v <= max;
 
         private static int[] BuildEdgesFromTrianglesLocal(int[] tris)

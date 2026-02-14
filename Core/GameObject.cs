@@ -25,8 +25,20 @@ public class GameObject : INotifyPropertyChanged
     public ObservableCollection<Behavior> Behaviors { get; } = new();
 
     // Prefab tracking
-    public string? PrefabId { get; set; }
-    public string? PrefabPath { get; set; }
+    string? _prefabId;
+    string? _prefabPath;
+
+    public string? PrefabId
+    {
+        get => _prefabId;
+        set { if (_prefabId != value) { _prefabId = value; OnChanged(nameof(PrefabId)); } }
+    }
+
+    public string? PrefabPath
+    {
+        get => _prefabPath;
+        set { if (_prefabPath != value) { _prefabPath = value; OnChanged(nameof(PrefabPath)); } }
+    }
 
     // Mandatory component
     public Transform Transform { get; } = new();

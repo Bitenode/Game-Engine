@@ -184,16 +184,60 @@ namespace Game_Engine.Views
             var anim = _selectedGO.AddBehavior<Animator>();
             _animator = anim;
 
-            // Create a default clip so the user has something to work with
-            var clipName = $"{_selectedGO.Name ?? "Object"}_DefaultClip";
-            var relPath = $"Assets/Animations/{clipName}.anim";
-            var defaultClip = AnimationClipAsset.CreateNew(clipName, relPath, 1.0f);
-            _animator.AddState("Default", defaultClip);
-            _animator.Play("Default");
-            _clip = defaultClip;
+            // Check for discovered bone animation clips first (from model import)
+            var discoveredAnims = DiscoverBoneAnimFiles(_selectedGO);
+            if (discoveredAnims.Count > 0)
+            {
+                // Auto-create states from discovered bone animations
+                string? defaultState = null;
+                for (int i = 0; i < discoveredAnims.Count; i++)
+                {
+                    var clipPath = discoveredAnims[i];
+                    var boneClip = BoneAnimationClipAsset.Load(clipPath);
+                    if (boneClip == null) continue;
+
+                    var stateName = boneClip.Name;
+                    if (string.IsNullOrWhiteSpace(stateName))
+                        stateName = System.IO.Path.GetFileNameWithoutExtension(clipPath);
+
+                    _animator.AddState(stateName, boneClip);
+                    _animator.StateList.Add(new Animator.AnimStateDTO
+                    {
+                        Name = stateName,
+                        BoneClipPath = clipPath,
+                        ClipPath = "",
+                        Speed = 1f,
+                        EditorX = i * 200f,
+                        EditorY = 0f
+                    });
+
+                    if (i == 0)
+                    {
+                        defaultState = stateName;
+                        _boneClip = boneClip;
+                    }
+                }
+
+                if (defaultState != null)
+                {
+                    _animator.DefaultStateName = defaultState;
+                    _animator.Play(defaultState);
+                }
+            }
+            else
+            {
+                // No bone clips found - create a default property clip
+                var clipName = $"{_selectedGO.Name ?? "Object"}_DefaultClip";
+                var relPath = $"Assets/Animations/{clipName}.anim";
+                var defaultClip = AnimationClipAsset.CreateNew(clipName, relPath, 1.0f);
+                _animator.AddState("Default", defaultClip);
+                _animator.Play("Default");
+                _clip = defaultClip;
+            }
 
             UpdateAddAnimatorButton();
             RefreshTransformSection();
+            RefreshBoneTreeSection();
             RefreshClipDropdown();
             RefreshTrackList();
             Canvas.InvalidateVisual();
@@ -631,6 +675,65 @@ namespace Game_Engine.Views
         private static readonly IBrush BoneLabelBrush = new SolidColorBrush(Color.FromRgb(140, 160, 185));
         private static readonly IBrush BoneIndentBrush = new SolidColorBrush(Color.FromRgb(60, 65, 75));
 
+        /// <summary>
+        /// Discover all .boneanim files in the model's _Animations directory.
+        /// Returns a list of project-relative paths.
+        /// </summary>
+        private List<string> DiscoverBoneAnimFiles(GameObject go)
+        {
+            var result = new List<string>();
+            if (go == null) return result;
+
+            // Find ModelPath from any MeshFilter on this GO or its children
+            string? modelPath = null;
+            foreach (var b in go.Behaviors)
+            {
+                if (b is MeshFilter mf && !string.IsNullOrWhiteSpace(mf.ModelPath))
+                {
+                    modelPath = mf.ModelPath;
+                    break;
+                }
+            }
+            if (modelPath == null)
+            {
+                foreach (var child in go.Children)
+                {
+                    foreach (var b in child.Behaviors)
+                    {
+                        if (b is MeshFilter mf && !string.IsNullOrWhiteSpace(mf.ModelPath))
+                        {
+                            modelPath = mf.ModelPath;
+                            break;
+                        }
+                    }
+                    if (modelPath != null) break;
+                }
+            }
+            if (string.IsNullOrWhiteSpace(modelPath)) return result;
+
+            // Build animation directory path
+            var animDirRel = System.IO.Path.ChangeExtension(modelPath, null) + "_Animations";
+            var proj = ProjectService.Current;
+            if (proj == null) return result;
+
+            var animDirAbs = System.IO.Path.Combine(proj.RootPath, animDirRel);
+            if (!System.IO.Directory.Exists(animDirAbs)) return result;
+
+            try
+            {
+                foreach (var file in System.IO.Directory.GetFiles(animDirAbs, "*.boneanim"))
+                {
+                    var relPath = System.IO.Path.GetRelativePath(proj.RootPath, file);
+                    result.Add(relPath);
+                    // Pre-load into cache so they show in the clip dropdown
+                    BoneAnimationClipAsset.Load(relPath);
+                }
+            }
+            catch { /* ignore directory access issues */ }
+
+            return result;
+        }
+
         private void RefreshBoneTreeSection()
         {
             BoneTreeSection.Children.Clear();
@@ -657,6 +760,9 @@ namespace Game_Engine.Views
             _activeSkeleton = smr.Skeleton;
             BoneTreeSection.IsVisible = true;
             BoneTrackSeparator.IsVisible = true;
+
+            // Auto-discover .boneanim files from the model's animation directory
+            var discoveredAnims = DiscoverBoneAnimFiles(_selectedGO);
 
             // Find bone clip from Animator
             if (_animator != null)
@@ -691,6 +797,70 @@ namespace Game_Engine.Views
                 VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
             });
             BoneTreeSection.Children.Add(headerRow);
+
+            // Show discovered animation clips with "Add to Animator" buttons
+            if (discoveredAnims.Count > 0 && _animator != null)
+            {
+                var animHeader = new TextBlock
+                {
+                    Text = $"Discovered Animations ({discoveredAnims.Count})",
+                    FontSize = 10,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = new SolidColorBrush(Color.FromRgb(160, 200, 160)),
+                    Margin = new Thickness(4, 6, 0, 2)
+                };
+                BoneTreeSection.Children.Add(animHeader);
+
+                foreach (var animPath in discoveredAnims)
+                {
+                    var clipName = System.IO.Path.GetFileNameWithoutExtension(animPath);
+                    bool alreadyInAnimator = _animator.States.Values.Any(s =>
+                        s.BoneClip?.Name == clipName);
+
+                    var animRow = new DockPanel { Margin = new Thickness(8, 1, 4, 1) };
+
+                    if (!alreadyInAnimator)
+                    {
+                        var addBtn = new Button
+                        {
+                            Content = "+ Add",
+                            Classes = { "action" },
+                            Height = 18,
+                            FontSize = 8,
+                            Padding = new Thickness(4, 0),
+                            Tag = animPath,
+                            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                        };
+                        addBtn.Click += OnAddDiscoveredAnim;
+                        DockPanel.SetDock(addBtn, Dock.Right);
+                        animRow.Children.Add(addBtn);
+                    }
+                    else
+                    {
+                        var checkMark = new TextBlock
+                        {
+                            Text = "✓",
+                            FontSize = 10,
+                            Foreground = new SolidColorBrush(Color.FromRgb(100, 200, 100)),
+                            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                            Margin = new Thickness(0, 0, 4, 0)
+                        };
+                        DockPanel.SetDock(checkMark, Dock.Right);
+                        animRow.Children.Add(checkMark);
+                    }
+
+                    animRow.Children.Add(new TextBlock
+                    {
+                        Text = clipName,
+                        FontSize = 10,
+                        Foreground = BoneLabelBrush,
+                        VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                        TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis
+                    });
+
+                    BoneTreeSection.Children.Add(animRow);
+                }
+            }
 
             // Build bone tree recursively from roots
             foreach (var rootIdx in _activeSkeleton.RootBoneIndices)
@@ -756,6 +926,48 @@ namespace Game_Engine.Views
             _selectedBoneIndex = boneIdx;
             RefreshBoneTreeSection(); // re-render to update selection highlight
             Canvas.InvalidateVisual(); // show bone keyframes in timeline
+        }
+
+        private void OnAddDiscoveredAnim(object? sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.Tag is not string animPath) return;
+            if (_animator == null || _activeSkeleton == null) return;
+
+            var clip = BoneAnimationClipAsset.Load(animPath);
+            if (clip == null) return;
+
+            // Remap bone indices to match current skeleton
+            foreach (var track in clip.Tracks)
+            {
+                int idx = _activeSkeleton.FindBone(track.BoneName);
+                if (idx >= 0) track.BoneIndex = idx;
+            }
+            clip.InvalidateCache();
+
+            // Add as a state to the Animator
+            var stateName = clip.Name;
+            if (string.IsNullOrWhiteSpace(stateName))
+                stateName = System.IO.Path.GetFileNameWithoutExtension(animPath);
+
+            if (!_animator.States.ContainsKey(stateName))
+            {
+                _animator.AddState(stateName, clip);
+
+                // Also update the DTO list for persistence
+                _animator.StateList.Add(new Animator.AnimStateDTO
+                {
+                    Name = stateName,
+                    BoneClipPath = animPath,
+                    ClipPath = "",
+                    Speed = 1f
+                });
+            }
+
+            _boneClip = clip;
+            RefreshBoneTreeSection();
+            RefreshClipDropdown();
+            Canvas.InvalidateVisual();
+            SmCanvas.InvalidateVisual();
         }
 
         private async void OnImportBoneAnim(object? sender, RoutedEventArgs e)

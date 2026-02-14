@@ -79,7 +79,6 @@ public partial class MainWindow : Window
         // ----- Project menu (items are named in XAML) -----
         MI_NewProject.Click += OnNewProject;
         MI_OpenProject.Click += OnOpenProject;
-        MI_OpenFolder.Click += OnOpenFolder;
         MI_CloseProject.Click += (_, __) =>
         {
             ProjectService.Close();
@@ -293,6 +292,8 @@ public partial class MainWindow : Window
 
         MI_CloseProject.IsEnabled = has;
         MI_RevealInExplorer.IsEnabled = has;
+        MI_SaveScene.IsEnabled = has;
+        MI_LoadScene.IsEnabled = has;
 
         Title = ProjectService.Current is { } p
             ? $"{p.Name} — Game Engine"
@@ -346,22 +347,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnOpenFolder(object? s, RoutedEventArgs e)
-    {
-        var dlg = new OpenFolderDialog { Title = "Open project folder (contains project.json)" };
-        var folder = await dlg.ShowAsync(this);
-        if (string.IsNullOrWhiteSpace(folder)) return;
-
-        try
-        {
-            ProjectService.Open(folder);
-            RefreshProjectUI();
-        }
-        catch (Exception ex)
-        {
-            await ShowError($"Failed to open project:\n{ex.Message}");
-        }
-    }
 
     
     private async void OnMenuSaveScene_Click(object? sender, RoutedEventArgs e)
