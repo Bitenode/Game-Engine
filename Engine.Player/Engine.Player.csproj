@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Game_Engine</RootNamespace>
+    <AssemblyName>Engine.Player</AssemblyName>
+    <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64;linux-x64;linux-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <!-- Player-specific define so shared Core files can #if !PLAYER -->
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);PLAYER</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Link shared Core source files from the editor project -->
+  <ItemGroup>
+    <Compile Include="..\Game-Engine\Core\**\*.cs"
+             Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**"
+             Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- NuGet: same as editor minus Roslyn (player loads pre-compiled DLLs) -->
+  <ItemGroup>
+    <PackageReference Include="AssimpNet" Version="4.1.0" />
+    <PackageReference Include="AutoConstructor" Version="5.6.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+
+    <PackageReference Include="Avalonia" Version="11.*" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.*" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
+
+    <PackageReference Include="NAudio" Version="2.2.1" />
+
+    <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
+    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+    <PackageReference Include="System.Reactive" Version="6.1.0" />
+  </ItemGroup>
+</Project>
