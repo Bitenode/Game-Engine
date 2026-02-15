@@ -6,10 +6,18 @@ using SN = System.Numerics;
 
 namespace Game_Engine.Core.Physics
 {
-    /// Central registry + super-simple broadphase queries (AABB only for now).
+    /// <summary>
+    /// Central registry + BVH-accelerated broadphase queries.
+    /// Maintains a BVH that is rebuilt each frame for O(log n) spatial queries
+    /// (raycasts, AABB overlaps, sphere overlaps) instead of linear scans.
+    /// </summary>
     public static class CollisionWorld
     {
         static readonly List<Component.Collider> _colliders = new List<Component.Collider>();
+
+        /// <summary>BVH acceleration structure — rebuilt each physics frame.</summary>
+        private static readonly BVH _bvh = new();
+        private static int _lastBuildFrame = -1;
 
         internal static void Register(Component.Collider c)
         {
@@ -21,25 +29,47 @@ namespace Game_Engine.Core.Physics
             if (c != null) _colliders.Remove(c);
         }
 
-        /// Return all colliders whose world AABB overlaps the given AABB.
-        public static IEnumerable<Component.Collider> QueryAABB(SN.Vector3 min, SN.Vector3 max)
+        /// <summary>Ensure the BVH is up to date for this frame.</summary>
+        private static void EnsureBVH()
         {
+            int frame = Time.frameCount;
+            if (frame == _lastBuildFrame) return;
+            _lastBuildFrame = frame;
+
+            // Filter to active colliders and build BVH
+            var active = new List<Component.Collider>(_colliders.Count);
             for (int i = 0; i < _colliders.Count; i++)
             {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled) continue;
-                var a = c.GetWorldAABB();
-                if (Overlaps(a.Min, a.Max, min, max)) yield return c;
+                if (_colliders[i].IsActiveAndEnabled)
+                    active.Add(_colliders[i]);
             }
+            _bvh.Build(active);
         }
 
-        /// Very basic “is anything inside me?” helper for triggers, etc.
+        /// <summary>Force a BVH rebuild on next query.</summary>
+        public static void InvalidateBVH() => _lastBuildFrame = -1;
+
+        /// <summary>Return all colliders whose world AABB overlaps the given AABB.</summary>
+        public static IEnumerable<Component.Collider> QueryAABB(SN.Vector3 min, SN.Vector3 max)
+        {
+            EnsureBVH();
+            var results = new List<Component.Collider>();
+            _bvh.QueryAABB(min, max, results);
+            return results;
+        }
+
+        /// <summary>Very basic "is anything inside me?" helper for triggers, etc.</summary>
         public static bool AnyOverlap(Component.Collider col, out Component.Collider other)
         {
             var a = col.GetWorldAABB();
-            for (int i = 0; i < _colliders.Count; i++)
+            // Use BVH for broad-phase, then narrow-phase AABB check
+            EnsureBVH();
+            var candidates = new List<Component.Collider>();
+            _bvh.QueryAABB(a.Min, a.Max, candidates);
+
+            for (int i = 0; i < candidates.Count; i++)
             {
-                var c = _colliders[i];
+                var c = candidates[i];
                 if (ReferenceEquals(c, col) || !c.IsActiveAndEnabled) continue;
                 var b = c.GetWorldAABB();
                 if (Overlaps(a.Min, a.Max, b.Min, b.Max)) { other = c; return true; }
@@ -68,92 +98,67 @@ namespace Game_Engine.Core.Physics
         }
 
         /// <summary>
-        /// Cast a ray through the physics world. Returns true if any collider was hit.
-        /// Tests against all AABB colliders in the scene.
+        /// Cast a ray through the physics world using BVH acceleration.
+        /// Returns true if any collider was hit.
         /// </summary>
         public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDist, out RaycastHit hit, int layerMask = -1)
         {
             hit = default;
             direction = SN.Vector3.Normalize(direction);
-            float bestT = maxDist;
-            bool found = false;
 
-            for (int i = 0; i < _colliders.Count; i++)
+            EnsureBVH();
+
+            if (_bvh.Raycast(origin, direction, maxDist,
+                    out var hitPoint, out var hitNormal, out var hitDist, out var hitCollider))
             {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled || c.IsTrigger) continue;
-
-                var aabb = c.GetWorldAABB();
-                if (RayAABB(origin, direction, aabb.Min, aabb.Max, out float t, out SN.Vector3 normal) && t < bestT && t >= 0f)
+                hit = new RaycastHit
                 {
-                    bestT = t;
-                    hit = new RaycastHit
-                    {
-                        Point = origin + direction * t,
-                        Normal = normal,
-                        Distance = t,
-                        Collider = c
-                    };
-                    found = true;
-                }
+                    Point = hitPoint,
+                    Normal = hitNormal,
+                    Distance = hitDist,
+                    Collider = hitCollider!
+                };
+                return true;
             }
-            return found;
+            return false;
         }
 
         /// <summary>
-        /// Cast a ray and return ALL hits (unsorted). Useful for pierce queries.
+        /// Cast a ray and return ALL hits (unsorted). Uses BVH for acceleration.
         /// </summary>
         public static List<RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDist)
         {
             direction = SN.Vector3.Normalize(direction);
             var results = new List<RaycastHit>();
 
-            for (int i = 0; i < _colliders.Count; i++)
-            {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled) continue;
+            EnsureBVH();
+            var bvhHits = new List<(Component.Collider collider, float distance, SN.Vector3 point, SN.Vector3 normal)>();
+            _bvh.RaycastAll(origin, direction, maxDist, bvhHits);
 
-                var aabb = c.GetWorldAABB();
-                if (RayAABB(origin, direction, aabb.Min, aabb.Max, out float t, out SN.Vector3 normal) && t <= maxDist && t >= 0f)
+            for (int i = 0; i < bvhHits.Count; i++)
+            {
+                results.Add(new RaycastHit
                 {
-                    results.Add(new RaycastHit
-                    {
-                        Point = origin + direction * t,
-                        Normal = normal,
-                        Distance = t,
-                        Collider = c
-                    });
-                }
+                    Point = bvhHits[i].point,
+                    Normal = bvhHits[i].normal,
+                    Distance = bvhHits[i].distance,
+                    Collider = bvhHits[i].collider
+                });
             }
             return results;
         }
 
-        /// <summary>Sphere overlap query — returns all colliders within a sphere.</summary>
+        /// <summary>Sphere overlap query — returns all colliders within the sphere. BVH-accelerated.</summary>
         public static List<Component.Collider> OverlapSphere(SN.Vector3 center, float radius)
         {
+            EnsureBVH();
             var results = new List<Component.Collider>();
-            for (int i = 0; i < _colliders.Count; i++)
-            {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled) continue;
-
-                var aabb = c.GetWorldAABB();
-                // Expand AABB by radius for sphere test
-                var expandedMin = aabb.Min - new SN.Vector3(radius);
-                var expandedMax = aabb.Max + new SN.Vector3(radius);
-
-                if (center.X >= expandedMin.X && center.X <= expandedMax.X &&
-                    center.Y >= expandedMin.Y && center.Y <= expandedMax.Y &&
-                    center.Z >= expandedMin.Z && center.Z <= expandedMax.Z)
-                {
-                    results.Add(c);
-                }
-            }
+            _bvh.OverlapSphere(center, radius, results);
             return results;
         }
 
-        /// <summary>Ray vs AABB intersection (slab method).</summary>
-        static bool RayAABB(SN.Vector3 origin, SN.Vector3 dir, SN.Vector3 min, SN.Vector3 max,
+        /// <summary>Ray vs AABB intersection (slab method). Kept for legacy/direct use.</summary>
+        internal static bool RayAABB(SN.Vector3 origin, SN.Vector3 dir, SN.Vector3 min, SN.Vector3 max,
             out float tHit, out SN.Vector3 normal)
         {
             tHit = 0;

@@ -7,6 +7,7 @@ namespace Game_Engine.Core.Component
     /// Audio listener component — represents the "ears" in the scene.
     /// Typically attached to the main camera's GameObject.
     /// Only one AudioListener should be active at a time.
+    /// Drives the OpenAL listener position/orientation for native 3D spatial audio.
     /// </summary>
     public sealed class AudioListener : Behavior
     {
@@ -23,6 +24,12 @@ namespace Game_Engine.Core.Component
         {
             AudioManager.ClearListener(this);
             base.OnDisable();
+        }
+
+        public override void LateUpdate()
+        {
+            // Update OpenAL listener transform each frame for accurate 3D audio
+            AudioManager.UpdateListenerTransform();
         }
 
         /// <summary>Get world position of this listener.</summary>
@@ -42,6 +49,12 @@ namespace Game_Engine.Core.Component
         {
             float yaw = (float)Transform.Rotation.Y * MathF.PI / 180f;
             return new SN.Vector3(-MathF.Sin(yaw), 0f, -MathF.Cos(yaw));
+        }
+
+        /// <summary>Get world-space up direction.</summary>
+        public SN.Vector3 GetWorldUp()
+        {
+            return SN.Vector3.UnitY;
         }
     }
 }

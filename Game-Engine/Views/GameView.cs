@@ -311,6 +311,8 @@ namespace Game_Engine.Views
                 return;
             }
 
+            Profiler.Begin("Render");
+
             // --- SCENE SETUP ---
             var sky = _sky;
             var skyTop = sky?.Top ?? FallbackSkyTop;
@@ -499,6 +501,8 @@ namespace Game_Engine.Views
 
             _tScene = sec.Elapsed.TotalMilliseconds;
 
+            Profiler.End(); // end "Render"
+
             g.Flush();
 
             // Restore Avalonia's FB and clean up GL state for compositing
@@ -516,6 +520,8 @@ namespace Game_Engine.Views
             _frameWatch.Stop();
             _msFrameLast = _frameWatch.Elapsed.TotalMilliseconds;
             Ema(ref _msFrameEma, _msFrameLast, 0.18);
+
+            Profiler.EndFrame();
 
             // Signal the update timer that this render is done — it can request the next one.
             _renderInFlight = false;
@@ -820,13 +826,24 @@ namespace Game_Engine.Views
         {
             if (State != GamePanel.GameState.Playing) return;
             if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
+
+            Profiler.BeginFrame();
+
             var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
             _updateWatch.Restart();
             if (dt > 0.05) dt = 0.05;
             Core.Time.BeginUpdate(dt);
             Input.NewFrame((float)dt);
+
+            Profiler.Begin("Scripts");
             ForEachBehavior(b => b.__Update());
             ForEachBehavior(b => b.__LateUpdate());
+            Profiler.End();
+
+            Profiler.Begin("Audio");
+            AudioManager.UpdateListenerTransform();
+            Profiler.End();
+
             Input.EndFrame();
         }
 
@@ -841,9 +858,11 @@ namespace Game_Engine.Views
             if (_fixedAccum > 0.25) _fixedAccum = 0.25;
             while (_fixedAccum >= FIXED_DT)
             {
+                Profiler.Begin("Physics");
                 Core.Time.BeginFixedUpdate(FIXED_DT);
                 Core.Physics.PhysicsCache.Tick();
                 ForEachBehavior(b => b.__FixedUpdate());
+                Profiler.End();
                 _fixedAccum -= FIXED_DT;
             }
         }

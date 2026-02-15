@@ -6,9 +6,8 @@ namespace Game_Engine.Core.Component
 {
     /// <summary>
     /// Audio source component — plays sound clips with 3D spatial audio support.
-    /// Attach to any GameObject; distance attenuation is calculated from the
-    /// AudioListener's position each frame.
-    /// Uses NAudio backend for real audio output.
+    /// Attach to any GameObject; spatial audio is handled natively by OpenAL
+    /// using the source position and the AudioListener position.
     /// </summary>
     public sealed class AudioSource : Behavior
     {
@@ -33,6 +32,7 @@ namespace Game_Engine.Core.Component
 
         // ── Runtime state ──
         private AudioHandle? _handle;
+        private SN.Vector3 _lastPosition;
 
         /// <summary>True if currently playing audio.</summary>
         public bool IsPlaying => _handle != null && _handle.IsPlaying;
@@ -44,6 +44,7 @@ namespace Game_Engine.Core.Component
 
         public override void Start()
         {
+            _lastPosition = GetWorldPos();
             // Only auto-play if the component is actually enabled
             if (Enabled && PlayOnAwake && !string.IsNullOrEmpty(ClipPath))
                 Play();
@@ -58,19 +59,43 @@ namespace Game_Engine.Core.Component
                 return;
             }
 
-            // Update volume and pan each frame for spatial audio
+            // Update volume and spatial properties each frame
             if (_handle == null || !_handle.IsPlaying) return;
 
             // Effective volume
             float vol = ComputeEffectiveVolume();
             _handle.Volume = Mute ? 0f : vol;
 
-            // Spatial panning
-            float pan = ComputePan();
-            _handle.Pan = pan;
-
             // Keep loop in sync
             _handle.Loop = Loop;
+
+            // Pitch
+            _handle.Pitch = Math.Clamp(Pitch, 0.1f, 4f);
+
+            // 3D spatial audio via OpenAL
+            if (SpatialBlend > 0f)
+            {
+                var pos = GetWorldPos();
+
+                // Set source position in world space (OpenAL handles attenuation + panning)
+                _handle.SetPosition(pos.X, pos.Y, pos.Z);
+
+                // Set distance model parameters
+                _handle.SetDistanceModel(MinDistance, MaxDistance, 1f);
+
+                // Doppler: set velocity based on position change
+                if (DopplerLevel > 0f && Time.deltaTime > 0f)
+                {
+                    var velocity = (pos - _lastPosition) / Time.deltaTime * DopplerLevel;
+                    _handle.SetVelocity(velocity.X, velocity.Y, velocity.Z);
+                }
+                else
+                {
+                    _handle.SetVelocity(0f, 0f, 0f);
+                }
+
+                _lastPosition = pos;
+            }
         }
 
         public override void OnEnable()
@@ -104,7 +129,14 @@ namespace Game_Engine.Core.Component
 
             if (_handle != null)
             {
-                _handle.Pan = ComputePan();
+                // Configure spatial audio
+                if (SpatialBlend > 0f)
+                {
+                    var pos = GetWorldPos();
+                    _handle.SetPosition(pos.X, pos.Y, pos.Z);
+                    _handle.SetDistanceModel(MinDistance, MaxDistance, 1f);
+                }
+
                 Log.Info($"[AudioSource] Playing: {ClipPath}");
             }
         }
@@ -132,7 +164,8 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>
-        /// Compute effective volume considering distance attenuation and channel volumes.
+        /// Compute effective volume considering channel volumes.
+        /// Distance attenuation is handled natively by OpenAL for 3D sources.
         /// </summary>
         float ComputeEffectiveVolume()
         {
@@ -141,58 +174,15 @@ namespace Game_Engine.Core.Component
                 : AudioManager.SFXVolume;
 
             float vol = Volume * AudioManager.MasterVolume * channelVol;
-
-            if (SpatialBlend > 0f)
-            {
-                var listener = AudioManager.Listener;
-                if (listener != null)
-                {
-                    var listenerPos = listener.GetWorldPosition();
-                    var srcPos = new SN.Vector3(
-                        (float)Transform.Position.X,
-                        (float)Transform.Position.Y,
-                        (float)Transform.Position.Z);
-                    float dist = SN.Vector3.Distance(srcPos, listenerPos);
-
-                    // Inverse distance clamped attenuation
-                    float atten = 1f;
-                    if (dist > MinDistance)
-                    {
-                        float t = Math.Clamp((dist - MinDistance) / Math.Max(MaxDistance - MinDistance, 0.001f), 0f, 1f);
-                        atten = 1f - t;
-                    }
-
-                    vol *= (1f - SpatialBlend) + SpatialBlend * atten;
-                }
-            }
-
             return Math.Clamp(vol, 0f, 2f);
         }
 
-        /// <summary>
-        /// Compute stereo panning for 3D audio (-1 = left, 0 = center, +1 = right).
-        /// </summary>
-        float ComputePan()
-        {
-            if (SpatialBlend <= 0f) return 0f;
-
-            var listener = AudioManager.Listener;
-            if (listener == null) return 0f;
-
-            var listenerPos = listener.GetWorldPosition();
-            var listenerRight = listener.GetWorldRight();
-            var srcPos = new SN.Vector3(
+        /// <summary>Get world position of this audio source.</summary>
+        private SN.Vector3 GetWorldPos()
+            => new(
                 (float)Transform.Position.X,
                 (float)Transform.Position.Y,
                 (float)Transform.Position.Z);
-            var toSource = srcPos - listenerPos;
-            float len = toSource.Length();
-            if (len < 0.001f) return 0f;
-
-            toSource /= len;
-            float pan = SN.Vector3.Dot(toSource, listenerRight);
-            return Math.Clamp(pan * SpatialBlend, -1f, 1f);
-        }
     }
 
     /// <summary>Audio channel for volume control separation.</summary>

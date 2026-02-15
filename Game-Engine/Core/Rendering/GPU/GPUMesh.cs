@@ -235,6 +235,8 @@ public sealed class GPUMesh : IDisposable
         if (IndexCount <= 0) return;
         _gl.BindVertexArray(VAO);
         _gl.DrawElements(PrimitiveType.Triangles, (uint)IndexCount, DrawElementsType.UnsignedInt, null);
+        Profiler.CountDrawCall();
+        Profiler.CountTriangles(IndexCount / 3);
     }
 
     /// <summary>Draw wireframe lines.</summary>

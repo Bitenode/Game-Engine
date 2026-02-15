@@ -1,22 +1,108 @@
 #nullable enable
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using NAudio.Wave;
+using Silk.NET.OpenAL;
 
 namespace Game_Engine.Core
 {
     /// <summary>
-    /// Low-level audio backend using NAudio.
-    /// Each sound gets its own WaveOutEvent for maximum compatibility.
-    /// Simple and reliable — avoids mixer format-matching issues.
+    /// Cross-platform audio backend using OpenAL (via Silk.NET).
+    /// Works on Windows, macOS, and Linux.
+    /// NAudio is kept only for audio file decoding (WAV/MP3/etc.).
+    /// OpenAL handles all playback and 3D spatial audio natively.
     /// </summary>
     public static class AudioBackend
     {
-        private static bool s_available = true;
+        private static bool s_available;
+        private static bool s_initialized;
+
+        // OpenAL state
+        private static AL? s_al;
+        private static ALContext? s_alc;
+        private static unsafe Device* s_device;
+        private static unsafe Context* s_context;
 
         // Track all active handles so we can stop them all on game stop
         private static readonly List<WeakReference<AudioHandle>> s_activeHandles = new();
+
+        /// <summary>The OpenAL API instance. Null if not initialized.</summary>
+        internal static AL? AL => s_al;
+
+        /// <summary>
+        /// Initialize the OpenAL audio device and context.
+        /// Safe to call multiple times — only initializes once.
+        /// </summary>
+        public static unsafe void EnsureInit()
+        {
+            if (s_initialized) return;
+            s_initialized = true;
+
+            try
+            {
+                s_alc = ALContext.GetApi();
+                s_device = s_alc.OpenDevice(null); // default device
+                if (s_device == null)
+                {
+                    Log.Warning("[AudioBackend] Failed to open OpenAL device — audio disabled.");
+                    s_available = false;
+                    return;
+                }
+
+                s_context = s_alc.CreateContext(s_device, null);
+                if (s_context == null)
+                {
+                    Log.Warning("[AudioBackend] Failed to create OpenAL context — audio disabled.");
+                    s_alc.CloseDevice(s_device);
+                    s_device = null;
+                    s_available = false;
+                    return;
+                }
+
+                s_alc.MakeContextCurrent(s_context);
+                s_al = AL.GetApi();
+
+                // Default listener at origin
+                s_al.SetListenerProperty(ListenerFloat.Gain, 1.0f);
+
+                s_available = true;
+                Log.Info("[AudioBackend] OpenAL initialized (cross-platform audio ready).");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[AudioBackend] OpenAL init failed: {ex.Message} — audio disabled.");
+                s_available = false;
+            }
+        }
+
+        /// <summary>
+        /// Update the OpenAL listener position and orientation from the AudioListener component.
+        /// Call this each frame from AudioManager.
+        /// </summary>
+        public static void UpdateListener(
+            System.Numerics.Vector3 position,
+            System.Numerics.Vector3 forward,
+            System.Numerics.Vector3 up,
+            float gain)
+        {
+            if (!s_available || s_al == null) return;
+
+            s_al.SetListenerProperty(ListenerFloat.Gain, Math.Clamp(gain, 0f, 1f));
+
+            // Position
+            s_al.SetListenerProperty(ListenerVector3.Position, position.X, position.Y, position.Z);
+
+            // Orientation: (forward, up) as 6 floats
+            unsafe
+            {
+                float* ori = stackalloc float[6];
+                ori[0] = forward.X; ori[1] = forward.Y; ori[2] = forward.Z;
+                ori[3] = up.X; ori[4] = up.Y; ori[5] = up.Z;
+                s_al.SetListenerProperty(ListenerFloatArray.Orientation, ori);
+            }
+        }
 
         /// <summary>
         /// Resolve an audio file path. Tries multiple locations:
@@ -65,12 +151,88 @@ namespace Game_Engine.Core
         }
 
         /// <summary>
+        /// Decode an audio file to raw PCM data using NAudio.
+        /// Returns the PCM bytes, sample rate, channels, and bits per sample.
+        /// </summary>
+        internal static (byte[] pcm, int sampleRate, int channels, int bitsPerSample)? DecodeAudio(string absPath)
+        {
+            try
+            {
+                using var reader = new AudioFileReader(absPath);
+
+                // Convert to 16-bit PCM for OpenAL compatibility
+                var format = new WaveFormat(reader.WaveFormat.SampleRate, 16, reader.WaveFormat.Channels);
+                using var resampler = new MediaFoundationResampler(reader, format);
+                resampler.ResamplerQuality = 60;
+
+                using var ms = new MemoryStream();
+                var buffer = new byte[4096];
+                int bytesRead;
+                while ((bytesRead = resampler.Read(buffer, 0, buffer.Length)) > 0)
+                    ms.Write(buffer, 0, bytesRead);
+
+                return (ms.ToArray(), format.SampleRate, format.Channels, format.BitsPerSample);
+            }
+            catch
+            {
+                // MediaFoundationResampler may not be available on all platforms.
+                // Fall back to reading float samples and converting manually.
+                try
+                {
+                    return DecodeFallback(absPath);
+                }
+                catch (Exception ex2)
+                {
+                    Log.Warning($"[AudioBackend] Decode failed for {Path.GetFileName(absPath)}: {ex2.Message}");
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Fallback decoder: read float samples from NAudio and convert to 16-bit PCM manually.
+        /// Works on all platforms (no MediaFoundation dependency).
+        /// </summary>
+        private static (byte[] pcm, int sampleRate, int channels, int bitsPerSample)? DecodeFallback(string absPath)
+        {
+            using var reader = new AudioFileReader(absPath);
+            int sampleRate = reader.WaveFormat.SampleRate;
+            int channels = reader.WaveFormat.Channels;
+
+            var floatBuffer = new float[4096];
+            using var ms = new MemoryStream();
+            int samplesRead;
+            while ((samplesRead = reader.Read(floatBuffer, 0, floatBuffer.Length)) > 0)
+            {
+                for (int i = 0; i < samplesRead; i++)
+                {
+                    float sample = Math.Clamp(floatBuffer[i], -1f, 1f);
+                    short s16 = (short)(sample * 32767f);
+                    ms.WriteByte((byte)(s16 & 0xFF));
+                    ms.WriteByte((byte)((s16 >> 8) & 0xFF));
+                }
+            }
+
+            return (ms.ToArray(), sampleRate, channels, 16);
+        }
+
+        /// <summary>
+        /// Get the OpenAL buffer format for the given channel count and bit depth.
+        /// </summary>
+        internal static BufferFormat GetALFormat(int channels, int bitsPerSample)
+        {
+            if (channels == 1)
+                return bitsPerSample == 16 ? BufferFormat.Mono16 : BufferFormat.Mono8;
+            return bitsPerSample == 16 ? BufferFormat.Stereo16 : BufferFormat.Stereo8;
+        }
+
+        /// <summary>
         /// Play an audio file. Returns a handle for volume/pause/stop control.
-        /// Each call creates its own output device — simple and reliable.
+        /// Uses OpenAL for playback with native 3D spatial audio support.
         /// </summary>
         public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop)
         {
-            if (!s_available || string.IsNullOrWhiteSpace(filePath)) return null;
+            if (!s_available || s_al == null || string.IsNullOrWhiteSpace(filePath)) return null;
 
             string? absPath = ResolveAudioPath(filePath);
             if (absPath == null)
@@ -81,17 +243,36 @@ namespace Game_Engine.Core
 
             try
             {
-                var reader = new AudioFileReader(absPath);
-                reader.Volume = Math.Clamp(volume, 0f, 1f);
+                var decoded = DecodeAudio(absPath);
+                if (decoded == null) return null;
 
-                // Wrap for looping
-                var loopStream = new LoopingReader(reader, loop);
+                var (pcm, sampleRate, channels, bitsPerSample) = decoded.Value;
+                var format = GetALFormat(channels, bitsPerSample);
 
-                var output = new WaveOutEvent();
-                output.Init(loopStream);
-                output.Play();
+                // Create OpenAL buffer
+                uint buffer = s_al.GenBuffer();
+                unsafe
+                {
+                    fixed (byte* pData = pcm)
+                    {
+                        s_al.BufferData(buffer, format, pData, pcm.Length, sampleRate);
+                    }
+                }
 
-                var handle = new AudioHandle(output, reader, loopStream);
+                // Create OpenAL source
+                uint source = s_al.GenSource();
+                s_al.SetSourceProperty(source, SourceInteger.Buffer, (int)buffer);
+                s_al.SetSourceProperty(source, SourceFloat.Gain, Math.Clamp(volume, 0f, 2f));
+                s_al.SetSourceProperty(source, SourceFloat.Pitch, Math.Clamp(pitch, 0.1f, 4f));
+                s_al.SetSourceProperty(source, SourceBoolean.Looping, loop);
+
+                // Default: non-spatial (relative to listener) until AudioSource configures it
+                s_al.SetSourceProperty(source, SourceBoolean.SourceRelative, true);
+                s_al.SetSourceProperty(source, SourceVector3.Position, 0f, 0f, 0f);
+
+                s_al.SourcePlay(source);
+
+                var handle = new AudioHandle(s_al, source, buffer, loop);
                 lock (s_activeHandles) s_activeHandles.Add(new WeakReference<AudioHandle>(handle));
                 Log.Info($"[AudioBackend] Now playing: {Path.GetFileName(absPath)}");
                 return handle;
@@ -99,7 +280,6 @@ namespace Game_Engine.Core
             catch (Exception ex)
             {
                 Log.Warning($"[AudioBackend] Failed to play {Path.GetFileName(absPath)}: {ex.Message}");
-                s_available = false; // disable future attempts if device fails
                 return null;
             }
         }
@@ -108,7 +288,7 @@ namespace Game_Engine.Core
         public static void PlayOneShot(string filePath, float volume = 1f)
         {
             var handle = Play(filePath, volume, 1f, loop: false);
-            // Handle auto-disposes when playback ends via PlaybackStopped event
+            // Handle auto-disposes when playback ends via polling or GC
         }
 
         /// <summary>Stop all currently playing audio handles.</summary>
@@ -127,112 +307,129 @@ namespace Game_Engine.Core
             }
         }
 
-        /// <summary>Shut down — stops all audio and prevents future playback.</summary>
-        public static void Shutdown()
+        /// <summary>Shut down — stops all audio and releases OpenAL resources.</summary>
+        public static unsafe void Shutdown()
         {
             StopAll();
             s_available = false;
-        }
 
-        public static void EnsureInit() { s_available = true; }
-    }
-
-    /// <summary>
-    /// WaveStream wrapper that loops an AudioFileReader.
-    /// </summary>
-    internal sealed class LoopingReader : WaveStream
-    {
-        private readonly AudioFileReader _reader;
-        public bool Loop { get; set; }
-
-        public override WaveFormat WaveFormat => _reader.WaveFormat;
-        public override long Length => _reader.Length;
-        public override long Position
-        {
-            get => _reader.Position;
-            set => _reader.Position = value;
-        }
-
-        public LoopingReader(AudioFileReader reader, bool loop)
-        {
-            _reader = reader;
-            Loop = loop;
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            int totalRead = 0;
-
-            while (totalRead < count)
+            if (s_al != null)
             {
-                int read = _reader.Read(buffer, offset + totalRead, count - totalRead);
-                if (read == 0)
-                {
-                    if (Loop)
-                    {
-                        _reader.Position = 0; // loop back
-                    }
-                    else
-                    {
-                        break; // done, EOF
-                    }
-                }
-                totalRead += read;
+                s_al.Dispose();
+                s_al = null;
             }
 
-            return totalRead;
+            if (s_alc != null)
+            {
+                if (s_context != null)
+                {
+                    s_alc.MakeContextCurrent(null);
+                    s_alc.DestroyContext(s_context);
+                    s_context = null;
+                }
+                if (s_device != null)
+                {
+                    s_alc.CloseDevice(s_device);
+                    s_device = null;
+                }
+                s_alc.Dispose();
+                s_alc = null;
+            }
+
+            s_initialized = false;
+            Log.Info("[AudioBackend] OpenAL shut down.");
         }
     }
 
     /// <summary>
-    /// Handle to a playing audio clip. Controls volume, pause, stop.
+    /// Handle to a playing audio clip via OpenAL. Controls volume, pitch, pan, position, stop.
     /// </summary>
     public sealed class AudioHandle : IDisposable
     {
-        private readonly WaveOutEvent _output;
-        private readonly AudioFileReader _reader;
-        private readonly LoopingReader _looper;
+        private readonly AL _al;
+        private readonly uint _source;
+        private readonly uint _buffer;
         private bool _disposed;
+        private bool _loop;
 
-        public bool IsPlaying => !_disposed && _output.PlaybackState == PlaybackState.Playing;
-        public TimeSpan Duration => _reader.TotalTime;
-
-        internal AudioHandle(WaveOutEvent output, AudioFileReader reader, LoopingReader looper)
+        public bool IsPlaying
         {
-            _output = output;
-            _reader = reader;
-            _looper = looper;
-
-            // Auto-cleanup when playback finishes naturally
-            _output.PlaybackStopped += (s, e) =>
+            get
             {
-                if (!_looper.Loop) Dispose();
-            };
+                if (_disposed) return false;
+                _al.GetSourceProperty(_source, GetSourceInteger.SourceState, out int state);
+                return state == (int)SourceState.Playing;
+            }
         }
+
+        internal AudioHandle(AL al, uint source, uint buffer, bool loop)
+        {
+            _al = al;
+            _source = source;
+            _buffer = buffer;
+            _loop = loop;
+        }
+
+        /// <summary>OpenAL source ID for advanced control.</summary>
+        internal uint SourceId => _source;
 
         public float Volume
         {
-            get => _reader.Volume;
-            set => _reader.Volume = Math.Clamp(value, 0f, 1f);
+            get { _al.GetSourceProperty(_source, SourceFloat.Gain, out float v); return v; }
+            set { if (!_disposed) _al.SetSourceProperty(_source, SourceFloat.Gain, Math.Clamp(value, 0f, 2f)); }
+        }
+
+        public float Pitch
+        {
+            get { _al.GetSourceProperty(_source, SourceFloat.Pitch, out float v); return v; }
+            set { if (!_disposed) _al.SetSourceProperty(_source, SourceFloat.Pitch, Math.Clamp(value, 0.1f, 4f)); }
         }
 
         public bool Loop
         {
-            get => _looper.Loop;
-            set => _looper.Loop = value;
+            get => _loop;
+            set
+            {
+                _loop = value;
+                if (!_disposed) _al.SetSourceProperty(_source, SourceBoolean.Looping, value);
+            }
         }
 
-        /// <summary>Stereo pan: -1 left, 0 center, +1 right. (Approximate via volume for now.)</summary>
+        /// <summary>Set the 3D position of this audio source in world space.</summary>
+        public void SetPosition(float x, float y, float z)
+        {
+            if (_disposed) return;
+            _al.SetSourceProperty(_source, SourceBoolean.SourceRelative, false);
+            _al.SetSourceProperty(_source, SourceVector3.Position, x, y, z);
+        }
+
+        /// <summary>Set the velocity for Doppler effect.</summary>
+        public void SetVelocity(float x, float y, float z)
+        {
+            if (_disposed) return;
+            _al.SetSourceProperty(_source, SourceVector3.Velocity, x, y, z);
+        }
+
+        /// <summary>Configure distance attenuation model parameters.</summary>
+        public void SetDistanceModel(float refDistance, float maxDistance, float rolloff)
+        {
+            if (_disposed) return;
+            _al.SetSourceProperty(_source, SourceFloat.ReferenceDistance, refDistance);
+            _al.SetSourceProperty(_source, SourceFloat.MaxDistance, maxDistance);
+            _al.SetSourceProperty(_source, SourceFloat.RolloffFactor, rolloff);
+        }
+
+        /// <summary>Stereo pan: -1 left, 0 center, +1 right. (For 2D sounds only.)</summary>
         public float Pan { get; set; }
 
         public void Pause()
         {
-            if (!_disposed) _output.Pause();
+            if (!_disposed) _al.SourcePause(_source);
         }
 
         public void Resume()
         {
-            if (!_disposed) _output.Play();
+            if (!_disposed) _al.SourcePlay(_source);
         }
 
         public void Stop() => Dispose();
@@ -242,9 +439,9 @@ namespace Game_Engine.Core
             if (_disposed) return;
             _disposed = true;
 
-            try { _output.Stop(); } catch { }
-            try { _output.Dispose(); } catch { }
-            try { _reader.Dispose(); } catch { }
+            try { _al.SourceStop(_source); } catch { }
+            try { _al.DeleteSource(_source); } catch { }
+            try { _al.DeleteBuffer(_buffer); } catch { }
         }
     }
 }

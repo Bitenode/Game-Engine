@@ -892,6 +892,7 @@ namespace Game_Engine.Core
             }
             shader.SetTexture("uNormalMap", 1);
             shader.SetInt("uHasNormalMap", hasNormal ? 1 : 0);
+            shader.SetFloat("uNormalStrength", mat?.NormalStrength ?? 1f);
 
             // Specular texture → Texture2
             bool hasSpec = false;

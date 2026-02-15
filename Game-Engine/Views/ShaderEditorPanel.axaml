@@ -1,0 +1,38 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.ShaderEditorPanel">
+	<DockPanel>
+		<!-- Toolbar -->
+		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="8">
+			<TextBlock Text="Visual Shader Editor" FontSize="14" VerticalAlignment="Center" />
+			<Button x:Name="CompileButton" Content="Compile" />
+			<Button x:Name="AddNodeButton" Content="Add Node" />
+			<ComboBox x:Name="NodeTypeCombo" Width="200" SelectedIndex="0">
+				<ComboBoxItem Content="Texture Sample" />
+				<ComboBoxItem Content="Color" />
+				<ComboBoxItem Content="Float" />
+				<ComboBoxItem Content="Math" />
+				<ComboBoxItem Content="Coordinates" />
+				<ComboBoxItem Content="Fresnel" />
+				<ComboBoxItem Content="Noise" />
+			</ComboBox>
+			<TextBlock x:Name="StatusLabel" Text="" VerticalAlignment="Center" Opacity="0.7" />
+		</StackPanel>
+
+		<Grid ColumnDefinitions="*,300">
+			<!-- Node graph canvas -->
+			<Border Grid.Column="0" Background="#1A1A2E" ClipToBounds="True" CornerRadius="4" Margin="4">
+				<Canvas x:Name="GraphCanvas" />
+			</Border>
+
+			<!-- Properties panel -->
+			<Border Grid.Column="1" Background="#20000000" CornerRadius="4" Margin="4" Padding="8">
+				<DockPanel>
+					<TextBlock DockPanel.Dock="Top" Text="Node Properties" FontSize="12" Margin="0,0,0,8" FontWeight="Bold" />
+					<StackPanel x:Name="PropertiesPanel" Spacing="6" />
+				</DockPanel>
+			</Border>
+		</Grid>
+	</DockPanel>
+</UserControl>

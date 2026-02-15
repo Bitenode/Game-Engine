@@ -125,9 +125,38 @@ uniform float uAlphaCutoff;
 uniform bool  uTransparent;
 uniform bool  uDoubleSided;
 
-// Textures
+// Albedo texture
 uniform sampler2D uAlbedoTex;
 uniform bool      uHasAlbedoTex;
+
+// Normal map
+uniform sampler2D uNormalMap;
+uniform int       uHasNormalMap;
+uniform float     uNormalStrength;
+
+// Specular map
+uniform sampler2D uSpecularTex;
+uniform int       uHasSpecularTex;
+
+// Metallic map
+uniform sampler2D uMetallicTex;
+uniform int       uHasMetallicTex;
+
+// Roughness map
+uniform sampler2D uRoughnessTex;
+uniform int       uHasRoughnessTex;
+
+// Ambient occlusion map
+uniform sampler2D uAOTex;
+uniform int       uHasAOTex;
+
+// Emissive
+uniform sampler2D uEmissiveTex;
+uniform int       uHasEmissiveTex;
+uniform vec3      uEmissiveColor;
+uniform float     uEmissiveIntensity;
+
+// Shadow
 uniform sampler2D uShadowMap;
 uniform bool      uHasShadow;
 
@@ -146,12 +175,31 @@ uniform vec3  uCamPos;
 
 out vec4 FragColor;
 
+// Construct a cotangent-frame TBN matrix from screen-space derivatives.
+// This allows normal mapping without per-vertex tangent attributes.
+mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
+{
+    vec3 dp1  = dFdx(p);
+    vec3 dp2  = dFdy(p);
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    return mat3(T * invmax, B * invmax, N);
+}
+
 float ShadowCalc(vec4 sc, vec3 N)
 {
     if (!uHasShadow) return 1.0;
     vec3 proj = sc.xyz / sc.w;
     proj = proj * 0.5 + 0.5;
-    // Outside shadow map bounds → fully lit
+    // Outside shadow map bounds -> fully lit
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
         return 1.0;
 
@@ -188,7 +236,17 @@ void main()
     vec3 N = normalize(vWorldNormal);
     if (uDoubleSided && !gl_FrontFacing) N = -N;
 
-    // Albedo
+    // ── Normal mapping (screen-space derivative TBN) ──
+    if (uHasNormalMap == 1)
+    {
+        vec3 mapN = texture(uNormalMap, vUV).rgb * 2.0 - 1.0;
+        mapN.xy *= uNormalStrength;
+        mapN = normalize(mapN);
+        mat3 TBN = CotangentFrame(N, vWorldPos, vUV);
+        N = normalize(TBN * mapN);
+    }
+
+    // ── Albedo ──
     vec4 albedo = uBaseColor;
     if (uHasAlbedoTex)
         albedo *= texture(uAlbedoTex, vUV);
@@ -197,7 +255,24 @@ void main()
     if (uTransparent && albedo.a < uAlphaCutoff)
         discard;
 
-    // Light direction
+    // ── Per-pixel PBR parameters from texture maps ──
+    float roughness = uRoughness;
+    if (uHasRoughnessTex == 1)
+        roughness = texture(uRoughnessTex, vUV).r;
+
+    float metallic = uMetallic;
+    if (uHasMetallicTex == 1)
+        metallic = texture(uMetallicTex, vUV).r;
+
+    float aoFactor = 1.0;
+    if (uHasAOTex == 1)
+        aoFactor = texture(uAOTex, vUV).r;
+
+    float specMask = 1.0;
+    if (uHasSpecularTex == 1)
+        specMask = texture(uSpecularTex, vUV).r;
+
+    // ── Light direction ──
     vec3 L;
     float atten = 1.0;
     if (uLightIsPoint)
@@ -223,23 +298,35 @@ void main()
     // Shadow (slope-biased)
     float shadow = ShadowCalc(vShadowCoord, N);
 
-    // Specular (Blinn-Phong)
+    // ── Specular (Blinn-Phong) ──
     float specular = 0.0;
     if (uDiffuseK > 0.0 && diffuse > 0.0)
     {
-        float smoothness = 1.0 - uRoughness;
+        float smoothness = 1.0 - roughness;
         float shininess = 8.0 + smoothness * smoothness * 248.0;
         vec3 V = normalize(uCamPos - vWorldPos);
         vec3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
-        specular = pow(NdotH, shininess) * (0.25 + 0.75 * uMetallic) * diffuse;
+        specular = pow(NdotH, shininess) * (0.25 + 0.75 * metallic) * diffuse * specMask;
     }
 
-    // Combine — shadow attenuates both ambient (sky occlusion) and diffuse
+    // ── Combine ──
+    // Shadow attenuates both ambient (sky occlusion) and diffuse
     // In shadowed areas ambient drops to ~35%, simulating occlusion from the sun/sky
     float ambShadow = mix(0.35, 1.0, shadow);
     float shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
     vec3 color = albedo.rgb * shade + vec3(specular * shadow);
+
+    // AO darkens the entire lit result (ambient + diffuse + specular)
+    // Applied before emissive so self-illumination is unaffected by occlusion
+    color *= aoFactor;
+
+    // ── Emissive (bypasses lighting) ──
+    vec3 emissive = uEmissiveColor * uEmissiveIntensity;
+    if (uHasEmissiveTex == 1)
+        emissive *= texture(uEmissiveTex, vUV).rgb;
+    color += emissive;
+
     color = clamp(color, 0.0, 1.0);
 
     float alpha = uTransparent ? albedo.a : 1.0;

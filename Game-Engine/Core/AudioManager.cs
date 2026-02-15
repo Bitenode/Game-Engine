@@ -9,7 +9,7 @@ namespace Game_Engine.Core
     /// <summary>
     /// Central audio manager — tracks all AudioSources and the active AudioListener.
     /// Manages volume channels, spatial audio processing, and playback state.
-    /// Uses NAudio backend for real audio output.
+    /// Uses OpenAL backend for cross-platform audio output (Windows, macOS, Linux).
     /// </summary>
     public static class AudioManager
     {
@@ -42,7 +42,7 @@ namespace Game_Engine.Core
         internal static void SetListener(AudioListener listener)
         {
             _listener = listener;
-            // Initialize audio backend when a listener is first set
+            // Initialize OpenAL audio backend when a listener is first set
             AudioBackend.EnsureInit();
         }
 
@@ -50,6 +50,21 @@ namespace Game_Engine.Core
         {
             if (ReferenceEquals(_listener, listener))
                 _listener = null;
+        }
+
+        /// <summary>
+        /// Update the OpenAL listener transform. Call each frame from the game loop.
+        /// This enables native 3D spatial audio positioning via OpenAL.
+        /// </summary>
+        public static void UpdateListenerTransform()
+        {
+            if (_listener == null) return;
+
+            var pos = _listener.GetWorldPosition();
+            var forward = _listener.GetWorldForward();
+            var up = SN.Vector3.UnitY; // World up
+
+            AudioBackend.UpdateListener(pos, forward, up, _listener.Volume * MasterVolume);
         }
 
         /// <summary>Play a one-shot sound at a world position (fire-and-forget).</summary>

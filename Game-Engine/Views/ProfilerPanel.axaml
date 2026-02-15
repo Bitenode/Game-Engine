@@ -1,0 +1,40 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.ProfilerPanel">
+	<DockPanel>
+		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="12">
+			<TextBlock Text="Profiler" FontSize="14" VerticalAlignment="Center" />
+			<ToggleButton x:Name="EnableToggle" Content="Enable" IsChecked="False" />
+			<TextBlock x:Name="FpsLabel" Text="FPS: --" VerticalAlignment="Center" FontWeight="Bold" />
+			<TextBlock x:Name="FrameTimeLabel" Text="Frame: -- ms" VerticalAlignment="Center" />
+		</StackPanel>
+
+		<Grid Margin="6" RowDefinitions="Auto,*">
+			<!-- Stats summary -->
+			<Border Grid.Row="0" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
+				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto">
+					<TextBlock Grid.Row="0" Grid.Column="0" x:Name="RenderLabel" Text="Render: -- ms" Margin="4,2" />
+					<TextBlock Grid.Row="0" Grid.Column="1" x:Name="PhysicsLabel" Text="Physics: -- ms" Margin="4,2" />
+					<TextBlock Grid.Row="0" Grid.Column="2" x:Name="ScriptsLabel" Text="Scripts: -- ms" Margin="4,2" />
+					<TextBlock Grid.Row="0" Grid.Column="3" x:Name="AudioLabel" Text="Audio: -- ms" Margin="4,2" />
+
+					<TextBlock Grid.Row="1" Grid.Column="0" x:Name="DrawCallsLabel" Text="Draw Calls: --" Margin="4,2" />
+					<TextBlock Grid.Row="1" Grid.Column="1" x:Name="TrianglesLabel" Text="Triangles: --" Margin="4,2" />
+					<TextBlock Grid.Row="1" Grid.Column="2" x:Name="BatchesLabel" Text="Batches: --" Margin="4,2" />
+					<TextBlock Grid.Row="1" Grid.Column="3" x:Name="AnimLabel" Text="Anim: -- ms" Margin="4,2" />
+
+					<TextBlock Grid.Row="2" Grid.Column="0" x:Name="GameObjectsLabel" Text="GameObjects: --" Margin="4,2" />
+					<TextBlock Grid.Row="2" Grid.Column="1" x:Name="CollidersLabel" Text="Colliders: --" Margin="4,2" />
+					<TextBlock Grid.Row="2" Grid.Column="2" x:Name="AvgFpsLabel" Text="Avg FPS: --" Margin="4,2" />
+					<TextBlock Grid.Row="2" Grid.Column="3" x:Name="AvgFrameLabel" Text="Avg Frame: -- ms" Margin="4,2" />
+				</Grid>
+			</Border>
+
+			<!-- Frame time graph (drawn in code-behind) -->
+			<Border Grid.Row="1" Background="#20000000" CornerRadius="4">
+				<Canvas x:Name="GraphCanvas" ClipToBounds="True" />
+			</Border>
+		</Grid>
+	</DockPanel>
+</UserControl>
