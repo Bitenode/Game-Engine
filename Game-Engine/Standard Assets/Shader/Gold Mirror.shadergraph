@@ -1,0 +1,61 @@
+{
+  "name": "Gold Mirror",
+  "nodes": [
+    {
+      "id": "output01",
+      "type": "Output",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "color01",
+      "type": "Color",
+      "x": 120,
+      "y": 180,
+      "props": {
+        "R": 1.0,
+        "G": 0.84,
+        "B": 0.0,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "metal01",
+      "type": "Float",
+      "x": 300,
+      "y": 370,
+      "props": {
+        "Value": 1.0
+      }
+    },
+    {
+      "id": "rough01",
+      "type": "Float",
+      "x": 300,
+      "y": 460,
+      "props": {
+        "Value": 0.05
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "color01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "metal01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 2
+    },
+    {
+      "fromNode": "rough01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 3
+    }
+  ]
+}

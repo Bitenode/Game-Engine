@@ -16,6 +16,24 @@ namespace Game_Engine.Core
     /// </summary>
     public static class SceneRenderer
     {
+        // ---------- Render context for custom shader support ----------
+        /// <summary>
+        /// Bundles per-frame render state so DrawMeshItem can set uniforms on custom shaders.
+        /// </summary>
+        private struct RenderContext
+        {
+            public SN.Matrix4x4 View;
+            public SN.Matrix4x4 Proj;
+            public SN.Vector3 CamPos;
+            public SN.Vector3 LightDir;
+            public float DiffuseK;
+            public float Ambient;
+            public SN.Matrix4x4 ShadowVP;
+            public ShaderProgram StandardShader;
+            public ResourceCache Cache;
+            public bool IsES;
+        }
+
         // ---------- Frustum culling ----------
         private struct Sphere { public SN.Vector3 Center; public float Radius; }
         private static readonly Dictionary<Mesh, Sphere> s_meshSpheres = new(1024);
@@ -436,7 +454,8 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 camPos,
             SN.Vector3 sunShineDir = default,
-            ShaderProgram? terrainShader = null)
+            ShaderProgram? terrainShader = null,
+            bool isES = true)
         {
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
@@ -479,6 +498,21 @@ namespace Game_Engine.Core
                 standardShader.SetInt("uHasShadow", 0);
             }
 
+            // Build render context for custom shader support
+            var renderCtx = new RenderContext
+            {
+                View = view,
+                Proj = proj,
+                CamPos = camPos,
+                LightDir = lightDir,
+                DiffuseK = diffuseK,
+                Ambient = ambient,
+                ShadowVP = shadowVP,
+                StandardShader = standardShader,
+                Cache = cache,
+                IsES = isES
+            };
+
             // --- BATCH terrain draw items by Terrain reference ---
             // This avoids rebinding splatmap + layer textures for every single chunk.
             // We first draw all non-terrain opaque items, then group terrain items by terrain.
@@ -499,7 +533,7 @@ namespace Game_Engine.Core
                     }
                     terrainShaderActive = false;
                 }
-                DrawMeshItem(gl, standardShader, cache, item);
+                DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
             }
 
             // Now draw ALL terrain items, grouped by terrain to minimize state changes
@@ -562,7 +596,7 @@ namespace Game_Engine.Core
 
                 foreach (var item in transparentItems)
                 {
-                    DrawMeshItem(gl, standardShader, cache, item);
+                    DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
                 }
 
                 gl.DepthMask(true);
@@ -715,12 +749,40 @@ namespace Game_Engine.Core
             GL gl,
             ShaderProgram shader,
             ResourceCache cache,
-            in DrawItem item)
+            in DrawItem item,
+            in RenderContext ctx)
         {
             var mesh = item.MF.Mesh;
             if (mesh == null) return;
 
             var gpuMesh = cache.GetMesh(mesh);
+
+            // ── Custom shader path ──
+            // If the material references a .shader file, try to use it instead of the standard shader.
+            var mat = item.Mat;
+            if (mat != null && !string.IsNullOrWhiteSpace(mat.ShaderAssetPath))
+            {
+                string shaderPath = mat.ShaderAssetPath;
+                string absPath = shaderPath;
+                var proj = ProjectService.Current;
+                if (proj != null && !System.IO.Path.IsPathRooted(shaderPath))
+                    absPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, shaderPath));
+
+                var customShader = CustomShaderCache.GetOrCompile(absPath, gl, ctx.IsES);
+                if (customShader != null)
+                {
+                    DrawWithCustomShader(gl, customShader, cache, item, gpuMesh, in ctx);
+                    // Restore the standard shader for subsequent draws
+                    ctx.StandardShader.Use();
+                    SetLightUniforms(ctx.StandardShader, ctx.LightDir, ctx.DiffuseK, ctx.Ambient, false, SN.Vector3.Zero, 0f);
+                    ctx.StandardShader.SetMatrix4("uView", ctx.View);
+                    ctx.StandardShader.SetMatrix4("uProj", ctx.Proj);
+                    ctx.StandardShader.SetVector3("uCamPos", ctx.CamPos);
+                    return;
+                }
+            }
+
+            // ── Standard shader path (unchanged) ──
 
             // Model matrix
             shader.SetMatrix4("uModel", item.World);
@@ -731,7 +793,6 @@ namespace Game_Engine.Core
             shader.SetMatrix4("uNormalMatrix", normalMatrix);
 
             // Material properties
-            var mat = item.Mat;
             float r = 1f, g2 = 1f, b = 1f, a = 1f;
             float roughness = 0.5f, metallic = 0f, alphaCutoff = 0f;
             bool transparent = item.IsTransparent;
@@ -1028,6 +1089,84 @@ namespace Game_Engine.Core
             }
 
             // Draw
+            gpuMesh.Draw();
+        }
+
+        // ────────── CUSTOM SHADER DRAW ──────────
+
+        /// <summary>
+        /// Draw a mesh using a custom shader compiled from the Visual Shader Editor.
+        /// Sets uniforms using the custom shader's naming convention.
+        /// </summary>
+        private static void DrawWithCustomShader(
+            GL gl,
+            ShaderProgram customShader,
+            ResourceCache cache,
+            in DrawItem item,
+            GPUMesh gpuMesh,
+            in RenderContext ctx)
+        {
+            customShader.Use();
+
+            // ── Vertex uniforms (custom shader names) ──
+            customShader.SetMatrix4("uModel", item.World);
+            customShader.SetMatrix4("uView", ctx.View);
+            customShader.SetMatrix4("uProjection", ctx.Proj);
+            customShader.SetMatrix4("uLightSpaceMatrix", ctx.ShadowVP);
+
+            // ── Fragment uniforms (custom shader names) ──
+            customShader.SetVector3("uCameraPos", ctx.CamPos);
+            customShader.SetFloat("uTime", WindSystem.Time);
+
+            // Lighting: the custom shader expects uLightDir, uLightColor, uLightIntensity
+            customShader.SetVector3("uLightDir", ctx.LightDir);
+            customShader.SetVector3("uLightColor", new SN.Vector3(1f, 0.98f, 0.95f));
+            customShader.SetFloat("uLightIntensity", ctx.DiffuseK);
+
+            // ── Bind albedo texture to uTexture0 ──
+            var mat = item.Mat;
+            bool hasAlbedo = false;
+            if (mat?.Textures != null && mat.Textures.Count > 0)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? tex = null;
+                    var slot = mat.Textures[i];
+
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("albedo") || usage == "" || usage.Contains("base") || usage.Contains("diff"))
+                            tex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Albedo)
+                            tex = mtex.Texture;
+                    }
+
+                    if (tex != null)
+                    {
+                        cache.GetTexture(tex).Bind(TextureUnit.Texture0);
+                        hasAlbedo = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasAlbedo)
+                cache.GetWhiteTexture().Bind(TextureUnit.Texture0);
+            customShader.SetTexture("uTexture0", 0);
+
+            // ── Cull face ──
+            bool doubleSided = item.MR.DoubleSided;
+            if (doubleSided)
+                gl.Disable(EnableCap.CullFace);
+            else
+            {
+                gl.Enable(EnableCap.CullFace);
+                gl.CullFace(item.MR.InvertFrontFace ? TriangleFace.Front : TriangleFace.Back);
+            }
+
             gpuMesh.Draw();
         }
 

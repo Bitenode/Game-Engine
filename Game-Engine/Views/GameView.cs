@@ -460,7 +460,8 @@ namespace Game_Engine.Views
                 SN.Vector3.Normalize(-L), DiffuseK, Ambient,
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, camPos, sunSD,
-                terrainShader: _terrainShader);
+                terrainShader: _terrainShader,
+                isES: _glCtx.IsES);
 
             // --- WATER ---
             if (_waterShader != null)

@@ -13,6 +13,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Rendering;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -2079,6 +2080,212 @@ public partial class InspectorPanel : UserControl
 
         props.Children.Add(headerGrid);
 
+        // ── Material Preview Sphere ──
+        var previewImage = new Image { Width = 200, Height = 200, Stretch = Avalonia.Media.Stretch.Fill };
+        var previewBorder = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(13, 13, 26)),
+            CornerRadius = new CornerRadius(100),
+            Width = 200,
+            Height = 200,
+            ClipToBounds = true,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Child = previewImage
+        };
+        var previewSection = new StackPanel
+        {
+            Spacing = 4,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 8)
+        };
+        previewSection.Children.Add(new TextBlock
+        {
+            Text = "Material Preview",
+            FontSize = 11,
+            FontWeight = FontWeight.SemiBold,
+            Opacity = 0.7,
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+        previewSection.Children.Add(previewBorder);
+
+        // Shader name label below the sphere
+        var shaderLabel = new TextBlock
+        {
+            Text = !string.IsNullOrWhiteSpace(shader) ? $"Shader: {System.IO.Path.GetFileNameWithoutExtension(shader)}" : "",
+            FontSize = 10,
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 2, 0, 0)
+        };
+        if (!string.IsNullOrWhiteSpace(shader))
+            previewSection.Children.Add(shaderLabel);
+
+        previewSection.Children.Add(new TextBlock
+        {
+            Text = "Drag to rotate",
+            FontSize = 9,
+            Opacity = 0.35,
+            FontStyle = Avalonia.Media.FontStyle.Italic,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 2, 0, 0)
+        });
+
+        props.Children.Add(previewSection);
+
+        // Sphere rotation state for drag interaction
+        float previewRotY = 0f, previewRotX = 0f;
+        bool previewDragging = false;
+        Point previewDragStart = default;
+        float previewDragStartRotY = 0f, previewDragStartRotX = 0f;
+
+        // Captured references for the preview renderer (set after controls are created below)
+        TextBox? tbTintRef = null;
+        Slider? sMetalRef = null;
+        Slider? sRoughRef = null;
+        TextBox? tbShaderRef = null;
+
+        // Helper: render the material preview sphere using current values
+        Action renderMaterialPreview = null!;
+
+        previewBorder.PointerPressed += (_, e) =>
+        {
+            previewDragging = true;
+            previewDragStart = e.GetPosition(previewBorder);
+            previewDragStartRotY = previewRotY;
+            previewDragStartRotX = previewRotX;
+            e.Pointer.Capture((Avalonia.Input.IInputElement)previewBorder);
+            e.Handled = true;
+        };
+        previewBorder.PointerMoved += (_, e) =>
+        {
+            if (!previewDragging) return;
+            var pos = e.GetPosition(previewBorder);
+            float dx = (float)(pos.X - previewDragStart.X);
+            float dy = (float)(pos.Y - previewDragStart.Y);
+            previewRotY = previewDragStartRotY + dx * 0.015f;
+            previewRotX = previewDragStartRotX + dy * 0.015f;
+            previewRotX = Math.Clamp(previewRotX, -1.4f, 1.4f);
+            renderMaterialPreview();
+        };
+        previewBorder.PointerReleased += (_, e) =>
+        {
+            previewDragging = false;
+            e.Pointer.Capture(null);
+        };
+        previewBorder.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+
+        renderMaterialPreview = () =>
+        {
+            try
+            {
+                // Parse tint color
+                float tR = 1f, tG = 1f, tB = 1f;
+                try
+                {
+                    var hex = (tbTintRef?.Text ?? tintHex ?? "#FFFFFFFF").Trim();
+                    if (hex.StartsWith("#")) hex = hex.Substring(1);
+                    if (hex.Length >= 6)
+                    {
+                        tR = Convert.ToByte(hex.Substring(0, 2), 16) / 255f;
+                        tG = Convert.ToByte(hex.Substring(2, 2), 16) / 255f;
+                        tB = Convert.ToByte(hex.Substring(4, 2), 16) / 255f;
+                    }
+                }
+                catch { }
+
+                float curMetallic = (float)(sMetalRef?.Value ?? metallic);
+                float curRoughness = (float)(sRoughRef?.Value ?? rough);
+
+                var pbr = new MaterialPreviewRenderer.PBRParams
+                {
+                    Albedo = new System.Numerics.Vector3(tR, tG, tB),
+                    Metallic = Math.Clamp(curMetallic, 0f, 1f),
+                    Roughness = Math.Clamp(curRoughness, 0f, 1f),
+                    Emission = System.Numerics.Vector3.Zero,
+                    AO = 1f,
+                    RotationY = previewRotY,
+                    RotationX = previewRotX
+                };
+
+                // Load texture maps from project-relative paths
+                if (texMap != null)
+                {
+                    foreach (var kvp in texMap)
+                    {
+                        if (string.IsNullOrWhiteSpace(kvp.Value)) continue;
+                        string absPath = string.IsNullOrWhiteSpace(projRoot)
+                            ? kvp.Value
+                            : System.IO.Path.Combine(projRoot, kvp.Value.Replace('/', System.IO.Path.DirectorySeparatorChar));
+
+                        int tw, th;
+                        switch (kvp.Key.ToLowerInvariant())
+                        {
+                            case "albedo":
+                                pbr.AlbedoPixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.AlbedoWidth = tw; pbr.AlbedoHeight = th;
+                                break;
+                            case "normal":
+                                pbr.NormalPixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.NormalWidth = tw; pbr.NormalHeight = th;
+                                break;
+                            case "roughness":
+                                pbr.RoughnessPixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.RoughnessWidth = tw; pbr.RoughnessHeight = th;
+                                break;
+                            case "specular":
+                                pbr.SpecularPixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.SpecularWidth = tw; pbr.SpecularHeight = th;
+                                break;
+                            case "metallic":
+                                pbr.MetallicPixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.MetallicWidth = tw; pbr.MetallicHeight = th;
+                                break;
+                            case "emissive":
+                                pbr.EmissivePixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.EmissiveWidth = tw; pbr.EmissiveHeight = th;
+                                break;
+                            case "ambientocclusion":
+                                pbr.AOPixels = MaterialPreviewRenderer.LoadTexturePixels(absPath, out tw, out th);
+                                pbr.AOWidth = tw; pbr.AOHeight = th;
+                                break;
+                        }
+                    }
+                }
+
+                // Try to blend shader graph properties if a shader is assigned
+                string curShaderPath = tbShaderRef?.Text ?? shader ?? "";
+                if (!string.IsNullOrWhiteSpace(curShaderPath))
+                {
+                    string absShader = string.IsNullOrWhiteSpace(projRoot)
+                        ? curShaderPath
+                        : System.IO.Path.Combine(projRoot, curShaderPath.Replace('/', System.IO.Path.DirectorySeparatorChar));
+                    var sgParams = MaterialPreviewRenderer.ExtractPBRFromShaderGraph(absShader);
+                    if (sgParams.HasValue)
+                    {
+                        var sg = sgParams.Value;
+                        // Blend shader graph colors with material tint
+                        pbr.Albedo = pbr.Albedo * sg.Albedo;
+                        pbr.Emission = pbr.Emission + sg.Emission;
+                        pbr.HasFresnel = sg.HasFresnel;
+                        pbr.FresnelColor = sg.FresnelColor;
+                        pbr.FresnelPower = sg.FresnelPower;
+                        pbr.HasNoiseAlbedo = sg.HasNoiseAlbedo;
+                        pbr.AlbedoBase = sg.AlbedoBase * pbr.Albedo;
+                        pbr.NoiseScale = sg.NoiseScale;
+                        // Use shader's metallic/roughness as base if no texture overrides
+                        if (pbr.MetallicPixels == null && pbr.SpecularPixels == null)
+                            pbr.Metallic = Math.Clamp(pbr.Metallic + sg.Metallic, 0f, 1f);
+                        if (pbr.RoughnessPixels == null)
+                            pbr.Roughness = Math.Clamp(sg.Roughness * pbr.Roughness + sg.Roughness * 0.5f, 0f, 1f);
+                    }
+                }
+
+                var bitmap = MaterialPreviewRenderer.Render(pbr, 200);
+                previewImage.Source = bitmap;
+            }
+            catch { }
+        };
+
         Func<string, Control, Control> Labeled = (label, input) =>
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 4) };
@@ -2123,7 +2330,14 @@ public partial class InspectorPanel : UserControl
                 tbShader.Text = isUnderProject(picked) ? absToProjectRel(picked) : picked;
             }
         };
-        btnClearShader.Click += (_, __) => tbShader.Text = "";
+        btnClearShader.Click += (_, __) => { tbShader.Text = ""; renderMaterialPreview(); };
+        tbShaderRef = tbShader;
+        tbShader.LostFocus += (_, __) => renderMaterialPreview();
+        btnPickShader.Click += (_, __) =>
+        {
+            // Already handled by the async handler above; also re-render
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => renderMaterialPreview(), Avalonia.Threading.DispatcherPriority.Background);
+        };
 
         // Tint
         var tbTint = new TextBox { Text = string.IsNullOrWhiteSpace(tintHex) ? "#FFFFFFFF" : tintHex.Trim(), Width = 120 };
@@ -2172,6 +2386,19 @@ public partial class InspectorPanel : UserControl
         roughRowInner.Children.Add(sRough);
         roughRowInner.Children.Add(lblRough);
         props.Children.Add(Labeled("Roughness", roughRowInner));
+
+        // Wire captured refs for preview renderer and add live-update callbacks
+        tbTintRef = tbTint;
+        sMetalRef = sMetal;
+        sRoughRef = sRough;
+
+        sMetal.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) renderMaterialPreview(); };
+        sRough.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) renderMaterialPreview(); };
+        tbTint.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == TextBox.TextProperty)
+                renderMaterialPreview();
+        };
 
         // Transparent + cutoff
         var chkTransparent = new CheckBox { Content = "Transparent", IsChecked = transparent };
@@ -2307,6 +2534,7 @@ public partial class InspectorPanel : UserControl
 
                 tbPath.Text = absToProjectRel(target);
                 texMap[slot] = tbPath.Text;
+                renderMaterialPreview();
                 e.Handled = true;
             }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
 
@@ -2346,10 +2574,18 @@ public partial class InspectorPanel : UserControl
                     }
                     tbPath.Text = absToProjectRel(picked);
                     texMap[slot] = tbPath.Text;
+                    renderMaterialPreview();
                 }
             };
 
-            btnClear.Click += (_, __) => { tbPath.Text = ""; texMap[slot] = null; };
+            btnClear.Click += (_, __) => { tbPath.Text = ""; texMap[slot] = null; renderMaterialPreview(); };
+
+            // Re-render preview when texture path changes
+            tbPath.LostFocus += (_, __) =>
+            {
+                texMap[slot] = string.IsNullOrWhiteSpace(tbPath.Text) ? null : tbPath.Text;
+                renderMaterialPreview();
+            };
 
             var inner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             inner.Children.Add(tbPath);
@@ -2457,6 +2693,9 @@ public partial class InspectorPanel : UserControl
                 }
             }
         };
+
+        // Initial preview render
+        renderMaterialPreview();
     }
 
     // UI-only cache so material path doesn't disappear if there's no sibling path or inner path slot

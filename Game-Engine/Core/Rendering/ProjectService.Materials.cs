@@ -75,7 +75,12 @@ namespace Game_Engine.Core
                 // ---------- construct runtime Material ----------
                 var m = new Material();
                 m.Name = rootEl.TryGetProperty("name", out var nEl) ? (nEl.GetString() ?? "Material") : "Material";
-                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] name='{m.Name}', shader='(none)'");
+
+                // Read shader asset path from the material file
+                if (rootEl.TryGetProperty("shader", out var shaderEl) && shaderEl.ValueKind == JsonValueKind.String)
+                    m.ShaderAssetPath = shaderEl.GetString();
+
+                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] name='{m.Name}', shader='{m.ShaderAssetPath ?? "(none)"}'");
 
                 // ---------- parameters ----------
                 if (rootEl.TryGetProperty("parameters", out var p) && p.ValueKind == JsonValueKind.Object)
@@ -203,7 +208,6 @@ namespace Game_Engine.Core
                     m.BaseColor = Colors.White;
                 if (m.Smoothness < 0f) m.Smoothness = 0.5f;
 
-                m.ShaderAssetPath = null;
                 m.Lit = true;
 
                 System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] result: BaseColor={m.BaseColor}, Metallic={m.Metallic}, Smoothness={m.Smoothness}, Transparent={m.Transparent}, AlphaCutoff={m.AlphaCutoff}");

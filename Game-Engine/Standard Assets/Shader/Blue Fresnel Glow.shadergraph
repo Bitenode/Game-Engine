@@ -1,0 +1,106 @@
+{
+  "name": "Blue Fresnel Glow",
+  "nodes": [
+    {
+      "id": "output01",
+      "type": "Output",
+      "x": 700,
+      "y": 200
+    },
+    {
+      "id": "albedo01",
+      "type": "Color",
+      "x": 80,
+      "y": 150,
+      "props": {
+        "R": 0.15,
+        "G": 0.15,
+        "B": 0.2,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "rough01",
+      "type": "Float",
+      "x": 300,
+      "y": 420,
+      "props": {
+        "Value": 0.35
+      }
+    },
+    {
+      "id": "fresnel01",
+      "type": "Fresnel",
+      "x": 180,
+      "y": 500
+    },
+    {
+      "id": "fresnelpower",
+      "type": "Float",
+      "x": 40,
+      "y": 520,
+      "props": {
+        "Value": 3.5
+      }
+    },
+    {
+      "id": "glowcolor",
+      "type": "Color",
+      "x": 180,
+      "y": 620,
+      "props": {
+        "R": 0.3,
+        "G": 0.6,
+        "B": 1.0,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "math01",
+      "type": "Math",
+      "x": 440,
+      "y": 560,
+      "props": {
+        "Op": "Multiply"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "albedo01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "rough01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 3
+    },
+    {
+      "fromNode": "fresnelpower",
+      "fromPort": 0,
+      "toNode": "fresnel01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "glowcolor",
+      "fromPort": 0,
+      "toNode": "math01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "fresnel01",
+      "fromPort": 0,
+      "toNode": "math01",
+      "toPort": 1
+    },
+    {
+      "fromNode": "math01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 4
+    }
+  ]
+}

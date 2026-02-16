@@ -1,0 +1,286 @@
+{
+  "name": "Crystalline Nebula",
+  "nodes": [
+    {
+      "id": "output01",
+      "type": "Output",
+      "x": 1050,
+      "y": 280
+    },
+    {
+      "id": "baseGem",
+      "type": "Color",
+      "x": 40,
+      "y": 40,
+      "props": {
+        "R": 0.03,
+        "G": 0.08,
+        "B": 0.22,
+        "A": 1
+      }
+    },
+    {
+      "id": "veinColor",
+      "type": "Color",
+      "x": 40,
+      "y": 220,
+      "props": {
+        "R": 0.6,
+        "G": 0.1,
+        "B": 0.85,
+        "A": 1
+      }
+    },
+    {
+      "id": "noiseScale1",
+      "type": "Float",
+      "x": 80,
+      "y": 380,
+      "props": {
+        "Value": 18
+      }
+    },
+    {
+      "id": "noise1",
+      "type": "Noise",
+      "x": 250,
+      "y": 300
+    },
+    {
+      "id": "albedoVeins",
+      "type": "Math",
+      "x": 440,
+      "y": 180,
+      "props": {
+        "Op": "Multiply"
+      }
+    },
+    {
+      "id": "albedoBase",
+      "type": "Math",
+      "x": 650,
+      "y": 100,
+      "props": {
+        "Op": "Add"
+      }
+    },
+    {
+      "id": "highlight",
+      "type": "Color",
+      "x": 40,
+      "y": 480,
+      "props": {
+        "R": 0.95,
+        "G": 0.85,
+        "B": 0.4,
+        "A": 1
+      }
+    },
+    {
+      "id": "noiseScale2",
+      "type": "Float",
+      "x": 80,
+      "y": 620,
+      "props": {
+        "Value": 35
+      }
+    },
+    {
+      "id": "noise2",
+      "type": "Noise",
+      "x": 250,
+      "y": 560
+    },
+    {
+      "id": "goldDetail",
+      "type": "Math",
+      "x": 440,
+      "y": 500,
+      "props": {
+        "Op": "Multiply"
+      }
+    },
+    {
+      "id": "albedoFinal",
+      "type": "Math",
+      "x": 820,
+      "y": 250,
+      "props": {
+        "Op": "Add"
+      }
+    },
+    {
+      "id": "metalBase",
+      "type": "Float",
+      "x": 700,
+      "y": 420,
+      "props": {
+        "Value": 0.85
+      }
+    },
+    {
+      "id": "roughBase",
+      "type": "Float",
+      "x": 700,
+      "y": 490,
+      "props": {
+        "Value": 0.08
+      }
+    },
+    {
+      "id": "fresnelPow",
+      "type": "Float",
+      "x": 40,
+      "y": 760,
+      "props": {
+        "Value": 2.5
+      }
+    },
+    {
+      "id": "fresnel1",
+      "type": "Fresnel",
+      "x": 230,
+      "y": 780
+    },
+    {
+      "id": "glowColor",
+      "type": "Color",
+      "x": 40,
+      "y": 900,
+      "props": {
+        "R": 0.15,
+        "G": 0.95,
+        "B": 0.7,
+        "A": 1
+      }
+    },
+    {
+      "id": "emitMath",
+      "type": "Math",
+      "x": 440,
+      "y": 830,
+      "props": {
+        "Op": "Multiply"
+      }
+    },
+    {
+      "id": "aoVal",
+      "type": "Float",
+      "x": 700,
+      "y": 560,
+      "props": {
+        "Value": 0.9
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "noiseScale1",
+      "fromPort": 0,
+      "toNode": "noise1",
+      "toPort": 1
+    },
+    {
+      "fromNode": "veinColor",
+      "fromPort": 0,
+      "toNode": "albedoVeins",
+      "toPort": 0
+    },
+    {
+      "fromNode": "noise1",
+      "fromPort": 0,
+      "toNode": "albedoVeins",
+      "toPort": 1
+    },
+    {
+      "fromNode": "baseGem",
+      "fromPort": 0,
+      "toNode": "albedoBase",
+      "toPort": 0
+    },
+    {
+      "fromNode": "albedoVeins",
+      "fromPort": 0,
+      "toNode": "albedoBase",
+      "toPort": 1
+    },
+    {
+      "fromNode": "noiseScale2",
+      "fromPort": 0,
+      "toNode": "noise2",
+      "toPort": 1
+    },
+    {
+      "fromNode": "highlight",
+      "fromPort": 0,
+      "toNode": "goldDetail",
+      "toPort": 0
+    },
+    {
+      "fromNode": "noise2",
+      "fromPort": 0,
+      "toNode": "goldDetail",
+      "toPort": 1
+    },
+    {
+      "fromNode": "albedoBase",
+      "fromPort": 0,
+      "toNode": "albedoFinal",
+      "toPort": 0
+    },
+    {
+      "fromNode": "goldDetail",
+      "fromPort": 0,
+      "toNode": "albedoFinal",
+      "toPort": 1
+    },
+    {
+      "fromNode": "albedoFinal",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "metalBase",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 2
+    },
+    {
+      "fromNode": "roughBase",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 3
+    },
+    {
+      "fromNode": "fresnelPow",
+      "fromPort": 0,
+      "toNode": "fresnel1",
+      "toPort": 0
+    },
+    {
+      "fromNode": "glowColor",
+      "fromPort": 0,
+      "toNode": "emitMath",
+      "toPort": 0
+    },
+    {
+      "fromNode": "fresnel1",
+      "fromPort": 0,
+      "toNode": "emitMath",
+      "toPort": 1
+    },
+    {
+      "fromNode": "emitMath",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 4
+    },
+    {
+      "fromNode": "aoVal",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 6
+    }
+  ]
+}
