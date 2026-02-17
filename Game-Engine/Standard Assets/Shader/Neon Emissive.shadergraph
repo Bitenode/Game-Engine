@@ -1,0 +1,94 @@
+{
+  "name": "Neon Emissive",
+  "nodes": [
+    {
+      "id": "output01",
+      "type": "Output",
+      "x": 650,
+      "y": 200
+    },
+    {
+      "id": "basecolor",
+      "type": "Color",
+      "x": 100,
+      "y": 160,
+      "props": {
+        "R": 0.02,
+        "G": 0.02,
+        "B": 0.05,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "rough01",
+      "type": "Float",
+      "x": 350,
+      "y": 400,
+      "props": {
+        "Value": 0.15
+      }
+    },
+    {
+      "id": "emitcolor",
+      "type": "Color",
+      "x": 100,
+      "y": 400,
+      "props": {
+        "R": 0.0,
+        "G": 1.0,
+        "B": 0.4,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "emitstrength",
+      "type": "Float",
+      "x": 100,
+      "y": 560,
+      "props": {
+        "Value": 3.0
+      }
+    },
+    {
+      "id": "math01",
+      "type": "Math",
+      "x": 380,
+      "y": 480,
+      "props": {
+        "Op": "Multiply"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "basecolor",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "rough01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 3
+    },
+    {
+      "fromNode": "emitcolor",
+      "fromPort": 0,
+      "toNode": "math01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "emitstrength",
+      "fromPort": 0,
+      "toNode": "math01",
+      "toPort": 1
+    },
+    {
+      "fromNode": "math01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 4
+    }
+  ]
+}

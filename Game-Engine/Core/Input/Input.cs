@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.Json;
@@ -52,6 +52,8 @@ namespace Game_Engine.Core.Input
         static readonly HashSet<MouseButton> sUpMouse = new HashSet<MouseButton>();
 
         static float sMouseDX, sMouseDY;   // accumulated within current frame
+        static float sMousePosX, sMousePosY; // absolute mouse position in viewport pixels
+        static float sViewportW, sViewportH; // viewport size in the same space as mouse position
         static float sDt;                  // this frame dt (seconds)
         static int sFrameId;             // increments each NewFrame
         static int sAxesUpdatedInFrame;  // to update axes once per frame on demand
@@ -153,6 +155,19 @@ namespace Game_Engine.Core.Input
             sHeldMouse.Remove(btn);
         }
 
+        public static void FeedMousePosition(float x, float y)
+        {
+            sMousePosX = x;
+            sMousePosY = y;
+        }
+
+        /// <summary>Set the viewport size (same coordinate space as MousePosition).</summary>
+        public static void FeedViewportSize(float w, float h)
+        {
+            sViewportW = w;
+            sViewportH = h;
+        }
+
         public static void FeedMouseDelta(float dx, float dy)
         {
             sMouseDX += dx;
@@ -171,6 +186,18 @@ namespace Game_Engine.Core.Input
         public static SN.Vector2 MouseDelta
         {
             get { return new SN.Vector2(sMouseDX, sMouseDY); }
+        }
+
+        /// <summary>Current mouse position in viewport/window coordinates.</summary>
+        public static SN.Vector2 MousePosition
+        {
+            get { return new SN.Vector2(sMousePosX, sMousePosY); }
+        }
+
+        /// <summary>Current viewport size (same coordinate space as MousePosition).</summary>
+        public static SN.Vector2 ViewportSize
+        {
+            get { return new SN.Vector2(sViewportW, sViewportH); }
         }
 
         // ------------ Queries: actions ------------

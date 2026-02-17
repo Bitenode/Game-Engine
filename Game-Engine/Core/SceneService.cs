@@ -35,6 +35,13 @@ namespace Game_Engine.Core
 
         public static event Action? Changed;
 
+        /// <summary>
+        /// Fired when the entire scene is replaced (e.g. loading a new .scene file).
+        /// Subscribers should perform full cleanup (flush GPU caches, clear stale references, etc.).
+        /// This fires BEFORE <see cref="Changed"/> during a scene replacement.
+        /// </summary>
+        public static event Action? SceneReplaced;
+
         // convenience helpers (all notify)
         public static void Add(GameObject go)
         {
@@ -51,11 +58,34 @@ namespace Game_Engine.Core
 
         public static void ReplaceAll(IEnumerable<GameObject> items)
         {
+            SceneReplaced?.Invoke();
+
+            // Tear down ALL old behaviors (including those on disabled GameObjects)
+            // so that static component registries (Canvas._all, Light._allLights, etc.)
+            // are properly cleaned up. __OnDestroy is idempotent (_destroyed guard).
+            foreach (var go in _root)
+                DestroyBehaviorsRecursive(go);
+
             _root.CollectionChanged -= OnRootChanged;
             _root.Clear();
             foreach (var go in items) _root.Add(go);
             _root.CollectionChanged += OnRootChanged;
             Changed?.Invoke();
+        }
+
+        /// <summary>
+        /// Recursively call __OnDestroy on all behaviors in the hierarchy,
+        /// including those on disabled GameObjects. This ensures static
+        /// component registries are cleaned up during scene replacement.
+        /// </summary>
+        private static void DestroyBehaviorsRecursive(GameObject go)
+        {
+            foreach (var b in go.Behaviors)
+            {
+                try { b.__OnDestroy(); } catch { }
+            }
+            foreach (var child in go.Children)
+                DestroyBehaviorsRecursive(child);
         }
 
         public static void Clear()

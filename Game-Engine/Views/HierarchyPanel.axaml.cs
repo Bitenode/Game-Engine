@@ -638,4 +638,31 @@ namespace Game_Engine.Views
         public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
             => throw new NotSupportedException();
     }
+
+    /// <summary>
+    /// Multi-value converter for the Hierarchy TreeView foreground colour.
+    /// Values[0] = PrefabId (string?),  Values[1] = IsActiveInHierarchy (bool).
+    /// Disabled objects (or children of disabled objects) are shown in red.
+    /// Active prefab instances are shown in blue. Everything else uses the theme default.
+    /// </summary>
+    public class HierarchyForegroundConverter : IMultiValueConverter
+    {
+        public static readonly HierarchyForegroundConverter Instance = new();
+
+        private static readonly IBrush DisabledBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0x44, 0x44));
+        private static readonly IBrush PrefabBrush   = new SolidColorBrush(Color.FromRgb(0x55, 0x99, 0xFF));
+
+        public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture)
+        {
+            bool isActive = true;
+            if (values.Count > 1 && values[1] is bool b) isActive = b;
+
+            if (!isActive) return DisabledBrush;
+
+            var prefabId = values.Count > 0 ? values[0] as string : null;
+            if (!string.IsNullOrEmpty(prefabId)) return PrefabBrush;
+
+            return AvaloniaProperty.UnsetValue;
+        }
+    }
 }

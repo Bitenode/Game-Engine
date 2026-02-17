@@ -1,0 +1,43 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.FindReplaceOverlay"
+             IsVisible="False"
+             HorizontalAlignment="Right"
+             VerticalAlignment="Top"
+             Margin="0,4,24,0">
+
+    <Border Background="#252526" BorderBrush="#454545" BorderThickness="1"
+            CornerRadius="4" Padding="8" MinWidth="360">
+        <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+            <!-- Find row -->
+            <TextBox x:Name="FindBox"
+                     Grid.Row="0" Grid.Column="0"
+                     Watermark="Find"
+                     FontSize="12"
+                     Margin="0,0,4,4"/>
+            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                <TextBlock x:Name="MatchCount" Text="0 results" FontSize="11"
+                           Foreground="#888888" VerticalAlignment="Center" Margin="4,0"/>
+                <Button x:Name="BtnPrev" Content="&#x25B2;" FontSize="10" Padding="6,2" ToolTip.Tip="Previous (Shift+F3)"/>
+                <Button x:Name="BtnNext" Content="&#x25BC;" FontSize="10" Padding="6,2" ToolTip.Tip="Next (F3)"/>
+                <ToggleButton x:Name="BtnCase" Content="Aa" FontSize="10" Padding="6,2" ToolTip.Tip="Match Case"/>
+                <ToggleButton x:Name="BtnRegex" Content=".*" FontSize="10" Padding="6,2" ToolTip.Tip="Use Regex"/>
+                <Button x:Name="BtnCloseFind" Content="&#x00D7;" FontSize="12" Padding="6,2"/>
+            </StackPanel>
+
+            <!-- Replace row -->
+            <TextBox x:Name="ReplaceBox"
+                     Grid.Row="1" Grid.Column="0"
+                     Watermark="Replace"
+                     FontSize="12"
+                     Margin="0,0,4,4"
+                     IsVisible="{Binding #ReplaceRow.IsVisible}"/>
+            <StackPanel x:Name="ReplaceRow" Grid.Row="1" Grid.Column="1"
+                        Orientation="Horizontal" Spacing="2" VerticalAlignment="Center"
+                        IsVisible="False">
+                <Button x:Name="BtnReplace" Content="Replace" FontSize="10" Padding="6,2"/>
+                <Button x:Name="BtnReplaceAll" Content="All" FontSize="10" Padding="6,2"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>

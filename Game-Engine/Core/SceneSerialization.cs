@@ -98,6 +98,7 @@ namespace Game_Engine.Core
             var dto = new GameObjectDTO
             {
                 Name = go.Name,
+                Enabled = go.Enabled ? null : false,   // only write when disabled (keeps files clean)
                 Transform = new TransformDTO
                 {
                     LocalPosition = go.Transform.Position,
@@ -118,6 +119,7 @@ namespace Game_Engine.Core
             var dto = new GameObjectDTO
             {
                 Name = go.Name,
+                Enabled = go.Enabled ? null : false,
                 Transform = new TransformDTO
                 {
                     LocalPosition = go.Transform.Position,
@@ -135,6 +137,9 @@ namespace Game_Engine.Core
         static GameObject FromDTO(GameObjectDTO dto)
         {
             var go = new GameObject(dto.Name ?? "GameObject");
+
+            if (dto.Enabled.HasValue)
+                go.Enabled = dto.Enabled.Value;
 
             if (dto.Transform != null)
             {
@@ -1334,6 +1339,7 @@ namespace Game_Engine.Core
     public class GameObjectDTO
     {
         public string? Name { get; set; }
+        public bool? Enabled { get; set; }
         public TransformDTO? Transform { get; set; }
         public List<BehaviorDTO>? Behaviors { get; set; }
         public List<GameObjectDTO>? Children { get; set; }

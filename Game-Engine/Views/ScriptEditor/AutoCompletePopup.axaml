@@ -1,0 +1,15 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.AutoCompletePopup"
+             IsVisible="False"
+             Width="320" MaxHeight="240">
+
+    <Border Background="#252526" BorderBrush="#454545" BorderThickness="1"
+            CornerRadius="2" Padding="0">
+        <ListBox x:Name="CompletionList"
+                 Background="#252526"
+                 FontFamily="Consolas,Menlo,Monospace"
+                 FontSize="12"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+    </Border>
+</UserControl>

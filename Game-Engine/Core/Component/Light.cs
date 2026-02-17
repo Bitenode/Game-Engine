@@ -43,6 +43,9 @@ namespace Game_Engine.Core.Component
             base.OnDisable();
         }
 
+        /// <summary>Clear all registered lights. Call during scene teardown to prevent stale entries.</summary>
+        public static void ClearAll() => _allLights.Clear();
+
         /// <summary>Get the world-space direction this light points (for directional and spot).</summary>
         public System.Numerics.Vector3 GetWorldDirection()
         {

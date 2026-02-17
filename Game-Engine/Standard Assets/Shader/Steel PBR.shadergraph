@@ -1,0 +1,59 @@
+{
+  "name": "Steel PBR",
+  "nodes": [
+    {
+      "id": "output-1",
+      "type": "Output",
+      "x": 600,
+      "y": 300
+    },
+    {
+      "id": "tex-albedo",
+      "type": "TextureSample",
+      "x": 100,
+      "y": 200,
+      "props": {
+        "Slot": 0,
+        "Path": "Steel_C"
+      }
+    },
+    {
+      "id": "float-rough",
+      "type": "Float",
+      "x": 100,
+      "y": 450,
+      "props": {
+        "Value": 0.55
+      }
+    },
+    {
+      "id": "float-metal",
+      "type": "Float",
+      "x": 100,
+      "y": 530,
+      "props": {
+        "Value": 0.3
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "tex-albedo",
+      "fromPort": 0,
+      "toNode": "output-1",
+      "toPort": 0
+    },
+    {
+      "fromNode": "float-rough",
+      "fromPort": 0,
+      "toNode": "output-1",
+      "toPort": 3
+    },
+    {
+      "fromNode": "float-metal",
+      "fromPort": 0,
+      "toNode": "output-1",
+      "toPort": 2
+    }
+  ]
+}

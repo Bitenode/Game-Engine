@@ -16,6 +16,27 @@ namespace Game_Engine.Core
     /// </summary>
     public static class SceneRenderer
     {
+        // ---------- Render context for custom shader support ----------
+        /// <summary>
+        /// Bundles per-frame render state so DrawMeshItem can set uniforms on custom shaders.
+        /// </summary>
+        private struct RenderContext
+        {
+            public SN.Matrix4x4 View;
+            public SN.Matrix4x4 Proj;
+            public SN.Vector3 CamPos;
+            public SN.Vector3 LightDir;
+            public SN.Vector3 LightColor;
+            public float DiffuseK;
+            public float Ambient;
+            public SN.Matrix4x4 ShadowVP;
+            public ShaderProgram StandardShader;
+            public ResourceCache Cache;
+            public bool IsES;
+            /// <summary>When true, skip custom shader detection and always use the standard shader.</summary>
+            public bool ForceStandardShader;
+        }
+
         // ---------- Frustum culling ----------
         private struct Sphere { public SN.Vector3 Center; public float Radius; }
         private static readonly Dictionary<Mesh, Sphere> s_meshSpheres = new(1024);
@@ -140,6 +161,8 @@ namespace Game_Engine.Core
             GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
             SN.Vector4[] positions, SN.Vector4[] colors)
         {
+            if (!go.Enabled) return;
+
             foreach (var b in go.Behaviors)
             {
                 if (b is ParticleEmitter pe && pe.IsActiveAndEnabled && pe.ActiveParticleCount > 0)
@@ -243,6 +266,8 @@ namespace Game_Engine.Core
             SN.Vector3 lightDir, float ambient, float diffuseK,
             SN.Vector3 camPos, SN.Vector3 skyColor)
         {
+            if (!go.Enabled) return;
+
             var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
 
             foreach (var b in go.Behaviors)
@@ -436,7 +461,9 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 camPos,
             SN.Vector3 sunShineDir = default,
-            ShaderProgram? terrainShader = null)
+            ShaderProgram? terrainShader = null,
+            bool isES = true,
+            SN.Vector3 lightColor = default)
         {
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
@@ -479,6 +506,22 @@ namespace Game_Engine.Core
                 standardShader.SetInt("uHasShadow", 0);
             }
 
+            // Build render context for custom shader support
+            var renderCtx = new RenderContext
+            {
+                View = view,
+                Proj = proj,
+                CamPos = camPos,
+                LightDir = lightDir,
+                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                DiffuseK = diffuseK,
+                Ambient = ambient,
+                ShadowVP = shadowVP,
+                StandardShader = standardShader,
+                Cache = cache,
+                IsES = isES
+            };
+
             // --- BATCH terrain draw items by Terrain reference ---
             // This avoids rebinding splatmap + layer textures for every single chunk.
             // We first draw all non-terrain opaque items, then group terrain items by terrain.
@@ -499,7 +542,7 @@ namespace Game_Engine.Core
                     }
                     terrainShaderActive = false;
                 }
-                DrawMeshItem(gl, standardShader, cache, item);
+                DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
             }
 
             // Now draw ALL terrain items, grouped by terrain to minimize state changes
@@ -562,12 +605,38 @@ namespace Game_Engine.Core
 
                 foreach (var item in transparentItems)
                 {
-                    DrawMeshItem(gl, standardShader, cache, item);
+                    DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
                 }
 
                 gl.DepthMask(true);
                 gl.Disable(EnableCap.Blend);
             }
+
+            // --- WORLD-SPACE UI CANVASES (rendered as transparent overlays in 3D) ---
+            RenderWorldSpaceCanvases(gl, cache, in view, in proj);
+        }
+
+        /// <summary>
+        /// Render world-space UI canvases as textured quads in 3D space.
+        /// Called at the end of the forward pass after the transparent pass.
+        /// </summary>
+        public static void RenderWorldSpaceCanvases(
+            GL gl,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj)
+        {
+            var worldCanvases = Component.UI.Canvas.All
+                .Where(c => c.IsActiveAndEnabled && c.RenderMode == Component.UI.CanvasRenderMode.WorldSpace)
+                .ToList();
+
+            if (worldCanvases.Count == 0) return;
+
+            // World-space canvases are rendered by the CanvasRenderer instance
+            // owned by the view (GameView/SceneView). The view calls
+            // CanvasRenderer.RenderWorldCanvas() for each world-space canvas
+            // after calling RenderGPU(). This static method is a hook for
+            // future use if we want to batch world-space canvases in the scene renderer.
         }
 
         /// <summary>
@@ -608,6 +677,8 @@ namespace Game_Engine.Core
             List<DrawItem> opaque,
             List<DrawItem> transparent)
         {
+            if (!go.Enabled) return;
+
             // Fast skip for vegetation chunks whose MeshRenderer was disabled by distance culling.
             // Avoids expensive matrix computation and behavior iteration for distant grass.
             if (go.Name.StartsWith("chunk_"))
@@ -715,12 +786,41 @@ namespace Game_Engine.Core
             GL gl,
             ShaderProgram shader,
             ResourceCache cache,
-            in DrawItem item)
+            in DrawItem item,
+            in RenderContext ctx)
         {
             var mesh = item.MF.Mesh;
             if (mesh == null) return;
 
             var gpuMesh = cache.GetMesh(mesh);
+
+            // ── Custom shader path ──
+            // If the material references a .shader file, try to use it instead of the standard shader.
+            // Skipped when ForceStandardShader is set (e.g., G-buffer pass in deferred pipeline).
+            var mat = item.Mat;
+            if (!ctx.ForceStandardShader && mat != null && !string.IsNullOrWhiteSpace(mat.ShaderAssetPath))
+            {
+                string shaderPath = mat.ShaderAssetPath;
+                string absPath = shaderPath;
+                var proj = ProjectService.Current;
+                if (proj != null && !System.IO.Path.IsPathRooted(shaderPath))
+                    absPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, shaderPath));
+
+                var customShader = CustomShaderCache.GetOrCompile(absPath, gl, ctx.IsES);
+                if (customShader != null)
+                {
+                    DrawWithCustomShader(gl, customShader, cache, item, gpuMesh, in ctx);
+                    // Restore the standard shader for subsequent draws
+                    ctx.StandardShader.Use();
+                    SetLightUniforms(ctx.StandardShader, ctx.LightDir, ctx.DiffuseK, ctx.Ambient, false, SN.Vector3.Zero, 0f);
+                    ctx.StandardShader.SetMatrix4("uView", ctx.View);
+                    ctx.StandardShader.SetMatrix4("uProj", ctx.Proj);
+                    ctx.StandardShader.SetVector3("uCamPos", ctx.CamPos);
+                    return;
+                }
+            }
+
+            // ── Standard shader path (unchanged) ──
 
             // Model matrix
             shader.SetMatrix4("uModel", item.World);
@@ -731,7 +831,6 @@ namespace Game_Engine.Core
             shader.SetMatrix4("uNormalMatrix", normalMatrix);
 
             // Material properties
-            var mat = item.Mat;
             float r = 1f, g2 = 1f, b = 1f, a = 1f;
             float roughness = 0.5f, metallic = 0f, alphaCutoff = 0f;
             bool transparent = item.IsTransparent;
@@ -892,6 +991,7 @@ namespace Game_Engine.Core
             }
             shader.SetTexture("uNormalMap", 1);
             shader.SetInt("uHasNormalMap", hasNormal ? 1 : 0);
+            shader.SetFloat("uNormalStrength", mat?.NormalStrength ?? 1f);
 
             // Specular texture → Texture2
             bool hasSpec = false;
@@ -1030,6 +1130,152 @@ namespace Game_Engine.Core
             gpuMesh.Draw();
         }
 
+        // ────────── CUSTOM SHADER DRAW ──────────
+
+        /// <summary>
+        /// Draw a mesh using a custom shader compiled from the Visual Shader Editor.
+        /// Binds all available material textures (albedo, normal, specular) and sets
+        /// lighting/shadow uniforms using the custom shader naming convention.
+        /// </summary>
+        private static void DrawWithCustomShader(
+            GL gl,
+            ShaderProgram customShader,
+            ResourceCache cache,
+            in DrawItem item,
+            GPUMesh gpuMesh,
+            in RenderContext ctx)
+        {
+            customShader.Use();
+
+            // ── Vertex uniforms ──
+            customShader.SetMatrix4("uModel", item.World);
+            customShader.SetMatrix4("uView", ctx.View);
+            customShader.SetMatrix4("uProjection", ctx.Proj);
+            customShader.SetMatrix4("uLightSpaceMatrix", ctx.ShadowVP);
+
+            // Normal matrix = transpose(inverse(model))
+            SN.Matrix4x4.Invert(item.World, out var invWorld);
+            var normalMatrix = SN.Matrix4x4.Transpose(invWorld);
+            customShader.SetMatrix4("uNormalMatrix", normalMatrix);
+
+            // ── Fragment uniforms ──
+            customShader.SetVector3("uCameraPos", ctx.CamPos);
+            customShader.SetFloat("uTime", WindSystem.Time);
+
+            // Both the standard shader and custom shaders use the same convention:
+            // uLightDir = direction FROM the light (the "shine" direction).
+            // Shaders negate internally: dot(N, -uLightDir) or vec3 L = normalize(-uLightDir).
+            customShader.SetVector3("uLightDir", ctx.LightDir);
+            customShader.SetVector3("uLightColor", ctx.LightColor);
+            customShader.SetFloat("uLightIntensity", ctx.DiffuseK);
+            customShader.SetFloat("uAmbient", ctx.Ambient);
+
+            // Material properties
+            var mat = item.Mat;
+            float roughness = mat?.Roughness ?? 0.5f;
+            float metallic = mat?.Metallic ?? 0f;
+            customShader.SetFloat("uRoughness", roughness);
+            customShader.SetFloat("uMetallic", metallic);
+
+            // ── Bind albedo texture → uTexture0 (unit 0) ──
+            bool hasAlbedo = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? tex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("albedo") || usage == "" || usage.Contains("base") || usage.Contains("diff"))
+                            tex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Albedo)
+                            tex = mtex.Texture;
+                    }
+                    if (tex != null) { cache.GetTexture(tex).Bind(TextureUnit.Texture0); hasAlbedo = true; break; }
+                }
+            }
+            if (!hasAlbedo) cache.GetWhiteTexture().Bind(TextureUnit.Texture0);
+            customShader.SetTexture("uTexture0", 0);
+
+            // ── Bind normal map → uTexture1 (unit 1) ──
+            bool hasNormal = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? nTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("normal") || usage.Contains("bump"))
+                            nTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Normal)
+                            nTex = mtex.Texture;
+                    }
+                    if (nTex != null) { cache.GetTexture(nTex).Bind(TextureUnit.Texture1); hasNormal = true; break; }
+                }
+            }
+            if (!hasNormal)
+            {
+                // Bind a flat normal texture (0.5, 0.5, 1.0 = identity)
+                cache.GetWhiteTexture().Bind(TextureUnit.Texture1);
+            }
+            customShader.SetTexture("uTexture1", 1);
+            customShader.SetInt("uHasNormalMap", hasNormal ? 1 : 0);
+            customShader.SetFloat("uNormalStrength", mat?.NormalStrength ?? 1f);
+
+            // ── Bind specular map → uTexture2 (unit 2) ──
+            bool hasSpec = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? sTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("specular") || usage.Contains("spec"))
+                            sTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Specular)
+                            sTex = mtex.Texture;
+                    }
+                    if (sTex != null) { cache.GetTexture(sTex).Bind(TextureUnit.Texture2); hasSpec = true; break; }
+                }
+            }
+            if (!hasSpec) cache.GetWhiteTexture().Bind(TextureUnit.Texture2);
+            customShader.SetTexture("uTexture2", 2);
+            customShader.SetInt("uHasSpecularMap", hasSpec ? 1 : 0);
+
+            // ── Bind shadow map → unit 4 ──
+            // (matches deferred lighting convention so the shader can optionally use it)
+            customShader.SetInt("uHasShadow", 0);
+
+            // ── Cull face ──
+            bool doubleSided = item.MR.DoubleSided;
+            if (doubleSided)
+                gl.Disable(EnableCap.CullFace);
+            else
+            {
+                gl.Enable(EnableCap.CullFace);
+                gl.CullFace(item.MR.InvertFrontFace ? TriangleFace.Front : TriangleFace.Back);
+            }
+
+            gpuMesh.Draw();
+        }
+
         // ────────── TERRAIN SPLATMAP DRAW (batched) ──────────
 
         /// <summary>
@@ -1139,6 +1385,472 @@ namespace Game_Engine.Core
             return tex;
         }
 
+        // ══════════════════════════════════════════════════════════
+        //  DEFERRED RENDERING PIPELINE
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// G-buffer geometry pass: draws opaque standard items to the G-buffer MRT.
+        /// Populates thread-static draw item lists for use by RenderForwardOverlays.
+        /// The G-buffer FBO must be bound before calling this method.
+        /// </summary>
+        public static void RenderGBufferPass(
+            GL gl,
+            ShaderProgram gbufferShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            bool isES = true)
+        {
+            var viewProj = view * proj;
+            var planes = s_planes ??= new Plane[6];
+            ExtractFrustumPlanes(viewProj, planes);
+
+            var opaqueItems = s_opaqueItems ??= new List<DrawItem>(256);
+            var transparentItems = s_transparentItems ??= new List<DrawItem>(64);
+            opaqueItems.Clear();
+            transparentItems.Clear();
+
+            foreach (var root in SceneService.Root)
+                GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
+
+            gl.Enable(EnableCap.DepthTest);
+            gl.DepthFunc(DepthFunction.Less);
+            gl.DepthMask(true);
+            gl.Disable(EnableCap.Blend);
+
+            gbufferShader.Use();
+            gbufferShader.SetMatrix4("uView", view);
+            gbufferShader.SetMatrix4("uProj", proj);
+            gbufferShader.SetVector3("uCamPos", camPos);
+            gbufferShader.SetMatrix4("uShadowVP", shadowVP);
+
+            // Build render context — ForceStandardShader ensures custom shader items
+            // render with the G-buffer shader instead of their custom shaders.
+            var renderCtx = new RenderContext
+            {
+                View = view,
+                Proj = proj,
+                CamPos = camPos,
+                LightDir = SN.Vector3.UnitY,
+                LightColor = SN.Vector3.One,
+                DiffuseK = 0f,
+                Ambient = 0f,
+                ShadowVP = shadowVP,
+                StandardShader = gbufferShader,
+                Cache = cache,
+                IsES = isES,
+                ForceStandardShader = true
+            };
+
+            foreach (var item in opaqueItems)
+            {
+                // Skip terrain (forward-rendered with splatmap shader)
+                if (item.Terrain != null && item.Terrain.Layers.Count > 0) continue;
+
+                // Custom shader items are rendered here with the G-buffer shader
+                // (standard PBR). Custom shader effects only apply in Scene View
+                // (forward renderer). This avoids cross-pipeline rendering issues.
+                DrawMeshItem(gl, gbufferShader, cache, item, in renderCtx);
+            }
+        }
+
+        /// <summary>
+        /// Deferred lighting pass: fullscreen quad that reads G-buffer, computes PBR Cook-Torrance
+        /// lighting with multi-light support, and outputs the lit scene.
+        /// </summary>
+        public static void RenderDeferredLighting(
+            GL gl,
+            ShaderProgram deferredShader,
+            FullscreenQuad fsQuad,
+            GPUFramebuffer gbufferFBO,
+            GPUTexture? ssaoTexture,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            float ambient,
+            float shadowBias)
+        {
+            deferredShader.Use();
+
+            // Bind G-buffer textures
+            if (gbufferFBO.ColorTextures != null && gbufferFBO.ColorTextures.Length >= 3)
+            {
+                gbufferFBO.ColorTextures[0].Bind(TextureUnit.Texture0);
+                deferredShader.SetTexture("gAlbedoMetallic", 0);
+
+                gbufferFBO.ColorTextures[1].Bind(TextureUnit.Texture1);
+                deferredShader.SetTexture("gNormalRoughness", 1);
+
+                gbufferFBO.ColorTextures[2].Bind(TextureUnit.Texture2);
+                deferredShader.SetTexture("gEmissiveAO", 2);
+            }
+
+            // Depth
+            if (gbufferFBO.DepthTexture != null)
+            {
+                gbufferFBO.DepthTexture.Bind(TextureUnit.Texture3);
+                deferredShader.SetTexture("gDepth", 3);
+            }
+
+            // Shadow map
+            if (shadowFBO?.DepthTexture != null)
+            {
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture4);
+                deferredShader.SetTexture("uShadowMap", 4);
+                deferredShader.SetInt("uHasShadow", 1);
+                deferredShader.SetMatrix4("uShadowVP", shadowVP);
+                deferredShader.SetFloat("uShadowBias", shadowBias);
+                deferredShader.SetVector3("uSunDir", sunShineDir);
+            }
+            else
+            {
+                deferredShader.SetInt("uHasShadow", 0);
+            }
+
+            // SSAO
+            if (ssaoTexture != null)
+            {
+                ssaoTexture.Bind(TextureUnit.Texture5);
+                deferredShader.SetTexture("uSSAOTex", 5);
+                deferredShader.SetInt("uHasSSAO", 1);
+            }
+            else
+            {
+                deferredShader.SetInt("uHasSSAO", 0);
+            }
+
+            // Camera + inverse VP
+            deferredShader.SetVector3("uCamPos", camPos);
+            var vp = view * proj;
+            SN.Matrix4x4.Invert(vp, out var invVP);
+            deferredShader.SetMatrix4("uInvViewProj", invVP);
+
+            // Ambient
+            deferredShader.SetFloat("uAmbient", ambient);
+
+            // Multi-light upload
+            var lights = Component.Light.AllLights;
+            int lightCount = Math.Min(lights.Count, 16);
+            deferredShader.SetInt("uLightCount", lightCount);
+
+            for (int i = 0; i < lightCount; i++)
+            {
+                var light = lights[i];
+                int type = light.Type == LightType.Directional ? 0 : 1;
+                deferredShader.SetInt($"uLightTypes[{i}]", type);
+
+                if (light.Type == LightType.Directional)
+                {
+                    var dir = light.GetWorldDirection();
+                    deferredShader.SetVector3($"uLightDirs[{i}]", SN.Vector3.Normalize(-dir));
+                }
+                else
+                {
+                    deferredShader.SetVector3($"uLightPositions[{i}]", light.GetWorldPosition());
+                    deferredShader.SetFloat($"uLightRanges[{i}]", Math.Max(0.001f, light.Range));
+                }
+
+                var col = light.GetColorRGB();
+                deferredShader.SetVector3($"uLightColors[{i}]", new SN.Vector3(
+                    light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f));
+                deferredShader.SetFloat($"uLightIntensities[{i}]", light.Intensity);
+            }
+
+            // Draw fullscreen quad
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.Blend);
+            fsQuad.Draw();
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        /// <summary>
+        /// Forward overlay pass: renders terrain, custom shader items, and transparent objects.
+        /// Must be called after RenderGBufferPass (which populates the draw item lists).
+        /// </summary>
+        public static void RenderForwardOverlays(
+            GL gl,
+            ShaderProgram standardShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float diffuseK,
+            float ambient,
+            bool lightIsPoint,
+            SN.Vector3 lightPosW,
+            float lightRange,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            ShaderProgram? terrainShader = null,
+            bool isES = true,
+            SN.Vector3 lightColor = default)
+        {
+            var opaqueItems = s_opaqueItems;
+            var transparentItems = s_transparentItems;
+            if (opaqueItems == null) return;
+
+            var renderCtx = new RenderContext
+            {
+                View = view,
+                Proj = proj,
+                CamPos = camPos,
+                LightDir = lightDir,
+                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                DiffuseK = diffuseK,
+                Ambient = ambient,
+                ShadowVP = shadowVP,
+                StandardShader = standardShader,
+                Cache = cache,
+                IsES = isES
+            };
+
+            // --- TERRAIN PASS ---
+            if (terrainShader != null)
+            {
+                Terrain? boundTerrain = null;
+                terrainShader.Use();
+                SetLightUniforms(terrainShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
+                terrainShader.SetMatrix4("uView", view);
+                terrainShader.SetMatrix4("uProj", proj);
+                terrainShader.SetVector3("uCamPos", camPos);
+
+                if (shadowFBO?.DepthTexture != null)
+                {
+                    terrainShader.SetInt("uHasShadow", 1);
+                    terrainShader.SetMatrix4("uShadowVP", shadowVP);
+                    terrainShader.SetFloat("uShadowBias", 0.008f);
+                    terrainShader.SetVector3("uSunDir", sunShineDir);
+                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture2);
+                    terrainShader.SetTexture("uShadowMap", 2);
+                }
+                else
+                {
+                    terrainShader.SetInt("uHasShadow", 0);
+                }
+
+                gl.Enable(EnableCap.CullFace);
+                gl.CullFace(TriangleFace.Back);
+
+                foreach (var item in opaqueItems)
+                {
+                    if (item.Terrain == null || item.Terrain.Layers.Count <= 0) continue;
+                    if (!ReferenceEquals(item.Terrain, boundTerrain))
+                    {
+                        boundTerrain = item.Terrain;
+                        BindTerrainState(gl, terrainShader, cache, boundTerrain);
+                    }
+                    DrawTerrainChunk(gl, terrainShader, cache, item);
+                }
+            }
+
+            // CUSTOM SHADER FORWARD PASS — re-render items that have custom shaders
+            // with their actual shaders. They were already written to the G-buffer (for
+            // depth, SSAO, etc.) with the standard PBR shader, so we use GL_LEQUAL depth
+            // to overdraw only where they already exist.
+            {
+                var customCtx = new RenderContext
+                {
+                    View = view,
+                    Proj = proj,
+                    CamPos = camPos,
+                    LightDir = lightDir,
+                    LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                    DiffuseK = diffuseK,
+                    Ambient = ambient,
+                    ShadowVP = shadowVP,
+                    StandardShader = standardShader,
+                    Cache = cache,
+                    IsES = isES,
+                    ForceStandardShader = false
+                };
+
+                gl.DepthFunc(DepthFunction.Lequal);
+                foreach (var item in opaqueItems)
+                {
+                    if (item.Terrain != null) continue;
+                    var mat = item.Mat;
+                    if (mat == null || string.IsNullOrWhiteSpace(mat.ShaderAssetPath)) continue;
+                    DrawMeshItem(gl, standardShader, cache, item, in customCtx);
+                }
+                gl.DepthFunc(DepthFunction.Less);
+            }
+
+            // Set up the standard shader for transparent items below.
+            standardShader.Use();
+            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
+            standardShader.SetMatrix4("uView", view);
+            standardShader.SetMatrix4("uProj", proj);
+            standardShader.SetVector3("uCamPos", camPos);
+
+            if (shadowFBO?.DepthTexture != null)
+            {
+                standardShader.SetInt("uHasShadow", 1);
+                standardShader.SetMatrix4("uShadowVP", shadowVP);
+                standardShader.SetFloat("uShadowBias", 0.008f);
+                standardShader.SetVector3("uSunDir", sunShineDir);
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                standardShader.SetTexture("uShadowMap", 7);
+            }
+            else
+            {
+                standardShader.SetInt("uHasShadow", 0);
+            }
+
+            // --- TRANSPARENT PASS (back-to-front) ---
+            if (transparentItems != null && transparentItems.Count > 0)
+            {
+                transparentItems.Sort((a, b) => b.SortZ.CompareTo(a.SortZ));
+
+                gl.Enable(EnableCap.Blend);
+                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                gl.DepthMask(false);
+
+                standardShader.Use();
+                if (shadowFBO?.DepthTexture != null)
+                {
+                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                    standardShader.SetTexture("uShadowMap", 7);
+                }
+
+                foreach (var item in transparentItems)
+                {
+                    DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
+                }
+
+                gl.DepthMask(true);
+                gl.Disable(EnableCap.Blend);
+            }
+        }
+
+        /// <summary>
+        /// SSAO pass: computes screen-space ambient occlusion from G-buffer depth + normals.
+        /// The SSAO FBO must be bound before calling.
+        /// </summary>
+        public static void RenderSSAO(
+            GL gl,
+            ShaderProgram ssaoShader,
+            FullscreenQuad fsQuad,
+            GPUFramebuffer gbufferFBO,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3[] kernel,
+            int screenWidth,
+            int screenHeight,
+            float radius = 0.5f,
+            float bias = 0.025f)
+        {
+            ssaoShader.Use();
+
+            // Bind G-buffer textures
+            if (gbufferFBO.ColorTextures != null && gbufferFBO.ColorTextures.Length >= 2)
+            {
+                gbufferFBO.ColorTextures[1].Bind(TextureUnit.Texture0);
+                ssaoShader.SetTexture("gNormalRoughness", 0);
+            }
+            if (gbufferFBO.DepthTexture != null)
+            {
+                gbufferFBO.DepthTexture.Bind(TextureUnit.Texture1);
+                ssaoShader.SetTexture("gDepth", 1);
+            }
+
+            ssaoShader.SetMatrix4("uProjection", proj);
+            ssaoShader.SetMatrix4("uView", view);
+            var vp = view * proj;
+            SN.Matrix4x4.Invert(vp, out var invVP);
+            ssaoShader.SetMatrix4("uInvViewProj", invVP);
+
+            // Upload kernel samples
+            for (int i = 0; i < Math.Min(kernel.Length, 32); i++)
+                ssaoShader.SetVector3($"uSamples[{i}]", kernel[i]);
+
+            ssaoShader.SetFloat("uRadius", radius);
+            ssaoShader.SetFloat("uBias", bias);
+            ssaoShader.SetVector2("uNoiseScale", screenWidth / 4f, screenHeight / 4f);
+
+            gl.Disable(EnableCap.DepthTest);
+            fsQuad.Draw();
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        /// <summary>SSAO blur pass. The blur FBO must be bound before calling.</summary>
+        public static void RenderSSAOBlur(
+            GL gl,
+            ShaderProgram blurShader,
+            FullscreenQuad fsQuad,
+            GPUTexture ssaoInput,
+            int width,
+            int height)
+        {
+            blurShader.Use();
+            ssaoInput.Bind(TextureUnit.Texture0);
+            blurShader.SetTexture("uSSAOInput", 0);
+            blurShader.SetVector2("uTexelSize", 1f / width, 1f / height);
+
+            gl.Disable(EnableCap.DepthTest);
+            fsQuad.Draw();
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        /// <summary>
+        /// SSR pass: screen-space reflections from the lit scene + G-buffer.
+        /// The output FBO must be bound before calling.
+        /// </summary>
+        public static void RenderSSR(
+            GL gl,
+            ShaderProgram ssrShader,
+            FullscreenQuad fsQuad,
+            GPUTexture litScene,
+            GPUFramebuffer gbufferFBO,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            int screenWidth,
+            int screenHeight)
+        {
+            ssrShader.Use();
+
+            litScene.Bind(TextureUnit.Texture0);
+            ssrShader.SetTexture("uLitScene", 0);
+
+            if (gbufferFBO.ColorTextures != null && gbufferFBO.ColorTextures.Length >= 2)
+            {
+                gbufferFBO.ColorTextures[1].Bind(TextureUnit.Texture1);
+                ssrShader.SetTexture("gNormalRoughness", 1);
+
+                gbufferFBO.ColorTextures[0].Bind(TextureUnit.Texture2);
+                ssrShader.SetTexture("gAlbedoMetallic", 2);
+            }
+            if (gbufferFBO.DepthTexture != null)
+            {
+                gbufferFBO.DepthTexture.Bind(TextureUnit.Texture3);
+                ssrShader.SetTexture("gDepth", 3);
+            }
+
+            ssrShader.SetMatrix4("uView", view);
+            ssrShader.SetMatrix4("uProjection", proj);
+            var vp = view * proj;
+            SN.Matrix4x4.Invert(vp, out var invVP);
+            ssrShader.SetMatrix4("uInvViewProj", invVP);
+            ssrShader.SetVector3("uCamPos", camPos);
+            ssrShader.SetVector2("uScreenSize", screenWidth, screenHeight);
+
+            gl.Disable(EnableCap.DepthTest);
+            fsQuad.Draw();
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        // ══════════════════════════════════════════════════════════
+
         private static void SetLightUniforms(
             ShaderProgram shader,
             SN.Vector3 lightDir, float diffuseK, float ambient,
@@ -1161,6 +1873,8 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 lightVP,
             Plane[] planes)
         {
+            if (!go.Enabled) return;
+
             // Fast skip for culled vegetation chunks
             if (go.Name.StartsWith("chunk_"))
             {

@@ -1,0 +1,103 @@
+{
+  "name": "Matte Concrete",
+  "nodes": [
+    {
+      "id": "output01",
+      "type": "Output",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "color01",
+      "type": "Color",
+      "x": 100,
+      "y": 160,
+      "props": {
+        "R": 0.55,
+        "G": 0.53,
+        "B": 0.5,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "rough01",
+      "type": "Float",
+      "x": 300,
+      "y": 380,
+      "props": {
+        "Value": 0.9
+      }
+    },
+    {
+      "id": "ao01",
+      "type": "Float",
+      "x": 300,
+      "y": 470,
+      "props": {
+        "Value": 0.75
+      }
+    },
+    {
+      "id": "noise01",
+      "type": "Noise",
+      "x": 100,
+      "y": 340
+    },
+    {
+      "id": "noisescale",
+      "type": "Float",
+      "x": -60,
+      "y": 380,
+      "props": {
+        "Value": 25.0
+      }
+    },
+    {
+      "id": "math01",
+      "type": "Math",
+      "x": 320,
+      "y": 200,
+      "props": {
+        "Op": "Multiply"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "noisescale",
+      "fromPort": 0,
+      "toNode": "noise01",
+      "toPort": 1
+    },
+    {
+      "fromNode": "color01",
+      "fromPort": 0,
+      "toNode": "math01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "noise01",
+      "fromPort": 0,
+      "toNode": "math01",
+      "toPort": 1
+    },
+    {
+      "fromNode": "math01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "rough01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 3
+    },
+    {
+      "fromNode": "ao01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 6
+    }
+  ]
+}

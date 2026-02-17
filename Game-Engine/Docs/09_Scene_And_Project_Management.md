@@ -426,3 +426,105 @@ Low-level audio playback via **NAudio**:
 - **Channel routing** — each source belongs to Master, Music, or SFX channel
 
 Volume computation: `finalVolume = sourceVolume × channelVolume × masterVolume × distanceAttenuation`
+
+### AudioMixer
+Hierarchical audio mixing system with group-based volume control and effects:
+- **Groups** — organize audio sources into named groups (Music, SFX, Ambient, etc.)
+- **Volume control** — per-group volume with master bus
+- **Effects** — per-group audio effects (reverb, EQ, compression)
+- **Integration** — works with `ReverbZone` components for spatial reverb
+
+---
+
+## Wind System
+
+The `WindSystem` provides global wind parameters for vegetation animation:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Direction` | `Vector3` | Global wind direction (normalized) |
+| `Strength` | `float` | Wind strength multiplier |
+| `Turbulence` | `float` | Turbulence intensity |
+| `Speed` | `float` | Wind animation speed |
+
+Wind affects:
+- **Tree** components — vertex displacement modulated by height
+- **VegetationPainter** — grass sway animation
+- Configured globally and read by the GPU shader via uniforms
+
+---
+
+## Profiler
+
+The `Profiler` class tracks per-frame performance metrics:
+
+| Metric | Description |
+|--------|-------------|
+| `FPS` | Current frames per second |
+| `FrameTime` | Time per frame in milliseconds |
+| `DrawCalls` | GPU draw calls per frame |
+| `VertexCount` | Total vertices rendered |
+| `TriangleCount` | Total triangles rendered |
+
+Access in-editor via the **Profiler Panel** (Window > Profiler) or programmatically via `Profiler.CurrentFPS`, `Profiler.FrameTimeMs`, etc.
+
+---
+
+## Networking
+
+### NetworkManager
+Central multiplayer networking system supporting server/client architecture:
+
+| Feature | Description |
+|---------|-------------|
+| **Server/Client** | Host as server or connect as client |
+| **Object Registry** | Tracks all `NetworkIdentity` objects |
+| **State Broadcast** | Server broadcasts object state to all clients |
+| **RPC System** | Register and invoke remote procedure calls |
+| **Peer Management** | Track connected peers with IDs |
+
+### NetworkTransport
+Low-level UDP transport layer:
+- **Unreliable datagrams** — fast state updates (position, rotation)
+- **Reliable messages** — RPCs and critical state changes
+- **Connection management** — handshake, keep-alive, disconnect handling
+
+### Networking Components
+| Component | Purpose |
+|-----------|---------|
+| `NetworkIdentity` | Identifies a networked GameObject (required for any networked object) |
+| `NetworkTransform` | Synchronizes position/rotation/scale with interpolation |
+| `NetworkAnimator` | Synchronizes animation state and parameters |
+
+See the [Components Reference](03_Components_Reference.md) for full property details.
+
+---
+
+## SceneManager — Runtime Scene Loading
+
+The `SceneManager` provides a script-accessible API for loading scenes at runtime (e.g., main menu → gameplay transitions). Scene loads are **deferred to the next frame** to avoid mutating the scene tree during iteration.
+
+| API | Description |
+|-----|-------------|
+| `SceneManager.LoadScene(name)` | Queue a scene by name (looks in `Scenes/` folder) |
+| `SceneManager.LoadSceneByPath(path)` | Queue a scene by file path |
+| `SceneManager.CurrentSceneName` | Name of the currently loaded scene (read-only) |
+| `SceneManager.HasPendingLoad` | `true` if a load is queued but not yet processed |
+| `SceneManager.SceneLoaded` | `Action<string>` event fired after a scene finishes loading |
+
+**Load sequence:**
+1. `OnDestroy()` is called on all behaviors in the current scene
+2. Audio, physics, and UI registries are cleared
+3. The new `.scene` file is loaded via `SceneService.LoadFromFile()`
+4. Caches are rebuilt; `Awake()` and `Start()` are called on new behaviors
+5. `SceneManager.SceneLoaded` event fires with the scene name
+
+### SceneQuery — Runtime Scene Search
+
+The `SceneQuery` class provides utilities for finding objects in the scene hierarchy from scripts:
+
+| Method | Description |
+|--------|-------------|
+| `SceneQuery.FindBehaviors<T>()` | Returns all enabled behaviors of type `T` across the scene |
+| `SceneQuery.FindByName(name)` | Returns the first `GameObject` matching the name (depth-first) |
+| `SceneQuery.FindByPath(path)` | Finds a `GameObject` by `/`-separated path (e.g., `"Player/RightHand/Weapon"`) |

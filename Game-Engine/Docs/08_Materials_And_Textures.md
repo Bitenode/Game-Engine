@@ -275,6 +275,36 @@ Key features:
 
 ---
 
+## Shader Graph Materials
+
+Materials can use shaders created with the visual **Shader Graph** system or hand-written `.shader` files instead of the default Standard shader.
+
+### Using a Shader Graph
+1. Create a new shader graph in the **Shader Editor** (Window > Shader Editor)
+2. Connect nodes to define surface properties (BaseColor, Normal, Metallic, Roughness, Emission, Opacity)
+3. Save as a `.shadergraph` file
+4. Assign the shader graph to a material in the Inspector
+
+### Custom .shader Files
+Hand-written GLSL shaders using the engine's custom format:
+- Declare properties (exposed in the Inspector as sliders, color pickers, texture slots)
+- Write GLSL vertex and fragment shader code directly
+- Support the same PBR lighting model as the Standard shader
+- Example: `Standard Assets/Shader/Steel PBR.shader` — Cook-Torrance BRDF with GGX/Smith/Schlick
+
+### Built-In Shader Graph Assets
+| File | Style |
+|------|-------|
+| `Steel PBR.shadergraph` | Metallic steel surface |
+| `Crystalline Nebula.shadergraph` | Animated nebula effect |
+| `Neon Emissive.shadergraph` | Bright neon glow |
+| `Matte Concrete.shadergraph` | Rough concrete |
+| `Gold Mirror.shadergraph` | Highly reflective gold |
+| `Blue Fresnel Glow.shadergraph` | Edge glow effect |
+| `Shiny Red Metal.shadergraph` | Polished red metal |
+
+---
+
 ## Texture Formats and GPU Details
 
 | Format | GL Internal | Usage |

@@ -1,0 +1,61 @@
+{
+  "name": "Shiny Red Metal",
+  "nodes": [
+    {
+      "id": "output01",
+      "type": "Output",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "color01",
+      "type": "Color",
+      "x": 120,
+      "y": 180,
+      "props": {
+        "R": 0.85,
+        "G": 0.12,
+        "B": 0.1,
+        "A": 1.0
+      }
+    },
+    {
+      "id": "metal01",
+      "type": "Float",
+      "x": 300,
+      "y": 350,
+      "props": {
+        "Value": 0.95
+      }
+    },
+    {
+      "id": "rough01",
+      "type": "Float",
+      "x": 300,
+      "y": 440,
+      "props": {
+        "Value": 0.2
+      }
+    }
+  ],
+  "connections": [
+    {
+      "fromNode": "color01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 0
+    },
+    {
+      "fromNode": "metal01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 2
+    },
+    {
+      "fromNode": "rough01",
+      "fromPort": 0,
+      "toNode": "output01",
+      "toPort": 3
+    }
+  ]
+}

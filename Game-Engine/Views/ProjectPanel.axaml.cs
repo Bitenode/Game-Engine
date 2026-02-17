@@ -305,12 +305,12 @@ public sealed partial class ProjectPanel : UserControl
         var defaultDir = Directory.Exists(p.ScenesPath) ? p.ScenesPath : p.RootPath;
         var baseDir = CurrentDirOrFallback(defaultDir);
 
-        var name = await AskText("New Scene", "Enter scene file name:", "Main.scene.json");
+        var name = await AskText("New Scene", "Enter scene file name:", "New Scene");
         if (string.IsNullOrWhiteSpace(name)) return;
 
         name = name.Trim();
-        if (!name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-            name += ".json";
+        if (!name.EndsWith(".scene", StringComparison.OrdinalIgnoreCase))
+            name += ".scene";
 
         name = MakeSafeName(name);
         var path = UniquePath(Path.Combine(baseDir, name), isFolder: false);

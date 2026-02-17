@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System.Linq;
 using Avalonia;
 using Avalonia.Media;
@@ -18,7 +18,7 @@ public static class CameraOverlay
 
         foreach (var cam in SceneQuery.FindBehaviors<Camera>())
         {
-            if (!cam.Enabled) continue;
+            if (!cam.IsActiveAndEnabled) continue;
             if (cam == activeCam) continue; // skip the one we’re looking through
 
             // That camera’s inverse VP to recover frustum corners in world space

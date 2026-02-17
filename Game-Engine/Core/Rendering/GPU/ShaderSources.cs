@@ -125,9 +125,38 @@ uniform float uAlphaCutoff;
 uniform bool  uTransparent;
 uniform bool  uDoubleSided;
 
-// Textures
+// Albedo texture
 uniform sampler2D uAlbedoTex;
 uniform bool      uHasAlbedoTex;
+
+// Normal map
+uniform sampler2D uNormalMap;
+uniform int       uHasNormalMap;
+uniform float     uNormalStrength;
+
+// Specular map
+uniform sampler2D uSpecularTex;
+uniform int       uHasSpecularTex;
+
+// Metallic map
+uniform sampler2D uMetallicTex;
+uniform int       uHasMetallicTex;
+
+// Roughness map
+uniform sampler2D uRoughnessTex;
+uniform int       uHasRoughnessTex;
+
+// Ambient occlusion map
+uniform sampler2D uAOTex;
+uniform int       uHasAOTex;
+
+// Emissive
+uniform sampler2D uEmissiveTex;
+uniform int       uHasEmissiveTex;
+uniform vec3      uEmissiveColor;
+uniform float     uEmissiveIntensity;
+
+// Shadow
 uniform sampler2D uShadowMap;
 uniform bool      uHasShadow;
 
@@ -146,12 +175,34 @@ uniform vec3  uCamPos;
 
 out vec4 FragColor;
 
+// Construct a cotangent-frame TBN matrix from screen-space derivatives.
+// This allows normal mapping without per-vertex tangent attributes.
+mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
+{
+    vec3 dp1  = dFdx(p);
+    vec3 dp2  = dFdy(p);
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    // Guard against degenerate derivatives (edge-on surfaces, UV discontinuities)
+    float maxLen = max(dot(T, T), dot(B, B));
+    if (maxLen < 1e-6) return mat3(vec3(1,0,0), vec3(0,1,0), N);
+    float invmax = inversesqrt(maxLen);
+    return mat3(T * invmax, B * invmax, N);
+}
+
 float ShadowCalc(vec4 sc, vec3 N)
 {
     if (!uHasShadow) return 1.0;
     vec3 proj = sc.xyz / sc.w;
     proj = proj * 0.5 + 0.5;
-    // Outside shadow map bounds → fully lit
+    // Outside shadow map bounds -> fully lit
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
         return 1.0;
 
@@ -188,7 +239,26 @@ void main()
     vec3 N = normalize(vWorldNormal);
     if (uDoubleSided && !gl_FrontFacing) N = -N;
 
-    // Albedo
+    // Save geometric normal for shadow bias (unaffected by normal map)
+    vec3 geoN = N;
+
+    // ── Normal mapping (screen-space derivative TBN) ──
+    if (uHasNormalMap == 1)
+    {
+        vec3 mapN = texture(uNormalMap, vUV).rgb * 2.0 - 1.0;
+        mapN.xy *= uNormalStrength;
+        mapN = normalize(mapN);
+        mat3 TBN = CotangentFrame(N, vWorldPos, vUV);
+        N = normalize(TBN * mapN);
+
+        // Prevent the normal map from flipping the surface away from the
+        // geometric normal — clamp to at least 10% alignment to avoid
+        // completely black patches on lit surfaces.
+        if (dot(N, geoN) < 0.1)
+            N = normalize(mix(N, geoN, 0.5));
+    }
+
+    // ── Albedo ──
     vec4 albedo = uBaseColor;
     if (uHasAlbedoTex)
         albedo *= texture(uAlbedoTex, vUV);
@@ -197,7 +267,25 @@ void main()
     if (uTransparent && albedo.a < uAlphaCutoff)
         discard;
 
-    // Light direction
+    // ── Per-pixel PBR parameters from texture maps ──
+    float roughness = uRoughness;
+    if (uHasRoughnessTex == 1)
+        roughness = texture(uRoughnessTex, vUV).r;
+
+    float metallic = uMetallic;
+    if (uHasMetallicTex == 1)
+        metallic = texture(uMetallicTex, vUV).r;
+
+    float aoFactor = 1.0;
+    if (uHasAOTex == 1)
+        aoFactor = texture(uAOTex, vUV).r;
+
+    float specMask = 1.0;
+    if (uHasSpecularTex == 1)
+        specMask = texture(uSpecularTex, vUV).r;
+
+    // ── Light direction ──
+    // uLightDir is FROM the light (shine direction). Negate for TOWARD the light.
     vec3 L;
     float atten = 1.0;
     if (uLightIsPoint)
@@ -213,37 +301,693 @@ void main()
     }
     else
     {
-        L = uLightDir;
+        L = -uLightDir;
     }
 
     float NdotL = max(dot(N, L), 0.0);
     float diffuse = NdotL * atten;
     if (diffuse > 1.0) diffuse = 1.0;
 
-    // Shadow (slope-biased)
-    float shadow = ShadowCalc(vShadowCoord, N);
+    // Shadow — use geometric normal for bias to prevent normal-map shadow acne
+    float shadow = ShadowCalc(vShadowCoord, geoN);
 
-    // Specular (Blinn-Phong)
+    // ── Specular (Blinn-Phong) ──
     float specular = 0.0;
     if (uDiffuseK > 0.0 && diffuse > 0.0)
     {
-        float smoothness = 1.0 - uRoughness;
+        float smoothness = 1.0 - roughness;
         float shininess = 8.0 + smoothness * smoothness * 248.0;
         vec3 V = normalize(uCamPos - vWorldPos);
         vec3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
-        specular = pow(NdotH, shininess) * (0.25 + 0.75 * uMetallic) * diffuse;
+        specular = pow(NdotH, shininess) * (0.25 + 0.75 * metallic) * diffuse * specMask;
     }
 
-    // Combine — shadow attenuates both ambient (sky occlusion) and diffuse
+    // ── Combine ──
+    // Shadow attenuates both ambient (sky occlusion) and diffuse
     // In shadowed areas ambient drops to ~35%, simulating occlusion from the sun/sky
     float ambShadow = mix(0.35, 1.0, shadow);
     float shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
     vec3 color = albedo.rgb * shade + vec3(specular * shadow);
+
+    // AO darkens the entire lit result (ambient + diffuse + specular)
+    // Applied before emissive so self-illumination is unaffected by occlusion
+    color *= aoFactor;
+
+    // ── Emissive (bypasses lighting) ──
+    vec3 emissive = uEmissiveColor * uEmissiveIntensity;
+    if (uHasEmissiveTex == 1)
+        emissive *= texture(uEmissiveTex, vUV).rgb;
+    color += emissive;
+
     color = clamp(color, 0.0, 1.0);
 
     float alpha = uTransparent ? albedo.a : 1.0;
     FragColor = vec4(color, alpha);
+}
+";
+
+    // =====================================================================
+    // G-BUFFER (deferred geometry pass — outputs to MRT)
+    // =====================================================================
+
+    /// <summary>GBuffer vertex shader — identical to StandardVert (same transforms, skinning, wind).</summary>
+    public const string GBufferVert = StandardVert;
+
+    public const string GBufferFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+in vec4 vShadowCoord;
+
+// Material
+uniform vec4  uBaseColor;
+uniform float uRoughness;
+uniform float uMetallic;
+uniform float uAlphaCutoff;
+uniform bool  uTransparent;
+uniform bool  uDoubleSided;
+
+// Albedo texture
+uniform sampler2D uAlbedoTex;
+uniform bool      uHasAlbedoTex;
+
+// Normal map
+uniform sampler2D uNormalMap;
+uniform int       uHasNormalMap;
+uniform float     uNormalStrength;
+
+// Specular map
+uniform sampler2D uSpecularTex;
+uniform int       uHasSpecularTex;
+
+// Metallic map
+uniform sampler2D uMetallicTex;
+uniform int       uHasMetallicTex;
+
+// Roughness map
+uniform sampler2D uRoughnessTex;
+uniform int       uHasRoughnessTex;
+
+// Ambient occlusion map
+uniform sampler2D uAOTex;
+uniform int       uHasAOTex;
+
+// Emissive
+uniform sampler2D uEmissiveTex;
+uniform int       uHasEmissiveTex;
+uniform vec3      uEmissiveColor;
+uniform float     uEmissiveIntensity;
+
+// MRT outputs
+layout(location = 0) out vec4 gAlbedoMetallic;    // RT0: Albedo.rgb + Metallic
+layout(location = 1) out vec4 gNormalRoughness;    // RT1: Normal.xyz + Roughness
+layout(location = 2) out vec4 gEmissiveAO;         // RT2: Emissive.rgb + AO
+
+// Construct cotangent-frame TBN from screen-space derivatives
+mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
+{
+    vec3 dp1  = dFdx(p);
+    vec3 dp2  = dFdy(p);
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    float maxLen = max(dot(T, T), dot(B, B));
+    if (maxLen < 1e-6) return mat3(vec3(1,0,0), vec3(0,1,0), N);
+    float invmax = inversesqrt(maxLen);
+    return mat3(T * invmax, B * invmax, N);
+}
+
+void main()
+{
+    vec3 N = normalize(vWorldNormal);
+    if (uDoubleSided && !gl_FrontFacing) N = -N;
+
+    vec3 geoN = N;
+
+    // Normal mapping
+    if (uHasNormalMap == 1)
+    {
+        vec3 mapN = texture(uNormalMap, vUV).rgb * 2.0 - 1.0;
+        mapN.xy *= uNormalStrength;
+        mapN = normalize(mapN);
+        mat3 TBN = CotangentFrame(N, vWorldPos, vUV);
+        N = normalize(TBN * mapN);
+
+        // Prevent normal map from flipping surface away from geometric normal
+        if (dot(N, geoN) < 0.1)
+            N = normalize(mix(N, geoN, 0.5));
+    }
+
+    // Albedo
+    vec4 albedo = uBaseColor;
+    if (uHasAlbedoTex)
+        albedo *= texture(uAlbedoTex, vUV);
+
+    // Alpha test
+    if (uTransparent && albedo.a < uAlphaCutoff)
+        discard;
+
+    // PBR parameters
+    float roughness = uRoughness;
+    if (uHasRoughnessTex == 1)
+        roughness = texture(uRoughnessTex, vUV).r;
+
+    float metallic = uMetallic;
+    if (uHasMetallicTex == 1)
+        metallic = texture(uMetallicTex, vUV).r;
+
+    float aoFactor = 1.0;
+    if (uHasAOTex == 1)
+        aoFactor = texture(uAOTex, vUV).r;
+
+    // Emissive
+    vec3 emissive = uEmissiveColor * uEmissiveIntensity;
+    if (uHasEmissiveTex == 1)
+        emissive *= texture(uEmissiveTex, vUV).rgb;
+
+    // Write to G-buffer MRT
+    gAlbedoMetallic  = vec4(albedo.rgb, metallic);
+    gNormalRoughness = vec4(N * 0.5 + 0.5, roughness);  // encode normal to [0,1]
+    gEmissiveAO      = vec4(emissive, aoFactor);
+}
+";
+
+    // =====================================================================
+    // DEFERRED LIGHTING (fullscreen pass reading G-buffer)
+    // =====================================================================
+
+    public const string DeferredLightingVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string DeferredLightingFrag = @"
+#version 330 core
+in vec2 vUV;
+
+// G-buffer textures
+uniform sampler2D gAlbedoMetallic;   // RT0
+uniform sampler2D gNormalRoughness;  // RT1
+uniform sampler2D gEmissiveAO;       // RT2
+uniform sampler2D gDepth;            // Depth buffer
+
+// Shadow
+uniform sampler2D uShadowMap;
+uniform bool      uHasShadow;
+uniform mat4      uShadowVP;
+uniform float     uShadowBias;
+uniform vec3      uSunDir;
+
+// Camera
+uniform vec3  uCamPos;
+uniform mat4  uInvViewProj;  // inverse(proj * view)
+
+// Multi-light support
+#define MAX_LIGHTS 16
+uniform int   uLightCount;
+uniform int   uLightTypes[MAX_LIGHTS];       // 0 = directional, 1 = point
+uniform vec3  uLightDirs[MAX_LIGHTS];
+uniform vec3  uLightColors[MAX_LIGHTS];
+uniform float uLightIntensities[MAX_LIGHTS];
+uniform vec3  uLightPositions[MAX_LIGHTS];
+uniform float uLightRanges[MAX_LIGHTS];
+
+// Ambient
+uniform float uAmbient;
+
+// SSAO (optional, bound in Phase 4)
+uniform sampler2D uSSAOTex;
+uniform bool      uHasSSAO;
+
+out vec4 FragColor;
+
+#define PI 3.14159265359
+
+// ── PBR: Cook-Torrance BRDF ──
+
+// GGX / Trowbridge-Reitz normal distribution
+float DistributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a  = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    denom = PI * denom * denom;
+    return a2 / max(denom, 0.0001);
+}
+
+// Smith's Schlick-GGX geometry function
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    return GeometrySchlickGGX(NdotV, roughness) * GeometrySchlickGGX(NdotL, roughness);
+}
+
+// Fresnel-Schlick approximation
+vec3 FresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Reconstruct world position from depth
+vec3 WorldPosFromDepth(float depth, vec2 uv)
+{
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 clip = vec4(ndc, depth * 2.0 - 1.0, 1.0);
+    vec4 world = uInvViewProj * clip;
+    return world.xyz / world.w;
+}
+
+// Shadow calculation — deferred version.
+// Uses higher bias than forward because:
+// 1) World position is reconstructed from depth (precision loss)
+// 2) Normal N includes normal-map perturbation (geometric normal unavailable in G-buffer)
+float ShadowCalc(vec3 worldPos, vec3 N)
+{
+    if (!uHasShadow) return 1.0;
+
+    // Normal offset: push sample point along the surface normal AND along the
+    // light direction. This two-axis offset is much more robust than normal-only.
+    float cosTheta = max(dot(N, -uSunDir), 0.0);
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    float normalOff = 0.15 * sinTheta;
+    float lightOff  = 0.08;
+    vec3 offsetPos = worldPos + N * normalOff + (-uSunDir) * lightOff;
+
+    vec4 sc = uShadowVP * vec4(offsetPos, 1.0);
+    vec3 proj = sc.xyz / sc.w;
+    proj = proj * 0.5 + 0.5;
+
+    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
+        return 1.0;
+
+    // Aggressive slope-scaled depth bias for deferred
+    float bias = uShadowBias * 3.0 + uShadowBias * 8.0 * (1.0 - cosTheta);
+    bias = max(bias, 0.002);
+    float currentDepth = proj.z - bias;
+
+    // 3x3 PCF
+    vec2 texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float result = 0.0;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            float pcfDepth = texture(uShadowMap, proj.xy + vec2(x, y) * texelSize).r;
+            result += (currentDepth > pcfDepth) ? 0.0 : 1.0;
+        }
+    }
+    float shadow = max(result / 9.0, 0.10);
+
+    // Edge fade
+    float fadeMargin = 0.08;
+    float fadeX = smoothstep(0.0, fadeMargin, proj.x) * smoothstep(1.0, 1.0 - fadeMargin, proj.x);
+    float fadeY = smoothstep(0.0, fadeMargin, proj.y) * smoothstep(1.0, 1.0 - fadeMargin, proj.y);
+    return mix(1.0, shadow, fadeX * fadeY);
+}
+
+void main()
+{
+    // Sample G-buffer
+    vec4 albedoMetal = texture(gAlbedoMetallic, vUV);
+    vec4 normalRough = texture(gNormalRoughness, vUV);
+    vec4 emissiveAO  = texture(gEmissiveAO, vUV);
+    float depth      = texture(gDepth, vUV).r;
+
+    // Skip sky pixels (depth == 1.0)
+    if (depth >= 1.0)
+        discard;
+
+    vec3  albedo    = albedoMetal.rgb;
+    float metallic  = albedoMetal.a;
+    vec3  N         = normalize(normalRough.rgb * 2.0 - 1.0);  // decode from [0,1]
+    float roughness = normalRough.a;
+    vec3  emissive  = emissiveAO.rgb;
+    float ao        = emissiveAO.a;
+
+    // SSAO
+    if (uHasSSAO)
+        ao *= texture(uSSAOTex, vUV).r;
+
+    // Reconstruct world position
+    vec3 worldPos = WorldPosFromDepth(depth, vUV);
+    vec3 V = normalize(uCamPos - worldPos);
+
+    // PBR: base reflectivity
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    // Shadow for primary light
+    float shadow = ShadowCalc(worldPos, N);
+
+    // Accumulate lighting from all lights
+    vec3 Lo = vec3(0.0);
+
+    for (int i = 0; i < uLightCount; i++)
+    {
+        vec3 L;
+        float attenuation = 1.0;
+
+        if (uLightTypes[i] == 1)
+        {
+            // Point light
+            vec3 toLight = uLightPositions[i] - worldPos;
+            float dist = length(toLight);
+            L = toLight / max(dist, 0.0001);
+            if (uLightRanges[i] > 0.0)
+            {
+                float t = dist / uLightRanges[i];
+                attenuation = 1.0 / (1.0 + t * t);
+            }
+        }
+        else
+        {
+            // Directional light
+            L = uLightDirs[i];
+        }
+
+        vec3 H = normalize(V + L);
+        float NdotL = max(dot(N, L), 0.0);
+
+        // Cook-Torrance BRDF
+        float NDF = DistributionGGX(N, H, roughness);
+        float G   = GeometrySmith(N, V, L, roughness);
+        vec3  F   = FresnelSchlick(max(dot(H, V), 0.0), F0);
+
+        vec3 numerator   = NDF * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001;
+        vec3 specular    = numerator / denominator;
+
+        vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+
+        vec3 radiance = uLightColors[i] * uLightIntensities[i] * attenuation;
+
+        // Apply shadow only to the primary directional light (index 0)
+        float lightShadow = (i == 0 && uLightTypes[i] == 0) ? shadow : 1.0;
+
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL * lightShadow;
+    }
+
+    // Ambient
+    float ambShadow = mix(0.35, 1.0, shadow);
+    vec3 ambient = vec3(uAmbient) * albedo * ao * ambShadow;
+
+    vec3 color = ambient + Lo + emissive;
+
+    // Reinhard tone mapping (compresses HDR from multiple lights into LDR range)
+    color = color / (color + vec3(1.0));
+
+    FragColor = vec4(color, 1.0);
+}
+";
+
+    // =====================================================================
+    // SSAO (Screen-Space Ambient Occlusion)
+    // =====================================================================
+
+    public const string SSAOVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string SSAOFrag = @"
+#version 330 core
+in vec2 vUV;
+
+uniform sampler2D gNormalRoughness;
+uniform sampler2D gDepth;
+
+uniform mat4  uProjection;
+uniform mat4  uView;
+uniform mat4  uInvViewProj;
+
+// Kernel samples (in view space, hemisphere oriented along +Z)
+#define KERNEL_SIZE 32
+uniform vec3 uSamples[KERNEL_SIZE];
+uniform float uRadius;
+uniform float uBias;
+uniform vec2 uNoiseScale;  // screenSize / noiseTexSize
+
+out vec4 FragColor;
+
+// Simple noise function (replaces noise texture for simplicity)
+float hash(vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+vec3 randomVec(vec2 uv)
+{
+    return normalize(vec3(
+        hash(uv) * 2.0 - 1.0,
+        hash(uv + vec2(1.0, 0.0)) * 2.0 - 1.0,
+        0.0
+    ));
+}
+
+vec3 WorldPosFromDepth(float depth, vec2 uv)
+{
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 clip = vec4(ndc, depth * 2.0 - 1.0, 1.0);
+    vec4 world = uInvViewProj * clip;
+    return world.xyz / world.w;
+}
+
+void main()
+{
+    float depth = texture(gDepth, vUV).r;
+    if (depth >= 1.0)
+    {
+        FragColor = vec4(1.0);
+        return;
+    }
+
+    // World-space position and normal
+    vec3 worldPos = WorldPosFromDepth(depth, vUV);
+    vec3 N = normalize(texture(gNormalRoughness, vUV).rgb * 2.0 - 1.0);
+
+    // Convert to view space
+    vec3 fragPos = (uView * vec4(worldPos, 1.0)).xyz;
+    vec3 normal  = normalize((uView * vec4(N, 0.0)).xyz);
+
+    // Random rotation vector
+    vec3 rvec = randomVec(vUV * uNoiseScale);
+
+    // Create TBN from normal and random vector
+    vec3 tangent   = normalize(rvec - normal * dot(rvec, normal));
+    vec3 bitangent = cross(normal, tangent);
+    mat3 TBN       = mat3(tangent, bitangent, normal);
+
+    float occlusion = 0.0;
+    for (int i = 0; i < KERNEL_SIZE; i++)
+    {
+        // View-space sample position
+        vec3 samplePos = fragPos + TBN * uSamples[i] * uRadius;
+
+        // Project to screen
+        vec4 offset = uProjection * vec4(samplePos, 1.0);
+        offset.xy /= offset.w;
+        offset.xy = offset.xy * 0.5 + 0.5;
+
+        // Sample depth at projected position
+        float sampleDepth = texture(gDepth, offset.xy).r;
+        vec3 sampleWorld = WorldPosFromDepth(sampleDepth, offset.xy);
+        float sampleViewZ = (uView * vec4(sampleWorld, 1.0)).z;
+
+        // Range check and occlusion test
+        float rangeCheck = smoothstep(0.0, 1.0, uRadius / abs(fragPos.z - sampleViewZ));
+        occlusion += (sampleViewZ >= samplePos.z + uBias ? 1.0 : 0.0) * rangeCheck;
+    }
+
+    occlusion = 1.0 - (occlusion / float(KERNEL_SIZE));
+
+    FragColor = vec4(vec3(occlusion), 1.0);
+}
+";
+
+    public const string SSAOBlurFrag = @"
+#version 330 core
+in vec2 vUV;
+
+uniform sampler2D uSSAOInput;
+uniform vec2 uTexelSize;
+
+out vec4 FragColor;
+
+void main()
+{
+    float result = 0.0;
+    for (int x = -2; x <= 2; x++)
+    {
+        for (int y = -2; y <= 2; y++)
+        {
+            vec2 offset = vec2(float(x), float(y)) * uTexelSize;
+            result += texture(uSSAOInput, vUV + offset).r;
+        }
+    }
+    result /= 25.0;
+    FragColor = vec4(vec3(result), 1.0);
+}
+";
+
+    // =====================================================================
+    // SSR (Screen-Space Reflections)
+    // =====================================================================
+
+    public const string SSRVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string SSRFrag = @"
+#version 330 core
+in vec2 vUV;
+
+uniform sampler2D uLitScene;
+uniform sampler2D gNormalRoughness;
+uniform sampler2D gAlbedoMetallic;
+uniform sampler2D gDepth;
+
+uniform mat4 uView;
+uniform mat4 uProjection;
+uniform mat4 uInvViewProj;
+
+uniform vec3 uCamPos;
+uniform vec2 uScreenSize;
+
+out vec4 FragColor;
+
+#define MAX_STEPS 64
+#define MAX_DIST 50.0
+#define THICKNESS 0.5
+
+vec3 WorldPosFromDepth(float depth, vec2 uv)
+{
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 clip = vec4(ndc, depth * 2.0 - 1.0, 1.0);
+    vec4 world = uInvViewProj * clip;
+    return world.xyz / world.w;
+}
+
+vec2 ProjectToScreen(vec3 worldPos)
+{
+    vec4 clip = uProjection * uView * vec4(worldPos, 1.0);
+    vec3 ndc = clip.xyz / clip.w;
+    return ndc.xy * 0.5 + 0.5;
+}
+
+void main()
+{
+    vec4 normalRough = texture(gNormalRoughness, vUV);
+    vec4 albedoMetal = texture(gAlbedoMetallic, vUV);
+    float depth = texture(gDepth, vUV).r;
+
+    // Start with the lit scene color
+    vec3 litColor = texture(uLitScene, vUV).rgb;
+
+    if (depth >= 1.0)
+    {
+        FragColor = vec4(litColor, 1.0);
+        return;
+    }
+
+    float roughness = normalRough.a;
+    float metallic  = albedoMetal.a;
+
+    // Only reflect on surfaces that are somewhat smooth and metallic
+    float reflectivity = (1.0 - roughness) * mix(0.04, 1.0, metallic);
+    if (reflectivity < 0.02)
+    {
+        FragColor = vec4(litColor, 1.0);
+        return;
+    }
+
+    vec3 worldPos = WorldPosFromDepth(depth, vUV);
+    vec3 N = normalize(normalRough.rgb * 2.0 - 1.0);
+    vec3 V = normalize(uCamPos - worldPos);
+    vec3 R = reflect(-V, N);
+
+    // Ray march in world space
+    float stepSize = MAX_DIST / float(MAX_STEPS);
+    vec3 rayPos = worldPos + R * 0.1; // small offset to avoid self-intersection
+
+    vec3 reflColor = vec3(0.0);
+    float hitMask = 0.0;
+
+    for (int i = 0; i < MAX_STEPS; i++)
+    {
+        rayPos += R * stepSize;
+
+        // Project to screen
+        vec2 screenUV = ProjectToScreen(rayPos);
+
+        // Out of screen bounds
+        if (screenUV.x < 0.0 || screenUV.x > 1.0 || screenUV.y < 0.0 || screenUV.y > 1.0)
+            break;
+
+        // Sample depth at this screen position
+        float sampledDepth = texture(gDepth, screenUV).r;
+        vec3 sampledWorld = WorldPosFromDepth(sampledDepth, screenUV);
+
+        // Check if ray is behind the surface
+        float viewDepthRay = (uView * vec4(rayPos, 1.0)).z;
+        float viewDepthSurf = (uView * vec4(sampledWorld, 1.0)).z;
+
+        if (viewDepthRay < viewDepthSurf && viewDepthRay > viewDepthSurf - THICKNESS)
+        {
+            reflColor = texture(uLitScene, screenUV).rgb;
+            hitMask = 1.0;
+
+            // Screen-edge fade
+            vec2 edgeFade = smoothstep(vec2(0.0), vec2(0.1), screenUV)
+                          * smoothstep(vec2(1.0), vec2(0.9), screenUV);
+            hitMask *= edgeFade.x * edgeFade.y;
+
+            // Distance fade
+            float dist = length(rayPos - worldPos);
+            hitMask *= 1.0 - clamp(dist / MAX_DIST, 0.0, 1.0);
+            break;
+        }
+    }
+
+    // Blend reflection with lit scene
+    vec3 finalColor = mix(litColor, reflColor, hitMask * reflectivity);
+    FragColor = vec4(finalColor, 1.0);
 }
 ";
 
@@ -623,7 +1367,7 @@ void main()
     }
     else
     {
-        L = uLightDir;
+        L = -uLightDir;
     }
 
     float NdotL = max(dot(N, L), 0.0);
@@ -1048,7 +1792,7 @@ void main()
 {
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(uCamPos - vWorldPos);
-    vec3 L = uLightDir;
+    vec3 L = -uLightDir;
 
     // Fresnel
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), uFresnelPower);
@@ -1064,13 +1808,14 @@ void main()
 
     // Specular highlight (sun reflection on water)
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 128.0) * 1.5;
+    float spec = pow(max(dot(N, H), 0.0), 128.0) * 0.8;
 
-    // Lighting
+    // Lighting — water is primarily reflective; diffuse contribution is soft
     float NdotL = max(dot(N, L), 0.0);
-    float lighting = uAmbient + uDiffuseK * NdotL;
+    float diffuse = min(uDiffuseK, 1.0) * NdotL * 0.3;
+    float lighting = uAmbient + diffuse;
 
-    vec3 color = waterColor.rgb * lighting + reflColor * fresnel + vec3(spec);
+    vec3 color = waterColor.rgb * lighting + reflColor * fresnel + vec3(spec) * min(uDiffuseK, 1.0);
 
     // Foam (based on wave height, simplified)
     if (uFoamEnabled)
@@ -1081,8 +1826,76 @@ void main()
         color = mix(color, uFoamColor, foam);
     }
 
+    // Reinhard tone mapping to prevent whiteout
+    color = color / (color + vec3(1.0));
+
     float alpha = mix(uTransparency, 1.0, fresnel);
     FragColor = vec4(clamp(color, 0.0, 1.0), alpha);
+}
+";
+
+    // =====================================================================
+    // UI — Flat textured/colored quads for Canvas UI elements
+    // =====================================================================
+    public const string UIVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+layout(location = 2) in vec4 aColor;
+
+uniform mat4 uMVP;
+
+out vec2 vUV;
+out vec4 vColor;
+
+void main()
+{
+    vUV    = aUV;
+    vColor = aColor;
+    gl_Position = uMVP * vec4(aPos, 0.0, 1.0);
+}
+";
+
+    public const string UIFrag = @"
+#version 330 core
+in vec2 vUV;
+in vec4 vColor;
+
+uniform sampler2D uTex;
+uniform int       uHasTexture;   // 0 = solid color, 1 = textured
+
+out vec4 FragColor;
+
+void main()
+{
+    vec4 texColor = (uHasTexture != 0) ? texture(uTex, vUV) : vec4(1.0);
+    vec4 final = texColor * vColor;
+    if (final.a < 0.004) discard;   // ~1/255 alpha clip
+    FragColor = final;
+}
+";
+
+    // =====================================================================
+    // UI Text — SDF (signed-distance-field) font rendering
+    // Uses the same vertex format as UI quads.
+    // =====================================================================
+    public const string UITextFrag = @"
+#version 330 core
+in vec2 vUV;
+in vec4 vColor;
+
+uniform sampler2D uTex;
+
+out vec4 FragColor;
+
+void main()
+{
+    float dist = texture(uTex, vUV).r;
+    // SDF smoothstep parameters — adjust for sharpness
+    float edgeWidth = fwidth(dist) * 0.75;
+    float alpha = smoothstep(0.5 - edgeWidth, 0.5 + edgeWidth, dist);
+    if (alpha < 0.004) discard;
+    FragColor = vec4(vColor.rgb, vColor.a * alpha);
 }
 ";
 }

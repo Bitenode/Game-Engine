@@ -44,6 +44,39 @@ public sealed class ResourceCache : IDisposable
     }
 
     /// <summary>
+    /// Whether a full GPU cache flush has been requested.
+    /// Checked at the start of the next GL render pass so disposal runs inside
+    /// the correct GL context.
+    /// </summary>
+    public bool FlushRequested { get; set; }
+
+    /// <summary>
+    /// Dispose and clear ALL cached GPU resources (meshes, textures, terrain splatmaps).
+    /// Must be called from within an active GL context (e.g. OnOpenGlRender).
+    /// Use this when the entire scene has been replaced.
+    /// </summary>
+    public void FlushAll()
+    {
+        foreach (var kv in _meshes)
+            kv.Value.GPU.Dispose();
+        _meshes.Clear();
+
+        foreach (var kv in _textures)
+            kv.Value.Dispose();
+        _textures.Clear();
+
+        foreach (var kv in _terrainSplatTextures)
+        {
+            kv.Value.Splat0?.Dispose();
+            kv.Value.Splat1?.Dispose();
+        }
+        _terrainSplatTextures.Clear();
+
+        _globalVersion++;
+        FlushRequested = false;
+    }
+
+    /// <summary>
     /// Get or create a GPUMesh for the given engine Mesh.
     /// Uploads data if the mesh is new or has changed.
     /// </summary>

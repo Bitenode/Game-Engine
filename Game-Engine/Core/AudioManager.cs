@@ -82,6 +82,17 @@ namespace Game_Engine.Core
                 _sources[i].UnPause();
         }
 
+        /// <summary>Update the audio listener position/orientation from the active listener component.</summary>
+        public static void UpdateListenerTransform()
+        {
+            if (_listener == null || _listener.gameObject == null) return;
+            var world = TransformUtil.WorldFromTransform(_listener.gameObject.Transform);
+            var pos = new SN.Vector3(world.M41, world.M42, world.M43);
+            var fwd = SN.Vector3.Normalize(new SN.Vector3(world.M31, world.M32, world.M33));
+            var up = SN.Vector3.Normalize(new SN.Vector3(world.M21, world.M22, world.M23));
+            AudioBackend.SetListenerPosition(pos, fwd, up);
+        }
+
         /// <summary>Shut down the audio system. Call on application exit.</summary>
         public static void Shutdown()
         {

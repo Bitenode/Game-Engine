@@ -1,0 +1,14 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.EditorTabBar"
+             Height="30">
+
+    <Border BorderThickness="0,0,0,1" BorderBrush="#303030" Background="#252526">
+        <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="TabStack"
+                        Orientation="Horizontal"
+                        Spacing="0"/>
+        </ScrollViewer>
+    </Border>
+</UserControl>

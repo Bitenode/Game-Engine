@@ -19,7 +19,7 @@
   <!-- Link shared Core source files from the editor project -->
   <ItemGroup>
     <Compile Include="..\Game-Engine\Core\**\*.cs"
-             Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**"
+             Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**;..\Game-Engine\Core\Editor\**"
              Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 

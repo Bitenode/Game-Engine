@@ -2,7 +2,9 @@
 
 Every component inherits from `Behavior` and attaches to a `GameObject`. Properties marked `[Persist]` are saved with the scene. Components can declare dependencies with `[Require(typeof(OtherComponent))]` to auto-add required sibling components.
 
-The engine includes **27 built-in component types** organized by category below.
+A component's `IsActiveAndEnabled` property is `true` only when both its own `Enabled` flag and the owning GameObject's `IsActiveInHierarchy` are `true`. All engine systems (game loop, rendering, physics queries, scene queries) use `IsActiveAndEnabled` to skip components on disabled GameObjects. Disabling a GameObject effectively silences all its components without changing their individual `Enabled` flags.
+
+The engine includes **34+ built-in component types** organized by category below.
 
 ---
 
@@ -585,19 +587,298 @@ Animation clips are imported automatically from 3D model files (FBX, glTF) and s
 
 Decal projection component for rendering textures onto surfaces.
 
-Decals project a texture from a box volume onto underlying geometry, useful for bullet holes, footprints, graffiti, blood splatters, and other surface detail.
+| Property       | Type               | Default          | Description                              |
+|----------------|--------------------|------------------|------------------------------------------|
+| `TexturePath`  | `string`           | `""`             | Path to the decal texture image          |
+| `Width`        | `float`            | `1.0`            | Decal width in world units               |
+| `Height`       | `float`            | `1.0`            | Decal height in world units              |
+| `Depth`        | `float`            | `0.5`            | Projection depth (z-fighting offset)     |
+| `Color`        | `Vector4`          | `(1,1,1,1)`      | Decal tint color (RGBA)                  |
+| `Opacity`      | `float`            | `1.0`            | Base opacity (0-1)                       |
+| `Projection`   | `DecalProjection`  | `Forward`        | Projection axis: `Forward`, `Up`, `Down` |
+| `AngleFade`    | `float`            | `60`             | Fade angle for steep surfaces (degrees)  |
+| `Lifetime`     | `float`            | `0`              | Auto-destroy after N seconds (0 = infinite) |
+| `FadeOutTime`  | `float`            | `1.0`            | Fade-out duration at end of lifetime     |
+
+**Projection modes:**
+- **Forward** — quad in XY plane facing -Z (for walls)
+- **Up** — quad in XZ plane facing +Y (for floors/ground)
+- **Down** — quad in XZ plane facing -Y (for ceilings)
+
+**Script spawning:**
+```csharp
+Decal.Spawn(hitPoint, hitNormal, "Assets/Textures/bullethole.png", width: 0.5f, height: 0.5f, lifetime: 10f);
+```
+
+**Requires:** MeshFilter, MeshRenderer (auto-added via `[Require]`)
 
 ---
 
 ## NavMeshAgent
 
-Navigation mesh agent component for AI pathfinding on baked navigation meshes.
+Navigation mesh agent component with A* pathfinding on baked navigation meshes.
+
+| Property          | Type    | Default | Description                              |
+|-------------------|---------|---------|------------------------------------------|
+| `Speed`           | `float` | `3.5`   | Movement speed (units/sec)               |
+| `AngularSpeed`    | `float` | `360`   | Rotation speed (degrees/sec)             |
+| `Acceleration`    | `float` | `8`     | Acceleration rate                        |
+| `StoppingDistance` | `float`| `0.5`   | Distance at which the agent stops        |
+| `Height`          | `float` | `2`     | Agent height                             |
+| `Radius`          | `float` | `0.5`   | Agent radius                             |
+| `AvoidanceRadius` | `float` | `1`     | Inter-agent avoidance radius             |
+| `AutoBraking`     | `bool`  | `true`  | Slow down when approaching destination   |
+| `SnapToNavMesh`   | `bool`  | `true`  | Follow navmesh surface height            |
+| `AutoRepath`      | `bool`  | `true`  | Re-compute path when stuck               |
+| `RepathInterval`  | `float` | `1`     | Seconds between auto-repaths             |
+| `AreaMask`        | `int`   | `-1`    | Walkable area mask (all areas)           |
+
+**Read-only runtime state:**
+- `Status` — `Idle`, `Moving`, `Reached`, or `PathNotFound`
+- `HasPath` / `RemainingDistance` / `Velocity` / `CurrentSpeed`
+- `Path` — current waypoint list (for debug drawing)
+
+**Events:**
+- `OnPathComplete` — fired when destination is reached or pathfinding fails
+
+**Key methods:**
+- `SetDestination(Vector3)` — navigate to a world position using A*
+- `MoveTo(GameObject)` — navigate toward another object
+- `Warp(Vector3)` — teleport to a position (snaps to NavMesh)
+- `ClearPath()` / `Stop()` / `Resume()`
+
+**NavMesh static API:**
+```csharp
+NavMesh.Bake();                                    // Bake from scene geometry
+NavMesh.FindPath(start, end);                      // A* pathfinding
+NavMesh.SamplePosition(pos, out hit);              // Closest point on NavMesh
+NavMesh.SampleHeight(pos, out y);                  // Surface height at XZ
+NavMesh.Raycast(origin, dir, maxDist, out hit);    // Raycast against NavMesh
+```
 
 ---
 
-## VegetationInstance
+## VegetationPainter
 
-Vegetation placement component for grass, flowers, and other small vegetation instances scattered across terrain or other surfaces.
+Vegetation painter component for GPU-instanced grass, rocks, and debris placement on terrain surfaces.
+
+| Property              | Type             | Default              | Description                          |
+|-----------------------|------------------|----------------------|--------------------------------------|
+| `ActiveType`          | `VegetationType` | `Grass`              | Type: `Grass`, `Rock`, `Debris`, `Custom` |
+| `BrushRadius`         | `float`          | `5`                  | Paint brush radius (world units)     |
+| `Density`             | `float`          | `10`                 | Instances per unit area              |
+| `MinScale`            | `float`          | `0.5`                | Minimum random scale                 |
+| `MaxScale`            | `float`          | `1.5`                | Maximum random scale                 |
+| `RandomRotation`      | `bool`           | `true`               | Apply random Y-axis rotation         |
+| `GrassHeight`         | `float`          | `1.0`                | Grass blade height                   |
+| `GrassWidth`          | `float`          | `0.4`                | Grass blade width                    |
+| `GrassBaseColor`      | `Vector3`        | `(0.2, 0.5, 0.15)`  | Grass base color (RGB)               |
+| `GrassTipColor`       | `Vector3`        | `(0.4, 0.7, 0.2)`   | Grass tip color (RGB)                |
+| `WindStrength`        | `float`          | `0.5`                | Wind sway intensity                  |
+| `FadeStartDistance`   | `float`          | `30`                 | LOD fade start distance              |
+| `FadeEndDistance`     | `float`          | `50`                 | LOD fade end distance (cull beyond)  |
+| `CustomMeshPath`      | `string`         | `""`                 | Custom 3D model or texture path      |
+| `ModelExclusionRadius`| `float`          | `2`                  | Exclusion zone around existing models|
+| `IsWaterPlant`        | `bool`           | `false`              | Only spawn in water areas            |
+
+**Key methods:**
+- `Paint(center, radius, terrain)` — scatter vegetation instances
+- `Erase(center, radius)` — remove instances within radius
+- `BuildOnTerrain()` — auto-populate entire terrain with chunked grass
+- `ClearAll()` — remove all vegetation
+
+**Features:**
+- **Chunked rendering** — merged meshes per spatial chunk (one draw call per chunk)
+- **Distance culling** — chunks beyond `FadeEndDistance` are automatically hidden
+- **Model exclusion** — grass avoids spawning near placed 3D models
+- **Custom meshes** — load 3D models or billboard textures as vegetation type
+- **Water-aware** — optionally restrict placement to underwater areas
+
+---
+
+## Camera2D
+
+2D camera helper that configures a Camera for orthographic 2D rendering with follow, zoom, bounds, pixel-perfect snapping, and camera shake.
+
+| Property          | Type      | Default          | Description                          |
+|-------------------|-----------|------------------|--------------------------------------|
+| `PixelPerfect`    | `bool`    | `false`          | Snap to nearest pixel for crisp 2D   |
+| `PixelsPerUnit`   | `float`   | `100`            | Pixels per world unit                |
+| `ReferenceHeight` | `int`     | `1080`           | Reference screen height              |
+| `Zoom`            | `float`   | `1`              | Zoom level (1 = default)             |
+| `FollowTargetName`| `string`  | `""`             | Name of GameObject to follow         |
+| `SmoothSpeed`     | `float`   | `5`              | Follow smoothing (0 = instant)       |
+| `FollowOffset`    | `Vector3` | `(0, 0, -10)`   | Offset from follow target            |
+| `UseBounds`       | `bool`    | `false`          | Enable camera bounds clamping        |
+| `BoundsMinX/MaxX` | `float`   | `±100`           | Horizontal camera bounds             |
+| `BoundsMinY/MaxY` | `float`   | `±100`           | Vertical camera bounds               |
+
+**Methods:**
+- `Shake(intensity, duration)` — trigger camera shake effect
+- `ScreenToWorld(screenX, screenY, screenW, screenH)` — convert screen to world coordinates
+
+**Requires:** Camera (auto-added via `[Require]`)
+
+---
+
+## Tilemap
+
+2D tilemap component for grid-based level design with sparse storage, collision, and tileset UV mapping.
+
+| Property         | Type      | Default   | Description                          |
+|------------------|-----------|-----------|--------------------------------------|
+| `CellSize`       | `float`   | `1`       | World-space size of each cell        |
+| `Width`          | `int`     | `32`      | Grid width in cells                  |
+| `Height`         | `int`     | `32`      | Grid height in cells                 |
+| `SortingLayer`   | `string`  | `"Default"` | Sorting layer name                 |
+| `SortingOrder`   | `int`     | `0`       | Order within the sorting layer       |
+| `TilesetPath`    | `string`  | `""`      | Path to tileset texture atlas        |
+| `TilesetColumns` | `int`     | `16`      | Columns in the tileset texture       |
+| `TilesetRows`    | `int`     | `16`      | Rows in the tileset texture          |
+| `TintColor`      | `Color`   | `White`   | Tint color for the entire tilemap    |
+
+**Key methods:**
+- `SetTile(x, y, tileId, color, collision)` — place a tile
+- `GetTile(x, y)` — read a tile
+- `ClearTile(x, y)` / `ClearAll()` — remove tiles
+- `FillRect(x, y, w, h, tileId)` — fill a rectangular region
+- `GridToWorld(x, y)` / `WorldToGrid(x, y)` — coordinate conversion
+- `HasCollisionAt(x, y)` — check collision flag
+- `CheckCollision(minX, minY, maxX, maxY)` — AABB collision query
+
+**Features:**
+- **Sparse storage** — only non-empty tiles consume memory
+- **Per-tile collision** — flag tiles for 2D physics collision
+- **Tileset UV mapping** — supports texture atlases with spacing and margins
+- **Flip and rotation** — per-tile sprite flipping and 90-degree rotation
+
+---
+
+## IKConstraint
+
+Inverse kinematics constraint component that overrides animated bone poses in `LateUpdate`.
+
+| Property        | Type      | Default      | Description                          |
+|-----------------|-----------|--------------|--------------------------------------|
+| `Mode`          | `IKMode`  | `TwoBone`    | IK type: `TwoBone`, `LookAt`, `FABRIK` |
+| `TargetName`    | `string`  | `""`         | Name of the target GameObject        |
+| `PoleTargetName`| `string`  | `""`         | Pole target for bend direction (TwoBone) |
+| `RootBoneName`  | `string`  | `""`         | Root bone (e.g., "UpperArm")         |
+| `MidBoneName`   | `string`  | `""`         | Mid bone (e.g., "Forearm")           |
+| `TipBoneName`   | `string`  | `""`         | Tip bone (e.g., "Hand")              |
+| `Weight`        | `float`   | `1`          | Blend weight (0 = no IK, 1 = full)  |
+| `MaxAngle`      | `float`   | `90`         | Maximum look-at angle (LookAt mode)  |
+| `ChainLength`   | `int`     | `4`          | Number of joints (FABRIK mode)       |
+| `Iterations`    | `int`     | `10`         | FABRIK solver iterations             |
+| `Tolerance`     | `float`   | `0.01`       | Convergence tolerance                |
+
+**IK Modes:**
+- **TwoBone** — arm/leg IK with 3 joints (upper, mid, tip) and pole target for bend direction
+- **LookAt** — rotate toward a target (head tracking, turrets) with angle clamping
+- **FABRIK** — Forward And Backward Reaching IK for multi-joint chains (tails, spines, tentacles)
+
+---
+
+## RigidbodyPlayer
+
+Physics-based player movement using Rigidbody dynamics (momentum, sliding, inertia). Drop-in alternative to `PlayerMovement` for a heavier, more physical feel.
+
+| Property            | Type      | Default          | Description                          |
+|---------------------|-----------|------------------|--------------------------------------|
+| `MoveForce`         | `float`   | `50`             | Movement force                       |
+| `MaxSpeed`          | `float`   | `7`              | Maximum horizontal speed             |
+| `SprintMultiplier`  | `float`   | `1.75`           | Sprint speed multiplier              |
+| `JumpImpulse`       | `float`   | `5`              | Jump impulse force                   |
+| `AirControlFactor`  | `float`   | `0.3`            | Air control (0 = none, 1 = full)     |
+| `GroundDrag`        | `float`   | `5`              | Ground friction                      |
+| `AirDrag`           | `float`   | `0.5`            | Air resistance                       |
+| `SwimForce`         | `float`   | `30`             | Swimming movement force              |
+| `SwimMaxSpeed`      | `float`   | `4`              | Maximum swim speed                   |
+| `SwimVerticalSpeed` | `float`   | `3`              | Vertical swim speed                  |
+| `LookSensitivity`   | `float`   | `90`             | Mouse look speed                     |
+| `FirstPerson`       | `bool`    | `true`           | First-person camera mode             |
+| `JumpBufferSeconds` | `float`   | `0.12`           | Jump input buffer                    |
+
+**Features:**
+- **Swimming** — automatic underwater movement when the Rigidbody detects submersion
+- **Momentum-based** — natural sliding, pushing, and inertia
+- **Camera modes** — first-person and third-person with smooth follow
+- **Jump buffering** — responsive jump input
+
+**Requires:** Rigidbody, CapsuleCollider (auto-added via `[Require]`)
+
+---
+
+## NetworkIdentity
+
+Network identity component that identifies a GameObject for multiplayer synchronization. Must be attached to any networked object.
+
+| Property       | Type    | Default | Description                          |
+|----------------|---------|---------|--------------------------------------|
+| `NetworkId`    | `uint`  | `0`     | Unique network ID (assigned by server) |
+| `IsLocalPlayer`| `bool`  | `false` | True if owned by the local player    |
+| `OwnerPeerId`  | `int`   | `-1`    | Peer ID of the owner (-1 = server)   |
+
+**Read-only:**
+- `HasAuthority` — true if the local machine controls this object (server or owner)
+
+**Methods:**
+- `SerializeState()` — serialize transform and component state to bytes
+- `DeserializeState(data)` — apply network state (with interpolation via NetworkTransform)
+
+---
+
+## NetworkTransform
+
+Synchronizes position, rotation, and scale over the network with smooth interpolation.
+
+| Property              | Type    | Default | Description                          |
+|-----------------------|---------|---------|--------------------------------------|
+| `InterpolationSpeed`  | `float` | `15`    | Interpolation speed (higher = snappier) |
+| `PositionThreshold`   | `float` | `0.01`  | Minimum position change to sync      |
+| `RotationThreshold`   | `float` | `0.5`   | Minimum rotation change to sync (degrees) |
+| `SyncRate`            | `float` | `20`    | Updates per second                   |
+| `SyncPosition`        | `bool`  | `true`  | Enable position syncing              |
+| `SyncRotation`        | `bool`  | `true`  | Enable rotation syncing              |
+| `SyncScale`           | `bool`  | `false` | Enable scale syncing                 |
+
+**Requires:** NetworkIdentity (auto-added via `[Require]`)
+
+---
+
+## NetworkAnimator
+
+Synchronizes animation state machine parameters and state transitions over the network.
+
+| Property    | Type    | Default | Description                          |
+|-------------|---------|---------|--------------------------------------|
+| `SyncRate`  | `float` | `10`    | Animation sync rate (updates/sec)    |
+
+Automatically detects changes in animation state names, float parameters, and bool parameters, then broadcasts updates to remote peers via RPC.
+
+**Requires:** NetworkIdentity, Animator (auto-added via `[Require]`)
+
+---
+
+## ReverbZone
+
+Audio reverb zone that applies reverb effects to audio sources when the AudioListener enters its volume.
+
+| Property           | Type           | Default | Description                          |
+|--------------------|----------------|---------|--------------------------------------|
+| `Preset`           | `ReverbPreset` | `Room`  | Reverb preset (10 presets available) |
+| `MinDistance`       | `float`        | `5`     | Inner radius (full reverb)           |
+| `MaxDistance`       | `float`        | `20`    | Outer radius (reverb fades to zero)  |
+| `DecayTime`        | `float`        | `1.5`   | Reverb decay time (custom preset)    |
+| `Density`          | `float`        | `1`     | Echo density (custom preset)         |
+| `Diffusion`        | `float`        | `1`     | Diffusion level (custom preset)      |
+
+**Available presets:** `None`, `Room`, `Hall`, `Cathedral`, `Cave`, `Arena`, `Forest`, `Underwater`, `Bathroom`, `StoneRoom`, `Auditorium`
+
+**Features:**
+- **Distance-based blending** — reverb fades smoothly between inner and outer radius
+- **Overlapping zones** — closest zone takes priority
+- **Custom parameters** — when Preset is `None`, manual reverb parameters are used
 
 ---
 
@@ -664,4 +945,304 @@ LogDebug("Debug info");
 SceneService.Root   // top-level GameObjects
 SceneService.Add(newGameObject);
 SceneService.Remove(gameObject);
+
+// Runtime scene loading
+SceneManager.LoadScene("Main Menu");
+
+// Scene queries
+var cam = SceneQuery.FindBehaviors<Camera>().FirstOrDefault();
+var player = SceneQuery.FindByName("Player");
+var weapon = SceneQuery.FindByPath("Player/RightHand/Weapon");
+```
+
+---
+
+## Runtime UI System
+
+The engine includes a full GPU-rendered runtime UI system for in-game interfaces (HUDs, menus, dialogs). UI elements are components attached to GameObjects, laid out with an anchor-based `RectTransform`, and rendered in batches by the `CanvasRenderer`.
+
+### Architecture
+
+```
+Canvas (root)
+  └─ RectTransform (layout)
+       └─ UIElement subclasses (visuals + interaction)
+            ├─ UIText        — Bitmap font text
+            ├─ UIImage       — Sprite / texture
+            ├─ UIButton      — Clickable button
+            ├─ UIPanel       — Background panel
+            ├─ UISlider      — Value slider
+            ├─ UIToggle      — Checkbox toggle
+            └─ UIInputField  — Text input box
+```
+
+The `UIEventSystem` processes pointer input each frame, raycasting against `RectTransform` rects in screen space and delivering hover/press/click/drag events to UI elements. `UIEventSystem.PointerOverUI` can be checked to prevent game input when the pointer is over a UI element.
+
+---
+
+### Canvas
+
+Root component for runtime UI rendering. Attach to a GameObject to enable UI rendering for that hierarchy. All UI children must have a `RectTransform`.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `RenderMode` | `CanvasRenderMode` | `ScreenSpaceOverlay` | How the canvas is rendered |
+| `SortOrder` | `int` | `0` | Drawing priority (higher = on top) |
+| `PixelPerfect` | `bool` | `true` | Snap to pixel grid for crisp edges |
+| `ScaleMode` | `CanvasScaleMode` | `ScaleWithScreenSize` | How the canvas scales with screen size |
+| `ReferenceResolutionX` | `float` | `1920` | Design width for ScaleWithScreenSize |
+| `ReferenceResolutionY` | `float` | `1080` | Design height for ScaleWithScreenSize |
+| `MatchWidthOrHeight` | `float` | `0.5` | 0 = match width, 1 = match height |
+| `WorldSizeX` | `float` | `5` | Width in world units (WorldSpace mode) |
+| `WorldSizeY` | `float` | `3` | Height in world units (WorldSpace mode) |
+
+**Render Modes:**
+| Mode | Description |
+|------|-------------|
+| `ScreenSpaceOverlay` | Drawn after post-processing, always on top. Coordinates in pixels. |
+| `ScreenSpaceCamera` | Rendered relative to a specific Camera, affected by post-processing. |
+| `WorldSpace` | Lives in 3D world space on a GameObject. |
+
+**Scale Modes:**
+| Mode | Description |
+|------|-------------|
+| `ConstantPixelSize` | UI elements retain their pixel size regardless of screen size |
+| `ScaleWithScreenSize` | UI scales with screen size based on reference resolution |
+| `ConstantPhysicalSize` | UI elements retain their physical size (DPI-aware) |
+
+---
+
+### RectTransform
+
+Defines a 2D rectangle for UI layout using anchor-based positioning relative to a parent `RectTransform` (or the Canvas root). Lives alongside `Transform` on the same GameObject.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `AnchorMinX/Y` | `float` | `0.5` | Bottom-left anchor (0–1 relative to parent) |
+| `AnchorMaxX/Y` | `float` | `0.5` | Top-right anchor (0–1 relative to parent) |
+| `PivotX/Y` | `float` | `0.5` | Local origin point (0–1) |
+| `AnchoredPositionX/Y` | `float` | `0` | Offset from anchor centre (pixels) |
+| `SizeDeltaX` | `float` | `160` | Width when anchors are together / delta when apart |
+| `SizeDeltaY` | `float` | `40` | Height when anchors are together / delta when apart |
+| `Rotation2D` | `float` | `0` | 2D rotation in degrees |
+| `ScaleX/Y` | `float` | `1` | 2D scale multiplier |
+
+**Key Methods:**
+- `GetRect(parentRect)` — compute screen-space rect from parent rect
+- `GetWorldRect(canvasRect)` — walk hierarchy to compute final screen rect
+- `GetWorldCorners(canvasRect, corners)` — get 4 corners (supports 2D rotation)
+- `ContainsScreenPoint(point, canvasRect)` — point-in-rect hit test
+
+---
+
+### UIElement (Base Class)
+
+Abstract base class for all UI elements. Requires `RectTransform`. Provides common visual properties and pointer-event callbacks.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Raycastable` | `bool` | `true` | Whether this element receives pointer events |
+| `Color` | `Color` | `White` | Base tint color |
+| `Opacity` | `float` | `1` | Opacity (0 = transparent, 1 = opaque) |
+
+**Pointer Events (virtual):**
+| Method | When Called |
+|--------|------------|
+| `OnPointerEnter()` | Pointer enters this element's rect |
+| `OnPointerExit()` | Pointer leaves this element's rect |
+| `OnPointerDown()` | Pointer button pressed over this element |
+| `OnPointerUp()` | Pointer button released over this element |
+| `OnPointerClick()` | Click (press + release) on this element |
+| `OnDrag(delta)` | Each frame while dragging over this element |
+
+---
+
+### UIText
+
+Renders text using a bitmap font atlas (BMFont `.fnt` format). Supports font size scaling, alignment, word wrap, and SDF text rendering. If no font path is set, a default font atlas is auto-generated.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Text` | `string` | `"Text"` | The text string to display |
+| `FontSize` | `float` | `24` | Font size in canvas pixels |
+| `FontPath` | `string` | `""` | Path to BMFont `.fnt` file (empty = auto-generated default) |
+| `Alignment` | `TextAnchor` | `Left` | Horizontal alignment (`Left`, `Center`, `Right`) |
+| `WordWrap` | `bool` | `true` | Wrap text to fit the rect width |
+| `LineSpacing` | `float` | `1.0` | Line spacing multiplier |
+
+---
+
+### UIImage
+
+Renders a sprite or texture inside a `RectTransform`. Supports simple stretch, 9-slice, tiled, and filled image modes.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SpritePath` | `string` | `""` | Path to image file |
+| `ImageType` | `ImageType` | `Simple` | Rendering mode |
+| `FillAmount` | `float` | `1` | Fill (0–1) for `Filled` mode |
+| `PreserveAspect` | `bool` | `false` | Maintain original aspect ratio |
+
+**Image Types:**
+| Type | Description |
+|------|-------------|
+| `Simple` | Stretch to fill the rect |
+| `Sliced` | 9-slice rendering for resizable UI panels |
+| `Tiled` | Tile the image to fill the rect |
+| `Filled` | Horizontal fill controlled by `FillAmount` |
+
+---
+
+### UIButton
+
+Interactive button that responds to pointer events. Drives a sibling `UIImage` color based on hover/press/disabled state with smooth color transitions.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Interactable` | `bool` | `true` | Whether the button can be clicked |
+| `NormalColor` | `Color` | `#FFFFFF` | Color in normal state |
+| `HighlightedColor` | `Color` | `#E0E0E0` | Color when hovered |
+| `PressedColor` | `Color` | `#B0B0B0` | Color when pressed |
+| `DisabledColor` | `Color` | `#808080` | Color when not interactable |
+| `FadeDuration` | `float` | `0.1` | Color transition speed (0 = instant) |
+
+**Events:**
+- `OnClick` — `Action` fired when the button is clicked
+
+**Usage:**
+```csharp
+var btn = GetComponent<UIButton>();
+btn.OnClick += () => LogInfo("Button clicked!");
+```
+
+---
+
+### UIPanel
+
+A simple colored or textured rectangular background. Useful as a container/backdrop for other UI elements.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SpritePath` | `string` | `""` | Optional background image |
+
+Inherits `Color` and `Opacity` from `UIElement`.
+
+---
+
+### UISlider
+
+A draggable slider for selecting a value within a range. Renders a background track, fill bar, and handle knob.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MinValue` | `float` | `0` | Minimum slider value |
+| `MaxValue` | `float` | `1` | Maximum slider value |
+| `Value` | `float` | `0` | Current value |
+| `WholeNumbers` | `bool` | `false` | Restrict to integers |
+| `Direction` | `SliderDirection` | `LeftToRight` | Slider direction |
+| `BackgroundColor` | `Color` | `#404040` | Track background color |
+| `FillColor` | `Color` | `#40A0FF` | Fill bar color |
+| `HandleColor` | `Color` | `White` | Handle knob color |
+| `HandleSize` | `float` | `0.8` | Handle size as fraction of height |
+
+**Directions:** `LeftToRight`, `RightToLeft`, `BottomToTop`, `TopToBottom`
+
+**Events:**
+- `OnValueChanged` — `Action<float>` fired when the value changes
+
+**Usage:**
+```csharp
+var slider = GetComponent<UISlider>();
+slider.OnValueChanged += (val) => LogInfo($"Volume: {val:F2}");
+```
+
+---
+
+### UIToggle
+
+A checkbox/toggle switch that alternates between on and off states. Renders a background box with a checkmark indicator when active.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `IsOn` | `bool` | `false` | Current toggle state |
+| `Interactable` | `bool` | `true` | Whether the toggle can be interacted with |
+| `BackgroundColor` | `Color` | `#505050` | Background when off |
+| `ActiveColor` | `Color` | `#40A0FF` | Background when on |
+| `CheckmarkColor` | `Color` | `White` | Checkmark indicator color |
+| `CheckmarkInset` | `float` | `0.15` | Checkmark inset (0–0.5) |
+
+**Events:**
+- `OnValueChanged` — `Action<bool>` fired when the toggle state changes
+
+---
+
+### UIInputField
+
+A text input box with cursor, selection, placeholder text, and keyboard input handling. Captures keyboard input when focused (clicked).
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Text` | `string` | `""` | Current text content |
+| `Placeholder` | `string` | `"Enter text..."` | Placeholder when empty |
+| `CharacterLimit` | `int` | `0` | Max characters (0 = unlimited) |
+| `ContentType` | `InputFieldContentType` | `Standard` | Input validation mode |
+| `FontSize` | `float` | `20` | Font size in canvas pixels |
+| `FontPath` | `string` | `""` | Path to BMFont `.fnt` file |
+| `ReadOnly` | `bool` | `false` | Prevent editing |
+| `BackgroundColor` | `Color` | `#303030` | Background color |
+| `TextColor` | `Color` | `White` | Text color |
+| `PlaceholderColor` | `Color` | `#808080` | Placeholder text color |
+| `CursorColor` | `Color` | `White` | Cursor color |
+| `SelectionColor` | `Color` | `#6040A0FF` | Selection highlight color |
+
+**Content Types:** `Standard`, `IntegerNumber`, `DecimalNumber`, `Alphanumeric`, `Password`
+
+**Events:**
+- `OnValueChanged` — `Action<string>` fired when the text changes
+- `OnEndEdit` — `Action<string>` fired when the user presses Enter
+
+**Keyboard Support:** Arrow keys, Home, End, Backspace, Delete, Escape (unfocus), Enter (submit)
+
+---
+
+### Setting Up a UI Hierarchy
+
+A typical in-game HUD setup:
+
+```
+HUD (Canvas — ScreenSpaceOverlay, SortOrder=0)
+├── HealthBar (RectTransform, UIPanel — dark background)
+│   └── HealthFill (RectTransform, UIImage — Filled, FillAmount bound to health)
+├── ScoreText (RectTransform, UIText — "Score: 0", Alignment=Right)
+├── PauseButton (RectTransform, UIImage + UIButton)
+│   └── PauseIcon (RectTransform, UIImage — pause icon sprite)
+└── SettingsPanel (RectTransform, UIPanel — hidden by default)
+    ├── VolumeSlider (RectTransform, UISlider)
+    ├── MuteToggle (RectTransform, UIToggle)
+    └── PlayerName (RectTransform, UIInputField)
+```
+
+**Script example:**
+```csharp
+public class HealthBar : Behavior
+{
+    [Persist] public float MaxHealth { get; set; } = 100f;
+    private float _currentHealth;
+    private UIImage? _fillImage;
+
+    public override void Start()
+    {
+        _currentHealth = MaxHealth;
+        // Find the fill image on a child named "HealthFill"
+        var fill = SceneQuery.FindByPath("HUD/HealthBar/HealthFill");
+        _fillImage = fill?.Behaviors.OfType<UIImage>().FirstOrDefault();
+    }
+
+    public void TakeDamage(float amount)
+    {
+        _currentHealth = Math.Max(0, _currentHealth - amount);
+        if (_fillImage != null)
+            _fillImage.FillAmount = _currentHealth / MaxHealth;
+    }
+}
 ```

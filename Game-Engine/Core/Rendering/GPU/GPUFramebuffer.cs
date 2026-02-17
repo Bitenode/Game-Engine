@@ -18,6 +18,9 @@ public sealed class GPUFramebuffer : IDisposable
     public GPUTexture? DepthTexture { get; private set; }
     public GPUTexture? ColorTexture { get; private set; }
 
+    /// <summary>Multiple color attachments for MRT (G-buffer). Null when not using MRT.</summary>
+    public GPUTexture[]? ColorTextures { get; private set; }
+
     public GPUFramebuffer(GL gl)
     {
         _gl = gl;
@@ -103,6 +106,74 @@ public sealed class GPUFramebuffer : IDisposable
         // screen.  The caller should bind the correct target after setup.
     }
 
+    /// <summary>
+    /// Configure as a G-buffer FBO with 3 color attachments (MRT) + shared depth.
+    /// RT0 (RGBA8): Albedo.rgb + Metallic
+    /// RT1 (RGBA16F): Normal.xyz + Roughness
+    /// RT2 (RGBA8): Emissive.rgb + AO
+    /// Depth (Depth24): Shared depth buffer
+    /// </summary>
+    public void SetupGBuffer(int width, int height)
+    {
+        Width = width;
+        Height = height;
+
+        // Dispose old textures
+        if (ColorTextures != null)
+            foreach (var t in ColorTextures) t?.Dispose();
+        DepthTexture?.Dispose();
+        ColorTexture?.Dispose();
+        ColorTexture = null;
+
+        ColorTextures = new GPUTexture[3];
+
+        // RT0: Albedo.rgb + Metallic (RGBA8)
+        ColorTextures[0] = new GPUTexture(_gl);
+        ColorTextures[0].CreateColor(width, height);
+
+        // RT1: Normal.xyz + Roughness (RGBA16F for precision)
+        ColorTextures[1] = new GPUTexture(_gl);
+        ColorTextures[1].CreateColorFloat16(width, height);
+
+        // RT2: Emissive.rgb + AO (RGBA8)
+        ColorTextures[2] = new GPUTexture(_gl);
+        ColorTextures[2].CreateColor(width, height);
+
+        // Depth (Depth24)
+        DepthTexture = new GPUTexture(_gl);
+        DepthTexture.CreateDepth(width, height);
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
+
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, ColorTextures[0].Handle, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment1,
+            TextureTarget.Texture2D, ColorTextures[1].Handle, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment2,
+            TextureTarget.Texture2D, ColorTextures[2].Handle, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.DepthAttachment,
+            TextureTarget.Texture2D, DepthTexture.Handle, 0);
+
+        unsafe
+        {
+            DrawBufferMode* bufs = stackalloc DrawBufferMode[3]
+            {
+                DrawBufferMode.ColorAttachment0,
+                DrawBufferMode.ColorAttachment1,
+                DrawBufferMode.ColorAttachment2
+            };
+            _gl.DrawBuffers(3, bufs);
+        }
+
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (status != GLEnum.FramebufferComplete)
+            System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] G-Buffer FBO incomplete: {status}");
+    }
+
     /// <summary>Bind this FBO as the render target.</summary>
     public void Bind()
     {
@@ -120,6 +191,9 @@ public sealed class GPUFramebuffer : IDisposable
     {
         DepthTexture?.Dispose();
         ColorTexture?.Dispose();
+        if (ColorTextures != null)
+            foreach (var t in ColorTextures) t?.Dispose();
+        ColorTextures = null;
         _gl.DeleteFramebuffer(Handle);
         Handle = 0;
     }

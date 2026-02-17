@@ -37,7 +37,7 @@ The solution contains two projects: **Game_Engine** (the editor) and **Engine.Pl
 ```
 Game-Engine/
 ├── Core/                        # Engine runtime (non-UI)
-│   ├── Component/               # All attachable components (27 component types)
+│   ├── Component/               # All attachable components (34+ component types)
 │   │   ├── Transform.cs         # Position, rotation, scale (mandatory)
 │   │   ├── Camera.cs            # Perspective/orthographic camera
 │   │   ├── Light.cs             # Directional, point, spot lights
@@ -64,9 +64,35 @@ Game-Engine/
 │   │   ├── Animator.cs          # Skeletal animation state machine
 │   │   ├── Decal.cs             # Decal projection
 │   │   ├── NavMeshAgent.cs      # Navigation agent
-│   │   └── VegetationInstance.cs # Vegetation placement
+│   │   ├── VegetationInstance.cs # Vegetation placement
+│   │   ├── Camera2D.cs          # 2D camera helper
+│   │   ├── SpriteRenderer.cs    # 2D sprite rendering
+│   │   ├── Tilemap.cs           # 2D tilemap grid
+│   │   ├── IKConstraint.cs      # Inverse kinematics
+│   │   ├── NetworkIdentity.cs   # Network object identity
+│   │   ├── NetworkTransform.cs  # Network transform sync
+│   │   ├── NetworkAnimator.cs   # Network animation sync
+│   │   └── ReverbZone.cs        # Audio reverb zone
+│   │   └── UI/                  # Runtime UI components
+│   │       ├── Canvas.cs        # Root UI container (Overlay/Camera/World)
+│   │       ├── RectTransform.cs # Anchor-based 2D layout
+│   │       ├── UIElement.cs     # Base class for all UI elements
+│   │       ├── UIText.cs        # Bitmap font text rendering (BMFont)
+│   │       ├── UIImage.cs       # Sprite/texture display (Simple/Sliced/Tiled/Filled)
+│   │       ├── UIButton.cs      # Interactive button with color transitions
+│   │       ├── UIPanel.cs       # Colored/textured background panel
+│   │       ├── UISlider.cs      # Draggable value slider
+│   │       ├── UIToggle.cs      # Checkbox/toggle switch
+│   │       ├── UIInputField.cs  # Text input with cursor and validation
+│   │       └── DefaultFontGenerator.cs # Auto-generates a default bitmap font atlas
 │   ├── Rendering/               # Scene renderer, materials, overlays
 │   │   ├── SceneRenderer.cs     # Main rendering pipeline
+│   │   ├── ShaderGraph/         # Visual shader graph system
+│   │   │   ├── ShaderGraph.cs   # Node graph → GLSL compilation
+│   │   │   └── ShaderNode.cs    # Node types (Output, Texture, Math, Noise, etc.)
+│   │   ├── UI/                  # Runtime UI rendering
+│   │   │   ├── CanvasRenderer.cs # Batched quad renderer for UI canvases
+│   │   │   └── UIEventSystem.cs # Pointer input dispatch for UI elements
 │   │   └── GPU/                 # OpenGL wrappers
 │   │       ├── GLContext.cs     # OpenGL context (ANGLE detection)
 │   │       ├── ResourceCache.cs # Mesh/texture GPU caching
@@ -75,7 +101,8 @@ Game-Engine/
 │   │       ├── ShaderProgram.cs # Shader compilation and uniforms
 │   │       ├── GPUFramebuffer.cs# FBO for off-screen rendering
 │   │       ├── FullscreenQuad.cs# Fullscreen triangle for post-processing
-│   │       └── ShaderSources.cs # All embedded GLSL shaders
+│   │       ├── ShaderSources.cs # All embedded GLSL shaders
+│   │       └── CustomShaderCache.cs # Custom shader compilation + caching
 │   ├── Extensibility/           # Editor extension system
 │   │   ├── ExtensionService.cs  # Extension discovery and loading
 │   │   ├── EditorExtension.cs   # Base class for extensions
@@ -92,14 +119,29 @@ Game-Engine/
 │   ├── Meshes/                  # LOD, mesh utilities
 │   │   ├── MeshLod.cs           # Screen-space LOD for procedural meshes
 │   │   └── MeshUtil.cs          # Bounding radius, dimension estimation
-│   ├── Physics/                 # Collision detection
+│   ├── Physics/                 # Collision detection and physics
 │   │   ├── CollisionWorld.cs    # Runtime collision manager
 │   │   ├── Physics.cs           # Static convenience wrapper (Unity-style)
-│   │   └── PhysicsCache.cs      # Per-frame physics query caching
+│   │   ├── PhysicsCache.cs      # Per-frame physics query caching
+│   │   ├── PhysicsJoint.cs      # Joint constraints (fixed, hinge, spring, slider, ball-socket)
+│   │   └── BVH.cs               # Bounding Volume Hierarchy for spatial queries
 │   ├── UIX/                     # Declarative UI framework (21 widget types)
 │   │   ├── UIX.cs               # VNode definitions + static builder API
 │   │   ├── UIXRenderer.cs       # VNode → Avalonia control renderer
 │   │   └── WindowKit.cs         # Standalone window creation + chrome
+│   ├── Animation/               # Animation system
+│   │   ├── BlendTree.cs         # Animation blend tree
+│   │   ├── IKSolver.cs          # Inverse kinematics solvers (TwoBone, FABRIK, LookAt)
+│   │   ├── BoneAnimationClip.cs # Bone animation data
+│   │   └── AnimationClipAsset.cs# Animation clip asset format
+│   ├── Networking/              # Multiplayer networking
+│   │   ├── NetworkManager.cs    # Server/client lifecycle + RPC system
+│   │   └── NetworkTransport.cs  # Low-level UDP transport layer
+│   ├── Audio/                   # Audio subsystems
+│   │   └── AudioMixer.cs        # Hierarchical audio mixing with effects
+│   ├── Scene/                   # Runtime scene management
+│   │   ├── SceneManager.cs      # Runtime scene loading (deferred, safe transitions)
+│   │   └── SceneQuery.cs        # Scene search (FindByName, FindByPath, FindBehaviors)
 │   ├── Behavior.cs              # Base component class
 │   ├── GameObject.cs            # Scene entity
 │   ├── SceneService.cs          # Scene graph management
@@ -112,7 +154,9 @@ Game-Engine/
 │   ├── Time.cs                  # Frame timing
 │   ├── AudioBackend.cs          # NAudio playback backend
 │   ├── AudioManager.cs          # Audio channel management
-│   └── SceneSerialization.cs    # JSON scene serialization
+│   ├── SceneSerialization.cs    # JSON scene serialization
+│   ├── WindSystem.cs            # Global wind for vegetation animation
+│   └── Profiler.cs              # Performance profiler with frame statistics
 ├── Views/                       # Editor UI panels (Avalonia controls)
 │   ├── SceneView.cs             # 3D scene editing viewport
 │   ├── GameView.cs              # Game runtime viewport
@@ -125,6 +169,9 @@ Game-Engine/
 │   ├── ScenePanel.axaml.cs      # Scene view container
 │   ├── ScriptEditorWindow.axaml.cs # Code editor
 │   ├── InputRemappingWindow.axaml.cs # Input configuration
+│   ├── ShaderEditorPanel.axaml.cs  # Visual shader graph editor
+│   ├── ProfilerPanel.axaml.cs   # Performance profiler view
+│   ├── BuildSettingsWindow.axaml.cs # Build configuration and packaging
 │   └── ColliderGizmos.cs        # Collider wireframe rendering
 ├── Docking/                     # Dockable panel system
 │   ├── DockManager.cs           # 5-region dock management
@@ -132,6 +179,9 @@ Game-Engine/
 ├── Standard Assets/             # Built-in assets
 │   ├── Skybox/                  # 47 equirectangular sky textures
 │   ├── Glass/                   # Glass material textures
+│   ├── Shader/                  # Built-in shaders and shader graphs
+│   │   ├── Steel PBR.shader    # Cook-Torrance PBR shader
+│   │   └── *.shadergraph       # Pre-built shader graph assets
 │   └── Code Examples/           # Extension code samples
 ├── Program.cs                   # Application entry point
 ├── MainWindow.axaml(.cs)        # Main editor window with menus
@@ -148,11 +198,16 @@ Game-Engine/
 
 The fundamental entity in the scene. Every object in the scene is a `GameObject`. Each has:
 - A **Name** displayed in the Hierarchy panel (editable)
+- An **Enabled** flag (default: `true`) — disabled GameObjects and all their children are skipped during Update, rendering, and scene queries. The Hierarchy panel shows disabled objects (and their descendants) in red.
 - A mandatory **Transform** component (position, rotation, scale) — always present, cannot be removed
 - An `ObservableCollection<Behavior>` of **Behaviors** (components) that provide functionality
 - An `ObservableCollection<GameObject>` of **Children** forming the scene graph hierarchy
 - An optional **Parent** (prevents circular parent-child relationships)
 - Optional **PrefabId** / **PrefabPath** for prefab references
+
+Key properties:
+- `Enabled` — enable/disable the entire GameObject. Toggling this calls `SceneService.NotifyChanged()` to refresh all views immediately.
+- `IsActiveInHierarchy` — computed property that returns `true` only when this object **and every ancestor** is enabled. Used by behaviors (`IsActiveAndEnabled`) and the rendering pipeline to determine effective visibility.
 
 Key methods:
 - `AddChild(go)` — adds a child (validates no ancestor cycles)
@@ -161,7 +216,7 @@ Key methods:
 - `RemoveBehavior(b)` — removes a component (cannot remove Transform)
 - `IsAncestorOf(go)` — checks ancestry to prevent cycles
 
-Implements `INotifyPropertyChanged` for UI data binding.
+Implements `INotifyPropertyChanged` for UI data binding. Changing `Enabled` propagates `IsActiveInHierarchy` change notifications to all descendants so the Hierarchy panel updates their display color in real time.
 
 ### Behavior (Component)
 
@@ -184,7 +239,7 @@ Key properties:
 - `[Persist] LogLifecycle` — debug: logs lifecycle calls to console (default: `false`)
 - `gameObject` — the owning GameObject
 - `Transform` — shortcut to `gameObject.Transform`
-- `IsActiveAndEnabled` — whether the component is active
+- `IsActiveAndEnabled` — `true` only when the component's own `Enabled` is `true` **and** the owning GameObject's `IsActiveInHierarchy` is `true`. The game loop (`Update`, `FixedUpdate`, `LateUpdate`) and all rendering/query systems use this property to skip behaviors on disabled GameObjects.
 
 Utility methods:
 - `GetComponent<T>()` — find a sibling component by type
@@ -213,9 +268,17 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `ExtensionService` | Discovers, loads, and hot-reloads editor extensions from compiled assemblies using collectible `AssemblyLoadContext` |
 | `CommandRegistry` | Central command registration and invocation system for menus and shortcuts |
 | `AudioManager` | Volume channels (Master/Music/SFX), `AudioSource` registry, listener management, global playback control |
-| `AudioBackend` | Low-level NAudio playback — per-sound `WaveOutEvent`, `AudioHandle` wrapping, looping, auto-cleanup |
+| `AudioBackend` | Cross-platform OpenAL playback (via Silk.NET) — native 3D spatial audio, Doppler, distance attenuation; NAudio for file decoding |
 | `Log` | Global logging with severity levels (Info, Warning, Error, Success, Debug); messages appear in the Console panel |
+| `SceneManager` | Runtime scene loading — deferred to next frame, safe tear-down/rebuild, `SceneLoaded` event |
+| `SceneQuery` | Scene search utilities — `FindByName()`, `FindByPath()`, `FindBehaviors<T>()`. Traversal skips disabled GameObjects; `FindBehaviors<T>()` only returns behaviors where `IsActiveAndEnabled` is true |
+| `UIEventSystem` | Pointer input dispatch for runtime UI — raycasts screen-space canvases, delivers hover/click/drag events |
 | `Time` | Frame timing — `DeltaTime`, `ElapsedTime`, fixed timestep |
+| `NetworkManager` | Server/client lifecycle, object registry, RPC system, state broadcast |
+| `WindSystem` | Global wind direction and strength for vegetation animation |
+| `Profiler` | Frame timing statistics, FPS tracking, per-system performance metrics |
+| `AudioMixer` | Hierarchical audio group mixing with volume, effects, and routing |
+| `NavMesh` | Static navigation mesh baking, A* pathfinding, and spatial queries |
 
 ---
 
@@ -239,6 +302,9 @@ Scene Graph (GameObjects + Behaviors)
     ├─► Animator.Update() (bone animation)
     ├─► ParticleEmitter.Update() (particle simulation)
     ├─► AudioSource (spatial audio updates)
+    ├─► IKConstraint (inverse kinematics overrides)
+    ├─► NetworkTransform (network state interpolation)
+    ├─► NavMeshAgent (pathfinding movement)
     │
     ▼
 SceneRenderer.RenderGPU()
@@ -271,8 +337,12 @@ SceneRenderer.RenderGPU()
 | Scripts         | C# source   | `Assets/**/*.cs`, `Packages/**/*.cs`         | Compiled by Roslyn at runtime |
 | Compiled Scripts| DLL         | `Builds/EditorScripts_<timestamp>.dll`       | Auto-generated, hot-reloaded |
 | Animations      | Custom      | `*.boneanim`                                 | Bone animation data |
+| Shaders         | Custom      | `*.shader`                                   | Custom GLSL shaders |
+| Shader Graphs   | JSON        | `*.shadergraph`                              | Visual shader node graphs |
 
 Properties marked with `[Persist]` on Behaviors are automatically serialized/deserialized by `SceneSerialization`. Supported types include `string`, `int`, `float`, `bool`, `Vector3`, `Color`, enums, `List<T>`, and `float[]`.
+
+The `GameObject.Enabled` state is also serialized in `.scene` files. To keep files clean, the `enabled` field is only written when `false` (omitted when `true`, which is the default).
 
 ---
 

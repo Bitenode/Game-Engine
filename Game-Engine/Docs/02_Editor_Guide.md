@@ -2,7 +2,7 @@
 
 ## Editor Layout
 
-The editor window contains seven dockable panels distributed across five dock regions:
+The editor window contains ten dockable panels distributed across five dock regions:
 
 ```
 ┌──────────────┬──────────────────────────┬──────────────┐
@@ -132,6 +132,13 @@ During play mode, the Game View captures input and feeds it to the `Input` syste
 
 Shows the scene as a tree of GameObjects with expand/collapse nodes for the parent-child hierarchy.
 
+### Visual Indicators
+| Color | Meaning |
+|-------|---------|
+| **Default (theme)** | Normal active GameObject |
+| **Blue** (`#5599FF`) | Prefab instance (has a `PrefabId`) |
+| **Red** (`#DD4444`) | Disabled GameObject — either its own `Enabled` is `false`, or an ancestor is disabled. The entire subtree under a disabled object appears in red. |
+
 ### Actions
 | Action | Input | Description |
 |--------|-------|-------------|
@@ -172,6 +179,7 @@ When a new project is opened with no existing scene, a default scene is created 
 Displays and edits properties of the selected GameObject. Supports single and multi-selection.
 
 ### Header
+- **Enabled checkbox** — toggle next to the name field. Unchecking disables the entire GameObject and all its children: they are hidden from the scene, skipped during Update/FixedUpdate/LateUpdate, excluded from scene queries (`SceneQuery.FindBehaviors`), and shown in red in the Hierarchy. This does not change the individual component `Enabled` flags — it overrides them at the GameObject level.
 - **GameObject name** — editable text field
 - **LogLifecycle** checkbox — debug toggle that logs behavior lifecycle calls to the Console
 
@@ -206,6 +214,10 @@ Click **"+ Add Component"** at the bottom of the Inspector to open the component
 - ParticleEmitter, PostProcessVolume
 - AudioSource, AudioListener
 - Animator, Decal, NavMeshAgent, Water
+- Camera2D, SpriteRenderer, Tilemap
+- IKConstraint, RigidbodyPlayer, VegetationPainter
+- NetworkIdentity, NetworkTransform, NetworkAnimator
+- ReverbZone
 - Any custom script behaviors compiled from `Assets/` or `Packages/`
 
 ### Terrain Inspector
@@ -327,6 +339,72 @@ Bone animations are imported automatically from 3D model files (FBX, glTF) and s
 
 ---
 
+## Shader Editor
+
+The Shader Editor panel provides a visual node-based interface for creating custom shaders:
+
+### Features
+- **Node graph canvas** — drag and drop shader nodes, connect inputs/outputs with wires
+- **Live preview** — material preview sphere updates in real-time as nodes are edited
+- **Node palette** — Output, TextureSample, Color, Float, Math, Coordinate, Fresnel, Noise nodes
+- **GLSL compilation** — the node graph compiles to GLSL vertex + fragment shaders
+- **Save/Load** — shader graphs are saved as `.shadergraph` JSON files
+- **Custom .shader files** — hand-written GLSL shaders (like `Steel PBR.shader`) are also supported
+
+### Workflow
+1. Open via **Window > Shader Editor** or double-click a `.shadergraph` file
+2. Add nodes from the palette (right-click canvas)
+3. Connect node outputs to inputs by dragging wires
+4. The Output node defines the final surface properties (BaseColor, Normal, Metallic, Roughness, Emission, Opacity)
+5. Click **Compile** to generate the GLSL shader
+6. Assign the compiled shader to materials via the Inspector
+
+### Built-In Shader Graph Assets
+Located in `Standard Assets/Shader/`:
+| File | Description |
+|------|-------------|
+| `Steel PBR.shadergraph` | Metallic steel with Cook-Torrance BRDF |
+| `Crystalline Nebula.shadergraph` | Animated nebula effect |
+| `Neon Emissive.shadergraph` | Bright neon glow material |
+| `Matte Concrete.shadergraph` | Rough concrete surface |
+| `Gold Mirror.shadergraph` | Highly reflective gold |
+| `Blue Fresnel Glow.shadergraph` | Fresnel-based edge glow |
+| `Shiny Red Metal.shadergraph` | Polished red metallic surface |
+
+---
+
+## Profiler Panel
+
+The Profiler panel displays real-time performance metrics:
+
+### Metrics Displayed
+| Metric | Description |
+|--------|-------------|
+| **FPS** | Frames per second (current and average) |
+| **Frame Time** | Time per frame in milliseconds |
+| **Draw Calls** | Number of GPU draw calls per frame |
+| **Vertices** | Total vertex count rendered |
+| **Triangles** | Total triangle count rendered |
+
+Access via **Window > Profiler**.
+
+---
+
+## Build Settings Window
+
+The Build Settings window configures game packaging and platform targeting:
+
+### Features
+- **Scene list** — select which scenes to include in the build
+- **Platform selection** — target Windows, macOS, or Linux (x64/ARM64)
+- **Build configuration** — Debug or Release
+- **Output path** — choose the build destination folder
+- **Build button** — packages the game as a standalone Engine.Player executable
+
+Access via **Project > Build Settings**.
+
+---
+
 ## Input Remapping
 
 Access via **Settings > Input** or the Input Remapping window.
@@ -367,6 +445,8 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 | **Ctrl+Y** | Redo |
 | **Ctrl+B** | Compile scripts |
 | **Delete** | Delete selected object |
+| **F5** | Play / Stop game |
+| **F6** | Pause game |
 
 ---
 
@@ -379,11 +459,14 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 | **Open Project** | Load an existing project from `project.json` |
 | **Close** | Close the current project |
 | **Save Scene** | Save the current scene to `.scene` file |
+| **Build Settings** | Open the Build Settings window |
 
 ### Window Menu
 | Item | Description |
 |------|-------------|
 | **Reset Layout** | Restore default panel arrangement |
+| **Shader Editor** | Open the visual shader graph editor |
+| **Profiler** | Open the performance profiler panel |
 | Panel list | Open/focus specific panels |
 
 ### Settings Menu

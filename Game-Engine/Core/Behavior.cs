@@ -88,7 +88,7 @@ namespace Game_Engine.Core
         [Persist] public bool LogLifecycle { get; set; } = false;
 
         public Transform Transform => gameObject?.Transform ?? new Transform();
-        public bool IsActiveAndEnabled => Enabled;
+        public bool IsActiveAndEnabled => Enabled && (gameObject?.IsActiveInHierarchy ?? true);
         public event Action<Behavior, bool>? EnabledChanged;
 
         // -- Runtime lifecycle (engine drives these internal calls) ------------------

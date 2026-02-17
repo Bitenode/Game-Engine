@@ -135,6 +135,12 @@ namespace Game_Engine.Core
         }
 
         public static void EnsureInit() { s_available = true; }
+
+        /// <summary>Update the 3D audio listener position and orientation.</summary>
+        public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up)
+        {
+            // TODO: Forward to OpenAL listener when 3D audio is implemented
+        }
     }
 
     /// <summary>

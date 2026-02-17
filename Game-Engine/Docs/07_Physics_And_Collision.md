@@ -16,9 +16,12 @@ Colliders (BoxCollider, CapsuleCollider, MeshCollider)
     │ registered in
     ▼
 CollisionWorld (central registry)
+    │ uses
+    ├─► BVH (Bounding Volume Hierarchy for spatial acceleration)
     │ queried by
     ├─► CharacterController (per-frame ground/wall/ceiling detection)
     ├─► PlayerMovement (input → CharacterController.Simulate)
+    ├─► RigidbodyPlayer (physics-based player movement)
     ├─► Physics (static API for scripts)
     └─► SceneView (raycasting for object selection)
 ```
@@ -334,16 +337,45 @@ For runtime character movement, the engine provides an optimized terrain collisi
 
 ---
 
+## Physics Joints
+
+The engine supports five joint constraint types defined in `PhysicsJoint`:
+
+| Joint Type | Description |
+|------------|-------------|
+| **Fixed** | Rigidly connects two objects (no relative movement) |
+| **Hinge** | Rotation around a single axis (doors, wheels) |
+| **Spring** | Elastic connection with configurable stiffness and damping |
+| **Slider** | Linear movement along a single axis (pistons, rails) |
+| **BallSocket** | Rotation in all directions around a point (ragdoll shoulders) |
+
+---
+
+## Bounding Volume Hierarchy (BVH)
+
+The `BVH` class provides spatial acceleration for collision queries. Instead of testing every collider linearly, the BVH organizes colliders into a tree structure for O(log n) query performance.
+
+---
+
+## RigidbodyPlayer
+
+An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-based feel. Features include:
+- **Force-based movement** with configurable ground/air drag
+- **Swimming physics** — automatic 3D underwater movement
+- **Jump impulse** — physics-driven jumping with buffered input
+- **Natural push interactions** — momentum transfer between objects
+
+See the [Components Reference](03_Components_Reference.md) for full property details.
+
+---
+
 ## Limitations
 
-The physics system is designed primarily for character movement and basic collision queries. Current limitations include:
+The physics system is designed primarily for character movement and collision queries. Current limitations include:
 
 | Limitation | Description |
 |------------|-------------|
-| **No rigid body dynamics** | No bouncing, physics-driven motion, or force-based simulation |
-| **No joints or constraints** | No hinge, spring, or fixed joints between objects |
-| **No trigger volumes** (partial) | CharacterController supports trigger events, but general trigger detection is limited |
-| **Character-focused** | Collision is primarily designed for character movement scenarios |
-| **Linear collider search** | Non-terrain colliders are checked linearly (no spatial partitioning like BVH or octree) |
-| **Terrain holes in collision** | Heightmap lookup doesn't account for holes (height is interpolated even over holes) |
+| **Simplified rigid body dynamics** | Basic velocity and force support, no full constraint solver |
 | **No continuous collision for non-characters** | CCD is only implemented in CharacterController |
+| **Terrain holes in collision** | Heightmap lookup doesn't account for holes (height is interpolated even over holes) |
+| **Joint simulation** | Joint constraints are defined but use simplified solving |

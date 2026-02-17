@@ -197,6 +197,66 @@ Full-screen post-processing composite pass.
 
 ---
 
+## Shader Graph System
+
+The engine includes a visual **node-based shader graph** system that compiles to GLSL shaders at runtime.
+
+### Architecture
+```
+ShaderGraph (JSON .shadergraph file)
+    │ contains
+    ▼
+ShaderNodes (connected graph of operations)
+    │ compiled by
+    ▼
+ShaderGraph.Compile()
+    │ produces
+    ▼
+GLSL Vertex + Fragment source code
+    │ compiled by
+    ▼
+CustomShaderCache → ShaderProgram (GPU-ready shader)
+```
+
+### Node Types
+| Node | Description |
+|------|-------------|
+| **OutputNode** | Terminal node — defines surface BaseColor, Normal, Metallic, Roughness, Emission, Opacity |
+| **TextureSampleNode** | Samples a 2D texture at UV coordinates |
+| **ColorNode** | Constant color value (RGBA) |
+| **FloatNode** | Constant float value with configurable range |
+| **MathNode** | Math operations: Add, Subtract, Multiply, Divide, Power, Lerp, Clamp, Abs, Step, SmoothStep |
+| **CoordinateNode** | UV coordinates, world position, view direction, normal |
+| **FresnelNode** | Fresnel effect (angle-dependent reflection/glow) |
+| **NoiseNode** | Procedural noise generation (Perlin, Simplex) |
+
+### Custom Shader Files (.shader)
+Hand-written shaders using a custom format with GLSL vertex and fragment sections:
+```
+SHADER "My PBR Shader"
+
+PROPERTIES {
+    _BaseColor (Color) = (1, 1, 1, 1)
+    _Metallic (Float) = 0.5
+    _Roughness (Float) = 0.5
+    _MainTex (Texture2D)
+    _NormalMap (Texture2D)
+}
+
+VERTEX { ... GLSL code ... }
+FRAGMENT { ... GLSL code ... }
+```
+
+The `Steel PBR.shader` in Standard Assets demonstrates a full Cook-Torrance BRDF implementation with GGX distribution, Smith geometry, and Schlick Fresnel approximation.
+
+### CustomShaderCache
+Compiled custom shaders are cached per GL context. The `CustomShaderCache` manages:
+- Compilation of `.shader` files and shader graph output to GPU programs
+- Per-context caching to avoid recompilation
+- Fallback to the standard shader on compilation errors
+
+---
+
 ## GPU Resource Management
 
 ### GLContext
@@ -371,6 +431,7 @@ Each mesh has a bounding sphere computed from its vertices. Before drawing, the 
 
 | Optimization | Description |
 |--------------|-------------|
+| **GameObject culling** | Disabled GameObjects (`Enabled = false`) and their entire subtree are skipped early in all render traversals — `GatherDrawItems`, `RenderShadowNode`, `RenderParticlesRecursive`, `RenderWaterRecursive`, and Canvas `GatherElements`. This is a simple `if (!go.Enabled) return;` check before any matrix or material work. |
 | **Frustum culling** | Bounding sphere test against 6 frustum planes |
 | **Thread-static buffers** | Reuse draw-item buffers to reduce GC pressure |
 | **Terrain batching** | Group chunks by terrain, bind splatmaps once per terrain |
@@ -380,3 +441,56 @@ Each mesh has a bounding sphere computed from its vertices. Before drawing, the 
 | **Dirty tracking** | Only re-upload modified meshes (terrain edits, splatmap changes) |
 | **Splatmap versioning** | Per-context version counter avoids redundant GPU uploads |
 | **Index tracking** | MeshRenderer/MeshFilter pairing via index for fast component lookup |
+| **UI batching** | CanvasRenderer merges consecutive quads sharing a texture into single draw calls |
+
+---
+
+## Runtime UI Rendering (CanvasRenderer)
+
+The engine includes a dedicated GPU-accelerated UI rendering pipeline for in-game interfaces. The `CanvasRenderer` draws all active `Canvas` hierarchies after the main 3D scene.
+
+### Render Order
+
+```
+1. Shadow pass (depth-only)
+2. Opaque pass (MeshRenderers, SkinnedMeshRenderers, Terrain)
+3. Transparent pass (Water, Particles, Decals, World-Space Canvases)
+4. Post-processing (Bloom, Fog, Color Grading, Tone Mapping, Vignette, FXAA)
+5. UI Overlay pass (CanvasRenderer — ScreenSpaceOverlay canvases)
+6. Editor overlays (Grid, Gizmos, Collider wireframes)
+```
+
+### Architecture
+
+| Component | Role |
+|-----------|------|
+| `Canvas` | Root component defining render mode, scale mode, and sort order |
+| `RectTransform` | Anchor-based 2D layout (relative to parent or canvas root) |
+| `UIElement` subclasses | Generate `UIQuad` draw data (position, UV, color, texture) |
+| `CanvasRenderer` | Collects quads, batches by texture, uploads to GPU, draws |
+| `UIEventSystem` | Per-frame pointer raycasting and event dispatch |
+
+### Rendering Pipeline
+
+1. **Canvas filtering** — Only canvases where `IsActiveAndEnabled` is `true` are processed. This respects both the Canvas component's own `Enabled` flag and the owning GameObject's `IsActiveInHierarchy`.
+2. **Canvas traversal** — Canvases are sorted by `SortOrder` (ascending). Each is traversed depth-first. During traversal, disabled GameObjects (`Enabled = false`) and their entire subtree are skipped, so disabling a UI panel hides all its children automatically.
+3. **Quad collection** — Each `UIElement` emits `UIDrawData` (array of `UIQuad` structs) given its computed rect.
+4. **Texture batching** — Consecutive quads sharing a texture handle + shader type are merged into a single draw batch.
+5. **GPU upload** — Vertices (pos2 + uv2 + color4 = 32 bytes each) and indices are streamed to dynamic VBO/EBO.
+6. **Draw calls** — Each batch binds its texture and issues one `glDrawElements` call.
+
+### Shaders
+
+| Shader | Purpose |
+|--------|---------|
+| `UIVert` | Vertex shader — transforms canvas-space positions by an orthographic or world-space MVP matrix |
+| `UIFrag` | Fragment shader — samples texture and multiplies by vertex color |
+| `UITextFrag` | Fragment shader — SDF text rendering with alpha-tested font atlas |
+
+### World-Space Canvases
+
+World-space canvases are rendered during the transparent pass. The canvas rect is mapped to a billboard in 3D space using the GameObject's transform. Canvas pixels are scaled to world units via `WorldSizeX`/`WorldSizeY`.
+
+### Screen-Space Scaling
+
+The `CanvasScaleMode.ScaleWithScreenSize` mode computes a scale factor from the viewport vs. reference resolution using a logarithmic blend between width and height matching (controlled by `MatchWidthOrHeight`). This ensures UI elements look consistent across different screen sizes.

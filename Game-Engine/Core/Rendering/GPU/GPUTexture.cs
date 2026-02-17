@@ -117,6 +117,33 @@ public sealed class GPUTexture : IDisposable
     }
 
     /// <summary>
+    /// Create an RGBA16F color texture (for G-buffer normal+roughness with higher precision).
+    /// </summary>
+    public unsafe void CreateColorFloat16(int width, int height)
+    {
+        Width = width;
+        Height = height;
+
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+
+        _gl.TexImage2D(TextureTarget.Texture2D, 0,
+            InternalFormat.Rgba16f,
+            (uint)width, (uint)height, 0,
+            PixelFormat.Rgba, PixelType.HalfFloat, null);
+
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    /// <summary>
     /// Upload RGBA float data to GPU (for splatmap textures).
     /// Data length must be width * height * 4 floats.
     /// </summary>

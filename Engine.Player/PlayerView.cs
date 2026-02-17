@@ -33,6 +33,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     #region GPU Resources
     private GLContext? _glCtx;
+    private bool _isES = true;
     private ShaderProgram? _standardShader;
     private ShaderProgram? _depthShader;
     private ShaderProgram? _skyShader;
@@ -141,6 +142,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _glCtx = new GLContext(name => gl.GetProcAddress(name));
             var g = _glCtx.GL;
             bool es = _glCtx.IsES;
+            _isES = es;
 
             _standardShader = new ShaderProgram(g,
                 ShaderSources.Adapt(ShaderSources.StandardVert, es),
@@ -275,10 +277,12 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         SN.Vector3 lightPosW = SN.Vector3.Zero;
         float lightRange = 0f;
 
+        SN.Vector3 lightColorNorm = new SN.Vector3(1f, 1f, 1f);
         if (light?.gameObject != null)
         {
             float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
             DiffuseK = Math.Max(light.Intensity * Math.Max(lum, 0.001f), 0.001f);
+            lightColorNorm = new SN.Vector3(light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f);
             var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
             if (light.Type == LightType.Directional)
             {
@@ -382,7 +386,9 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             SN.Vector3.Normalize(-L), DiffuseK, Ambient,
             lightIsPoint, lightPosW, lightRange,
             shadowFBO, shadowVP, camPos, sunSD,
-            terrainShader: _terrainShader);
+            terrainShader: _terrainShader,
+            isES: _isES,
+            lightColor: lightColorNorm);
 
         // --- WATER ---
         if (_waterShader != null)
@@ -539,6 +545,29 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     void TickUpdate()
     {
         if (!_playing) return;
+
+        // Process any deferred scene load queued by SceneManager.LoadScene()
+        if (SceneManager.HasPendingLoad)
+        {
+            SceneManager.ProcessPendingLoad(
+                callOnDestroyAll: () => ForEachBehavior(b => b.__OnDestroy()),
+                clearRegistries: () =>
+                {
+                    PostProcessVolume.ClearAll();
+                    Core.Rendering.UI.UIEventSystem.Reset();
+                    Input.ClearAll();
+                },
+                rebuildCaches: () =>
+                {
+                    _needsWarm = true;
+                    _collidersWarm = false;
+                },
+                callAwakeStart: () =>
+                {
+                    _awakened = false; _started = false;
+                });
+        }
+
         if (!_awakened) { ForEachBehavior(b => b.__Awake()); _awakened = true; }
         if (!_started) { ForEachBehavior(b => b.__Start()); _started = true; }
         if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }

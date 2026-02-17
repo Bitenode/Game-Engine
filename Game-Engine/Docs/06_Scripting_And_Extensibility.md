@@ -456,3 +456,90 @@ The engine supports a fast iteration workflow:
 **Limitations:**
 - Scene data persisted with old type definitions may need re-serialization if property names change
 - Adding/removing `[Persist]` properties requires careful migration
+
+---
+
+## SceneManager — Runtime Scene Loading
+
+The `SceneManager` static API allows scripts to load scenes at runtime (e.g., transitioning from a main menu to gameplay). Loads are **deferred to the start of the next frame** so the scene tree is never mutated during iteration.
+
+```csharp
+// Load a scene by name (looks in the project's Scenes/ folder)
+SceneManager.LoadScene("Main Menu");
+
+// Load a scene by file path
+SceneManager.LoadSceneByPath("Levels/Level_01.scene");
+
+// Check current scene
+string? name = SceneManager.CurrentSceneName;
+bool pending = SceneManager.HasPendingLoad;
+
+// Listen for scene load completion
+SceneManager.SceneLoaded += (sceneName) =>
+{
+    LogInfo($"Scene loaded: {sceneName}");
+};
+```
+
+**Load sequence:**
+1. Current scene is torn down (`OnDestroy` called on all behaviors)
+2. Registries (audio, physics, UI) are cleared
+3. New `.scene` file is deserialized via `SceneService.LoadFromFile()`
+4. Caches are rebuilt and `Awake()`/`Start()` are called on new behaviors
+5. `SceneManager.SceneLoaded` event fires
+
+---
+
+## SceneQuery — Finding Objects at Runtime
+
+The `SceneQuery` static class provides utilities for searching the scene hierarchy from scripts:
+
+```csharp
+// Find all enabled behaviors of a specific type
+var allCameras = SceneQuery.FindBehaviors<Camera>();
+var enemies = SceneQuery.FindBehaviors<EnemyAI>().ToList();
+
+// Find a GameObject by name (first match, depth-first search)
+var player = SceneQuery.FindByName("Player");
+
+// Find a GameObject by hierarchical path
+var weapon = SceneQuery.FindByPath("Player/RightHand/Weapon");
+```
+
+| Method | Description |
+|--------|-------------|
+| `FindBehaviors<T>()` | Returns all enabled behaviors of type `T` across the entire scene |
+| `FindByName(name)` | Returns the first GameObject matching the name (or null) |
+| `FindByPath(path)` | Finds a GameObject by `/`-separated path (e.g., `"Parent/Child/GrandChild"`) |
+
+---
+
+## Runtime UI API
+
+Scripts can interact with the runtime UI system (Canvas, UIText, UIButton, etc.) to build and control in-game interfaces:
+
+```csharp
+// Get a UI button and subscribe to clicks
+var btn = GetComponent<UIButton>();
+btn.OnClick += () => LogInfo("Clicked!");
+
+// Update a health bar fill
+var healthImg = SceneQuery.FindByPath("HUD/HealthBar/Fill")
+    ?.Behaviors.OfType<UIImage>().FirstOrDefault();
+if (healthImg != null)
+    healthImg.FillAmount = currentHealth / maxHealth;
+
+// Update score text
+var scoreText = SceneQuery.FindByPath("HUD/ScoreText")
+    ?.Behaviors.OfType<UIText>().FirstOrDefault();
+if (scoreText != null)
+    scoreText.Text = $"Score: {score}";
+
+// Check if pointer is over UI (to avoid game input)
+if (!UIEventSystem.PointerOverUI)
+{
+    // Process game input (shooting, camera, etc.)
+}
+```
+
+See the [Components Reference](03_Components_Reference.md) for full UI component documentation.

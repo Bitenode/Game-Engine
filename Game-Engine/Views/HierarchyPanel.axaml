@@ -7,6 +7,7 @@
 	<!-- Shared menu used by BOTH the Tree root and each TreeViewItem -->
 	<UserControl.Resources>
 		<views:PrefabColorConverter x:Key="PrefabColor"/>
+		<views:HierarchyForegroundConverter x:Key="HierarchyForeground"/>
 
 		<ContextMenu x:Key="HierarchyMenu">
 			<MenuItem Header="Create Empty Child" Click="OnCreateChild"/>
@@ -47,8 +48,14 @@
 				<TreeView.DataTemplates>
 					<TreeDataTemplate DataType="core:GameObject"
 									  ItemsSource="{Binding Children}">
-						<TextBlock Text="{Binding Name}"
-								   Foreground="{Binding PrefabId, Converter={StaticResource PrefabColor}}"/>
+						<TextBlock Text="{Binding Name}">
+							<TextBlock.Foreground>
+								<MultiBinding Converter="{StaticResource HierarchyForeground}">
+									<Binding Path="PrefabId"/>
+									<Binding Path="IsActiveInHierarchy"/>
+								</MultiBinding>
+							</TextBlock.Foreground>
+						</TextBlock>
 					</TreeDataTemplate>
 				</TreeView.DataTemplates>
 			</TreeView>

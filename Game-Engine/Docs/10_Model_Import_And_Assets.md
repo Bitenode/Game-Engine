@@ -292,6 +292,9 @@ Procedural meshes support dynamic tessellation based on screen-space size:
 | `.terrain.json`  | Terrain      | Terrain heightmap, layers, and splatmap data |
 | `.boneanim`      | Animation    | Bone animation clip data             |
 | `.dll`           | Assembly     | Compiled script assembly (auto-generated) |
+| `.shader`        | Shader       | Custom GLSL shader (Cook-Torrance PBR, etc.) |
+| `.shadergraph`   | Shader Graph | Visual shader node graph (JSON format) |
+| `input.bindings.json` | Config  | Input axis and action bindings            |
 
 ---
 

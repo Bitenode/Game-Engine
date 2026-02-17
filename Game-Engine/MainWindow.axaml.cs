@@ -41,6 +41,8 @@ public partial class MainWindow : Window
             [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
             [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
             [typeof(AnimationPanel)] = ("Animation", DockRegion.Bottom, () => new AnimationPanel()),
+            [typeof(ProfilerPanel)] = ("Profiler", DockRegion.Bottom, () => new ProfilerPanel()),
+            [typeof(ShaderEditorPanel)] = ("Shader Editor", DockRegion.Center, () => new ShaderEditorPanel()),
         };
 
         // Defaults
@@ -72,6 +74,8 @@ public partial class MainWindow : Window
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
         BindNew("NewAnimationTab", typeof(AnimationPanel), DockRegion.Bottom);
         BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
+        BindNew("NewProfilerTab", typeof(ProfilerPanel), DockRegion.Bottom);
+        BindNew("NewShaderEditorTab", typeof(ShaderEditorPanel), DockRegion.Center);
 
         if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
             settings.Click += (_, __) => InputRemappingAsync();

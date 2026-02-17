@@ -8,6 +8,7 @@ public class GameObject : INotifyPropertyChanged
 {
     string _name;
     GameObject? _parent;
+    bool _enabled = true;
 
     public string Name
     {
@@ -15,10 +16,61 @@ public class GameObject : INotifyPropertyChanged
         set { if (_name != value) { _name = value; OnChanged(nameof(Name)); } }
     }
 
+    /// <summary>
+    /// Enable or disable this GameObject. Disabled GameObjects (and all their children)
+    /// are skipped during Update/Render. The Hierarchy shows them in red.
+    /// </summary>
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (_enabled != value)
+            {
+                _enabled = value;
+                OnChanged(nameof(Enabled));
+                OnChanged(nameof(IsActiveInHierarchy));
+                PropagateActiveChanged();
+                SceneService.NotifyChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// True only when this GameObject AND every ancestor is enabled.
+    /// </summary>
+    public bool IsActiveInHierarchy
+    {
+        get
+        {
+            if (!_enabled) return false;
+            return _parent?.IsActiveInHierarchy ?? true;
+        }
+    }
+
+    /// Notify this object and all descendants that the effective active state may have changed.
+    void PropagateActiveChanged()
+    {
+        foreach (var child in Children)
+        {
+            child.OnChanged(nameof(IsActiveInHierarchy));
+            child.PropagateActiveChanged();
+        }
+    }
+
     public GameObject? Parent
     {
         get => _parent;
-        private set { if (_parent != value) { _parent = value; OnChanged(nameof(Parent)); } }
+        private set
+        {
+            if (_parent != value)
+            {
+                _parent = value;
+                OnChanged(nameof(Parent));
+                OnChanged(nameof(IsActiveInHierarchy));
+                PropagateActiveChanged();
+            }
+        }
     }
 
     public ObservableCollection<GameObject> Children { get; } = new();

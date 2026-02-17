@@ -12,6 +12,8 @@ using CoreVec3 = Game_Engine.Core.Vector3;
 using Avalonia.Platform;
 using System.Reflection;
 using System.Diagnostics;
+using System.IO;
+using System.Text.Json;
 using Avalonia.Threading;
 using static Game_Engine.Core.TransformUtil;
 using Game_Engine.Core.Component;
@@ -46,6 +48,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
 
     private ShadowMapGPU? _shadow;
+
+    // Canvas UI renderer
+    private Core.Rendering.UI.CanvasRenderer? _canvasRenderer;
 
     // Gizmo GL resources (lines + arrowhead cones)
     private uint _gizmoVao;
@@ -221,17 +226,116 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     public bool SnapEnabled { get; set; } = false;
     public float SnapStep { get; set; } = 0.5f;
 
+    #region View Settings Persistence
+
+    private sealed class ViewSettingsDTO
+    {
+        public bool ShowGrid { get; set; } = true;
+        public bool ShowWire { get; set; } = false;
+        public bool ShowLight { get; set; } = true;
+        public bool Is2D { get; set; } = false;
+        public bool Supersample2x { get; set; } = false;
+        public bool GizmoLocal { get; set; } = true;
+        public bool ShowTerrainGizmos { get; set; } = true;
+        public bool ShowShadows { get; set; } = true;
+        public bool ShowCameras { get; set; } = true;
+    }
+
+    private static readonly JsonSerializerOptions s_viewJson = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private bool _isLoadingViewSettings;
+
+    private static string? GetViewSettingsPath()
+    {
+        var cur = ProjectService.Current;
+        if (cur == null) return null;
+        var dir = Path.Combine(cur.RootPath, "ProjectSettings");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "viewsettings.json");
+    }
+
+    /// <summary>Save current view toggle states to ProjectSettings/viewsettings.json.</summary>
+    public void SaveViewSettings()
+    {
+        if (_isLoadingViewSettings) return;
+        var path = GetViewSettingsPath();
+        if (path == null) return;
+
+        try
+        {
+            var dto = new ViewSettingsDTO
+            {
+                ShowGrid = ShowGrid,
+                ShowWire = ShowWire,
+                ShowLight = ShowLight,
+                Is2D = Is2D,
+                Supersample2x = Supersample2x,
+                GizmoLocal = GizmoLocal,
+                ShowTerrainGizmos = ShowTerrainGizmos,
+                ShowShadows = ShowShadows,
+                ShowCameras = ShowCameras
+            };
+
+            var json = JsonSerializer.Serialize(dto, s_viewJson);
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[ViewSettings] Failed to save: {ex.Message}");
+        }
+    }
+
+    /// <summary>Load view toggle states from ProjectSettings/viewsettings.json if it exists.</summary>
+    public void LoadViewSettings()
+    {
+        var path = GetViewSettingsPath();
+        if (path == null || !File.Exists(path)) return;
+
+        try
+        {
+            _isLoadingViewSettings = true;
+
+            var text = File.ReadAllText(path);
+            var dto = JsonSerializer.Deserialize<ViewSettingsDTO>(text, s_viewJson);
+            if (dto == null) return;
+
+            ShowGrid = dto.ShowGrid;
+            ShowWire = dto.ShowWire;
+            ShowLight = dto.ShowLight;
+            Is2D = dto.Is2D;
+            Supersample2x = dto.Supersample2x;
+            GizmoLocal = dto.GizmoLocal;
+            ShowTerrainGizmos = dto.ShowTerrainGizmos;
+            ShowShadows = dto.ShowShadows;
+            ShowCameras = dto.ShowCameras;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[ViewSettings] Failed to load: {ex.Message}");
+        }
+        finally
+        {
+            _isLoadingViewSettings = false;
+        }
+    }
+
+    #endregion
+
     static SceneView()
     {
         ToolProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowGridProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowWireProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowLightProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        Is2DProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
+        ShowGridProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowWireProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowLightProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        Is2DProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
     }
     #endregion
 
@@ -806,6 +910,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         foreach (var root in SceneService.Root) WalkLOD(root, camPos);
         static void WalkLOD(GameObject go, SN.Vector3 cam)
         {
+            if (!go.Enabled) return;
             foreach (var b in go.Behaviors)
                 if (b is Terrain t && t.Enabled) { t.UpdateLOD(cam); break; }
             foreach (var c in go.Children) WalkLOD(c, cam);
@@ -818,6 +923,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
         static void WalkTreeLOD(GameObject go, SN.Vector3 cam)
         {
+            if (!go.Enabled) return;
             foreach (var b in go.Behaviors)
                 if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
             foreach (var c in go.Children) WalkTreeLOD(c, cam);
@@ -827,10 +933,11 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     // ────────────── Cached Scene Queries ──────────────
     void CacheSkyboxAndLight(GameObject go)
     {
+        if (!go.Enabled) return;
         foreach (var b in go.Behaviors)
         {
-            if (_cachedSkybox == null && b is Skybox sb && sb.Enabled) _cachedSkybox = sb;
-            if (_cachedLight == null && b is Light lt && lt.Enabled) _cachedLight = lt;
+            if (_cachedSkybox == null && b is Skybox sb && sb.IsActiveAndEnabled) _cachedSkybox = sb;
+            if (_cachedLight == null && b is Light lt && lt.IsActiveAndEnabled) _cachedLight = lt;
         }
         if (_cachedSkybox != null && _cachedLight != null) return; // found both
         foreach (var c in go.Children) CacheSkyboxAndLight(c);
@@ -928,6 +1035,29 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             InvalidateVisual();
         };
         SceneService.Changed += () => { _cache?.InvalidateAll(); _sceneQueryDirty = true; InvalidateVisual(); };
+
+        // Full scene replacement (e.g. File > Load Scene) needs a heavier reset
+        // than the incremental Changed handler above.
+        SceneService.SceneReplaced += () =>
+        {
+            // Request a full GPU cache flush on the next GL render pass
+            // (GL resources must be disposed inside the GL context).
+            if (_cache != null) _cache.FlushRequested = true;
+            _sceneQueryDirty = true;
+            _cachedSkybox = null;
+            _cachedLight = null;
+
+            // Clear selection to avoid stale references to old scene objects
+            SelectionService.Clear();
+            _selected = null;
+            _multiSelected.Clear();
+
+            // Post InvalidateVisual at Render priority to ensure it runs
+            // after the scene data is fully committed.
+            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+                Avalonia.Threading.DispatcherPriority.Render);
+        };
+
         AffectsRender<SceneView>(GizmoLocalProperty);
         AddHandler(PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
         AddHandler(PointerReleasedEvent, OnPointerReleased, RoutingStrategies.Tunnel);
@@ -1046,6 +1176,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _shadow = new ShadowMapGPU(g, 1024, 1024);
             DiagLog("[SceneView] Shadow map OK");
 
+            _canvasRenderer = new Core.Rendering.UI.CanvasRenderer(g, es);
+            DiagLog("[SceneView] Canvas UI renderer OK");
+
             // Gizmo VAO/VBO – 24 vertices (3 lines + 3 arrowheads à 2 tris)
             _gizmoVao = g.GenVertexArray();
             _gizmoVbo = g.GenBuffer();
@@ -1089,6 +1222,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             if (_colliderVao != 0) { g.DeleteVertexArray(_colliderVao); _colliderVao = 0; }
             if (_colliderVbo != 0) { g.DeleteBuffer(_colliderVbo); _colliderVbo = 0; }
         }
+        _canvasRenderer?.Dispose(); _canvasRenderer = null;
         _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
         _postProcessShader?.Dispose(); _postProcessShader = null;
         _waterShader?.Dispose(); _waterShader = null;
@@ -1117,6 +1251,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // Flush any GL errors accumulated by the other view's rendering.
         // Both views share the same GL context; stale errors can confuse drivers.
         while (g.GetError() != GLEnum.NoError) { }
+
+        // Full GPU cache flush requested (e.g. after loading a new scene).
+        // Must happen inside the GL context to safely dispose GPU resources.
+        if (_cache.FlushRequested)
+        {
+            _cache.FlushAll();
+        }
 
         _frameTimer.Restart();
         double _tSetup = 0, _tShadow = 0, _tScene = 0, _tGizmo = 0;
@@ -1216,10 +1357,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         SN.Vector3 lightPosW = SN.Vector3.Zero;
         float lightRange = 10f;
 
+        SN.Vector3 lightColorNorm = new SN.Vector3(1f, 1f, 1f);
         if (light is not null)
         {
             float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
             DiffuseK *= MathF.Max(0.01f, light.Intensity * lum);
+            lightColorNorm = new SN.Vector3(light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f);
             if (light.Type == LightType.Directional && light.gameObject is { } lt)
                 L = -ForwardFrom(lt.Transform);
             else if (light.Type == LightType.Point && light.gameObject is { } go)
@@ -1301,7 +1444,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 SN.Vector3.Normalize(-L), DiffuseK, Ambient,
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, camPos, sunSD,
-                terrainShader: _terrainShader);
+                terrainShader: _terrainShader,
+                lightColor: lightColorNorm);
 
             // --- WATER ---
             if (_waterShader != null)
@@ -1316,6 +1460,17 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             // --- PARTICLES ---
             if (_particleShader != null)
                 SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
+
+            // --- WORLD-SPACE UI CANVASES ---
+            if (_canvasRenderer != null)
+            {
+                var viewProj = view * proj;
+                foreach (var wc in Core.Component.UI.Canvas.All)
+                {
+                    if (wc.IsActiveAndEnabled && wc.RenderMode == Core.Component.UI.CanvasRenderMode.WorldSpace)
+                        _canvasRenderer.RenderWorldCanvas(wc, in viewProj, _cache);
+                }
+            }
         }
 
         // --- POST-PROCESSING BLIT ---
@@ -1340,6 +1495,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         }
 
+        // --- CANVAS UI OVERLAY (screen-space canvases on top of the scene) ---
+        if (_canvasRenderer != null && _cache != null)
+        {
+            _canvasRenderer.RenderOverlays(pxW, pxH, _cache);
+        }
+
         _tScene = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
 
         // --- GIZMO PASS (GL lines + cones on top of scene) ---
@@ -1355,6 +1516,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // --- TERRAIN BRUSH GIZMO PASS (GL lines — independent of collider toggle) ---
         if (ShowTerrainGizmos)
             RenderTerrainGizmosGL(g, view, proj);
+
+        // --- CANVAS UI RECTRANSFORM GIZMO PASS (GL lines — shows UI element bounds) ---
+        RenderRectTransformGizmosGL(g, view, proj);
 
         // Periodic GPU resource eviction (avoid unbounded cache growth)
         if (++_evictCounter > 300) // roughly every ~5s at 60fps
@@ -2212,6 +2376,102 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         g.BindVertexArray(0);
         g.Disable(EnableCap.Blend);
+    }
+
+    /// <summary>
+    /// Renders RectTransform gizmo outlines for Canvas UI elements in the scene.
+    /// Shows green dashed rectangles around each RectTransform to help visualize UI layout.
+    /// </summary>
+    unsafe void RenderRectTransformGizmosGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj)
+    {
+        if (_wireShader == null || _colliderVao == 0) return;
+
+        var canvases = Core.Component.UI.Canvas.All;
+        if (canvases.Count == 0) return;
+
+        var lines = new List<float>(256);
+
+        foreach (var canvas in canvases)
+        {
+            if (!canvas.IsActiveAndEnabled) continue;
+
+            if (canvas.RenderMode == Core.Component.UI.CanvasRenderMode.WorldSpace)
+            {
+                // World-space canvases: draw outlines in 3D space
+                var go = canvas.gameObject;
+                if (go == null) continue;
+
+                var tr = go.Transform;
+                float worldW = canvas.WorldSizeX;
+                float worldH = canvas.WorldSizeY;
+                float canvasPixelsW = canvas.ReferenceResolutionX;
+                float canvasPixelsH = canvas.ReferenceResolutionY;
+                var canvasRect = new Core.Component.UI.RectTransform.Rect(0, 0, canvasPixelsW, canvasPixelsH);
+
+                float scaleX = worldW / canvasPixelsW;
+                float scaleY = worldH / canvasPixelsH;
+
+                static float Deg2Rad(double d) => (float)(Math.PI / 180.0 * d);
+                var model = SN.Matrix4x4.CreateScale(scaleX, scaleY, 1f)
+                          * SN.Matrix4x4.CreateFromYawPitchRoll(
+                                Deg2Rad(tr.Rotation.Y), Deg2Rad(tr.Rotation.X), Deg2Rad(tr.Rotation.Z))
+                          * SN.Matrix4x4.CreateTranslation(
+                                (float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
+
+                GatherRectTransformLines(canvas.gameObject!, canvasRect, model, lines);
+            }
+        }
+
+        if (lines.Count == 0) return;
+
+        var mvp = view * proj;
+        _wireShader.Use();
+        _wireShader.SetMatrix4("uMVP", mvp);
+        g.Disable(EnableCap.DepthTest);
+        g.Disable(EnableCap.CullFace);
+        g.Enable(EnableCap.Blend);
+        g.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+        g.BindVertexArray(_colliderVao);
+        g.BindBuffer(BufferTargetARB.ArrayBuffer, _colliderVbo);
+        g.LineWidth(1.5f);
+
+        // Green color for UI rect gizmos
+        DrawColliderLineBatch(g, lines, 0.2f, 0.9f, 0.3f, 0.8f);
+
+        g.BindVertexArray(0);
+        g.Disable(EnableCap.Blend);
+    }
+
+    void GatherRectTransformLines(GameObject go, Core.Component.UI.RectTransform.Rect canvasRect,
+        SN.Matrix4x4 worldTransform, List<float> lines)
+    {
+        foreach (var b in go.Behaviors)
+        {
+            if (b is Core.Component.UI.RectTransform rt && rt.Enabled)
+            {
+                var rect = rt.GetWorldRect(in canvasRect);
+
+                // Convert rect corners to world space via the world transform
+                var corners = new SN.Vector2[4];
+                rt.GetWorldCorners(in canvasRect, corners);
+
+                for (int i = 0; i < 4; i++)
+                {
+                    int next = (i + 1) % 4;
+                    // Transform 2D corners through world matrix (Z=0 plane)
+                    var p0 = SN.Vector4.Transform(new SN.Vector4(corners[i].X, corners[i].Y, 0, 1), worldTransform);
+                    var p1 = SN.Vector4.Transform(new SN.Vector4(corners[next].X, corners[next].Y, 0, 1), worldTransform);
+
+                    lines.Add(p0.X); lines.Add(p0.Y); lines.Add(p0.Z);
+                    lines.Add(p1.X); lines.Add(p1.Y); lines.Add(p1.Z);
+                }
+                break; // only one RectTransform per GameObject
+            }
+        }
+
+        foreach (var child in go.Children)
+            GatherRectTransformLines(child, canvasRect, worldTransform, lines);
     }
 
     /// <summary>
