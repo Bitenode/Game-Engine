@@ -37,43 +37,52 @@ The solution contains two projects: **Game_Engine** (the editor) and **Engine.Pl
 ```
 Game-Engine/
 ├── Core/                        # Engine runtime (non-UI)
-│   ├── Component/               # All attachable components (34+ component types)
-│   │   ├── Transform.cs         # Position, rotation, scale (mandatory)
-│   │   ├── Camera.cs            # Perspective/orthographic camera
-│   │   ├── Light.cs             # Directional, point, spot lights
-│   │   ├── MeshFilter.cs        # Mesh geometry holder
-│   │   ├── MeshRenderer.cs      # Mesh rendering with materials
-│   │   ├── SkinnedMeshRenderer.cs # GPU bone skinning
-│   │   ├── Terrain.cs           # Heightmap terrain with splatmaps
-│   │   ├── Tree.cs              # Procedural/imported trees with wind
-│   │   ├── TreeLOD.cs           # Tree level-of-detail management
-│   │   ├── Water.cs             # Gerstner wave water rendering
-│   │   ├── Skybox.cs            # Sky gradient + equirectangular texture
-│   │   ├── BoxCollider.cs       # Box collision shape
-│   │   ├── CapsuleCollider.cs   # Capsule collision shape
-│   │   ├── MeshCollider.cs      # Mesh-based collision
-│   │   ├── Collider.cs          # Base collider class
-│   │   ├── CharacterController.cs # Physics character controller
-│   │   ├── PlayerMovement.cs    # FPS/TPS player movement
-│   │   ├── Rigidbody.cs         # Physics body
-│   │   ├── RigidbodyPlayer.cs   # Player physics controller
-│   │   ├── ParticleEmitter.cs   # Particle system
-│   │   ├── PostProcessVolume.cs # Post-processing effects
-│   │   ├── AudioSource.cs       # 3D spatial audio emitter
-│   │   ├── AudioListener.cs     # Audio listener
-│   │   ├── Animator.cs          # Skeletal animation state machine
-│   │   ├── Decal.cs             # Decal projection
-│   │   ├── NavMeshAgent.cs      # Navigation agent
-│   │   ├── VegetationInstance.cs # Vegetation placement
-│   │   ├── Camera2D.cs          # 2D camera helper
-│   │   ├── SpriteRenderer.cs    # 2D sprite rendering
-│   │   ├── Tilemap.cs           # 2D tilemap grid
-│   │   ├── IKConstraint.cs      # Inverse kinematics
-│   │   ├── NetworkIdentity.cs   # Network object identity
-│   │   ├── NetworkTransform.cs  # Network transform sync
-│   │   ├── NetworkAnimator.cs   # Network animation sync
-│   │   └── ReverbZone.cs        # Audio reverb zone
-│   │   └── UI/                  # Runtime UI components
+│   ├── Component/               # All attachable components (34+ types, organized by category)
+│   │   ├── Transform.cs         # Position, rotation, scale (mandatory, always present)
+│   │   ├── Rendering/           # [ComponentCategory("Rendering")]
+│   │   │   ├── Camera.cs        # Perspective/orthographic camera
+│   │   │   ├── Light.cs         # Directional, point, spot lights
+│   │   │   ├── MeshFilter.cs    # Mesh geometry holder
+│   │   │   ├── MeshRenderer.cs  # Mesh rendering with materials
+│   │   │   └── SkinnedMeshRenderer.cs # GPU bone skinning
+│   │   ├── Physics/             # [ComponentCategory("Physics")]
+│   │   │   ├── Collider.cs      # Base collider class
+│   │   │   ├── BoxCollider.cs   # Box collision shape
+│   │   │   ├── CapsuleCollider.cs # Capsule collision shape
+│   │   │   ├── MeshCollider.cs  # Mesh-based collision
+│   │   │   ├── CharacterController.cs # Physics character controller
+│   │   │   ├── PlayerMovement.cs # FPS/TPS player movement
+│   │   │   ├── Rigidbody.cs     # Physics body
+│   │   │   └── RigidbodyPlayer.cs # Player physics controller
+│   │   ├── Animation/           # [ComponentCategory("Animation")]
+│   │   │   ├── Animator.cs      # Skeletal animation state machine
+│   │   │   └── IKConstraint.cs  # Inverse kinematics
+│   │   ├── Audio/               # [ComponentCategory("Audio")]
+│   │   │   ├── AudioSource.cs   # 3D spatial audio emitter
+│   │   │   ├── AudioListener.cs # Audio listener
+│   │   │   └── ReverbZone.cs    # Audio reverb zone
+│   │   ├── Effects/             # [ComponentCategory("Effects")]
+│   │   │   ├── Decal.cs         # Decal projection
+│   │   │   ├── ParticleEmitter.cs # Particle system
+│   │   │   └── PostProcessVolume.cs # Post-processing effects
+│   │   ├── Environment/         # [ComponentCategory("Environment")]
+│   │   │   ├── Skybox.cs        # Sky gradient + equirectangular texture
+│   │   │   ├── Terrain.cs       # Heightmap terrain with splatmaps
+│   │   │   ├── Tree.cs          # Procedural/imported trees with wind
+│   │   │   ├── TreeLOD.cs       # Tree level-of-detail management
+│   │   │   ├── VegetationPainter.cs # GPU-instanced vegetation
+│   │   │   └── Water.cs         # Gerstner wave water rendering
+│   │   ├── Navigation/          # [ComponentCategory("Navigation")]
+│   │   │   └── NavMeshAgent.cs  # Navigation agent
+│   │   ├── Networking/          # [ComponentCategory("Networking")]
+│   │   │   ├── NetworkIdentity.cs   # Network object identity
+│   │   │   ├── NetworkTransform.cs  # Network transform sync
+│   │   │   └── NetworkAnimator.cs   # Network animation sync
+│   │   ├── 2D/                  # [ComponentCategory("2D")]
+│   │   │   ├── Camera2D.cs      # 2D camera helper
+│   │   │   ├── SpriteRenderer.cs # 2D sprite rendering
+│   │   │   └── Tilemap.cs       # 2D tilemap grid
+│   │   └── UI/                  # [ComponentCategory("UI")]
 │   │       ├── Canvas.cs        # Root UI container (Overlay/Camera/World)
 │   │       ├── RectTransform.cs # Anchor-based 2D layout
 │   │       ├── UIElement.cs     # Base class for all UI elements
@@ -134,6 +143,17 @@ Game-Engine/
 │   │   ├── IKSolver.cs          # Inverse kinematics solvers (TwoBone, FABRIK, LookAt)
 │   │   ├── BoneAnimationClip.cs # Bone animation data
 │   │   └── AnimationClipAsset.cs# Animation clip asset format
+│   ├── Dialogue/                # Dialogue system
+│   │   ├── DialogueTree.cs      # Dialogue tree asset (nodes, choices, branches)
+│   │   └── DialogueRunner.cs    # Dialogue playback component
+│   ├── AI/                      # AI behavior trees
+│   │   ├── BehaviorTree.cs      # Behavior tree asset
+│   │   ├── BTNode.cs            # Node types (Selector, Sequence, Parallel, etc.)
+│   │   ├── BehaviorTreeRunner.cs# Behavior tree executor component
+│   │   └── Blackboard.cs        # Key-value data store for AI agents
+│   ├── Timeline/                # Timeline / Cutscene sequencer
+│   │   ├── Timeline.cs          # TimelineAsset, TimelineTrack, TimelineClip
+│   │   └── TimelinePlayer.cs    # Timeline playback component
 │   ├── Networking/              # Multiplayer networking
 │   │   ├── NetworkManager.cs    # Server/client lifecycle + RPC system
 │   │   └── NetworkTransport.cs  # Low-level UDP transport layer
@@ -165,6 +185,7 @@ Game-Engine/
 │   ├── ProjectPanel.axaml.cs    # File browser
 │   ├── ConsolePanel.axaml.cs    # Log console
 │   ├── AnimationPanel.axaml.cs  # Animation editor
+│   ├── TimelineSequencerPanel.axaml.cs # Timeline / Cutscene sequencer editor
 │   ├── GamePanel.axaml.cs       # Game view container
 │   ├── ScenePanel.axaml.cs      # Scene view container
 │   ├── ScriptEditorWindow.axaml.cs # Code editor
@@ -251,6 +272,8 @@ Utility methods:
 
 Components can declare dependencies with `[Require(typeof(OtherComponent))]`, which automatically adds missing components when the behavior is attached to a GameObject.
 
+Components are organized into categories using the `[ComponentCategory("Name")]` attribute. The Inspector's **+ Add Component** button opens a hierarchical popup menu where each category is a submenu (e.g., Rendering, Physics, Animation, Audio, Effects, Environment, Navigation, Networking, 2D, UI, AI, Dialogue, Timeline). Custom scripts appear in a separate **Scripts** submenu.
+
 ### Scene Graph
 
 The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-level objects as an `ObservableCollection<GameObject>`. Children inherit parent transforms (hierarchical positioning). The hierarchy is displayed in the Hierarchy panel and traversed by the renderer for drawing and culling.
@@ -301,6 +324,9 @@ Scene Graph (GameObjects + Behaviors)
     ├─► CharacterController.Simulate() (physics)
     ├─► Animator.Update() (bone animation)
     ├─► ParticleEmitter.Update() (particle simulation)
+    ├─► DialogueRunner.Update() (dialogue advancement / voice playback)
+    ├─► BehaviorTreeRunner.Update() (AI behavior tree ticking)
+    ├─► TimelinePlayer.Update() (timeline/cutscene playback)
     ├─► AudioSource (spatial audio updates)
     ├─► IKConstraint (inverse kinematics overrides)
     ├─► NetworkTransform (network state interpolation)
@@ -319,6 +345,7 @@ SceneRenderer.RenderGPU()
     ├─► Transparent Pass (back-to-front sorted, alpha blending)
     ├─► Particle Pass (billboard quads, instanced rendering)
     ├─► Gizmo Pass (editor overlays, collider wireframes — Scene View only)
+    ├─► Volumetric Fog Pass (ray-marched scattering with shadow sampling)
     ├─► Post-Processing Pass (Bloom, Fog, Color Grading, FXAA, Vignette, Underwater)
     └─► GL State Cleanup (restore Avalonia compositor state)
 ```
@@ -362,7 +389,7 @@ The `GameObject.Enabled` state is also serialized in `.scene` files. To keep fil
    - **Center** — Scene View and Game View (tabbed)
    - **Right** — Inspector panel
    - **Bottom Left** — Project panel
-   - **Bottom** — Console panel and Animation panel
+   - **Bottom** — Console panel, Animation panel, and Timeline Sequencer panel
 
 The main window also builds the menu bar (Project, Window, Settings menus) and dynamically appends extension menus when scripts are compiled.
 

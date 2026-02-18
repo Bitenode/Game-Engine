@@ -40,6 +40,7 @@
 					<MenuItem Header="New Project Tab"   x:Name="NewProjectTab"/>
 					<MenuItem Header="New Console Tab"   x:Name="NewConsoleTab"/>
 					<MenuItem Header="New Animation Tab" x:Name="NewAnimationTab"/>
+					<MenuItem Header="New Timeline Tab"  x:Name="NewTimelineTab"/>
 					<Separator/>
 					<MenuItem Header="New Profiler Tab"       x:Name="NewProfilerTab"/>
 					<MenuItem Header="New Shader Editor Tab"  x:Name="NewShaderEditorTab"/>

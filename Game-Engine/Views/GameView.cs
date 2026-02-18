@@ -65,10 +65,12 @@ namespace Game_Engine.Views
         private ShaderProgram? _ssaoShader;
         private ShaderProgram? _ssaoBlurShader;
         private ShaderProgram? _ssrShader;
+        private ShaderProgram? _volFogShader;
         private GPUFramebuffer? _gbufferFBO;
         private GPUFramebuffer? _ssaoFBO;
         private GPUFramebuffer? _ssaoBlurFBO;
         private GPUFramebuffer? _ssrFBO;
+        private GPUFramebuffer? _volFogFBO;
         private int _gbufferW, _gbufferH;
         private SN.Vector3[]? _ssaoKernel;
         #endregion
@@ -239,6 +241,9 @@ namespace Game_Engine.Views
                 _ssrShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.SSRVert, es),
                     ShaderSources.Adapt(ShaderSources.SSRFrag, es));
+                _volFogShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.VolumetricFogVert, es),
+                    ShaderSources.Adapt(ShaderSources.VolumetricFogFrag, es));
 
                 // Generate SSAO hemisphere kernel (biased toward the surface)
                 _ssaoKernel = GenerateSSAOKernel(32);
@@ -266,7 +271,9 @@ namespace Game_Engine.Views
             _ssaoFBO?.Dispose(); _ssaoFBO = null;
             _ssaoBlurFBO?.Dispose(); _ssaoBlurFBO = null;
             _ssrFBO?.Dispose(); _ssrFBO = null;
+            _volFogFBO?.Dispose(); _volFogFBO = null;
             _ssrShader?.Dispose(); _ssrShader = null;
+            _volFogShader?.Dispose(); _volFogShader = null;
             _ssaoBlurShader?.Dispose(); _ssaoBlurShader = null;
             _ssaoShader?.Dispose(); _ssaoShader = null;
             _deferredLightShader?.Dispose(); _deferredLightShader = null;
@@ -640,6 +647,30 @@ namespace Game_Engine.Views
                 g.BindVertexArray(0);
 
                 finalSceneTex = _ssrFBO.ColorTexture;
+            }
+
+            // 10b. VOLUMETRIC FOG — ray-marched fullscreen pass (reads scene color + depth)
+            if (_volFogShader != null && postVolume?.VolumetricFogEnabled == true
+                && finalSceneTex != null && _gbufferFBO?.DepthTexture != null)
+            {
+                if (_volFogFBO == null) _volFogFBO = new GPUFramebuffer(g);
+                if (_volFogFBO.Width != W || _volFogFBO.Height != H)
+                    _volFogFBO.SetupColorDepth(W, H);
+
+                _volFogFBO.Bind();
+                g.ClearColor(0f, 0f, 0f, 1f);
+                g.Clear(ClearBufferMask.ColorBufferBit);
+
+                g.BindVertexArray(_fsQuad!.VAO);
+                SceneRenderer.RenderVolumetricFog(g, _volFogShader, _fsQuad!,
+                    finalSceneTex, _gbufferFBO.DepthTexture,
+                    view, proj, camPos,
+                    sunSD, lightColorNorm,
+                    shadowFBO, shadowVP, postVolume,
+                    (float)Core.Time.time);
+                g.BindVertexArray(0);
+
+                finalSceneTex = _volFogFBO.ColorTexture;
             }
 
             // 11. POST-PROCESSING → Avalonia framebuffer

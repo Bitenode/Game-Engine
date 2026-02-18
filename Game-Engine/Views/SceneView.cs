@@ -41,9 +41,11 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private ShaderProgram? _particleShader;
     private ShaderProgram? _waterShader;
     private ShaderProgram? _postProcessShader;
+    private ShaderProgram? _volFogShader;
     private FullscreenQuad? _fsQuad;
     private ResourceCache? _cache;
     private GPUFramebuffer? _sceneFBO;
+    private GPUFramebuffer? _volFogFBO;
     private int _sceneFBO_W, _sceneFBO_H;
 
 
@@ -1168,6 +1170,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
             DiagLog("[SceneView] Post-process shader OK");
 
+            DiagLog("[SceneView] Compiling volumetric fog shader...");
+            _volFogShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.VolumetricFogVert, es),
+                ShaderSources.Adapt(ShaderSources.VolumetricFogFrag, es));
+            DiagLog("[SceneView] Volumetric fog shader OK");
+
             _fsQuad = new FullscreenQuad(g);
             _cache = new ResourceCache(g);
 
@@ -1224,7 +1232,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
         _canvasRenderer?.Dispose(); _canvasRenderer = null;
         _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
+        _volFogFBO?.Dispose(); _volFogFBO = null;
         _postProcessShader?.Dispose(); _postProcessShader = null;
+        _volFogShader?.Dispose(); _volFogShader = null;
         _waterShader?.Dispose(); _waterShader = null;
         _particleShader?.Dispose(); _particleShader = null;
         _shadow?.Dispose();
@@ -1473,8 +1483,35 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             }
         }
 
+        // --- VOLUMETRIC FOG PASS ---
+        GPUTexture? postInputTex = _sceneFBO?.ColorTexture;
+        if (_volFogShader != null && postVolume?.VolumetricFogEnabled == true
+            && _sceneFBO?.ColorTexture != null && _sceneFBO?.DepthTexture != null)
+        {
+            if (_volFogFBO == null) _volFogFBO = new GPUFramebuffer(g);
+            if (_volFogFBO.Width != pxW || _volFogFBO.Height != pxH)
+                _volFogFBO.SetupColorDepth(pxW, pxH);
+
+            _volFogFBO.Bind();
+            g.ClearColor(0f, 0f, 0f, 1f);
+            g.Clear(ClearBufferMask.ColorBufferBit);
+
+            var volFogSunDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
+
+            g.BindVertexArray(_fsQuad!.VAO);
+            SceneRenderer.RenderVolumetricFog(g, _volFogShader, _fsQuad!,
+                _sceneFBO.ColorTexture, _sceneFBO.DepthTexture,
+                view, proj, camPos,
+                volFogSunDir, lightColorNorm,
+                shadowFBO, shadowVP, postVolume,
+                (float)Core.Time.time);
+            g.BindVertexArray(0);
+
+            postInputTex = _volFogFBO.ColorTexture;
+        }
+
         // --- POST-PROCESSING BLIT ---
-        if (usePostFX && _sceneFBO?.ColorTexture != null)
+        if (usePostFX && postInputTex != null)
         {
             // Bind Avalonia's framebuffer as the output target
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
@@ -1482,7 +1519,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             g.Disable(EnableCap.DepthTest);
 
             g.BindVertexArray(_fsQuad!.VAO);
-            SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, pxW, pxH, postVolume);
+            SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, postInputTex, pxW, pxH, postVolume);
             g.BindVertexArray(0);
 
             g.Enable(EnableCap.DepthTest);

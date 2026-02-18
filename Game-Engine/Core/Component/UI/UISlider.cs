@@ -12,6 +12,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI Slider element — a draggable slider for selecting a value in a range.
     /// Renders a background track and a filled portion based on the current value.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class UISlider : UIElement
     {

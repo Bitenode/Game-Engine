@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Events;
 
 namespace Game_Engine.Core
 {
@@ -15,6 +16,16 @@ namespace Game_Engine.Core
     {
         public Type[] Types { get; }
         public RequireAttribute(params Type[] types) { Types = types ?? Array.Empty<Type>(); }
+    }
+
+    /// <summary>
+    /// Assigns a component to a named category for the Add Component dropdown in the Inspector.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, Inherited = false)]
+    public sealed class ComponentCategoryAttribute : Attribute
+    {
+        public string Category { get; }
+        public ComponentCategoryAttribute(string category) => Category = category;
     }
 
     /// Base class for attachable scripts/components
@@ -128,6 +139,7 @@ namespace Game_Engine.Core
                 SafeCall(OnDisable, nameof(OnDisable));
                 if (LogLifecycle) LogDebug("Disabled (via Destroy)");
             }
+            EventBus.UnsubscribeAll(this);
             SafeCall(OnDestroy, nameof(OnDestroy));
             if (LogLifecycle) LogDebug("OnDestroy");
         }

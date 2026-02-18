@@ -8,6 +8,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI Toggle element — a checkbox/toggle that switches between on and off states.
     /// Renders a background box and a checkmark indicator.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class UIToggle : UIElement
     {

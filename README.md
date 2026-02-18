@@ -99,7 +99,7 @@ Github Engine/
 
 ## Documentation
 
-Comprehensive documentation is available in the `Game-Engine/Docs/` folder & Wiki:
+Comprehensive documentation is available in the `Game-Engine/Docs/` folder:
 
 | Document | Topic |
 |----------|-------|

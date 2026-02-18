@@ -156,8 +156,15 @@ uniform int       uHasEmissiveTex;
 uniform vec3      uEmissiveColor;
 uniform float     uEmissiveIntensity;
 
-// Shadow
-uniform sampler2D uShadowMap;
+// Shadow (cascaded shadow maps)
+#define MAX_CASCADES 4
+uniform sampler2D uShadowMap;          // cascade 0 (backward compat)
+uniform sampler2D uShadowMapC1;        // cascade 1
+uniform sampler2D uShadowMapC2;        // cascade 2
+uniform sampler2D uShadowMapC3;        // cascade 3
+uniform mat4      uShadowVPC[MAX_CASCADES];
+uniform float     uCascadeSplits[MAX_CASCADES];
+uniform int       uCascadeCount;
 uniform bool      uHasShadow;
 
 // Lighting
@@ -197,11 +204,64 @@ mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
     return mat3(T * invmax, B * invmax, N);
 }
 
+float SampleShadowMap(int cascade, vec2 uv, float compareDepth)
+{
+    // PCF 3x3 for the selected cascade
+    vec2 texelSize;
+    float result = 0.0;
+    if (cascade == 0)
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMap, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    else if (cascade == 1)
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMapC1, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMapC1, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    else if (cascade == 2)
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMapC2, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMapC2, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    else
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMapC3, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMapC3, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    return max(result / 9.0, 0.10);
+}
+
 float ShadowCalc(vec4 sc, vec3 N)
 {
     if (!uHasShadow) return 1.0;
-    vec3 proj = sc.xyz / sc.w;
+
+    // Determine cascade index from fragment distance to camera
+    float fragDist = length(vWorldPos - uCamPos);
+    int cascadeIdx = 0;
+    for (int i = 0; i < uCascadeCount; i++)
+    {
+        if (fragDist < uCascadeSplits[i])
+        {
+            cascadeIdx = i;
+            break;
+        }
+        cascadeIdx = i;
+    }
+
+    // Project into the selected cascade's light space
+    vec4 shadowCoord = uShadowVPC[cascadeIdx] * vec4(vWorldPos, 1.0);
+    vec3 proj = shadowCoord.xyz / shadowCoord.w;
     proj = proj * 0.5 + 0.5;
+
     // Outside shadow map bounds -> fully lit
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
         return 1.0;
@@ -209,24 +269,11 @@ float ShadowCalc(vec4 sc, vec3 N)
     // Slope-scaled bias: surfaces nearly parallel to the light get more bias
     float cosTheta = max(dot(N, -uSunDir), 0.0);
     float bias = uShadowBias + uShadowBias * 3.0 * (1.0 - cosTheta);
-
     float currentDepth = proj.z - bias;
 
-    // 3x3 PCF kernel for softer shadow edges
-    vec2 texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
-    float result = 0.0;
-    for (int x = -1; x <= 1; ++x)
-    {
-        for (int y = -1; y <= 1; ++y)
-        {
-            float pcfDepth = texture(uShadowMap, proj.xy + vec2(x, y) * texelSize).r;
-            result += (currentDepth > pcfDepth) ? 0.0 : 1.0;
-        }
-    }
-    float shadow = max(result / 9.0, 0.10);
+    float shadow = SampleShadowMap(cascadeIdx, proj.xy, currentDepth);
 
-    // Smooth edge falloff: fade shadow to 1.0 near shadow map borders
-    // so there's no visible hard boundary as the player moves
+    // Smooth edge falloff near shadow map borders
     float fadeMargin = 0.08;
     float fadeX = smoothstep(0.0, fadeMargin, proj.x) * smoothstep(1.0, 1.0 - fadeMargin, proj.x);
     float fadeY = smoothstep(0.0, fadeMargin, proj.y) * smoothstep(1.0, 1.0 - fadeMargin, proj.y);
@@ -505,10 +552,17 @@ uniform sampler2D gNormalRoughness;  // RT1
 uniform sampler2D gEmissiveAO;       // RT2
 uniform sampler2D gDepth;            // Depth buffer
 
-// Shadow
-uniform sampler2D uShadowMap;
+// Shadow (cascaded shadow maps)
+#define MAX_CASCADES 4
+uniform sampler2D uShadowMap;          // cascade 0
+uniform sampler2D uShadowMapC1;        // cascade 1
+uniform sampler2D uShadowMapC2;        // cascade 2
+uniform sampler2D uShadowMapC3;        // cascade 3
+uniform mat4      uShadowVPC[MAX_CASCADES];
+uniform float     uCascadeSplits[MAX_CASCADES];
+uniform int       uCascadeCount;
 uniform bool      uHasShadow;
-uniform mat4      uShadowVP;
+uniform mat4      uShadowVP;           // backward compat (cascade 0)
 uniform float     uShadowBias;
 uniform vec3      uSunDir;
 
@@ -582,23 +636,67 @@ vec3 WorldPosFromDepth(float depth, vec2 uv)
     return world.xyz / world.w;
 }
 
-// Shadow calculation — deferred version.
-// Uses higher bias than forward because:
-// 1) World position is reconstructed from depth (precision loss)
-// 2) Normal N includes normal-map perturbation (geometric normal unavailable in G-buffer)
+// Shadow calculation — deferred version with cascaded shadow maps.
+float SampleDeferredShadow(int cascade, vec2 uv, float compareDepth)
+{
+    float result = 0.0;
+    vec2 texelSize;
+    if (cascade == 0)
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMap, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    else if (cascade == 1)
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMapC1, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMapC1, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    else if (cascade == 2)
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMapC2, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMapC2, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    else
+    {
+        texelSize = 1.0 / vec2(textureSize(uShadowMapC3, 0));
+        for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+                result += (compareDepth > texture(uShadowMapC3, uv + vec2(x, y) * texelSize).r) ? 0.0 : 1.0;
+    }
+    return max(result / 9.0, 0.10);
+}
+
 float ShadowCalc(vec3 worldPos, vec3 N)
 {
     if (!uHasShadow) return 1.0;
 
-    // Normal offset: push sample point along the surface normal AND along the
-    // light direction. This two-axis offset is much more robust than normal-only.
+    // Normal offset for shadow acne reduction
     float cosTheta = max(dot(N, -uSunDir), 0.0);
     float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
     float normalOff = 0.15 * sinTheta;
     float lightOff  = 0.08;
     vec3 offsetPos = worldPos + N * normalOff + (-uSunDir) * lightOff;
 
-    vec4 sc = uShadowVP * vec4(offsetPos, 1.0);
+    // Select cascade based on distance to camera
+    float fragDist = length(worldPos - uCamPos);
+    int cascadeIdx = 0;
+    for (int i = 0; i < uCascadeCount; i++)
+    {
+        if (fragDist < uCascadeSplits[i])
+        {
+            cascadeIdx = i;
+            break;
+        }
+        cascadeIdx = i;
+    }
+
+    vec4 sc = uShadowVPC[cascadeIdx] * vec4(offsetPos, 1.0);
     vec3 proj = sc.xyz / sc.w;
     proj = proj * 0.5 + 0.5;
 
@@ -610,18 +708,7 @@ float ShadowCalc(vec3 worldPos, vec3 N)
     bias = max(bias, 0.002);
     float currentDepth = proj.z - bias;
 
-    // 3x3 PCF
-    vec2 texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
-    float result = 0.0;
-    for (int x = -1; x <= 1; ++x)
-    {
-        for (int y = -1; y <= 1; ++y)
-        {
-            float pcfDepth = texture(uShadowMap, proj.xy + vec2(x, y) * texelSize).r;
-            result += (currentDepth > pcfDepth) ? 0.0 : 1.0;
-        }
-    }
-    float shadow = max(result / 9.0, 0.10);
+    float shadow = SampleDeferredShadow(cascadeIdx, proj.xy, currentDepth);
 
     // Edge fade
     float fadeMargin = 0.08;
@@ -1831,6 +1918,292 @@ void main()
 
     float alpha = mix(uTransparency, 1.0, fresnel);
     FragColor = vec4(clamp(color, 0.0, 1.0), alpha);
+}
+";
+
+    // =====================================================================
+    // VOLUMETRIC FOG (ray-marched fullscreen pass)
+    // =====================================================================
+
+    public const string VolumetricFogVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string VolumetricFogFrag = @"
+#version 330 core
+in vec2 vUV;
+
+uniform sampler2D uSceneColor;
+uniform sampler2D gDepth;
+
+uniform mat4  uInvViewProj;
+uniform vec3  uCamPos;
+uniform vec3  uLightDir;       // direction FROM light (negated for L)
+uniform vec3  uLightColor;
+
+// Volumetric fog parameters
+uniform float uFogDensity;
+uniform float uFogAnisotropy;
+uniform float uFogScattering;
+uniform float uFogHeightFalloff;
+uniform float uFogBaseHeight;
+uniform float uFogNoiseScale;
+uniform float uFogNoiseSpeed;
+uniform float uFogMaxDistance;
+uniform vec3  uFogColor;
+uniform int   uFogSteps;
+uniform float uTime;
+
+// Shadow map for light occlusion during ray march
+uniform sampler2D uShadowMap;
+uniform mat4      uShadowVP;
+uniform bool      uHasShadow;
+
+out vec4 FragColor;
+
+// Simple 3D hash noise
+float hash3D(vec3 p)
+{
+    p = fract(p * vec3(443.8975, 397.2973, 491.1871));
+    p += dot(p, p.yzx + 19.19);
+    return fract((p.x + p.y) * p.z);
+}
+
+float noise3D(vec3 p)
+{
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+
+    float a = hash3D(i);
+    float b = hash3D(i + vec3(1, 0, 0));
+    float c = hash3D(i + vec3(0, 1, 0));
+    float d = hash3D(i + vec3(1, 1, 0));
+    float e = hash3D(i + vec3(0, 0, 1));
+    float f1 = hash3D(i + vec3(1, 0, 1));
+    float g = hash3D(i + vec3(0, 1, 1));
+    float h = hash3D(i + vec3(1, 1, 1));
+
+    return mix(mix(mix(a, b, f.x), mix(c, d, f.x), f.y),
+               mix(mix(e, f1, f.x), mix(g, h, f.x), f.y), f.z);
+}
+
+// Henyey-Greenstein phase function
+float phaseHG(float cosTheta, float g)
+{
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / (4.0 * 3.14159265 * pow(denom, 1.5));
+}
+
+vec3 WorldPosFromDepth(float depth, vec2 uv)
+{
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 clip = vec4(ndc, depth * 2.0 - 1.0, 1.0);
+    vec4 world = uInvViewProj * clip;
+    return world.xyz / world.w;
+}
+
+float ShadowCheck(vec3 worldPos)
+{
+    if (!uHasShadow) return 1.0;
+    vec4 sc = uShadowVP * vec4(worldPos, 1.0);
+    vec3 proj = sc.xyz / sc.w * 0.5 + 0.5;
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0)
+        return 1.0;
+    float shadowDepth = texture(uShadowMap, proj.xy).r;
+    return (proj.z - 0.005 > shadowDepth) ? 0.0 : 1.0;
+}
+
+void main()
+{
+    vec3 sceneColor = texture(uSceneColor, vUV).rgb;
+    float depth = texture(gDepth, vUV).r;
+
+    // No volumetric fog for sky pixels
+    if (depth >= 1.0)
+    {
+        FragColor = vec4(sceneColor, 1.0);
+        return;
+    }
+
+    vec3 worldPos = WorldPosFromDepth(depth, vUV);
+    vec3 rayDir = normalize(worldPos - uCamPos);
+    float maxDist = min(length(worldPos - uCamPos), uFogMaxDistance);
+    float stepSize = maxDist / float(uFogSteps);
+
+    // Phase function for directional light scattering
+    float cosAngle = dot(rayDir, -uLightDir);
+    float phase = phaseHG(cosAngle, uFogAnisotropy);
+
+    vec3 fogAccum = vec3(0.0);
+    float transmittance = 1.0;
+
+    for (int i = 0; i < uFogSteps; i++)
+    {
+        float t = (float(i) + 0.5) * stepSize;
+        vec3 samplePos = uCamPos + rayDir * t;
+
+        // Height-based density
+        float heightAtten = exp(-max(samplePos.y - uFogBaseHeight, 0.0) * uFogHeightFalloff);
+
+        // Noise-based density variation
+        vec3 noiseCoord = samplePos * uFogNoiseScale + vec3(uTime * uFogNoiseSpeed, 0.0, uTime * uFogNoiseSpeed * 0.7);
+        float noiseFactor = noise3D(noiseCoord) * 0.5 + 0.5;
+
+        float localDensity = uFogDensity * heightAtten * noiseFactor;
+        if (localDensity < 0.0001) continue;
+
+        // Light contribution (check shadow)
+        float shadowFactor = ShadowCheck(samplePos);
+        vec3 lightContrib = uLightColor * phase * uFogScattering * shadowFactor;
+        vec3 ambient = uFogColor * 0.15;
+
+        // Beer-Lambert extinction
+        float extinction = exp(-localDensity * stepSize);
+
+        // Accumulate in-scattered light
+        fogAccum += transmittance * (lightContrib + ambient) * uFogColor * localDensity * stepSize;
+        transmittance *= extinction;
+
+        if (transmittance < 0.01) break;
+    }
+
+    vec3 finalColor = sceneColor * transmittance + fogAccum;
+    FragColor = vec4(finalColor, 1.0);
+}
+";
+
+    // =====================================================================
+    // DEPTH OF FIELD (separable bokeh blur)
+    // =====================================================================
+
+    public const string DepthOfFieldVert = @"
+#version 330 core
+layout(location = 0) in vec2 aPosition;
+out vec2 vUV;
+void main()
+{
+    vUV = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+";
+
+    public const string DepthOfFieldFrag = @"
+#version 330 core
+in vec2 vUV;
+
+uniform sampler2D uSceneColor;
+uniform sampler2D gDepth;
+
+uniform mat4  uInvViewProj;
+uniform vec3  uCamPos;
+uniform float uFocusDistance;
+uniform float uAperture;
+uniform float uFocalLength;
+uniform float uMaxBlurRadius;
+uniform float uNearBlurScale;
+uniform float uFarBlurScale;
+uniform vec2  uTexelSize;
+uniform int   uPass;       // 0 = horizontal, 1 = vertical
+
+// Camera near/far for linearizing depth
+uniform float uNear;
+uniform float uFar;
+
+out vec4 FragColor;
+
+float LinearizeDepth(float d)
+{
+    float z = d * 2.0 - 1.0;
+    return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
+}
+
+// Compute Circle of Confusion diameter
+float ComputeCoC(float depth)
+{
+    float focalLengthM = uFocalLength * 0.001; // mm to meters
+    float s1 = uFocusDistance;
+    float s2 = depth;
+
+    // Thin lens CoC formula
+    float coc = abs(focalLengthM * focalLengthM * (s2 - s1)) /
+                (uAperture * s2 * (s1 - focalLengthM));
+
+    // Scale to pixel radius and clamp
+    coc = coc * 1000.0; // scale to visible range
+    coc = clamp(coc, 0.0, uMaxBlurRadius);
+
+    // Apply near/far scaling
+    if (s2 < s1)
+        coc *= uNearBlurScale;
+    else
+        coc *= uFarBlurScale;
+
+    return coc;
+}
+
+void main()
+{
+    float depth = texture(gDepth, vUV).r;
+    vec3 centerColor = texture(uSceneColor, vUV).rgb;
+
+    if (depth >= 1.0)
+    {
+        FragColor = vec4(centerColor, 1.0);
+        return;
+    }
+
+    float linearDepth = LinearizeDepth(depth);
+    float coc = ComputeCoC(linearDepth);
+
+    if (coc < 0.5)
+    {
+        FragColor = vec4(centerColor, 1.0);
+        return;
+    }
+
+    // Direction: horizontal (pass 0) or vertical (pass 1)
+    vec2 dir = (uPass == 0) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+
+    // Variable-width Gaussian blur based on CoC
+    vec3 colorSum = centerColor;
+    float weightSum = 1.0;
+    int samples = int(min(coc, uMaxBlurRadius));
+    samples = max(samples, 1);
+
+    for (int i = 1; i <= samples; i++)
+    {
+        float offset = float(i);
+        float weight = 1.0 - (offset / (float(samples) + 1.0));
+        weight *= weight; // quadratic falloff
+
+        vec2 uv1 = vUV + dir * uTexelSize * offset;
+        vec2 uv2 = vUV - dir * uTexelSize * offset;
+
+        // Sample neighbor CoC to prevent sharp objects bleeding into blurred areas
+        float d1 = texture(gDepth, uv1).r;
+        float d2 = texture(gDepth, uv2).r;
+        float coc1 = ComputeCoC(LinearizeDepth(d1));
+        float coc2 = ComputeCoC(LinearizeDepth(d2));
+
+        // Only blur if the neighbor also wants to be blurred
+        float w1 = weight * smoothstep(0.0, 2.0, coc1);
+        float w2 = weight * smoothstep(0.0, 2.0, coc2);
+
+        colorSum += texture(uSceneColor, uv1).rgb * w1;
+        colorSum += texture(uSceneColor, uv2).rgb * w2;
+        weightSum += w1 + w2;
+    }
+
+    FragColor = vec4(colorSum / weightSum, 1.0);
 }
 ";
 

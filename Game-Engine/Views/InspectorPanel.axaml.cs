@@ -13,8 +13,12 @@ using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.AI;
+using Game_Engine.Core.Dialogue;
 using Game_Engine.Core.Rendering;
+using Game_Engine.Core.Timeline;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -28,6 +32,7 @@ using System.Text.RegularExpressions;
 using static Assimp.Metadata;
 using CoreTransform = Game_Engine.Core.Component.Transform;
 using CoreVector3 = Game_Engine.Core.Vector3;
+using SNVector3 = System.Numerics.Vector3;
 
 namespace Game_Engine.Views;
 
@@ -36,6 +41,14 @@ file sealed class PrimitiveChoice
     public string Name { get; init; } = "";
     public Func<Game_Engine.Core.Mesh?> Factory { get; init; } = () => null;
     public override string ToString() => Name;
+}
+
+file sealed class DialogueNodeLinkItem
+{
+    public string Id { get; }
+    public string Label { get; }
+    public DialogueNodeLinkItem(string id, string label) { Id = id; Label = label; }
+    public override string ToString() => Label;
 }
 
 file sealed class NumberConverter : IValueConverter
@@ -128,8 +141,28 @@ public partial class InspectorPanel : UserControl
                         (p.Name != nameof(MeshCollider.TargetFilters) &&
                          p.Name != nameof(MeshCollider.TargetPaths) &&
                          p.Name != nameof(MeshCollider.BindToTargetTransform) &&
-                         p.Name != nameof(MeshCollider.Mesh)));
-            
+                         p.Name != nameof(MeshCollider.Mesh)))
+            // hide BehaviorTreeRunner properties handled by the custom BT editor
+            .Where(p => !(b is BehaviorTreeRunner) ||
+                        (p.Name != nameof(BehaviorTreeRunner.Tree) &&
+                         p.Name != nameof(BehaviorTreeRunner.Blackboard) &&
+                         p.Name != nameof(BehaviorTreeRunner.LastStatus)))
+            // hide DialogueRunner properties handled by the custom Dialogue Tree editor
+            .Where(p => !(b is DialogueRunner) ||
+                        (p.Name != nameof(DialogueRunner.Tree) &&
+                         p.Name != nameof(DialogueRunner.Variables) &&
+                         p.Name != nameof(DialogueRunner.IsRunning) &&
+                         p.Name != nameof(DialogueRunner.IsWaitingForInput) &&
+                         p.Name != nameof(DialogueRunner.CurrentNode) &&
+                         p.Name != nameof(DialogueRunner.Mode) &&
+                         p.Name != nameof(DialogueRunner.VoiceVolume) &&
+                         p.Name != nameof(DialogueRunner.AutoAdvanceOnVoiceEnd)))
+            // hide TimelinePlayer properties handled by the custom timeline editor
+            .Where(p => !(b is TimelinePlayer) ||
+                        (p.Name != nameof(TimelinePlayer.Timeline) &&
+                         p.Name != nameof(TimelinePlayer.CurrentTime) &&
+                         p.Name != nameof(TimelinePlayer.IsPlaying) &&
+                         p.Name != nameof(TimelinePlayer.IsFinished)));
     }
 
     // Default property panel (what we previously inlined)
@@ -964,6 +997,7 @@ public partial class InspectorPanel : UserControl
     sealed class ComboItem
     {
         public string Display { get; set; } = "";   // <— property (not field)
+        public string Category { get; set; } = "";  // category for grouping
         public Type Type { get; set; }              // non-null if loaded/instantiable
         public ScriptInfo Script { get; set; }      // non-null for source scripts
     }
@@ -1257,6 +1291,8 @@ public partial class InspectorPanel : UserControl
         if (v is null) return null;
         if (t == typeof(CoreVector3) && v is CoreVector3 vv)
             return new CoreVector3(vv.X, vv.Y, vv.Z);
+        if (t == typeof(SNVector3) && v is SNVector3 sv)
+            return new SNVector3(sv.X, sv.Y, sv.Z);
         return v; // structs, enums, numbers, strings, Mesh refs
     }
 
@@ -1347,6 +1383,8 @@ public partial class InspectorPanel : UserControl
     {
         if (t == typeof(CoreVector3) && a is CoreVector3 va && b is CoreVector3 vb)
             return va.X == vb.X && va.Y == vb.Y && va.Z == vb.Z;
+        if (t == typeof(SNVector3) && a is SNVector3 sa && b is SNVector3 sb)
+            return sa.X == sb.X && sa.Y == sb.Y && sa.Z == sb.Z;
         return Equals(a, b);
     }
 
@@ -1527,73 +1565,47 @@ public partial class InspectorPanel : UserControl
             .SelectMany(LoadableTypes)
             .Where(t => t != null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
             .Where(t => t != typeof(CoreTransform))
-            .OrderBy(t => t.Name)
             .ToList();
 
         // Project scripts discovered from source files
         var scriptInfos = DiscoverProjectBehaviorScripts();
         scriptInfos.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
 
-        var choices = new List<ComboItem>();
         var scriptFullNames = new HashSet<string>(scriptInfos.Select(s => s.FullName), StringComparer.Ordinal);
 
-        // Scripts first — always labeled as [Script] (or [Script: source only])
-        foreach (var s in scriptInfos)
+        static string GetCategory(Type t)
         {
-            var loaded = TryResolveLoadedType(s.FullName);
-            var label = (loaded != null) ? $"{s.Name}  [Script]" : $"{s.Name}  [Script: source only]";
-            choices.Add(new ComboItem { Display = label, Type = loaded, Script = s });
+            var attr = t.GetCustomAttributes(typeof(ComponentCategoryAttribute), false);
+            if (attr.Length > 0) return ((ComponentCategoryAttribute)attr[0]).Category;
+            return "Misc";
         }
 
-        // Built-ins after — skip anything that matches a script type FullName
+        var categoryMap = new SortedDictionary<string, List<ComboItem>>(StringComparer.OrdinalIgnoreCase);
         foreach (var t in builtInTypes)
         {
             var fn = t.FullName ?? t.Name;
-            if (scriptFullNames.Contains(fn)) continue; // avoid duplicate entries
-            choices.Add(new ComboItem { Display = t.Name, Type = t, Script = null });
+            if (scriptFullNames.Contains(fn)) continue;
+            var cat = GetCategory(t);
+            if (!categoryMap.TryGetValue(cat, out var list)) { list = new List<ComboItem>(); categoryMap[cat] = list; }
+            list.Add(new ComboItem { Display = t.Name, Category = cat, Type = t });
         }
+        foreach (var list in categoryMap.Values)
+            list.Sort((a, b) => string.Compare(a.Display, b.Display, StringComparison.OrdinalIgnoreCase));
 
 
-        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        var typeBox = new ComboBox
+        var addComponentMenu = BuildAddComponentMenu(go, categoryMap, scriptInfos);
+
+        var addBtn = new Button
         {
-            Width = 260,
-            ItemsSource = choices,
-            SelectedIndex = choices.Count > 0 ? 0 : -1,
-            DisplayMemberBinding = new Binding(nameof(ComboItem.Display)),
-        };
-        var addBtn = new Button { Content = "Add Component", IsEnabled = choices.Count > 0 };
-
-        addBtn.Click += (_, __) =>
-        {
-            var sel = typeBox.SelectedItem as ComboItem;
-            if (sel == null) return;
-
-            if (sel.Type != null)
-            {
-                try
-                {
-                    var inst = (Behavior)Activator.CreateInstance(sel.Type)!;
-                    go.AddBehavior(inst);
-                    SceneService.NotifyChanged();
-                    BuildUI(go);
-                }
-                catch (Exception ex)
-                {
-                    ShowInfo("Failed to add component:\n" + ex.Message);
-                }
-            }
-            else if (sel.Script != null)
-            {
-                ShowInfo("That script exists in your project but isn’t compiled into the editor yet:\n\n" +
-                         sel.Script.FullName + "\n\nOpen it, add it to your editor solution, and build so it becomes available.");
-                try { ScriptEditorWindow.Open(OwnerWindow, sel.Script.FilePath); } catch { }
-            }
+            Content = "+ Add Component",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Padding = new Thickness(0, 6),
+            Margin = new Thickness(4, 2),
         };
 
-        addRow.Children.Add(typeBox);
-        addRow.Children.Add(addBtn);
-        Host.Children.Add(addRow);
+        addBtn.Click += (_, __) => addComponentMenu.Open(addBtn);
+        Host.Children.Add(addBtn);
 
         // ---- Separator before components ------------------------------------
         Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
@@ -1608,6 +1620,71 @@ public partial class InspectorPanel : UserControl
             if (i < behaviors.Count - 1)
                 Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
         }
+    }
+
+    ContextMenu BuildAddComponentMenu(GameObject go,
+        SortedDictionary<string, List<ComboItem>> categoryMap,
+        List<ScriptInfo> scriptInfos)
+    {
+        var menu = new ContextMenu();
+        foreach (var kvp in categoryMap)
+        {
+            var subMenu = new MenuItem { Header = kvp.Key };
+            foreach (var item in kvp.Value)
+            {
+                var ci = item;
+                var mi = new MenuItem { Header = ci.Display };
+                mi.Click += (_, __) =>
+                {
+                    if (ci.Type == null) return;
+                    try
+                    {
+                        go.AddBehavior((Behavior)Activator.CreateInstance(ci.Type)!);
+                        SceneService.NotifyChanged();
+                        BuildUI(go);
+                    }
+                    catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
+                };
+                subMenu.Items.Add(mi);
+            }
+            menu.Items.Add(subMenu);
+        }
+
+        if (scriptInfos.Count > 0)
+        {
+            menu.Items.Add(new Separator());
+            var scriptSub = new MenuItem { Header = "Scripts" };
+            foreach (var s in scriptInfos)
+            {
+                var loaded = TryResolveLoadedType(s.FullName);
+                var sLabel = loaded != null ? s.Name : $"{s.Name}  (source only)";
+                var sInfo = s; var sType = loaded;
+                var mi = new MenuItem { Header = sLabel };
+                mi.Click += (_, __) =>
+                {
+                    if (sType != null)
+                    {
+                        try
+                        {
+                            go.AddBehavior((Behavior)Activator.CreateInstance(sType)!);
+                            SceneService.NotifyChanged();
+                            BuildUI(go);
+                        }
+                        catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
+                    }
+                    else
+                    {
+                        ShowInfo("Script not compiled yet:\n\n" + sInfo.FullName +
+                                 "\n\nBuild to make it available.");
+                        try { ScriptEditorWindow.Open(OwnerWindow, sInfo.FilePath); } catch { }
+                    }
+                };
+                scriptSub.Items.Add(mi);
+            }
+            menu.Items.Add(scriptSub);
+        }
+
+        return menu;
     }
 
     /// <summary>Build the inspector for multiple selected GameObjects, each with a separator between them.</summary>
@@ -1859,6 +1936,72 @@ public partial class InspectorPanel : UserControl
         return row;
     }
 
+    Control SNVector3ColorEditor(object owner, PropertyInfo p)
+    {
+        var v = (SNVector3)(p.GetValue(owner) ?? new SNVector3());
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+
+        var swatch = new Border
+        {
+            Width = 24, Height = 24,
+            CornerRadius = new CornerRadius(3),
+            BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(Avalonia.Media.Color.FromRgb(
+                (byte)Math.Clamp(v.X * 255f, 0, 255),
+                (byte)Math.Clamp(v.Y * 255f, 0, 255),
+                (byte)Math.Clamp(v.Z * 255f, 0, 255)))
+        };
+
+        TextBox MakeChannel(string label, float val)
+        {
+            var tb = new TextBox
+            {
+                Width = 52, FontSize = 11,
+                Text = val.ToString("F3", CultureInfo.InvariantCulture),
+                Watermark = label
+            };
+            return tb;
+        }
+
+        var tbR = MakeChannel("R", v.X);
+        var tbG = MakeChannel("G", v.Y);
+        var tbB = MakeChannel("B", v.Z);
+
+        void Commit()
+        {
+            if (float.TryParse(tbR.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var r) &&
+                float.TryParse(tbG.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var g) &&
+                float.TryParse(tbB.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var b))
+            {
+                p.SetValue(owner, new SNVector3(r, g, b));
+                swatch.Background = new SolidColorBrush(Avalonia.Media.Color.FromRgb(
+                    (byte)Math.Clamp(r * 255f, 0, 255),
+                    (byte)Math.Clamp(g * 255f, 0, 255),
+                    (byte)Math.Clamp(b * 255f, 0, 255)));
+                SceneService.NotifyChanged();
+            }
+        }
+
+        tbR.GotFocus += (_, __) => BeginPropertyEdit(owner, p);
+        tbG.GotFocus += (_, __) => BeginPropertyEdit(owner, p);
+        tbB.GotFocus += (_, __) => BeginPropertyEdit(owner, p);
+        tbR.LostFocus += (_, __) => { Commit(); CommitPropertyEdit(owner, p); };
+        tbG.LostFocus += (_, __) => { Commit(); CommitPropertyEdit(owner, p); };
+        tbB.LostFocus += (_, __) => { Commit(); CommitPropertyEdit(owner, p); };
+        tbR.PropertyChanged += (_, __) => Commit();
+        tbG.PropertyChanged += (_, __) => Commit();
+        tbB.PropertyChanged += (_, __) => Commit();
+
+        row.Children.Add(swatch);
+        row.Children.Add(new TextBlock { Text = "R", VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        row.Children.Add(tbR);
+        row.Children.Add(new TextBlock { Text = "G", VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        row.Children.Add(tbG);
+        row.Children.Add(new TextBlock { Text = "B", VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        row.Children.Add(tbB);
+        return row;
+    }
+
     Control EditorForBehavior(GameObject owner, Behavior b)
     {
         // --- outer container (border -> vertical stack) ---
@@ -1914,6 +2057,24 @@ public partial class InspectorPanel : UserControl
         if (b is Tree treeComp)
         {
             outer.Children.Add(TreeInspectorUI(owner, treeComp));
+        }
+
+        // DialogueRunner: full dialogue tree editor
+        if (b is DialogueRunner dialogueRunner)
+        {
+            outer.Children.Add(DialogueRunnerInspectorUI(dialogueRunner));
+        }
+
+        // BehaviorTreeRunner: visual behavior tree editor
+        if (b is BehaviorTreeRunner btRunner)
+        {
+            outer.Children.Add(BehaviorTreeRunnerInspectorUI(btRunner));
+        }
+
+        // TimelinePlayer: inline timeline asset editor
+        if (b is TimelinePlayer tlPlayer)
+        {
+            outer.Children.Add(TimelinePlayerInspectorUI(tlPlayer));
         }
 
         // --------- BODY: custom inspector first, else default ----------
@@ -5318,6 +5479,10 @@ public partial class InspectorPanel : UserControl
         if (t == typeof(CoreVector3))
             return Vector3EditorWithUndo(target, p);
 
+        // ---- System.Numerics.Vector3 (color-like RGB or raw XYZ) ----------
+        if (t == typeof(SNVector3))
+            return SNVector3ColorEditor(target, p);
+
         // ---- string -----------------------------------------------------------
         if (t == typeof(string))
         {
@@ -5339,8 +5504,515 @@ public partial class InspectorPanel : UserControl
         if (t == typeof(GameObject))
             return GameObjectRefEditor(target, p);
 
+        // ---- List<T> -----------------------------------------------------------
+        if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>))
+            return ListPropertyEditor(target, p);
+
         // ---- fallback: read-only type name -----------------------------------
         return new TextBlock { Text = t.Name, Opacity = 0.6 };
+    }
+
+    /// <summary>
+    /// Builds a collapsible inspector panel for List&lt;T&gt; properties.
+    /// Shows element count, per-element editors, and Add / Remove / Move buttons.
+    /// </summary>
+    Control ListPropertyEditor(object target, PropertyInfo prop)
+    {
+        var list = prop.GetValue(target) as IList;
+        var elementType = prop.PropertyType.GetGenericArguments()[0];
+
+        // If the list is null, create an empty one and assign it
+        if (list == null)
+        {
+            list = (IList)Activator.CreateInstance(prop.PropertyType)!;
+            prop.SetValue(target, list);
+        }
+
+        var container = new StackPanel { Spacing = 4 };
+
+        // ── Header row: element count + Add button ──
+        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        var countLabel = new TextBlock
+        {
+            Text = $"{list.Count} items",
+            VerticalAlignment = VerticalAlignment.Center,
+            Opacity = 0.7,
+            FontSize = 12,
+            MinWidth = 60
+        };
+        headerRow.Children.Add(countLabel);
+
+        var btnAdd = new Button
+        {
+            Content = "+",
+            Padding = new Thickness(8, 2),
+            FontSize = 13,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        headerRow.Children.Add(btnAdd);
+
+        var btnClearAll = new Button
+        {
+            Content = "Clear",
+            Padding = new Thickness(6, 2),
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Opacity = 0.8
+        };
+        headerRow.Children.Add(btnClearAll);
+
+        container.Children.Add(headerRow);
+
+        // ── Elements panel ──
+        var elementsPanel = new StackPanel { Spacing = 4, Margin = new Thickness(8, 0, 0, 0) };
+        container.Children.Add(elementsPanel);
+
+        // Rebuild the elements UI
+        void RebuildElements()
+        {
+            elementsPanel.Children.Clear();
+            countLabel.Text = $"{list.Count} items";
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                int idx = i; // capture for closures
+                var elemRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+
+                // Index label
+                var idxLabel = new TextBlock
+                {
+                    Text = $"[{idx}]",
+                    Width = 32,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Opacity = 0.6,
+                    FontSize = 11
+                };
+                elemRow.Children.Add(idxLabel);
+
+                // Per-element editor
+                elemRow.Children.Add(ListElementEditor(target, prop, list, elementType, idx, RebuildElements));
+
+                // Move up button
+                if (idx > 0)
+                {
+                    var btnUp = new Button
+                    {
+                        Content = "\u25B2",
+                        Padding = new Thickness(4, 1),
+                        FontSize = 9,
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    btnUp.Click += (_, __) =>
+                    {
+                        var item = list[idx]!;
+                        list.RemoveAt(idx);
+                        list.Insert(idx - 1, item);
+                        SceneService.NotifyChanged();
+                        RebuildElements();
+                    };
+                    elemRow.Children.Add(btnUp);
+                }
+
+                // Move down button
+                if (idx < list.Count - 1)
+                {
+                    var btnDown = new Button
+                    {
+                        Content = "\u25BC",
+                        Padding = new Thickness(4, 1),
+                        FontSize = 9,
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    btnDown.Click += (_, __) =>
+                    {
+                        var item = list[idx]!;
+                        list.RemoveAt(idx);
+                        list.Insert(idx + 1, item);
+                        SceneService.NotifyChanged();
+                        RebuildElements();
+                    };
+                    elemRow.Children.Add(btnDown);
+                }
+
+                // Remove button
+                var btnRemove = new Button
+                {
+                    Content = "\u2212",
+                    Padding = new Thickness(6, 1),
+                    FontSize = 12,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = Brushes.IndianRed
+                };
+                btnRemove.Click += (_, __) =>
+                {
+                    list.RemoveAt(idx);
+                    SceneService.NotifyChanged();
+                    RebuildElements();
+                };
+                elemRow.Children.Add(btnRemove);
+
+                elementsPanel.Children.Add(elemRow);
+            }
+        }
+
+        RebuildElements();
+
+        // ── Add button handler ──
+        btnAdd.Click += (_, __) =>
+        {
+            object newItem = CreateDefaultForType(elementType);
+            list.Add(newItem);
+            SceneService.NotifyChanged();
+            RebuildElements();
+        };
+
+        // ── Clear All handler ──
+        btnClearAll.Click += (_, __) =>
+        {
+            list.Clear();
+            SceneService.NotifyChanged();
+            RebuildElements();
+        };
+
+        return container;
+    }
+
+    /// <summary>
+    /// Creates an inline editor control for a single element inside a List.
+    /// </summary>
+    Control ListElementEditor(object target, PropertyInfo listProp, IList list, Type elementType, int index, Action rebuild)
+    {
+        // ── bool ──
+        if (elementType == typeof(bool))
+        {
+            var cb = new CheckBox { IsChecked = (bool)(list[index] ?? false) };
+            cb.IsCheckedChanged += (_, __) =>
+            {
+                list[index] = cb.IsChecked ?? false;
+                SceneService.NotifyChanged();
+            };
+            return cb;
+        }
+
+        // ── enum ──
+        if (elementType.IsEnum)
+        {
+            var cb = new ComboBox { ItemsSource = Enum.GetValues(elementType), SelectedItem = list[index] };
+            cb.SelectionChanged += (_, __) =>
+            {
+                list[index] = cb.SelectedItem;
+                SceneService.NotifyChanged();
+            };
+            return cb;
+        }
+
+        // ── numbers ──
+        if (elementType == typeof(int) || elementType == typeof(float) || elementType == typeof(double) ||
+            elementType == typeof(decimal) || elementType == typeof(long) || elementType == typeof(short))
+        {
+            var tb = new TextBox { Width = 100, Text = list[index]?.ToString() ?? "0" };
+            tb.LostFocus += (_, __) =>
+            {
+                var s = tb.Text?.Trim() ?? "";
+                if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+                {
+                    if (elementType == typeof(int)) list[index] = (int)d;
+                    else if (elementType == typeof(float)) list[index] = (float)d;
+                    else if (elementType == typeof(double)) list[index] = d;
+                    else if (elementType == typeof(long)) list[index] = (long)d;
+                    else if (elementType == typeof(short)) list[index] = (short)d;
+                    else if (elementType == typeof(decimal)) list[index] = (decimal)d;
+                    SceneService.NotifyChanged();
+                }
+            };
+            return tb;
+        }
+
+        // ── Vector3 ──
+        if (elementType == typeof(CoreVector3))
+        {
+            var v = (CoreVector3)(list[index] ?? new CoreVector3());
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+
+            var tbX = new TextBox { Width = 60, Text = v.X.ToString(CultureInfo.InvariantCulture), Watermark = "X" };
+            var tbY = new TextBox { Width = 60, Text = v.Y.ToString(CultureInfo.InvariantCulture), Watermark = "Y" };
+            var tbZ = new TextBox { Width = 60, Text = v.Z.ToString(CultureInfo.InvariantCulture), Watermark = "Z" };
+
+            void CommitVec3()
+            {
+                if (double.TryParse(tbX.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) &&
+                    double.TryParse(tbY.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var y) &&
+                    double.TryParse(tbZ.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var z))
+                {
+                    list[index] = new CoreVector3(x, y, z);
+                    SceneService.NotifyChanged();
+                }
+            }
+
+            tbX.LostFocus += (_, __) => CommitVec3();
+            tbY.LostFocus += (_, __) => CommitVec3();
+            tbZ.LostFocus += (_, __) => CommitVec3();
+
+            panel.Children.Add(tbX);
+            panel.Children.Add(tbY);
+            panel.Children.Add(tbZ);
+            return panel;
+        }
+
+        // ── string ──
+        if (elementType == typeof(string))
+        {
+            var tb = new TextBox { Width = 200, Text = (list[index] as string) ?? "" };
+            tb.LostFocus += (_, __) =>
+            {
+                list[index] = tb.Text ?? "";
+                SceneService.NotifyChanged();
+            };
+            return tb;
+        }
+
+        // ── Color ──
+        if (elementType == typeof(Color))
+        {
+            var c = (Color)(list[index] ?? new Color());
+            var tb = new TextBox { Width = 140, Text = c.ToString(), Watermark = "#RRGGBB" };
+            tb.LostFocus += (_, __) =>
+            {
+                try
+                {
+                    list[index] = Color.Parse(tb.Text ?? "");
+                    SceneService.NotifyChanged();
+                }
+                catch { }
+            };
+            return tb;
+        }
+
+        // ── Complex objects with [Persist] properties: inline sub-inspector ──
+        if (elementType.IsClass && elementType != typeof(string))
+        {
+            var item = list[index];
+            if (item == null)
+            {
+                return new TextBlock { Text = "(null)", Opacity = 0.5, FontSize = 11 };
+            }
+
+            var subProps = elementType.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
+                .ToArray();
+
+            if (subProps.Length == 0)
+                return new TextBlock { Text = item.ToString() ?? elementType.Name, Opacity = 0.6, FontSize = 11 };
+
+            var subPanel = new StackPanel { Spacing = 3 };
+            var headerBtn = new Button
+            {
+                Content = $"{elementType.Name}",
+                Padding = new Thickness(4, 1),
+                FontSize = 11,
+                Background = Brushes.Transparent,
+                Foreground = Brushes.LightGray,
+                HorizontalContentAlignment = HorizontalAlignment.Left
+            };
+
+            var fieldsPanel = new StackPanel { Spacing = 3, Margin = new Thickness(12, 2, 0, 2), IsVisible = false };
+
+            headerBtn.Click += (_, __) =>
+            {
+                fieldsPanel.IsVisible = !fieldsPanel.IsVisible;
+                headerBtn.Content = (fieldsPanel.IsVisible ? "\u25BC " : "\u25B6 ") + elementType.Name;
+            };
+            headerBtn.Content = "\u25B6 " + elementType.Name;
+
+            foreach (var sp in subProps)
+            {
+                var fieldRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                fieldRow.Children.Add(new TextBlock
+                {
+                    Text = sp.Name,
+                    Width = 90,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    FontSize = 11,
+                    Opacity = 0.8
+                });
+                fieldRow.Children.Add(SubPropertyEditor(item, sp, () => SceneService.NotifyChanged()));
+                fieldsPanel.Children.Add(fieldRow);
+            }
+
+            subPanel.Children.Add(headerBtn);
+            subPanel.Children.Add(fieldsPanel);
+            return subPanel;
+        }
+
+        // ── Fallback ──
+        return new TextBlock { Text = list[index]?.ToString() ?? "(null)", Opacity = 0.6, FontSize = 11 };
+    }
+
+    /// <summary>
+    /// Creates an inline editor for a sub-property on a complex list element.
+    /// </summary>
+    Control SubPropertyEditor(object item, PropertyInfo sp, Action onChanged)
+    {
+        var val = sp.GetValue(item);
+        var t = sp.PropertyType;
+
+        if (t == typeof(bool))
+        {
+            var cb = new CheckBox { IsChecked = (bool)(val ?? false) };
+            cb.IsCheckedChanged += (_, __) =>
+            {
+                sp.SetValue(item, cb.IsChecked ?? false);
+                onChanged();
+            };
+            return cb;
+        }
+
+        if (t.IsEnum)
+        {
+            var cb = new ComboBox { ItemsSource = Enum.GetValues(t), SelectedItem = val };
+            cb.SelectionChanged += (_, __) =>
+            {
+                sp.SetValue(item, cb.SelectedItem);
+                onChanged();
+            };
+            return cb;
+        }
+
+        if (t == typeof(int) || t == typeof(float) || t == typeof(double) ||
+            t == typeof(decimal) || t == typeof(long) || t == typeof(short))
+        {
+            var tb = new TextBox { Width = 80, Text = val?.ToString() ?? "0", FontSize = 11 };
+            tb.LostFocus += (_, __) =>
+            {
+                var s = tb.Text?.Trim() ?? "";
+                if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+                {
+                    if (t == typeof(int)) sp.SetValue(item, (int)d);
+                    else if (t == typeof(float)) sp.SetValue(item, (float)d);
+                    else if (t == typeof(double)) sp.SetValue(item, d);
+                    else if (t == typeof(long)) sp.SetValue(item, (long)d);
+                    else if (t == typeof(short)) sp.SetValue(item, (short)d);
+                    else if (t == typeof(decimal)) sp.SetValue(item, (decimal)d);
+                    onChanged();
+                }
+            };
+            return tb;
+        }
+
+        if (t == typeof(CoreVector3))
+        {
+            var v = (CoreVector3)(val ?? new CoreVector3());
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+            var tbX = new TextBox { Width = 50, Text = v.X.ToString(CultureInfo.InvariantCulture), FontSize = 11 };
+            var tbY = new TextBox { Width = 50, Text = v.Y.ToString(CultureInfo.InvariantCulture), FontSize = 11 };
+            var tbZ = new TextBox { Width = 50, Text = v.Z.ToString(CultureInfo.InvariantCulture), FontSize = 11 };
+
+            void Commit()
+            {
+                if (double.TryParse(tbX.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) &&
+                    double.TryParse(tbY.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var y) &&
+                    double.TryParse(tbZ.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var z))
+                {
+                    sp.SetValue(item, new CoreVector3(x, y, z));
+                    onChanged();
+                }
+            }
+
+            tbX.LostFocus += (_, __) => Commit();
+            tbY.LostFocus += (_, __) => Commit();
+            tbZ.LostFocus += (_, __) => Commit();
+
+            panel.Children.Add(tbX);
+            panel.Children.Add(tbY);
+            panel.Children.Add(tbZ);
+            return panel;
+        }
+
+        if (t == typeof(SNVector3))
+        {
+            var v = (SNVector3)(val ?? new SNVector3());
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+
+            var swatchSub = new Border
+            {
+                Width = 18, Height = 18, CornerRadius = new CornerRadius(2),
+                BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1),
+                Background = new SolidColorBrush(Avalonia.Media.Color.FromRgb(
+                    (byte)Math.Clamp(v.X * 255f, 0, 255),
+                    (byte)Math.Clamp(v.Y * 255f, 0, 255),
+                    (byte)Math.Clamp(v.Z * 255f, 0, 255)))
+            };
+            var tbR = new TextBox { Width = 46, Text = v.X.ToString("F3", CultureInfo.InvariantCulture), FontSize = 11, Watermark = "R" };
+            var tbG = new TextBox { Width = 46, Text = v.Y.ToString("F3", CultureInfo.InvariantCulture), FontSize = 11, Watermark = "G" };
+            var tbB = new TextBox { Width = 46, Text = v.Z.ToString("F3", CultureInfo.InvariantCulture), FontSize = 11, Watermark = "B" };
+
+            void CommitSNV()
+            {
+                if (float.TryParse(tbR.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var r) &&
+                    float.TryParse(tbG.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var g) &&
+                    float.TryParse(tbB.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var b))
+                {
+                    sp.SetValue(item, new SNVector3(r, g, b));
+                    swatchSub.Background = new SolidColorBrush(Avalonia.Media.Color.FromRgb(
+                        (byte)Math.Clamp(r * 255f, 0, 255),
+                        (byte)Math.Clamp(g * 255f, 0, 255),
+                        (byte)Math.Clamp(b * 255f, 0, 255)));
+                    onChanged();
+                }
+            }
+
+            tbR.LostFocus += (_, __) => CommitSNV();
+            tbG.LostFocus += (_, __) => CommitSNV();
+            tbB.LostFocus += (_, __) => CommitSNV();
+
+            panel.Children.Add(swatchSub);
+            panel.Children.Add(tbR);
+            panel.Children.Add(tbG);
+            panel.Children.Add(tbB);
+            return panel;
+        }
+
+        if (t == typeof(string))
+        {
+            var tb = new TextBox { Width = 160, Text = (val as string) ?? "", FontSize = 11 };
+            tb.LostFocus += (_, __) =>
+            {
+                sp.SetValue(item, tb.Text ?? "");
+                onChanged();
+            };
+            return tb;
+        }
+
+        // Fallback: read-only
+        return new TextBlock { Text = val?.ToString() ?? "(null)", Opacity = 0.5, FontSize = 11 };
+    }
+
+    /// <summary>
+    /// Creates a sensible default value for the given type, used when adding new list elements.
+    /// </summary>
+    static object CreateDefaultForType(Type t)
+    {
+        if (t == typeof(string)) return "";
+        if (t == typeof(int)) return 0;
+        if (t == typeof(float)) return 0f;
+        if (t == typeof(double)) return 0.0;
+        if (t == typeof(long)) return 0L;
+        if (t == typeof(short)) return (short)0;
+        if (t == typeof(decimal)) return 0m;
+        if (t == typeof(bool)) return false;
+        if (t == typeof(CoreVector3)) return new CoreVector3(0, 0, 0);
+        if (t == typeof(SNVector3)) return new SNVector3(0, 0, 0);
+        if (t == typeof(Color)) return new Color();
+        if (t.IsEnum)
+        {
+            var vals = Enum.GetValues(t);
+            return vals.Length > 0 ? vals.GetValue(0)! : Activator.CreateInstance(t)!;
+        }
+        if (t.IsValueType) return Activator.CreateInstance(t)!;
+        try { return Activator.CreateInstance(t)!; }
+        catch { return null!; }
     }
 
     /// <summary>
@@ -5572,6 +6244,1563 @@ public partial class InspectorPanel : UserControl
         list.Add(new GameObjectRefItem { Label = label, GO = go });
         foreach (var child in go.Children)
             CollectGameObjectsRecursive(child, label, list);
+    }
+
+    // ═══════════════════════ Behavior Tree Runner Inspector UI ═══════════════════════
+
+    // Node type color coding
+    static IBrush BTNodeTypeBrush(BTNode node) => node switch
+    {
+        SelectorNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(180, 130, 40)),
+        SequenceNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(50, 140, 70)),
+        ParallelNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(80, 120, 180)),
+        InverterNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(160, 60, 60)),
+        RepeaterNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(140, 80, 160)),
+        SucceederNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(100, 160, 100)),
+        ActionNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(60, 130, 170)),
+        ConditionNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(170, 130, 60)),
+        WaitNode => new SolidColorBrush(Avalonia.Media.Color.FromRgb(120, 120, 140)),
+        _ => Brushes.Gray
+    };
+
+    static string BTNodeTypeLabel(BTNode node) => node switch
+    {
+        SelectorNode => "Selector",
+        SequenceNode => "Sequence",
+        ParallelNode => "Parallel",
+        InverterNode => "Inverter",
+        RepeaterNode => "Repeater",
+        SucceederNode => "Succeeder",
+        ActionNode => "Action",
+        ConditionNode => "Condition",
+        WaitNode => "Wait",
+        _ => node.GetType().Name.Replace("Node", "")
+    };
+
+    Control BehaviorTreeRunnerInspectorUI(BehaviorTreeRunner runner)
+    {
+        var root = new StackPanel { Spacing = 6 };
+        root.Children.Add(SectionTitle("Behavior Tree"));
+
+        if (runner.Tree == null)
+            runner.Tree = new BehaviorTree();
+
+        var tree = runner.Tree;
+
+        // ── Tree name ──
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        nameRow.Children.Add(new TextBlock { Text = "Name", Width = 80, VerticalAlignment = VerticalAlignment.Center });
+        var nameBox = new TextBox { Width = 200, Text = tree.Name };
+        nameBox.LostFocus += (_, __) => { tree.Name = nameBox.Text ?? "Untitled"; SceneService.NotifyChanged(); };
+        nameRow.Children.Add(nameBox);
+        root.Children.Add(nameRow);
+
+        // ── Status display ──
+        var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        statusRow.Children.Add(new TextBlock { Text = "Status", Width = 80, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var statusLabel = new TextBlock
+        {
+            Text = runner.LastStatus.ToString(),
+            FontSize = 11,
+            FontWeight = FontWeight.Bold,
+            Foreground = runner.LastStatus switch
+            {
+                BTStatus.Success => Brushes.LimeGreen,
+                BTStatus.Failure => Brushes.IndianRed,
+                _ => Brushes.Orange
+            }
+        };
+        statusRow.Children.Add(statusLabel);
+        root.Children.Add(statusRow);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 4, 0, 2) });
+
+        // ── Tree structure panel ──
+        var treePanel = new StackPanel { Spacing = 2 };
+        root.Children.Add(treePanel);
+
+        void RebuildTree()
+        {
+            treePanel.Children.Clear();
+            if (tree.Root == null)
+            {
+                treePanel.Children.Add(new TextBlock
+                {
+                    Text = "No root node. Set root below.",
+                    Opacity = 0.5, FontSize = 11, Margin = new Thickness(4)
+                });
+            }
+            else
+            {
+                treePanel.Children.Add(BTNodeEditorUI(tree.Root, null, -1, tree, RebuildTree, 0));
+            }
+        }
+
+        RebuildTree();
+
+        // ── Set Root button (if no root) ──
+        if (tree.Root == null)
+        {
+            var setRootPanel = new StackPanel { Spacing = 4, Margin = new Thickness(0, 6, 0, 0) };
+            setRootPanel.Children.Add(new TextBlock { Text = "Set Root Node:", FontSize = 11, FontWeight = FontWeight.SemiBold });
+            var rootBtnRow = new WrapPanel { Orientation = Orientation.Horizontal };
+            foreach (var nodeType in BTNodeTypes())
+            {
+                var btn = new Button
+                {
+                    Content = nodeType.label,
+                    Padding = new Thickness(8, 3),
+                    FontSize = 11,
+                    Margin = new Thickness(0, 0, 4, 4)
+                };
+                var factory = nodeType.factory;
+                btn.Click += (_, __) =>
+                {
+                    tree.Root = factory();
+                    SceneService.NotifyChanged();
+                    RebuildTree();
+                };
+                rootBtnRow.Children.Add(btn);
+            }
+            setRootPanel.Children.Add(rootBtnRow);
+            root.Children.Add(setRootPanel);
+        }
+
+        // ── Blackboard ──
+        root.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 2) });
+        root.Children.Add(SectionTitle("Blackboard"));
+        root.Children.Add(BlackboardEditorUI(runner.Blackboard));
+
+        return root;
+    }
+
+    static (string label, Func<BTNode> factory)[] BTNodeTypes() => new (string, Func<BTNode>)[]
+    {
+        ("Selector", () => new SelectorNode { Name = "Selector" }),
+        ("Sequence", () => new SequenceNode { Name = "Sequence" }),
+        ("Parallel", () => new ParallelNode { Name = "Parallel" }),
+        ("Inverter", () => new InverterNode { Name = "Inverter" }),
+        ("Repeater", () => new RepeaterNode { Name = "Repeater" }),
+        ("Succeeder", () => new SucceederNode { Name = "Succeeder" }),
+        ("Action", () => new ActionNode { Name = "Action" }),
+        ("Condition", () => new ConditionNode { Name = "Condition" }),
+        ("Wait", () => new WaitNode { Name = "Wait" }),
+    };
+
+    Control BTNodeEditorUI(BTNode node, object? parent, int childIndex, BehaviorTree tree, Action rebuild, int depth)
+    {
+        var container = new StackPanel { Spacing = 1 };
+        var indent = new Thickness(depth * 16, 0, 0, 0);
+
+        // ── Node header border ──
+        var nodeBorder = new Border
+        {
+            BorderThickness = new Thickness(1),
+            BorderBrush = BTNodeTypeBrush(node),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 4),
+            Margin = new Thickness(indent.Left, 2, 0, 2)
+        };
+
+        var nodePanel = new StackPanel { Spacing = 3 };
+
+        // ── Header row: type badge + name + delete ──
+        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        var typeBadge = new Border
+        {
+            Background = BTNodeTypeBrush(node),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(6, 1),
+            Child = new TextBlock
+            {
+                Text = BTNodeTypeLabel(node),
+                FontSize = 10,
+                FontWeight = FontWeight.Bold,
+                Foreground = Brushes.White
+            }
+        };
+        headerRow.Children.Add(typeBadge);
+
+        // Editable name
+        var nameBox = new TextBox { Text = node.Name, Width = 120, FontSize = 11 };
+        nameBox.LostFocus += (_, __) =>
+        {
+            node.Name = nameBox.Text ?? "";
+            SceneService.NotifyChanged();
+        };
+        headerRow.Children.Add(nameBox);
+
+        // Delete button
+        var deleteBtn = new Button
+        {
+            Content = "\u2715",
+            Padding = new Thickness(4, 1),
+            FontSize = 10,
+            Foreground = Brushes.IndianRed
+        };
+        deleteBtn.Click += (_, __) =>
+        {
+            if (parent == null)
+            {
+                tree.Root = null;
+            }
+            else if (parent is SelectorNode sel)
+            {
+                if (childIndex >= 0 && childIndex < sel.Children.Count)
+                    sel.Children.RemoveAt(childIndex);
+            }
+            else if (parent is SequenceNode seq)
+            {
+                if (childIndex >= 0 && childIndex < seq.Children.Count)
+                    seq.Children.RemoveAt(childIndex);
+            }
+            else if (parent is ParallelNode par)
+            {
+                if (childIndex >= 0 && childIndex < par.Children.Count)
+                    par.Children.RemoveAt(childIndex);
+            }
+            else if (parent is InverterNode inv) inv.Child = null;
+            else if (parent is RepeaterNode rep) rep.Child = null;
+            else if (parent is SucceederNode suc) suc.Child = null;
+            SceneService.NotifyChanged();
+            rebuild();
+        };
+        headerRow.Children.Add(deleteBtn);
+        nodePanel.Children.Add(headerRow);
+
+        // ── Type-specific properties ──
+        var propsPanel = new StackPanel { Spacing = 2, Margin = new Thickness(4, 2, 0, 0) };
+
+        if (node is WaitNode waitNode)
+        {
+            var durRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            durRow.Children.Add(new TextBlock { Text = "Duration", Width = 60, FontSize = 10, VerticalAlignment = VerticalAlignment.Center });
+            var durBox = new TextBox { Width = 60, Text = waitNode.Duration.ToString(CultureInfo.InvariantCulture), FontSize = 10 };
+            durBox.LostFocus += (_, __) =>
+            {
+                if (float.TryParse(durBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                {
+                    waitNode.Duration = v;
+                    SceneService.NotifyChanged();
+                }
+            };
+            durRow.Children.Add(durBox);
+            propsPanel.Children.Add(durRow);
+        }
+
+        if (node is ParallelNode parallelNode)
+        {
+            var reqRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            reqRow.Children.Add(new TextBlock { Text = "Required", Width = 60, FontSize = 10, VerticalAlignment = VerticalAlignment.Center });
+            var reqBox = new TextBox { Width = 40, Text = parallelNode.RequiredSuccesses.ToString(), FontSize = 10 };
+            reqBox.LostFocus += (_, __) =>
+            {
+                if (int.TryParse(reqBox.Text, out var v))
+                {
+                    parallelNode.RequiredSuccesses = v;
+                    SceneService.NotifyChanged();
+                }
+            };
+            reqRow.Children.Add(reqBox);
+            propsPanel.Children.Add(reqRow);
+        }
+
+        if (node is RepeaterNode repeaterNode)
+        {
+            var cntRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            cntRow.Children.Add(new TextBlock { Text = "Count", Width = 60, FontSize = 10, VerticalAlignment = VerticalAlignment.Center });
+            var cntBox = new TextBox { Width = 40, Text = repeaterNode.Count.ToString(), FontSize = 10 };
+            cntBox.LostFocus += (_, __) =>
+            {
+                if (int.TryParse(cntBox.Text, out var v))
+                {
+                    repeaterNode.Count = v;
+                    SceneService.NotifyChanged();
+                }
+            };
+            cntRow.Children.Add(cntBox);
+            cntRow.Children.Add(new TextBlock { Text = "(-1 = forever)", FontSize = 9, Opacity = 0.5, VerticalAlignment = VerticalAlignment.Center });
+            propsPanel.Children.Add(cntRow);
+        }
+
+        if (node is ActionNode actionNode)
+        {
+            propsPanel.Children.Add(new TextBlock
+            {
+                Text = actionNode.Action != null ? "Delegate bound" : "No action (set in code)",
+                FontSize = 10, Opacity = 0.6
+            });
+        }
+
+        if (node is ConditionNode condNode)
+        {
+            propsPanel.Children.Add(new TextBlock
+            {
+                Text = condNode.Condition != null ? "Condition bound" : "No condition (set in code)",
+                FontSize = 10, Opacity = 0.6
+            });
+        }
+
+        if (propsPanel.Children.Count > 0)
+            nodePanel.Children.Add(propsPanel);
+
+        // ── Children (for composite nodes) ──
+        if (node is SelectorNode selectorNode)
+        {
+            nodePanel.Children.Add(BTChildrenEditor(selectorNode.Children, node, tree, rebuild, depth));
+        }
+        else if (node is SequenceNode sequenceNode)
+        {
+            nodePanel.Children.Add(BTChildrenEditor(sequenceNode.Children, node, tree, rebuild, depth));
+        }
+        else if (node is ParallelNode parallelNodeChildren)
+        {
+            nodePanel.Children.Add(BTChildrenEditor(parallelNodeChildren.Children, node, tree, rebuild, depth));
+        }
+        // ── Single child (for decorator nodes) ──
+        else if (node is InverterNode inverterNode)
+        {
+            nodePanel.Children.Add(BTSingleChildEditor(inverterNode.Child, node, "Child",
+                child => { inverterNode.Child = child; SceneService.NotifyChanged(); rebuild(); },
+                tree, rebuild, depth));
+        }
+        else if (node is RepeaterNode repeaterNodeChild)
+        {
+            nodePanel.Children.Add(BTSingleChildEditor(repeaterNodeChild.Child, node, "Child",
+                child => { repeaterNodeChild.Child = child; SceneService.NotifyChanged(); rebuild(); },
+                tree, rebuild, depth));
+        }
+        else if (node is SucceederNode succeederNode)
+        {
+            nodePanel.Children.Add(BTSingleChildEditor(succeederNode.Child, node, "Child",
+                child => { succeederNode.Child = child; SceneService.NotifyChanged(); rebuild(); },
+                tree, rebuild, depth));
+        }
+
+        nodeBorder.Child = nodePanel;
+        container.Children.Add(nodeBorder);
+        return container;
+    }
+
+    Control BTChildrenEditor(List<BTNode> children, BTNode parentNode, BehaviorTree tree, Action rebuild, int depth)
+    {
+        var panel = new StackPanel { Spacing = 1, Margin = new Thickness(4, 2, 0, 0) };
+
+        for (int i = 0; i < children.Count; i++)
+        {
+            int idx = i;
+            var childRow = new StackPanel { Spacing = 0 };
+
+            // Move up/down buttons
+            var moveRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Margin = new Thickness((depth + 1) * 16, 0, 0, 0) };
+            if (idx > 0)
+            {
+                var upBtn = new Button { Content = "\u25B2", Padding = new Thickness(3, 0), FontSize = 8 };
+                upBtn.Click += (_, __) =>
+                {
+                    var item = children[idx];
+                    children.RemoveAt(idx);
+                    children.Insert(idx - 1, item);
+                    SceneService.NotifyChanged();
+                    rebuild();
+                };
+                moveRow.Children.Add(upBtn);
+            }
+            if (idx < children.Count - 1)
+            {
+                var downBtn = new Button { Content = "\u25BC", Padding = new Thickness(3, 0), FontSize = 8 };
+                downBtn.Click += (_, __) =>
+                {
+                    var item = children[idx];
+                    children.RemoveAt(idx);
+                    children.Insert(idx + 1, item);
+                    SceneService.NotifyChanged();
+                    rebuild();
+                };
+                moveRow.Children.Add(downBtn);
+            }
+            if (moveRow.Children.Count > 0)
+                childRow.Children.Add(moveRow);
+
+            childRow.Children.Add(BTNodeEditorUI(children[i], parentNode, i, tree, rebuild, depth + 1));
+            panel.Children.Add(childRow);
+        }
+
+        // Add child button
+        var addPanel = new StackPanel { Margin = new Thickness((depth + 1) * 16, 4, 0, 2) };
+        var addBtn = new Button
+        {
+            Content = "+ Add Child",
+            Padding = new Thickness(8, 3),
+            FontSize = 10
+        };
+        addBtn.Click += (_, __) =>
+        {
+            BTShowAddNodeMenu(addBtn, newNode =>
+            {
+                children.Add(newNode);
+                SceneService.NotifyChanged();
+                rebuild();
+            });
+        };
+        addPanel.Children.Add(addBtn);
+        panel.Children.Add(addPanel);
+
+        return panel;
+    }
+
+    Control BTSingleChildEditor(BTNode? child, BTNode parentNode, string label, Action<BTNode> setChild, BehaviorTree tree, Action rebuild, int depth)
+    {
+        var panel = new StackPanel { Spacing = 2, Margin = new Thickness(4, 2, 0, 0) };
+
+        if (child != null)
+        {
+            panel.Children.Add(BTNodeEditorUI(child, parentNode, 0, tree, rebuild, depth + 1));
+        }
+        else
+        {
+            var addPanel = new StackPanel { Margin = new Thickness((depth + 1) * 16, 4, 0, 2) };
+            var addBtn = new Button
+            {
+                Content = $"+ Set {label}",
+                Padding = new Thickness(8, 3),
+                FontSize = 10
+            };
+            addBtn.Click += (_, __) =>
+            {
+                BTShowAddNodeMenu(addBtn, newNode => setChild(newNode));
+            };
+            addPanel.Children.Add(addBtn);
+            panel.Children.Add(addPanel);
+        }
+
+        return panel;
+    }
+
+    void BTShowAddNodeMenu(Control target, Action<BTNode> onAdd)
+    {
+        var menu = new ContextMenu();
+        foreach (var (label, factory) in BTNodeTypes())
+        {
+            var item = new MenuItem { Header = label };
+            var f = factory;
+            item.Click += (_, __) =>
+            {
+                onAdd(f());
+            };
+            menu.Items.Add(item);
+        }
+        menu.Open(target);
+    }
+
+    Control BlackboardEditorUI(Blackboard board)
+    {
+        var panel = new StackPanel { Spacing = 4 };
+        var entryList = new StackPanel { Spacing = 3 };
+        panel.Children.Add(entryList);
+
+        void RebuildEntries()
+        {
+            entryList.Children.Clear();
+            foreach (var key in board.Keys)
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                row.Children.Add(new TextBlock { Text = key, Width = 100, FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
+
+                // Display current value (read-only since types vary)
+                var val = board.GetString(key, "");
+                float fVal = board.GetFloat(key);
+                int iVal = board.GetInt(key);
+                bool bVal = board.GetBool(key);
+
+                string display;
+                if (!string.IsNullOrEmpty(val) && val != "0" && val != "False")
+                    display = val;
+                else if (fVal != 0) display = fVal.ToString(CultureInfo.InvariantCulture);
+                else if (iVal != 0) display = iVal.ToString();
+                else if (bVal) display = "true";
+                else display = val;
+
+                var valBox = new TextBox { Width = 120, Text = display, FontSize = 11 };
+                valBox.LostFocus += (_, __) =>
+                {
+                    var t = valBox.Text ?? "";
+                    if (bool.TryParse(t, out var b)) board.Set(key, b);
+                    else if (int.TryParse(t, out var i)) board.Set(key, i);
+                    else if (float.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var f)) board.Set(key, f);
+                    else board.Set(key, t);
+                    SceneService.NotifyChanged();
+                };
+                row.Children.Add(valBox);
+
+                var removeBtn = new Button { Content = "\u2212", Padding = new Thickness(4, 1), FontSize = 10, Foreground = Brushes.IndianRed };
+                removeBtn.Click += (_, __) =>
+                {
+                    board.Remove(key);
+                    SceneService.NotifyChanged();
+                    RebuildEntries();
+                };
+                row.Children.Add(removeBtn);
+                entryList.Children.Add(row);
+            }
+
+            if (board.Count == 0)
+            {
+                entryList.Children.Add(new TextBlock
+                {
+                    Text = "No entries. Add keys below or they are set at runtime.",
+                    Opacity = 0.5, FontSize = 11
+                });
+            }
+        }
+
+        RebuildEntries();
+
+        // Add new entry
+        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
+        var newKeyBox = new TextBox { Width = 100, Watermark = "key", FontSize = 11 };
+        var newValBox = new TextBox { Width = 100, Watermark = "value", FontSize = 11 };
+        var addBtn = new Button { Content = "+ Add", Padding = new Thickness(6, 2), FontSize = 11 };
+        addBtn.Click += (_, __) =>
+        {
+            var k = newKeyBox.Text?.Trim();
+            if (string.IsNullOrEmpty(k)) return;
+            var v = newValBox.Text ?? "";
+            if (bool.TryParse(v, out var bv)) board.Set(k, bv);
+            else if (int.TryParse(v, out var iv)) board.Set(k, iv);
+            else if (float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var fv)) board.Set(k, fv);
+            else board.Set(k, v);
+            newKeyBox.Text = "";
+            newValBox.Text = "";
+            SceneService.NotifyChanged();
+            RebuildEntries();
+        };
+        addRow.Children.Add(newKeyBox);
+        addRow.Children.Add(newValBox);
+        addRow.Children.Add(addBtn);
+        panel.Children.Add(addRow);
+
+        return panel;
+    }
+
+    // ═══════════════════════ Timeline Player Inspector UI ═══════════════════════
+
+    Control TimelinePlayerInspectorUI(TimelinePlayer player)
+    {
+        var root = new StackPanel { Spacing = 6, Margin = new Thickness(0, 4, 0, 0) };
+
+        if (player.Timeline == null)
+        {
+            player.Timeline = new TimelineAsset();
+            SceneService.NotifyChanged();
+        }
+        var timeline = player.Timeline;
+
+        // ── Header: Timeline Name ──
+        var nameRow = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+        nameRow.Children.Add(new TextBlock
+        {
+            Text = "Timeline",
+            FontWeight = FontWeight.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x8C, 0xFF)),
+            FontSize = 13, VerticalAlignment = VerticalAlignment.Center
+        });
+        var nameBox = new TextBox
+        {
+            Text = timeline.Name, FontSize = 11, Height = 24, MinWidth = 120,
+            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1C, 0x20)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48))
+        };
+        nameBox.LostFocus += (_, _) => { if (!string.IsNullOrWhiteSpace(nameBox.Text)) { timeline.Name = nameBox.Text; SceneService.NotifyChanged(); } };
+        nameRow.Children.Add(nameBox);
+        root.Children.Add(nameRow);
+
+        // ── Settings row: Duration, Loop ──
+        var settingsRow = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
+
+        settingsRow.Children.Add(new TextBlock { Text = "Duration:", FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)), VerticalAlignment = VerticalAlignment.Center });
+        var durBox = new TextBox
+        {
+            Text = timeline.Duration.ToString("F1", CultureInfo.InvariantCulture),
+            FontSize = 11, Height = 22, Width = 55,
+            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1C, 0x20)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48))
+        };
+        durBox.LostFocus += (_, _) =>
+        {
+            if (float.TryParse(durBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float d))
+            {
+                timeline.Duration = Math.Max(0.1f, d);
+                SceneService.NotifyChanged();
+            }
+        };
+        settingsRow.Children.Add(durBox);
+
+        var loopCb = new CheckBox { Content = "Loop", IsChecked = timeline.Loop, FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xE0, 0xE6)), VerticalAlignment = VerticalAlignment.Center };
+        loopCb.IsCheckedChanged += (_, _) => { timeline.Loop = loopCb.IsChecked == true; SceneService.NotifyChanged(); };
+        settingsRow.Children.Add(loopCb);
+
+        root.Children.Add(settingsRow);
+
+        // ── Status row ──
+        var statusRow = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
+        statusRow.Children.Add(new TextBlock { Text = "Time:", FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)), VerticalAlignment = VerticalAlignment.Center });
+        statusRow.Children.Add(new TextBlock { Text = player.CurrentTime.ToString("F2", CultureInfo.InvariantCulture), FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)), VerticalAlignment = VerticalAlignment.Center });
+        statusRow.Children.Add(new TextBlock
+        {
+            Text = player.IsPlaying ? "Playing" : player.IsFinished ? "Finished" : "Stopped",
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(player.IsPlaying ? Color.FromRgb(0x66, 0xDD, 0x66)
+                : player.IsFinished ? Color.FromRgb(0xFF, 0xAA, 0x33) : Color.FromRgb(0x99, 0xAA, 0xBB))
+        });
+        root.Children.Add(statusRow);
+
+        root.Children.Add(new Border { Height = 1, Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48)), Margin = new Thickness(0, 2) });
+
+        // ── Tracks ──
+        root.Children.Add(new TextBlock
+        {
+            Text = $"Tracks ({timeline.Tracks.Count})",
+            FontWeight = FontWeight.SemiBold, FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA))
+        });
+
+        var trackList = new StackPanel { Spacing = 4 };
+        root.Children.Add(trackList);
+
+        void RebuildTracks()
+        {
+            trackList.Children.Clear();
+            for (int ti = 0; ti < timeline.Tracks.Count; ti++)
+            {
+                var track = timeline.Tracks[ti];
+                int trackIdx = ti;
+
+                var trackPanel = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(0x22, 0x24, 0x28)),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(6, 4),
+                    Margin = new Thickness(0, 1)
+                };
+
+                var trackStack = new StackPanel { Spacing = 3 };
+
+                // Track header: type badge + name + mute + delete
+                var trackHeader = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+
+                var typeBadge = new Border
+                {
+                    Background = TimelineTrackTypeBrush(track.Type),
+                    CornerRadius = new CornerRadius(3),
+                    Padding = new Thickness(4, 1),
+                    Child = new TextBlock
+                    {
+                        Text = track.Type.ToString(),
+                        FontSize = 9, Foreground = Brushes.White, FontWeight = FontWeight.SemiBold
+                    }
+                };
+                trackHeader.Children.Add(typeBadge);
+
+                var trackNameBox = new TextBox
+                {
+                    Text = track.Name, FontSize = 11, Height = 22, MinWidth = 100,
+                    Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1C, 0x20)),
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48)),
+                    VerticalContentAlignment = VerticalAlignment.Center
+                };
+                trackNameBox.LostFocus += (_, _) => { track.Name = trackNameBox.Text ?? "Track"; SceneService.NotifyChanged(); };
+                trackHeader.Children.Add(trackNameBox);
+
+                var muteCb = new CheckBox
+                {
+                    Content = "Muted", IsChecked = track.Muted, FontSize = 10,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xBB, 0x99)),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                muteCb.IsCheckedChanged += (_, _) => { track.Muted = muteCb.IsChecked == true; SceneService.NotifyChanged(); };
+                trackHeader.Children.Add(muteCb);
+
+                var delTrackBtn = new Button
+                {
+                    Content = "x", Width = 22, Height = 22, Padding = new Thickness(0),
+                    Background = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                delTrackBtn.Click += (_, _) =>
+                {
+                    timeline.RemoveTrack(track);
+                    SceneService.NotifyChanged();
+                    RebuildTracks();
+                };
+                trackHeader.Children.Add(delTrackBtn);
+
+                trackStack.Children.Add(trackHeader);
+
+                // Clips
+                for (int ci = 0; ci < track.Clips.Count; ci++)
+                {
+                    var clip = track.Clips[ci];
+                    int clipIdx = ci;
+
+                    var clipBorder = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1C, 0x20)),
+                        CornerRadius = new CornerRadius(3),
+                        Padding = new Thickness(6, 3),
+                        Margin = new Thickness(8, 1, 0, 1)
+                    };
+
+                    var clipStack = new StackPanel { Spacing = 2 };
+
+                    // Clip header: time range + delete
+                    var clipHeader = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+                    clipHeader.Children.Add(new TextBlock
+                    {
+                        Text = $"Clip {ci}:",
+                        FontSize = 10, FontWeight = FontWeight.SemiBold,
+                        Foreground = TimelineTrackTypeBrush(track.Type),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                    clipHeader.Children.Add(new TextBlock
+                    {
+                        Text = $"{clip.StartTime:F2}s - {clip.EndTime:F2}s ({clip.Duration:F2}s)",
+                        FontSize = 10,
+                        Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                    var delClipBtn = new Button
+                    {
+                        Content = "x", Width = 18, Height = 18, Padding = new Thickness(0), FontSize = 9,
+                        Background = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
+                        Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)),
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    delClipBtn.Click += (_, _) =>
+                    {
+                        track.Clips.RemoveAt(clipIdx);
+                        SceneService.NotifyChanged();
+                        RebuildTracks();
+                    };
+                    clipHeader.Children.Add(delClipBtn);
+                    clipStack.Children.Add(clipHeader);
+
+                    // Clip fields
+                    clipStack.Children.Add(TimelineClipFieldRow("Start", clip.StartTime, v => { clip.StartTime = Math.Max(0, v); }));
+                    clipStack.Children.Add(TimelineClipFieldRow("Duration", clip.Duration, v => { clip.Duration = Math.Max(0.01f, v); }));
+                    clipStack.Children.Add(TimelineClipFieldRow("Blend In", clip.BlendIn, v => { clip.BlendIn = Math.Max(0, v); }));
+                    clipStack.Children.Add(TimelineClipFieldRow("Blend Out", clip.BlendOut, v => { clip.BlendOut = Math.Max(0, v); }));
+                    clipStack.Children.Add(TimelineClipFieldRow("Speed", clip.Speed, v => { clip.Speed = v; }));
+
+                    if (track.Type == TrackType.Animation || track.Type == TrackType.Audio)
+                        clipStack.Children.Add(TimelineClipTextRow("Asset/State", clip.AssetPath, v => clip.AssetPath = v));
+                    if (track.Type == TrackType.Animation || track.Type == TrackType.Camera || track.Type == TrackType.Activation)
+                        clipStack.Children.Add(TimelineClipTextRow("Target", clip.TargetName, v => clip.TargetName = v));
+                    if (track.Type == TrackType.Event)
+                    {
+                        clipStack.Children.Add(TimelineClipTextRow("Event Name", clip.EventName, v => clip.EventName = v));
+                        clipStack.Children.Add(TimelineClipTextRow("Event Data", clip.EventData, v => clip.EventData = v));
+                    }
+
+                    clipBorder.Child = clipStack;
+                    trackStack.Children.Add(clipBorder);
+                }
+
+                // Add clip button
+                var addClipBtn = new Button
+                {
+                    Content = "+ Add Clip",
+                    FontSize = 10, Height = 22, Padding = new Thickness(6, 0),
+                    Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x6A, 0xBF)),
+                    Foreground = Brushes.White,
+                    Margin = new Thickness(8, 2, 0, 0),
+                    HorizontalAlignment = HorizontalAlignment.Left
+                };
+                addClipBtn.Click += (_, _) =>
+                {
+                    float start = 0f;
+                    if (track.Clips.Count > 0)
+                        start = track.Clips[^1].EndTime + 0.1f;
+                    track.Clips.Add(new TimelineClip { StartTime = start, Duration = 1f });
+                    SceneService.NotifyChanged();
+                    RebuildTracks();
+                };
+                trackStack.Children.Add(addClipBtn);
+
+                trackPanel.Child = trackStack;
+                trackList.Children.Add(trackPanel);
+            }
+        }
+
+        RebuildTracks();
+
+        // ── Add Track button ──
+        var addTrackBtn = new Button
+        {
+            Content = "+ Add Track",
+            FontSize = 11, Height = 26, Padding = new Thickness(8, 0),
+            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x6A, 0xBF)),
+            Foreground = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        addTrackBtn.Click += (_, _) =>
+        {
+            var menu = new ContextMenu();
+            foreach (TrackType tt in Enum.GetValues<TrackType>())
+            {
+                var captured = tt;
+                var mi = new MenuItem { Header = tt.ToString() };
+                mi.Click += (_, _) =>
+                {
+                    timeline.AddTrack($"{captured} Track", captured);
+                    SceneService.NotifyChanged();
+                    RebuildTracks();
+                };
+                menu.Items.Add(mi);
+            }
+            menu.Open(addTrackBtn);
+        };
+        root.Children.Add(addTrackBtn);
+
+        return root;
+    }
+
+    static IBrush TimelineTrackTypeBrush(TrackType t) => t switch
+    {
+        TrackType.Animation => new SolidColorBrush(Color.FromRgb(0x4A, 0x8C, 0xFF)),
+        TrackType.Camera => new SolidColorBrush(Color.FromRgb(0xFF, 0xAA, 0x33)),
+        TrackType.Audio => new SolidColorBrush(Color.FromRgb(0x66, 0xDD, 0x66)),
+        TrackType.Activation => new SolidColorBrush(Color.FromRgb(0xDD, 0x66, 0xDD)),
+        TrackType.Event => new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)),
+        _ => Brushes.Gray
+    };
+
+    Control TimelineClipFieldRow(string label, float value, Action<float> onChange)
+    {
+        var row = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+        row.Children.Add(new TextBlock
+        {
+            Text = label + ":", Width = 60, FontSize = 10,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var tb = new TextBox
+        {
+            Text = value.ToString("F3", CultureInfo.InvariantCulture),
+            FontSize = 10, Height = 20, Width = 65,
+            Background = new SolidColorBrush(Color.FromRgb(0x14, 0x16, 0x1A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48)),
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        tb.LostFocus += (_, _) =>
+        {
+            if (float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+            {
+                onChange(v);
+                SceneService.NotifyChanged();
+            }
+        };
+        row.Children.Add(tb);
+        return row;
+    }
+
+    Control TimelineClipTextRow(string label, string value, Action<string> onChange)
+    {
+        var row = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+        row.Children.Add(new TextBlock
+        {
+            Text = label + ":", Width = 60, FontSize = 10,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var tb = new TextBox
+        {
+            Text = value, FontSize = 10, Height = 20, MinWidth = 100,
+            Background = new SolidColorBrush(Color.FromRgb(0x14, 0x16, 0x1A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48)),
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        tb.LostFocus += (_, _) =>
+        {
+            onChange(tb.Text ?? "");
+            SceneService.NotifyChanged();
+        };
+        row.Children.Add(tb);
+        return row;
+    }
+
+    // ═══════════════════════ Dialogue Runner Inspector UI ═══════════════════════
+
+    Control DialogueRunnerInspectorUI(DialogueRunner runner)
+    {
+        var root = new StackPanel { Spacing = 6 };
+        root.Children.Add(SectionTitle("Dialogue Tree"));
+
+        // Ensure the runner has a tree to edit
+        if (runner.Tree == null)
+            runner.Tree = new DialogueTree();
+
+        var tree = runner.Tree;
+
+        // ── Tree name ──
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        nameRow.Children.Add(new TextBlock { Text = "Name", Width = 80, VerticalAlignment = VerticalAlignment.Center });
+        var nameBox = new TextBox { Width = 200, Text = tree.Name };
+        nameBox.LostFocus += (_, __) => { tree.Name = nameBox.Text ?? "Untitled"; SceneService.NotifyChanged(); };
+        nameRow.Children.Add(nameBox);
+        root.Children.Add(nameRow);
+
+        // ── Voice / Text Mode ──
+        root.Children.Add(new Separator { Margin = new Thickness(0, 4, 0, 2) });
+        root.Children.Add(SectionTitle("Dialogue Mode"));
+
+        var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        modeRow.Children.Add(new TextBlock { Text = "Mode", Width = 80, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var modeCb = new ComboBox
+        {
+            ItemsSource = Enum.GetValues(typeof(DialogueMode)),
+            SelectedItem = runner.Mode,
+            MinWidth = 140,
+            FontSize = 11
+        };
+        modeCb.SelectionChanged += (_, __) =>
+        {
+            if (modeCb.SelectedItem is DialogueMode m)
+            {
+                runner.Mode = m;
+                SceneService.NotifyChanged();
+            }
+        };
+        modeRow.Children.Add(modeCb);
+        root.Children.Add(modeRow);
+
+        var volRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        volRow.Children.Add(new TextBlock { Text = "Voice Vol", Width = 80, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var volBox = new TextBox { Width = 60, Text = runner.VoiceVolume.ToString(System.Globalization.CultureInfo.InvariantCulture), FontSize = 11 };
+        volBox.LostFocus += (_, __) =>
+        {
+            if (float.TryParse(volBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+            {
+                runner.VoiceVolume = Math.Clamp(v, 0f, 2f);
+                SceneService.NotifyChanged();
+            }
+        };
+        volRow.Children.Add(volBox);
+        root.Children.Add(volRow);
+
+        var autoAdvRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        autoAdvRow.Children.Add(new TextBlock { Text = "Auto-advance on voice end", VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var autoAdvCb = new CheckBox { IsChecked = runner.AutoAdvanceOnVoiceEnd };
+        autoAdvCb.IsCheckedChanged += (_, __) =>
+        {
+            runner.AutoAdvanceOnVoiceEnd = autoAdvCb.IsChecked ?? false;
+            SceneService.NotifyChanged();
+        };
+        autoAdvRow.Children.Add(autoAdvCb);
+        root.Children.Add(autoAdvRow);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 4, 0, 2) });
+        root.Children.Add(SectionTitle("Nodes"));
+
+        // ── Node list panel (rebuilt dynamically) ──
+        var nodesPanel = new StackPanel { Spacing = 6, Margin = new Thickness(0, 4, 0, 0) };
+        root.Children.Add(nodesPanel);
+
+        // ── Add node buttons ──
+        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
+
+        void AddNodeBtn(string label, DialogueNodeType type)
+        {
+            var btn = new Button { Content = $"+ {label}", Padding = new Thickness(8, 3), FontSize = 11 };
+            btn.Click += (_, __) =>
+            {
+                var node = tree.AddNode(type);
+                if (type == DialogueNodeType.Start && string.IsNullOrEmpty(tree.StartNodeId))
+                    tree.StartNodeId = node.Id;
+                SceneService.NotifyChanged();
+                RebuildDialogueNodeList(tree, nodesPanel, runner);
+            };
+            addRow.Children.Add(btn);
+        }
+
+        AddNodeBtn("Start", DialogueNodeType.Start);
+        AddNodeBtn("Dialogue", DialogueNodeType.Dialogue);
+        AddNodeBtn("Choice", DialogueNodeType.Choice);
+        AddNodeBtn("Branch", DialogueNodeType.Branch);
+        AddNodeBtn("End", DialogueNodeType.End);
+        root.Children.Add(addRow);
+
+        // Initial build
+        RebuildDialogueNodeList(tree, nodesPanel, runner);
+
+        // ── Variables section ──
+        root.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 2) });
+        root.Children.Add(SectionTitle("Dialogue Variables"));
+        root.Children.Add(DialogueVariablesUI(runner.Variables));
+
+        return root;
+    }
+
+    void RebuildDialogueNodeList(DialogueTree tree, StackPanel nodesPanel, DialogueRunner runner)
+    {
+        nodesPanel.Children.Clear();
+
+        if (tree.Nodes.Count == 0)
+        {
+            nodesPanel.Children.Add(new TextBlock
+            {
+                Text = "No nodes. Add nodes above to build a dialogue.",
+                Opacity = 0.5, FontSize = 11, Margin = new Thickness(4, 0, 0, 0)
+            });
+            return;
+        }
+
+        foreach (var node in tree.Nodes)
+        {
+            var nodePanel = DialogueNodeEditor(tree, node, nodesPanel, runner);
+            nodesPanel.Children.Add(nodePanel);
+        }
+    }
+
+    Control DialogueNodeEditor(DialogueTree tree, DialogueNode node, StackPanel nodesPanel, DialogueRunner runner)
+    {
+        var border = new Border
+        {
+            BorderThickness = new Thickness(1),
+            BorderBrush = NodeTypeBrush(node.Type),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8, 6),
+            Margin = new Thickness(0, 2, 0, 2)
+        };
+
+        var panel = new StackPanel { Spacing = 4 };
+
+        // ── Header: type badge + ID + collapse toggle + delete ──
+        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        var typeBadge = new Border
+        {
+            Background = NodeTypeBrush(node.Type),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(6, 1),
+            Child = new TextBlock
+            {
+                Text = node.Type.ToString(),
+                FontSize = 10,
+                FontWeight = FontWeight.Bold,
+                Foreground = Brushes.White
+            }
+        };
+        headerRow.Children.Add(typeBadge);
+
+        headerRow.Children.Add(new TextBlock
+        {
+            Text = $"#{node.Id}",
+            FontSize = 10,
+            Opacity = 0.5,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+
+        // Is this the start node?
+        if (tree.StartNodeId == node.Id)
+        {
+            headerRow.Children.Add(new TextBlock
+            {
+                Text = "[START]",
+                FontSize = 10,
+                FontWeight = FontWeight.Bold,
+                Foreground = Brushes.LimeGreen,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+        }
+        else if (node.Type == DialogueNodeType.Start || node.Type == DialogueNodeType.Dialogue)
+        {
+            var setStart = new Button { Content = "Set Start", Padding = new Thickness(4, 1), FontSize = 10 };
+            setStart.Click += (_, __) =>
+            {
+                tree.StartNodeId = node.Id;
+                SceneService.NotifyChanged();
+                RebuildDialogueNodeList(tree, nodesPanel, runner);
+            };
+            headerRow.Children.Add(setStart);
+        }
+
+        var deleteBtn = new Button
+        {
+            Content = "\u2715",
+            Padding = new Thickness(4, 1),
+            FontSize = 11,
+            Foreground = Brushes.IndianRed,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        deleteBtn.Click += (_, __) =>
+        {
+            tree.RemoveNode(node.Id);
+            if (tree.StartNodeId == node.Id) tree.StartNodeId = "";
+            SceneService.NotifyChanged();
+            RebuildDialogueNodeList(tree, nodesPanel, runner);
+        };
+        headerRow.Children.Add(deleteBtn);
+        panel.Children.Add(headerRow);
+
+        // ── Body: expandable fields panel ──
+        var fieldsPanel = new StackPanel { Spacing = 4, Margin = new Thickness(4, 4, 0, 0) };
+
+        switch (node.Type)
+        {
+            case DialogueNodeType.Dialogue:
+                fieldsPanel.Children.Add(DialogueFieldRow("Speaker", node.Speaker, 120, v => { node.Speaker = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueTextAreaRow("Text", node.Text, v => { node.Text = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueVoiceClipRow(node));
+                fieldsPanel.Children.Add(DialogueFloatRow("Duration", node.Duration, v => { node.Duration = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueNodeLinkRow("Next Node", node.NextNodeId, tree, v => { node.NextNodeId = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueActionsEditor(node, runner));
+                break;
+
+            case DialogueNodeType.Choice:
+                fieldsPanel.Children.Add(DialogueFieldRow("Speaker", node.Speaker, 120, v => { node.Speaker = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueTextAreaRow("Text", node.Text, v => { node.Text = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueVoiceClipRow(node));
+                fieldsPanel.Children.Add(DialogueChoicesEditor(node, tree, runner));
+                break;
+
+            case DialogueNodeType.Branch:
+                fieldsPanel.Children.Add(DialogueVarDropdownRow("Variable", node.BranchVariable, runner, v => { node.BranchVariable = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueFieldRow("Value", node.BranchValue, 160, v => { node.BranchValue = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueNodeLinkRow("True \u2192", node.TrueNextId, tree, v => { node.TrueNextId = v; SceneService.NotifyChanged(); }));
+                fieldsPanel.Children.Add(DialogueNodeLinkRow("False \u2192", node.FalseNextId, tree, v => { node.FalseNextId = v; SceneService.NotifyChanged(); }));
+                break;
+
+            case DialogueNodeType.Start:
+                fieldsPanel.Children.Add(DialogueNodeLinkRow("Next Node", node.NextNodeId, tree, v => { node.NextNodeId = v; SceneService.NotifyChanged(); }));
+                break;
+
+            case DialogueNodeType.End:
+                fieldsPanel.Children.Add(new TextBlock { Text = "End of dialogue.", Opacity = 0.5, FontSize = 11 });
+                break;
+        }
+
+        panel.Children.Add(fieldsPanel);
+        border.Child = panel;
+        return border;
+    }
+
+    // ── Dialogue editor helper controls ──
+
+    static IBrush NodeTypeBrush(DialogueNodeType type) => type switch
+    {
+        DialogueNodeType.Start => new SolidColorBrush(Avalonia.Media.Color.FromRgb(50, 140, 70)),
+        DialogueNodeType.Dialogue => new SolidColorBrush(Avalonia.Media.Color.FromRgb(55, 100, 160)),
+        DialogueNodeType.Choice => new SolidColorBrush(Avalonia.Media.Color.FromRgb(160, 120, 40)),
+        DialogueNodeType.Branch => new SolidColorBrush(Avalonia.Media.Color.FromRgb(140, 60, 140)),
+        DialogueNodeType.End => new SolidColorBrush(Avalonia.Media.Color.FromRgb(140, 50, 50)),
+        _ => Brushes.Gray
+    };
+
+    Control DialogueFieldRow(string label, string value, double width, Action<string> onChange)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = label, Width = 70, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var tb = new TextBox { Width = width, Text = value, FontSize = 11 };
+        tb.LostFocus += (_, __) => onChange(tb.Text ?? "");
+        row.Children.Add(tb);
+        return row;
+    }
+
+    Control DialogueTextAreaRow(string label, string text, Action<string> onChange)
+    {
+        var col = new StackPanel { Spacing = 2 };
+        col.Children.Add(new TextBlock { Text = label, FontSize = 11, Opacity = 0.8 });
+        var tb = new TextBox
+        {
+            Text = text,
+            AcceptsReturn = true,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            MinHeight = 48,
+            MaxHeight = 120,
+            FontSize = 11
+        };
+        tb.LostFocus += (_, __) => onChange(tb.Text ?? "");
+        col.Children.Add(tb);
+        return col;
+    }
+
+    Control DialogueVoiceClipRow(DialogueNode node)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        row.Children.Add(new TextBlock
+        {
+            Text = "Voice",
+            Width = 70,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 11
+        });
+
+        var pathBox = new TextBox
+        {
+            Width = 160,
+            Text = node.VoiceClipPath,
+            FontSize = 11,
+            Watermark = "(none - import audio)"
+        };
+        pathBox.LostFocus += (_, __) =>
+        {
+            node.VoiceClipPath = pathBox.Text ?? "";
+            SceneService.NotifyChanged();
+        };
+        row.Children.Add(pathBox);
+
+        var btnImport = new Button { Content = "...", Padding = new Thickness(6, 2), FontSize = 11 };
+        btnImport.Click += async (_, __) =>
+        {
+            var win = OwnerWindow;
+            if (win == null) return;
+
+            var assetsDir = ProjectService.Current?.AssetsPath;
+            var dlg = new OpenFileDialog
+            {
+                Title = "Import Voice Clip",
+                AllowMultiple = false,
+                Directory = assetsDir,
+                Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "Audio Files", Extensions = { "wav", "mp3", "ogg", "flac", "aiff" } },
+                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            var picked = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(picked)) return;
+
+            var relPath = AudioAbsToRel(picked);
+            pathBox.Text = relPath;
+            node.VoiceClipPath = relPath;
+            SceneService.NotifyChanged();
+        };
+        row.Children.Add(btnImport);
+
+        var btnClear = new Button
+        {
+            Content = "\u2715",
+            Padding = new Thickness(4, 2),
+            FontSize = 10,
+            Foreground = Brushes.IndianRed
+        };
+        btnClear.Click += (_, __) =>
+        {
+            pathBox.Text = "";
+            node.VoiceClipPath = "";
+            SceneService.NotifyChanged();
+        };
+        row.Children.Add(btnClear);
+
+        return row;
+    }
+
+    Control DialogueFloatRow(string label, float value, Action<float> onChange)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = label, Width = 70, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var tb = new TextBox { Width = 80, Text = value.ToString(CultureInfo.InvariantCulture), FontSize = 11 };
+        tb.LostFocus += (_, __) =>
+        {
+            if (float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
+                onChange(f);
+        };
+        row.Children.Add(tb);
+        return row;
+    }
+
+    Control DialogueNodeLinkRow(string label, string currentId, DialogueTree tree, Action<string> onChange)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = label, Width = 70, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+
+        // Build descriptive items: "(none)", then "type: preview (#id)" for each node
+        var items = new List<DialogueNodeLinkItem> { new("", "(none)") };
+        foreach (var n in tree.Nodes)
+        {
+            string desc = n.Type switch
+            {
+                DialogueNodeType.Dialogue => $"Dialogue: {Truncate(n.Speaker, 10)} - {Truncate(n.Text, 20)}",
+                DialogueNodeType.Choice => $"Choice: {Truncate(n.Speaker, 10)} - {Truncate(n.Text, 20)}",
+                DialogueNodeType.Branch => $"Branch: {n.BranchVariable}={n.BranchValue}",
+                DialogueNodeType.Start => "Start",
+                DialogueNodeType.End => "End",
+                _ => n.Type.ToString()
+            };
+            items.Add(new(n.Id, $"{desc}  (#{n.Id})"));
+        }
+
+        var combo = new ComboBox
+        {
+            ItemsSource = items,
+            MinWidth = 200,
+            FontSize = 11,
+            DisplayMemberBinding = new Binding(nameof(DialogueNodeLinkItem.Label))
+        };
+        combo.SelectedItem = items.FirstOrDefault(i => i.Id == currentId) ?? items[0];
+        combo.SelectionChanged += (_, __) =>
+        {
+            onChange((combo.SelectedItem as DialogueNodeLinkItem)?.Id ?? "");
+        };
+        row.Children.Add(combo);
+        return row;
+    }
+
+    Control DialogueVarDropdownRow(string label, string currentValue, DialogueRunner runner, Action<string> onChange)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new TextBlock { Text = label, Width = 70, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+
+        var varNames = new List<string> { "" };
+        foreach (var key in runner.Variables.Keys)
+            varNames.Add(key);
+
+        var combo = new ComboBox { MinWidth = 120, FontSize = 11, IsEditable = true };
+        combo.ItemsSource = varNames;
+        combo.Text = currentValue;
+        if (varNames.Contains(currentValue))
+            combo.SelectedItem = currentValue;
+        combo.SelectionChanged += (_, __) =>
+        {
+            var sel = combo.SelectedItem as string;
+            if (sel != null) onChange(sel);
+        };
+        combo.LostFocus += (_, __) =>
+        {
+            if (!string.IsNullOrEmpty(combo.Text))
+                onChange(combo.Text);
+        };
+        row.Children.Add(combo);
+        return row;
+    }
+
+    static string Truncate(string s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Length <= max ? s : s[..max] + "...";
+    }
+
+    Control DialogueChoicesEditor(DialogueNode node, DialogueTree tree, DialogueRunner runner)
+    {
+        var panel = new StackPanel { Spacing = 4 };
+        var choicesList = new StackPanel { Spacing = 4 };
+        panel.Children.Add(new TextBlock { Text = "Choices", FontSize = 11, FontWeight = FontWeight.SemiBold });
+        panel.Children.Add(choicesList);
+
+        void RebuildChoices()
+        {
+            choicesList.Children.Clear();
+            for (int i = 0; i < node.Choices.Count; i++)
+            {
+                int idx = i;
+                var choice = node.Choices[i];
+                var choiceBorder = new Border
+                {
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = new SolidColorBrush(Avalonia.Media.Color.FromRgb(80, 80, 50)),
+                    CornerRadius = new CornerRadius(3),
+                    Padding = new Thickness(6, 4),
+                    Margin = new Thickness(8, 0, 0, 0)
+                };
+                var choicePanel = new StackPanel { Spacing = 3 };
+
+                // Choice text
+                var textRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                textRow.Children.Add(new TextBlock { Text = $"[{idx}]", Width = 24, FontSize = 10, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center });
+                var textBox = new TextBox { Width = 180, Text = choice.Text, FontSize = 11, Watermark = "Choice text..." };
+                textBox.LostFocus += (_, __) => { choice.Text = textBox.Text ?? ""; SceneService.NotifyChanged(); };
+                textRow.Children.Add(textBox);
+
+                var removeBtn = new Button { Content = "\u2212", Padding = new Thickness(4, 1), FontSize = 11, Foreground = Brushes.IndianRed };
+                removeBtn.Click += (_, __) =>
+                {
+                    node.Choices.RemoveAt(idx);
+                    SceneService.NotifyChanged();
+                    RebuildChoices();
+                };
+                textRow.Children.Add(removeBtn);
+                choicePanel.Children.Add(textRow);
+
+                // Next node link (descriptive dropdown)
+                choicePanel.Children.Add(DialogueNodeLinkRow("Goes to", choice.NextNodeId, tree,
+                    v => { choice.NextNodeId = v; SceneService.NotifyChanged(); }));
+
+                // Condition (optional) - variable dropdown + value
+                var condRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                condRow.Children.Add(new TextBlock { Text = "If", Width = 20, FontSize = 10, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center });
+
+                // Variable dropdown (editable, shows existing vars)
+                var varNames = new List<string> { "" };
+                foreach (var key in runner.Variables.Keys)
+                    varNames.Add(key);
+                var condVar = new ComboBox { MinWidth = 80, FontSize = 10, IsEditable = true, ItemsSource = varNames };
+                condVar.Text = choice.ConditionVariable;
+                if (varNames.Contains(choice.ConditionVariable))
+                    condVar.SelectedItem = choice.ConditionVariable;
+                condVar.SelectionChanged += (_, __) =>
+                {
+                    var sel = condVar.SelectedItem as string;
+                    if (sel != null) { choice.ConditionVariable = sel; SceneService.NotifyChanged(); }
+                };
+                condVar.LostFocus += (_, __) =>
+                {
+                    choice.ConditionVariable = condVar.Text ?? "";
+                    SceneService.NotifyChanged();
+                };
+
+                var condVal = new TextBox { Width = 60, Text = choice.ConditionValue, FontSize = 10, Watermark = "value" };
+                condVal.LostFocus += (_, __) => { choice.ConditionValue = condVal.Text ?? ""; SceneService.NotifyChanged(); };
+                condRow.Children.Add(condVar);
+                condRow.Children.Add(new TextBlock { Text = "=", FontSize = 10, VerticalAlignment = VerticalAlignment.Center });
+                condRow.Children.Add(condVal);
+                choicePanel.Children.Add(condRow);
+
+                choiceBorder.Child = choicePanel;
+                choicesList.Children.Add(choiceBorder);
+            }
+        }
+
+        RebuildChoices();
+
+        var addChoice = new Button { Content = "+ Choice", Padding = new Thickness(6, 2), FontSize = 11, Margin = new Thickness(8, 2, 0, 0) };
+        addChoice.Click += (_, __) =>
+        {
+            node.Choices.Add(new DialogueChoice());
+            SceneService.NotifyChanged();
+            RebuildChoices();
+        };
+        panel.Children.Add(addChoice);
+
+        return panel;
+    }
+
+    Control DialogueActionsEditor(DialogueNode node, DialogueRunner runner)
+    {
+        var panel = new StackPanel { Spacing = 3 };
+        var actionsList = new StackPanel { Spacing = 3 };
+        panel.Children.Add(new TextBlock { Text = "Actions", FontSize = 11, FontWeight = FontWeight.SemiBold, Opacity = 0.8 });
+        panel.Children.Add(actionsList);
+
+        void RebuildActions()
+        {
+            actionsList.Children.Clear();
+            for (int i = 0; i < node.Actions.Count; i++)
+            {
+                int idx = i;
+                var action = node.Actions[i];
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                row.Children.Add(new TextBlock { Text = "Set", FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.6 });
+
+                // Variable: editable dropdown of existing variables
+                var varNames = new List<string> { "" };
+                foreach (var key in runner.Variables.Keys)
+                    varNames.Add(key);
+                var varBox = new ComboBox { MinWidth = 80, FontSize = 10, IsEditable = true, ItemsSource = varNames };
+                varBox.Text = action.Variable;
+                if (varNames.Contains(action.Variable))
+                    varBox.SelectedItem = action.Variable;
+                varBox.SelectionChanged += (_, __) =>
+                {
+                    var sel = varBox.SelectedItem as string;
+                    if (sel != null) { action.Variable = sel; SceneService.NotifyChanged(); }
+                };
+                varBox.LostFocus += (_, __) =>
+                {
+                    action.Variable = varBox.Text ?? "";
+                    SceneService.NotifyChanged();
+                };
+
+                var valBox = new TextBox { Width = 60, Text = action.Value, FontSize = 10, Watermark = "value" };
+                valBox.LostFocus += (_, __) => { action.Value = valBox.Text ?? ""; SceneService.NotifyChanged(); };
+                row.Children.Add(varBox);
+                row.Children.Add(new TextBlock { Text = "=", FontSize = 10, VerticalAlignment = VerticalAlignment.Center });
+                row.Children.Add(valBox);
+                var removeBtn = new Button { Content = "\u2212", Padding = new Thickness(4, 1), FontSize = 10, Foreground = Brushes.IndianRed };
+                removeBtn.Click += (_, __) =>
+                {
+                    node.Actions.RemoveAt(idx);
+                    SceneService.NotifyChanged();
+                    RebuildActions();
+                };
+                row.Children.Add(removeBtn);
+                actionsList.Children.Add(row);
+            }
+        }
+
+        RebuildActions();
+
+        var addAction = new Button { Content = "+ Action", Padding = new Thickness(4, 1), FontSize = 10, Margin = new Thickness(0, 2, 0, 0) };
+        addAction.Click += (_, __) =>
+        {
+            node.Actions.Add(new VariableAction());
+            SceneService.NotifyChanged();
+            RebuildActions();
+        };
+        panel.Children.Add(addAction);
+
+        return panel;
+    }
+
+    Control DialogueVariablesUI(DialogueVariableStore store)
+    {
+        var panel = new StackPanel { Spacing = 4 };
+        var varsList = new StackPanel { Spacing = 3 };
+        panel.Children.Add(varsList);
+
+        void RebuildVars()
+        {
+            varsList.Children.Clear();
+            foreach (var key in store.Keys)
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                row.Children.Add(new TextBlock { Text = key, Width = 100, FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
+                var valBox = new TextBox { Width = 120, Text = store.Get(key), FontSize = 11 };
+                valBox.LostFocus += (_, __) => { store.Set(key, valBox.Text ?? ""); SceneService.NotifyChanged(); };
+                row.Children.Add(valBox);
+                var removeBtn = new Button { Content = "\u2212", Padding = new Thickness(4, 1), FontSize = 10, Foreground = Brushes.IndianRed };
+                removeBtn.Click += (_, __) =>
+                {
+                    store.Remove(key);
+                    SceneService.NotifyChanged();
+                    RebuildVars();
+                };
+                row.Children.Add(removeBtn);
+                varsList.Children.Add(row);
+            }
+        }
+
+        RebuildVars();
+
+        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
+        var newKeyBox = new TextBox { Width = 100, Watermark = "key", FontSize = 11 };
+        var newValBox = new TextBox { Width = 100, Watermark = "value", FontSize = 11 };
+        var addBtn = new Button { Content = "+ Add", Padding = new Thickness(6, 2), FontSize = 11 };
+        addBtn.Click += (_, __) =>
+        {
+            var k = newKeyBox.Text?.Trim();
+            if (string.IsNullOrEmpty(k)) return;
+            store.Set(k, newValBox.Text ?? "");
+            newKeyBox.Text = "";
+            newValBox.Text = "";
+            SceneService.NotifyChanged();
+            RebuildVars();
+        };
+        addRow.Children.Add(newKeyBox);
+        addRow.Children.Add(newValBox);
+        addRow.Children.Add(addBtn);
+        panel.Children.Add(addRow);
+
+        return panel;
     }
 
     // ═══════════════════════ Tree Inspector UI ═══════════════════════

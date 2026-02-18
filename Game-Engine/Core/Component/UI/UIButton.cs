@@ -10,6 +10,7 @@ namespace Game_Engine.Core.Component.UI
     /// Exposes an OnClick event for scripting.
     /// </summary>
     [Require(typeof(RectTransform))]
+    [ComponentCategory("UI")]
     [Require(typeof(UIImage))]
     public sealed class UIButton : UIElement
     {

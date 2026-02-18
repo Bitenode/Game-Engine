@@ -500,6 +500,10 @@ namespace Game_Engine.Core
                 standardShader.SetVector3("uSunDir", sunShineDir);
                 shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
                 standardShader.SetTexture("uShadowMap", 7);
+
+                standardShader.SetInt("uCascadeCount", 1);
+                standardShader.SetMatrix4("uShadowVPC[0]", shadowVP);
+                standardShader.SetFloat("uCascadeSplits[0]", 1000f);
             }
             else
             {
@@ -664,6 +668,57 @@ namespace Game_Engine.Core
 
             // Restore default back-face culling after shadow pass
             gl.CullFace(TriangleFace.Back);
+        }
+
+        /// <summary>
+        /// Render cascaded shadow maps. Renders the shadow pass once per cascade.
+        /// </summary>
+        public static void RenderCascadedShadowPass(
+            GL gl,
+            ShaderProgram depthShader,
+            ResourceCache cache,
+            CascadedShadowMap csm,
+            uint defaultFB = 0)
+        {
+            for (int i = 0; i < csm.CascadeCount; i++)
+            {
+                var cascade = csm.Cascades[i];
+                cascade.Begin(gl);
+                gl.Viewport(0, 0, (uint)cascade.Width, (uint)cascade.Height);
+                RenderShadowPass(gl, depthShader, cache, csm.LightVPs[i]);
+                cascade.End(gl, defaultFB);
+            }
+        }
+
+        /// <summary>
+        /// Bind cascaded shadow map textures and uniforms to a shader.
+        /// </summary>
+        public static void BindCascadeShadowUniforms(
+            ShaderProgram shader,
+            CascadedShadowMap csm,
+            int baseTextureUnit = 7)
+        {
+            shader.SetInt("uCascadeCount", csm.CascadeCount);
+            shader.SetInt("uHasShadow", 1);
+
+            // Bind cascade shadow maps to texture units
+            string[] samplerNames = { "uShadowMap", "uShadowMapC1", "uShadowMapC2", "uShadowMapC3" };
+            for (int i = 0; i < csm.CascadeCount; i++)
+            {
+                int unit = baseTextureUnit + i;
+                csm.Cascades[i].FBO.DepthTexture?.Bind(TextureUnit.Texture0 + unit);
+                shader.SetTexture(samplerNames[i], unit);
+            }
+
+            // Upload per-cascade VP matrices and split distances
+            for (int i = 0; i < csm.CascadeCount; i++)
+            {
+                shader.SetMatrix4($"uShadowVPC[{i}]", csm.LightVPs[i]);
+                shader.SetFloat($"uCascadeSplits[{i}]", csm.SplitDistances[i]);
+            }
+
+            // Backward compat: set uShadowVP to cascade 0
+            shader.SetMatrix4("uShadowVP", csm.LightVPs[0]);
         }
 
         // ---------- Internal traversal ----------
@@ -1700,6 +1755,10 @@ namespace Game_Engine.Core
                 standardShader.SetVector3("uSunDir", sunShineDir);
                 shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
                 standardShader.SetTexture("uShadowMap", 7);
+
+                standardShader.SetInt("uCascadeCount", 1);
+                standardShader.SetMatrix4("uShadowVPC[0]", shadowVP);
+                standardShader.SetFloat("uCascadeSplits[0]", 1000f);
             }
             else
             {
@@ -1843,6 +1902,71 @@ namespace Game_Engine.Core
             ssrShader.SetMatrix4("uInvViewProj", invVP);
             ssrShader.SetVector3("uCamPos", camPos);
             ssrShader.SetVector2("uScreenSize", screenWidth, screenHeight);
+
+            gl.Disable(EnableCap.DepthTest);
+            fsQuad.Draw();
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        /// <summary>
+        /// Volumetric fog pass: ray-marched fullscreen effect that reads the scene
+        /// color + depth and composites fog with light scattering and shadow occlusion.
+        /// The output FBO must be bound before calling.
+        /// </summary>
+        public static void RenderVolumetricFog(
+            GL gl,
+            ShaderProgram volFogShader,
+            FullscreenQuad fsQuad,
+            GPUTexture sceneColor,
+            GPUTexture sceneDepth,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            SN.Vector3 lightColor,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            PostProcessVolume volume,
+            float time)
+        {
+            volFogShader.Use();
+
+            sceneColor.Bind(TextureUnit.Texture0);
+            volFogShader.SetTexture("uSceneColor", 0);
+
+            sceneDepth.Bind(TextureUnit.Texture1);
+            volFogShader.SetTexture("gDepth", 1);
+
+            var vp = view * proj;
+            SN.Matrix4x4.Invert(vp, out var invVP);
+            volFogShader.SetMatrix4("uInvViewProj", invVP);
+            volFogShader.SetVector3("uCamPos", camPos);
+            volFogShader.SetVector3("uLightDir", lightDir);
+            volFogShader.SetVector3("uLightColor", lightColor);
+
+            volFogShader.SetFloat("uFogDensity", volume.VolumetricFogDensity);
+            volFogShader.SetFloat("uFogAnisotropy", volume.VolumetricFogAnisotropy);
+            volFogShader.SetFloat("uFogScattering", volume.VolumetricFogScattering);
+            volFogShader.SetFloat("uFogHeightFalloff", volume.VolumetricFogHeightFalloff);
+            volFogShader.SetFloat("uFogBaseHeight", volume.VolumetricFogBaseHeight);
+            volFogShader.SetFloat("uFogNoiseScale", volume.VolumetricFogNoiseScale);
+            volFogShader.SetFloat("uFogNoiseSpeed", volume.VolumetricFogNoiseSpeed);
+            volFogShader.SetFloat("uFogMaxDistance", volume.VolumetricFogMaxDistance);
+            volFogShader.SetVector3("uFogColor", volume.VolumetricFogColor);
+            volFogShader.SetInt("uFogSteps", Math.Clamp(volume.VolumetricFogSteps, 4, 128));
+            volFogShader.SetFloat("uTime", time);
+
+            if (shadowFBO?.DepthTexture != null)
+            {
+                volFogShader.SetInt("uHasShadow", 1);
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture2);
+                volFogShader.SetTexture("uShadowMap", 2);
+                volFogShader.SetMatrix4("uShadowVP", shadowVP);
+            }
+            else
+            {
+                volFogShader.SetInt("uHasShadow", 0);
+            }
 
             gl.Disable(EnableCap.DepthTest);
             fsQuad.Draw();

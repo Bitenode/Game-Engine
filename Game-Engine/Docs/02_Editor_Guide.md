@@ -13,8 +13,8 @@ The editor window contains ten dockable panels distributed across five dock regi
 │              │   terrain editing)       │   object)    │
 │              │                          │              │
 ├──────────────┴──────────────────────────┴──────────────┤
-│  Project Panel              │  Console / Animation     │
-│  (file browser)             │  (log output / timeline) │
+│  Project Panel              │  Console / Animation /   │
+│  (file browser)             │  Timeline Sequencer      │
 └─────────────────────────────┴──────────────────────────┘
 ```
 
@@ -205,20 +205,29 @@ Each component (Behavior) on the selected object shows:
 | `List<>` | Expandable list | Add/remove items |
 
 ### Adding Components
-Click **"+ Add Component"** at the bottom of the Inspector to open the component picker. Available built-in components include:
-- Transform, Camera, Light
-- MeshFilter, MeshRenderer, SkinnedMeshRenderer
-- BoxCollider, CapsuleCollider, MeshCollider
-- CharacterController, PlayerMovement, Rigidbody
-- Skybox, Terrain, Tree, TreeLOD
-- ParticleEmitter, PostProcessVolume
-- AudioSource, AudioListener
-- Animator, Decal, NavMeshAgent, Water
-- Camera2D, SpriteRenderer, Tilemap
-- IKConstraint, RigidbodyPlayer, VegetationPainter
-- NetworkIdentity, NetworkTransform, NetworkAnimator
-- ReverbZone
-- Any custom script behaviors compiled from `Assets/` or `Packages/`
+Click the **"+ Add Component"** button at the bottom of the Inspector to open a hierarchical popup menu. Components are organized into category submenus, similar to Unity's component picker:
+
+| Category | Components |
+|----------|-----------|
+| **2D** | Camera2D, SpriteRenderer, Tilemap |
+| **AI** | BehaviorTreeRunner |
+| **Animation** | Animator, IKConstraint |
+| **Audio** | AudioListener, AudioSource, ReverbZone |
+| **Dialogue** | DialogueRunner |
+| **Effects** | Decal, ParticleEmitter, PostProcessVolume |
+| **Environment** | Skybox, Terrain, Tree, TreeLOD, VegetationPainter, Water |
+| **Misc** | Any components without a category annotation |
+| **Navigation** | NavMeshAgent |
+| **Networking** | NetworkAnimator, NetworkIdentity, NetworkTransform |
+| **Physics** | BoxCollider, CapsuleCollider, CharacterController, MeshCollider, PlayerMovement, Rigidbody, RigidbodyPlayer |
+| **Rendering** | Camera, Light, MeshFilter, MeshRenderer, SkinnedMeshRenderer |
+| **Timeline** | TimelinePlayer |
+| **UI** | Canvas, RectTransform, UIButton, UIElement, UIImage, UIInputField, UIPanel, UISlider, UIText, UIToggle |
+| **Scripts** | Any custom Behavior scripts compiled from `Assets/` or `Packages/` |
+
+Each category expands into a submenu listing its components alphabetically. The **Scripts** submenu appears below a separator at the bottom. Scripts that are present in source but not yet compiled show a "(source only)" label.
+
+Components are assigned to categories using the `[ComponentCategory("Name")]` attribute on their class declaration.
 
 ### Terrain Inspector
 When a Terrain is selected, the Inspector shows specialized sections:
@@ -229,6 +238,21 @@ When a Terrain is selected, the Inspector shows specialized sections:
 
 ### Custom Inspectors
 Components can implement `ICustomInspector` to provide custom Avalonia UI in the Inspector panel, or use `[CustomInspector(typeof(TargetComponent))]` on a separate class.
+
+Several built-in components have dedicated custom inspectors:
+
+| Component | Inspector Features |
+|-----------|-------------------|
+| **DialogueRunner** | Dialogue tree editor — node list with type/speaker/text, choice linking, variable store, voice clip paths per node, dialogue mode selector (Text / Voice / Both) |
+| **BehaviorTreeRunner** | Behavior tree editor — hierarchical node view with type selectors, child management, blackboard key-value editor, tick interval and running state |
+| **TimelinePlayer** | Timeline asset editor — name/duration/loop, playback status, track list with type badges and mute toggles, per-clip start/duration/blend/speed editors, track-type-specific fields |
+
+### List Property Editor
+`List<T>` properties are rendered with a dedicated expandable editor that supports:
+- **Add/Remove** items with +/- buttons
+- **Reorder** items with up/down arrows
+- **Sub-inspectors** for complex element types (nested property editors for non-primitive types)
+- Adapts automatically to the element type (`string`, `int`, `float`, custom objects, etc.)
 
 ---
 
@@ -329,13 +353,113 @@ Built-in C# script editor integrated into the editor:
 
 ## Animation Panel
 
-The Animation panel provides a timeline-based editor for bone animations:
+The Animation panel provides a timeline-based editor for bone animations and a state machine graph for the Animator component.
+
+### Animation Clip Editor
 - **Animation clip selection** — choose which clip to edit
 - **Keyframe editing** — add, move, and delete keyframes on the timeline
 - **Timeline scrubbing** — drag the playhead to preview animation at any point
 - **Bone visualization** — see which bones are affected by each keyframe
 
 Bone animations are imported automatically from 3D model files (FBX, glTF) and stored as `.boneanim` files.
+
+### Animator State Machine
+When a GameObject with an `Animator` component is selected, the Animation panel displays an interactive state machine graph:
+- **States** — rectangular nodes positioned on a canvas, draggable for layout
+- **Transitions** — directed arrows between states, shown as lines with arrowheads
+- **Add State** — right-click the canvas or use the "Add State" button to create new animation states with a clip reference
+- **Add Transition** — click a state, then click another state to create a transition between them
+- **Delete** — select a state or transition and press Delete to remove it
+- **Selection** — click states or transitions to select them (highlighted with a distinct color)
+- **Inspector integration** — selected states show their clip assignment and transition conditions in the Inspector
+
+Changes are automatically persisted via DTO synchronization.
+
+---
+
+## Timeline / Cutscene Sequencer Panel
+
+The Timeline Sequencer panel provides a visual editor for creating and editing cinematic sequences, cutscenes, and scripted events. Access via **Window > New Timeline Tab**.
+
+### Overview
+```
+┌──────────────────────────────────────────────────────────┐
+│  [▶ Play] [⏸ Pause] [⏹ Stop]  Loop ☐  Duration: 10.0  │
+│  Speed: 1.0  Time: 0.00 / 10.00  Timeline: My Cutscene │
+├─────────────────┬────────────────────────────────────────┤
+│  Track List     │  Time Ruler + Clip Canvas              │
+│  ┌───────────┐  │  0s    2s    4s    6s    8s   10s     │
+│  │ Anim Track│  │  ██████████░░░░░░░░░░░░░░░░░░░        │
+│  │ Audio     │  │  ░░░░░░░░░██████████████░░░░░░░░      │
+│  │ Camera    │  │  ████░░░░░░░░░░░░░██████████████      │
+│  │ Activation│  │  ██████████████████████████████        │
+│  │ Event     │  │  ░░░░░░░█░░░░░░░░░░░░░░░░░░█░░       │
+│  └───────────┘  │                    ▼ (playhead)        │
+├─────────────────┴────────────────────────────────────────┤
+│  [+ Add Track]                                           │
+└──────────────────────────────────────────────────────────┘
+```
+
+### GameObject Binding
+- Select a GameObject from the dropdown to bind the TimelinePlayer to it
+- If the selected GameObject has no `TimelinePlayer` component, click **"Add Player"** to attach one
+- Click **"New Timeline"** to create a fresh `TimelineAsset` on the bound player
+
+### Playback Controls
+| Control | Description |
+|---------|-------------|
+| **Play** | Start timeline playback from the current time |
+| **Pause** | Pause playback |
+| **Stop** | Stop and reset to time 0 |
+| **Loop** | Toggle looping behavior |
+| **Duration** | Set the total timeline duration (seconds) |
+| **Speed** | Playback speed multiplier |
+| **Time** | Current playback time (editable for seeking) |
+
+### Track Types
+| Type | Color Badge | Description |
+|------|-------------|-------------|
+| **Animation** | Blue | Plays bone animations on target GameObjects via their Animator component |
+| **Camera** | Green | Enables/disables camera GameObjects to switch between viewpoints |
+| **Audio** | Orange | Plays audio clips (`.wav`, `.mp3`, `.ogg`) at specified times |
+| **Activation** | Purple | Enables/disables target GameObjects during clip time ranges |
+| **Event** | Red | Fires named events via the EventBus at clip start times |
+
+### Track Operations
+- **Add Track** — click "+ Add Track" and select a track type from the context menu
+- **Rename** — edit the track name directly in the track list
+- **Mute** — toggle the mute checkbox to silence a track without removing it
+- **Delete** — click the X button to remove a track and all its clips
+
+### Clip Operations
+- **Add Clip** — right-click on a track in the canvas, or use the "+ Add Clip" button
+- **Drag** — click and drag clips to reposition them on the timeline
+- **Resize** — drag the left or right edge of a clip to change its start time or duration
+- **Edit** — right-click a clip to open a detail editor with all clip properties (start, duration, blend in/out, speed, and type-specific fields)
+- **Duplicate** — right-click > Duplicate to copy a clip
+- **Delete** — right-click > Delete to remove a clip
+
+### Clip Properties
+| Property | Description |
+|----------|-------------|
+| **Start Time** | When the clip begins (seconds) |
+| **Duration** | How long the clip lasts (seconds) |
+| **Blend In** | Crossfade-in duration at the start |
+| **Blend Out** | Crossfade-out duration at the end |
+| **Speed** | Playback speed multiplier for this clip |
+| **Asset Path** | Animation or audio file path (Animation/Audio tracks) |
+| **Target Name** | Target GameObject name (Camera/Activation/Animation tracks) |
+| **Event Name** | Event identifier (Event tracks) |
+| **Event Data** | String payload for events (Event tracks) |
+
+### Canvas Interaction
+| Action | Input |
+|--------|-------|
+| **Scrub playhead** | Click on the time ruler |
+| **Drag clip** | Click and drag a clip body |
+| **Resize clip** | Drag the left or right edge of a clip |
+| **Zoom** | Mouse scroll wheel to zoom the time scale |
+| **Context menu** | Right-click a clip for edit/duplicate/delete options |
 
 ---
 
@@ -466,6 +590,8 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 |------|-------------|
 | **Reset Layout** | Restore default panel arrangement |
 | **Shader Editor** | Open the visual shader graph editor |
+| **New Animation Tab** | Open a new Animation panel tab |
+| **New Timeline Tab** | Open a new Timeline Sequencer panel tab |
 | **Profiler** | Open the performance profiler panel |
 | Panel list | Open/focus specific panels |
 

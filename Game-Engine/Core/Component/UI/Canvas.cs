@@ -32,6 +32,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI rendering for this object and all children that have RectTransform + UIElement.
     /// Similar to Unity's Canvas component.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class Canvas : Behavior
     {

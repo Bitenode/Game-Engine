@@ -1911,21 +1911,33 @@ namespace Game_Engine.Views
     {
         public AnimationPanel? Panel { get; set; }
 
+        public StateMachineCanvas()
+        {
+            Focusable = true;
+        }
+
         // Interaction
         private int _dragNodeIdx = -1;
         private Point _dragOffset;
         private Point _lastMouse;
         private float _panX, _panY;
+        private int _selectedNodeIdx = -1;
+        private int _selectedTransIdx = -1;
 
         private static readonly IBrush NodeBg = new SolidColorBrush(Color.FromRgb(50, 52, 58));
         private static readonly IBrush NodeActiveBg = new SolidColorBrush(Color.FromRgb(40, 90, 140));
+        private static readonly IBrush NodeSelectedBg = new SolidColorBrush(Color.FromRgb(70, 70, 45));
         private static readonly IBrush NodeBorder = new SolidColorBrush(Color.FromRgb(80, 85, 95));
+        private static readonly IBrush NodeSelectedBorder = new SolidColorBrush(Color.FromRgb(220, 200, 80));
         private static readonly IBrush NodeText = Brushes.White;
         private static readonly IBrush ArrowBrush = new SolidColorBrush(Color.FromRgb(100, 180, 255));
+        private static readonly IBrush ArrowSelectedBrush = new SolidColorBrush(Color.FromRgb(255, 200, 60));
         private static readonly IBrush ArrowLabelBrush = new SolidColorBrush(Color.FromRgb(180, 200, 220));
         private static readonly IBrush BgBrush = new SolidColorBrush(Color.FromRgb(26, 27, 30));
         private static readonly Pen NodePen = new Pen(NodeBorder, 1.5);
+        private static readonly Pen NodeSelectedPen = new Pen(NodeSelectedBorder, 2.0);
         private static readonly Pen ArrowPen = new Pen(ArrowBrush, 1.5);
+        private static readonly Pen ArrowSelectedPen = new Pen(ArrowSelectedBrush, 2.5);
 
         private const float NodeW = 120, NodeH = 40;
 
@@ -1958,16 +1970,19 @@ namespace Game_Engine.Views
             }
 
             // Draw transitions (arrows)
-            foreach (var t in anim.Transitions)
+            var transitions = anim.Transitions;
+            for (int ti = 0; ti < transitions.Count; ti++)
             {
+                var t = transitions[ti];
                 var from = states.FirstOrDefault(s => s.Name == t.FromState);
                 var to = states.FirstOrDefault(s => s.Name == t.ToState);
                 if (from == null || to == null) continue;
 
+                bool isSelectedTrans = (ti == _selectedTransIdx);
                 var fp = NodeCenter(from);
                 var tp = NodeCenter(to);
 
-                dc.DrawLine(ArrowPen, fp, tp);
+                dc.DrawLine(isSelectedTrans ? ArrowSelectedPen : ArrowPen, fp, tp);
 
                 // Arrowhead
                 var dir = tp - fp;
@@ -2009,14 +2024,18 @@ namespace Game_Engine.Views
                 var state = states[i];
                 var rect = NodeRect(state);
                 bool isActive = anim.CurrentStateName == state.Name;
+                bool isSelected = (i == _selectedNodeIdx);
 
-                dc.DrawRectangle(isActive ? NodeActiveBg : NodeBg, NodePen,
+                IBrush bg = isActive ? NodeActiveBg : isSelected ? NodeSelectedBg : NodeBg;
+                Pen pen = isSelected ? NodeSelectedPen : NodePen;
+
+                dc.DrawRectangle(bg, pen,
                     new Rect(rect.X, rect.Y, rect.Width, rect.Height), 6, 6);
 
                 var ft = new FormattedText(state.Name,
                     System.Globalization.CultureInfo.CurrentCulture,
                     FlowDirection.LeftToRight,
-                    new Typeface("Segoe UI", FontStyle.Normal, isActive ? FontWeight.Bold : FontWeight.Normal), 12, NodeText);
+                    new Typeface("Segoe UI", FontStyle.Normal, (isActive || isSelected) ? FontWeight.Bold : FontWeight.Normal), 12, NodeText);
                 dc.DrawText(ft, new Point(rect.X + rect.Width / 2 - ft.Width / 2, rect.Y + rect.Height / 2 - ft.Height / 2));
             }
         }
@@ -2038,6 +2057,7 @@ namespace Game_Engine.Views
         protected override void OnPointerPressed(PointerPressedEventArgs e)
         {
             base.OnPointerPressed(e);
+            Focus();
             var pos = e.GetPosition(this);
             _lastMouse = pos;
 
@@ -2059,11 +2079,50 @@ namespace Game_Engine.Views
                 if (rect.Contains(pos))
                 {
                     _dragNodeIdx = i;
+                    _selectedNodeIdx = i;
+                    _selectedTransIdx = -1;
                     _dragOffset = new Point(pos.X - rect.X, pos.Y - rect.Y);
                     e.Handled = true;
+                    InvalidateVisual();
                     return;
                 }
             }
+
+            // Check if clicking on a transition line
+            var transitions = anim.Transitions;
+            for (int ti = 0; ti < transitions.Count; ti++)
+            {
+                var t = transitions[ti];
+                var from = states.FirstOrDefault(s => s.Name == t.FromState);
+                var to = states.FirstOrDefault(s => s.Name == t.ToState);
+                if (from == null || to == null) continue;
+
+                var fp = NodeCenter(from);
+                var tp = NodeCenter(to);
+                if (DistanceToSegment(pos, fp, tp) < 8.0)
+                {
+                    _selectedTransIdx = ti;
+                    _selectedNodeIdx = -1;
+                    e.Handled = true;
+                    InvalidateVisual();
+                    return;
+                }
+            }
+
+            // Clicked on empty space: deselect
+            _selectedNodeIdx = -1;
+            _selectedTransIdx = -1;
+            InvalidateVisual();
+        }
+
+        private static double DistanceToSegment(Point p, Point a, Point b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y;
+            double lenSq = dx * dx + dy * dy;
+            if (lenSq < 0.001) return Math.Sqrt((p.X - a.X) * (p.X - a.X) + (p.Y - a.Y) * (p.Y - a.Y));
+            double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0, 1);
+            double projX = a.X + t * dx, projY = a.Y + t * dy;
+            return Math.Sqrt((p.X - projX) * (p.X - projX) + (p.Y - projY) * (p.Y - projY));
         }
 
         protected override void OnPointerMoved(PointerEventArgs e)
@@ -2100,7 +2159,19 @@ namespace Game_Engine.Views
         protected override void OnPointerReleased(PointerReleasedEventArgs e)
         {
             base.OnPointerReleased(e);
+            if (_dragNodeIdx >= 0)
+            {
+                // Sync editor positions back to DTOs so they persist
+                Panel?.CurrentAnimator?.SyncToDTO();
+                SceneService.NotifyChanged();
+            }
             _dragNodeIdx = -1;
+        }
+
+        private Window? FindOwnerWindow()
+        {
+            return (TopLevel.GetTopLevel(this) as Window)
+                ?? (Panel != null ? TopLevel.GetTopLevel(Panel) as Window : null);
         }
 
         private void ShowContextMenu(Point pos, Animator anim)
@@ -2111,6 +2182,7 @@ namespace Game_Engine.Views
             addState.Click += async (_, _) =>
             {
                 var nameBox = new TextBox { Text = "New State", Width = 180 };
+                var okBtn = new Button { Content = "Add", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
                 var dialog = new Window
                 {
                     Title = "Add State",
@@ -2123,15 +2195,17 @@ namespace Game_Engine.Views
                         {
                             new TextBlock { Text = "State Name:" },
                             nameBox,
-                            new Button { Content = "Add", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right }
+                            okBtn
                         }
                     }
                 };
-                var btn = ((StackPanel)dialog.Content).Children.OfType<Button>().First();
-                btn.Click += (_, _) => dialog.Close();
+                okBtn.Click += (_, _) => dialog.Close();
 
-                var owner = TopLevel.GetTopLevel(this) as Window;
-                if (owner != null) await dialog.ShowDialog(owner);
+                var owner = FindOwnerWindow();
+                if (owner != null)
+                    await dialog.ShowDialog(owner);
+                else
+                    await dialog.ShowDialog(new Window()); // fallback
 
                 var name = nameBox.Text?.Trim();
                 if (string.IsNullOrEmpty(name)) return;
@@ -2144,6 +2218,8 @@ namespace Game_Engine.Views
                 if (states.TryGetValue(name, out var state))
                     state.EditorPosition = new System.Numerics.Vector2((float)(pos.X - _panX), (float)(pos.Y - _panY));
 
+                anim.SyncToDTO();
+                SceneService.NotifyChanged();
                 InvalidateVisual();
             };
             menu.Items.Add(addState);
@@ -2158,6 +2234,7 @@ namespace Game_Engine.Views
                     var fromBox = new ComboBox { ItemsSource = stateNames, SelectedIndex = 0, MinWidth = 120 };
                     var toBox = new ComboBox { ItemsSource = stateNames, SelectedIndex = Math.Min(1, stateNames.Count - 1), MinWidth = 120 };
                     var condBox = new TextBox { Watermark = "Parameter name (optional)", Width = 180 };
+                    var okBtn = new Button { Content = "Add", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
 
                     var dialog = new Window
                     {
@@ -2171,15 +2248,17 @@ namespace Game_Engine.Views
                                 new TextBlock { Text = "From:" }, fromBox,
                                 new TextBlock { Text = "To:" }, toBox,
                                 new TextBlock { Text = "Condition:" }, condBox,
-                                new Button { Content = "Add", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right }
+                                okBtn
                             }
                         }
                     };
-                    var btn = ((StackPanel)dialog.Content).Children.OfType<Button>().First();
-                    btn.Click += (_, _) => dialog.Close();
+                    okBtn.Click += (_, _) => dialog.Close();
 
-                    var owner = TopLevel.GetTopLevel(this) as Window;
-                    if (owner != null) await dialog.ShowDialog(owner);
+                    var owner = FindOwnerWindow();
+                    if (owner != null)
+                        await dialog.ShowDialog(owner);
+                    else
+                        await dialog.ShowDialog(new Window()); // fallback
 
                     var from = fromBox.SelectedItem as string;
                     var to = toBox.SelectedItem as string;
@@ -2193,6 +2272,8 @@ namespace Game_Engine.Views
                         TransitionDuration = 0.2f
                     });
 
+                    anim.SyncToDTO();
+                    SceneService.NotifyChanged();
                     InvalidateVisual();
                 };
                 menu.Items.Add(addTrans);
@@ -2210,6 +2291,9 @@ namespace Game_Engine.Views
                     deleteItem.Click += (_, _) =>
                     {
                         anim.RemoveState(deleteName);
+                        _selectedNodeIdx = -1;
+                        anim.SyncToDTO();
+                        SceneService.NotifyChanged();
                         InvalidateVisual();
                     };
                     menu.Items.Add(new Separator());
@@ -2218,7 +2302,67 @@ namespace Game_Engine.Views
                 }
             }
 
+            // Delete transition (check if right-clicked near a transition line)
+            var transForMenu = anim.Transitions;
+            for (int ti = 0; ti < transForMenu.Count; ti++)
+            {
+                var t = transForMenu[ti];
+                var from = states2.FirstOrDefault(s => s.Name == t.FromState);
+                var to = states2.FirstOrDefault(s => s.Name == t.ToState);
+                if (from == null || to == null) continue;
+
+                if (DistanceToSegment(pos, NodeCenter(from), NodeCenter(to)) < 8.0)
+                {
+                    var capturedTrans = t;
+                    var deleteTransItem = new MenuItem { Header = $"Delete transition '{t.FromState}' \u2192 '{t.ToState}'" };
+                    deleteTransItem.Click += (_, _) =>
+                    {
+                        anim.RemoveTransition(capturedTrans);
+                        _selectedTransIdx = -1;
+                        anim.SyncToDTO();
+                        SceneService.NotifyChanged();
+                        InvalidateVisual();
+                    };
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(deleteTransItem);
+                    break;
+                }
+            }
+
             menu.Open(this);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            var anim = Panel?.CurrentAnimator;
+            if (anim == null) return;
+
+            if (e.Key == Key.Delete || e.Key == Key.Back)
+            {
+                if (_selectedTransIdx >= 0 && _selectedTransIdx < anim.Transitions.Count)
+                {
+                    anim.RemoveTransition(anim.Transitions[_selectedTransIdx]);
+                    _selectedTransIdx = -1;
+                    anim.SyncToDTO();
+                    SceneService.NotifyChanged();
+                    InvalidateVisual();
+                    e.Handled = true;
+                }
+                else if (_selectedNodeIdx >= 0)
+                {
+                    var states = anim.States.Values.ToList();
+                    if (_selectedNodeIdx < states.Count)
+                    {
+                        anim.RemoveState(states[_selectedNodeIdx].Name);
+                        _selectedNodeIdx = -1;
+                        anim.SyncToDTO();
+                        SceneService.NotifyChanged();
+                        InvalidateVisual();
+                        e.Handled = true;
+                    }
+                }
+            }
         }
     }
 }

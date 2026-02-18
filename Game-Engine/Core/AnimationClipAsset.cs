@@ -33,6 +33,7 @@ namespace Game_Engine.Core
             public float Duration { get; set; } = 1f;
             public bool Loop { get; set; } = true;
             public List<TrackDTO> Tracks { get; set; } = new();
+            public List<EventDTO> Events { get; set; } = new();
         }
 
         private class TrackDTO
@@ -48,6 +49,15 @@ namespace Game_Engine.Core
             public string Interp { get; set; } = "Linear";
             public float InTangent { get; set; }
             public float OutTangent { get; set; }
+        }
+
+        private class EventDTO
+        {
+            public float Time { get; set; }
+            public string MethodName { get; set; } = "";
+            public string StringParam { get; set; } = "";
+            public float FloatParam { get; set; }
+            public int IntParam { get; set; }
         }
 
         // ── Save ──
@@ -80,6 +90,18 @@ namespace Game_Engine.Core
                     });
                 }
                 dto.Tracks.Add(trackDto);
+            }
+
+            foreach (var evt in clip.Events)
+            {
+                dto.Events.Add(new EventDTO
+                {
+                    Time = evt.Time,
+                    MethodName = evt.MethodName,
+                    StringParam = evt.StringParam,
+                    FloatParam = evt.FloatParam,
+                    IntParam = evt.IntParam
+                });
             }
 
             var dir = Path.GetDirectoryName(absPath);
@@ -133,6 +155,21 @@ namespace Game_Engine.Core
                         keys.Add(new AnimKeyframe(k.Time, k.Value, interp, k.InTangent, k.OutTangent));
                     }
                     clip.Tracks[trackDto.Path] = keys;
+                }
+
+                if (dto.Events != null)
+                {
+                    foreach (var evtDto in dto.Events)
+                    {
+                        clip.Events.Add(new AnimationEvent
+                        {
+                            Time = evtDto.Time,
+                            MethodName = evtDto.MethodName,
+                            StringParam = evtDto.StringParam,
+                            FloatParam = evtDto.FloatParam,
+                            IntParam = evtDto.IntParam
+                        });
+                    }
                 }
 
                 _cache[clip.Name] = (clip, projectRelativePath);

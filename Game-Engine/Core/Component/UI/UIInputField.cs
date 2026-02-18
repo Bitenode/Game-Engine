@@ -18,6 +18,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI InputField element — a text input box with cursor, selection, and placeholder text.
     /// Captures keyboard input when focused (clicked) and renders the text contents.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class UIInputField : UIElement
     {

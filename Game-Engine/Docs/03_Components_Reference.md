@@ -6,6 +6,28 @@ A component's `IsActiveAndEnabled` property is `true` only when both its own `En
 
 The engine includes **34+ built-in component types** organized by category below.
 
+### Component Categories
+
+Components are assigned to categories using the `[ComponentCategory("Name")]` attribute. The Inspector's **+ Add Component** button opens a hierarchical popup menu where each category is a submenu. Components without the attribute default to the **Misc** category.
+
+| Category | Components | Directory |
+|----------|-----------|-----------|
+| **Rendering** | Camera, Light, MeshFilter, MeshRenderer, SkinnedMeshRenderer | `Core/Component/Rendering/` |
+| **Physics** | Collider, BoxCollider, CapsuleCollider, MeshCollider, CharacterController, PlayerMovement, Rigidbody, RigidbodyPlayer | `Core/Component/Physics/` |
+| **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
+| **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
+| **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
+| **Environment** | Skybox, Terrain, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
+| **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
+| **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
+| **UI** | Canvas, RectTransform, UIElement, UIText, UIImage, UIButton, UIPanel, UISlider, UIToggle, UIInputField | `Core/Component/UI/` |
+| **AI** | BehaviorTreeRunner | `Core/AI/` |
+| **Dialogue** | DialogueRunner | `Core/Dialogue/` |
+| **Timeline** | TimelinePlayer | `Core/Timeline/` |
+
+Custom script components compiled from `Assets/` or `Packages/` appear in a separate **Scripts** submenu.
+
 ---
 
 ## Transform
@@ -520,11 +542,28 @@ Post-processing effects applied as a full-screen pass after scene rendering. Sup
 |--------|-------------|
 | **Bloom** | Bright areas glow and bleed into surrounding pixels |
 | **Fog** | Distance-based atmospheric fog |
+| **Volumetric Fog** | Ray-marched volumetric scattering with shadow sampling, height falloff, and 3D noise |
 | **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |
 | **Tone Mapping** | HDR to LDR conversion (Reinhard or ACES methods) |
 | **Vignette** | Darkened edges around the screen |
 | **FXAA** | Fast approximate anti-aliasing |
 | **Underwater** | Distortion, fog, caustics, and color absorption when camera is below water |
+
+### Volumetric Fog Properties
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `VolumetricFogEnabled` | `bool` | `false` | Enable volumetric fog rendering |
+| `VolumetricFogDensity` | `float` | `0.02` | Base fog density for scattering |
+| `VolumetricFogAnisotropy` | `float` | `0.3` | Henyey-Greenstein scattering anisotropy (-1 to 1; positive = forward scattering) |
+| `VolumetricFogScattering` | `float` | `1.0` | In-scattered light intensity multiplier |
+| `VolumetricFogHeightFalloff` | `float` | `0.1` | Height-based density falloff rate |
+| `VolumetricFogBaseHeight` | `float` | `0` | Base height of the fog volume (world Y) |
+| `VolumetricFogNoiseScale` | `float` | `0.1` | Scale of 3D noise applied to fog density |
+| `VolumetricFogNoiseSpeed` | `float` | `0.5` | Animation speed of the noise pattern |
+| `VolumetricFogMaxDistance` | `float` | `200` | Maximum ray march distance |
+| `VolumetricFogColor` | `Vector3` | `(1,1,1)` | Color tint for the volumetric fog (RGB) |
+| `VolumetricFogSteps` | `int` | `32` | Number of ray march steps (higher = better quality, lower performance) |
 
 **Features:**
 - **Priority system** — higher-priority volumes override lower ones
@@ -580,6 +619,280 @@ Skeletal animation state machine with bone-based animation support and GPU skinn
 - **Flexible bone matching** — handles bone name prefixes (e.g., "mixamorig:") for cross-format compatibility
 
 Animation clips are imported automatically from 3D model files (FBX, glTF) and stored as `.boneanim` files. The `Animator` component is auto-created during model import when animations are detected.
+
+---
+
+## DialogueRunner
+
+Component that walks a `DialogueTree` asset, publishing events via the `EventBus` for UI display. Supports text subtitles, voice line audio, or both simultaneously.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Mode` | `DialogueMode` | `TextAndVoice` | Presentation mode: `TextOnly`, `VoiceOnly`, or `TextAndVoice` |
+| `VoiceVolume` | `float` | `1.0` | Volume for voice line playback (0-1) |
+| `AutoAdvanceOnVoiceEnd` | `bool` | `true` | Auto-advance to next node when voice clip finishes |
+
+**Read-only runtime properties:**
+- `IsRunning` — whether dialogue is currently active
+- `IsWaitingForInput` — whether the runner is waiting for player input (advance or choice selection)
+- `CurrentNode` — the current `DialogueNode` being displayed
+- `IsVoicePlaying` — whether a voice clip is currently playing
+
+**Methods:**
+- `StartDialogue()` — begin the dialogue from the tree's start node
+- `StartDialogue(DialogueTree tree)` — set a tree and begin
+- `StopDialogue()` — immediately end the dialogue
+- `Advance()` — advance to the next node (for dialogue lines waiting for input)
+- `SelectChoice(int index)` — select a choice by index (for choice nodes)
+- `StopVoice()` — stop the currently playing voice clip
+
+### DialogueTree Asset
+
+A graph of `DialogueNode` objects representing a conversation flow.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Name` | `string` | Display name of the dialogue tree |
+| `StartNodeId` | `string` | ID of the entry node |
+| `Nodes` | `List<DialogueNode>` | All nodes in the tree |
+
+### DialogueNode
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Id` | `string` | Unique node identifier |
+| `Type` | `DialogueNodeType` | Node type (see below) |
+| `Speaker` | `string` | Speaker name for dialogue lines |
+| `Text` | `string` | Dialogue text content |
+| `Duration` | `float` | Auto-advance duration (0 = wait for input) |
+| `VoiceClipPath` | `string` | Path to voice audio file (`.wav`, `.mp3`, `.ogg`) |
+| `Choices` | `List<DialogueChoice>` | Available choices (for Choice nodes) |
+| `BranchVariable` / `BranchValue` | `string` | Variable condition (for Branch nodes) |
+| `TrueNextId` / `FalseNextId` | `string` | Conditional next nodes (for Branch nodes) |
+| `NextNodeId` | `string` | Next node for linear flow |
+| `Actions` | `List<VariableAction>` | Variable assignments executed on node entry |
+
+**Node Types:**
+
+| Type | Description |
+|------|-------------|
+| `Dialogue` | Displays speaker text (and optionally plays a voice clip) |
+| `Choice` | Presents player choices with optional conditions |
+| `Branch` | Checks a variable and routes to true/false paths |
+| `Start` | Entry point of the dialogue tree |
+| `End` | Terminates the dialogue |
+
+**Events published via EventBus:**
+
+| Event | When |
+|-------|------|
+| `DialogueStartedEvent` | Dialogue begins (`TreeName`) |
+| `DialogueLineEvent` | A dialogue line is shown (`Speaker`, `Text`, `Duration`, `VoiceClipPath`, `ShowText`, `PlayVoice`) |
+| `DialogueChoiceEvent` | Choices are presented (`Options`, `NodeId`) |
+| `DialogueEndedEvent` | Dialogue ends (`TreeName`) |
+
+### Dialogue Modes
+
+| Mode | Text Subtitles | Voice Audio |
+|------|----------------|-------------|
+| `TextOnly` | Shown | Not played |
+| `VoiceOnly` | Hidden | Played |
+| `TextAndVoice` | Shown | Played |
+
+When `AutoAdvanceOnVoiceEnd` is enabled and a voice clip is playing, the runner automatically advances to the next node when the clip finishes instead of waiting for manual input.
+
+---
+
+## BehaviorTreeRunner
+
+Component that ticks a `BehaviorTree` asset each frame to drive AI behavior. Each agent has its own `Blackboard` for sharing data between tree nodes.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `IsRunning` | `bool` | `true` | Whether the tree is actively ticking |
+| `TickInterval` | `float` | `0` | Seconds between ticks (0 = every frame) |
+
+**Read-only runtime properties:**
+- `Tree` — the `BehaviorTree` asset being executed
+- `Blackboard` — per-agent key-value data store
+- `LastStatus` — result of the last tick (`Running`, `Success`, or `Failure`)
+
+**Events:**
+- `OnTick` — `Action<BTStatus>` fired after each tick with the result status
+
+**Methods:**
+- `Restart()` — reset the tree and begin from scratch
+- `SetBlackboardValue<T>(key, value)` — set a blackboard value (convenience)
+- `GetBlackboardValue<T>(key, default)` — get a blackboard value (convenience)
+
+**Lifecycle:**
+- `Start()` — initializes the blackboard with a `"Self"` key pointing to the owning `GameObject`
+- `Update()` — ticks the tree (respecting `TickInterval`); when the tree completes (Success or Failure), it is automatically reset for the next tick
+
+### BehaviorTree Asset
+
+A root node that can be ticked each frame. Returns `BTStatus` (Running, Success, Failure).
+
+**Builder helpers:**
+```csharp
+var tree = BehaviorTree.Sequence("Patrol", 
+    new WaitNode(2f),
+    new ActionNode("Move", (bb, dt) => { /* move logic */ return BTStatus.Success; })
+);
+```
+
+### BTNode Types
+
+**Composite Nodes** (have multiple children):
+
+| Node | Behavior |
+|------|----------|
+| `SelectorNode` | Ticks children left-to-right. Succeeds on first child success. Fails if all children fail. (OR logic) |
+| `SequenceNode` | Ticks children left-to-right. Fails on first child failure. Succeeds if all children succeed. (AND logic) |
+| `ParallelNode` | Ticks all children every frame. Succeeds when `RequiredSuccesses` children succeed. Fails when success becomes impossible. |
+
+**Decorator Nodes** (wrap a single child):
+
+| Node | Behavior |
+|------|----------|
+| `InverterNode` | Inverts the child's result (Success ↔ Failure) |
+| `RepeaterNode` | Repeats the child N times (`Count`), or forever if `Count < 0` |
+| `SucceederNode` | Always returns Success regardless of child result (unless Running) |
+
+**Leaf Nodes** (no children):
+
+| Node | Behavior |
+|------|----------|
+| `ActionNode` | Executes a `Func<Blackboard, float, BTStatus>` delegate |
+| `ConditionNode` | Checks a `Func<Blackboard, bool>` predicate — returns Success if true, Failure if false |
+| `WaitNode` | Waits for `Duration` seconds then succeeds |
+
+### Blackboard
+
+Per-agent key-value data store for sharing state between behavior tree nodes.
+
+| Method | Description |
+|--------|-------------|
+| `Set<T>(key, value)` | Store a value |
+| `Get<T>(key, default)` | Retrieve a value (returns default if missing or wrong type) |
+| `Has(key)` | Check if a key exists |
+| `Remove(key)` | Remove a key |
+| `Clear()` | Remove all entries |
+| `GetFloat/GetInt/GetBool/GetString/GetVector3` | Typed convenience helpers |
+| `Keys` | Enumerate all keys |
+| `Count` | Number of entries |
+
+**Script example:**
+```csharp
+public class EnemyAI : Behavior
+{
+    public override void Start()
+    {
+        var runner = GetComponent<BehaviorTreeRunner>();
+        runner.Blackboard.Set("PatrolSpeed", 3.5f);
+        runner.Blackboard.Set("Target", (GameObject?)null);
+
+        var tree = BehaviorTree.Selector("Root",
+            new SequenceNode { Name = "Attack", Children = {
+                new ConditionNode("HasTarget", bb => bb.Get<GameObject?>("Target") != null),
+                new ActionNode("Chase", (bb, dt) => { /* chase logic */ return BTStatus.Running; })
+            }},
+            new SequenceNode { Name = "Patrol", Children = {
+                new ActionNode("Wander", (bb, dt) => { /* patrol logic */ return BTStatus.Running; }),
+                new WaitNode(2f)
+            }}
+        );
+        runner.Tree = tree;
+    }
+}
+```
+
+---
+
+## TimelinePlayer
+
+Component that plays a `TimelineAsset` for cutscenes and scripted sequences. Controls playback (play, pause, seek, speed) and processes multiple track types each frame.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PlayOnAwake` | `bool` | `false` | Start playback automatically when entering play mode |
+| `Speed` | `float` | `1.0` | Playback speed multiplier |
+
+**Read-only runtime properties:**
+- `Timeline` — the `TimelineAsset` being played
+- `CurrentTime` — current playback position (seconds)
+- `IsPlaying` — whether the timeline is actively playing
+- `IsFinished` — whether the timeline has reached the end (non-looping only)
+
+**Events:**
+- `OnComplete` — `Action` fired when playback finishes
+
+**Methods:**
+- `Play()` — start or resume playback
+- `Pause()` — pause playback
+- `Stop()` — stop playback and reset to time 0 (restores all activation changes)
+- `Seek(float time)` — jump to a specific time
+
+### TimelineAsset
+
+An ordered list of tracks, each containing clips on a shared time ruler.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Name` | `string` | `"New Timeline"` | Display name |
+| `Duration` | `float` | `10` | Total duration in seconds |
+| `Loop` | `bool` | `false` | Whether the timeline loops |
+| `Tracks` | `List<TimelineTrack>` | `[]` | Ordered list of tracks |
+
+### TimelineTrack
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Name` | `string` | `"Track"` | Track display name |
+| `Type` | `TrackType` | `Animation` | Track type (see below) |
+| `Muted` | `bool` | `false` | Muted tracks are skipped during playback |
+| `Clips` | `List<TimelineClip>` | `[]` | Clips on this track |
+
+### TimelineClip
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `StartTime` | `float` | `0` | Start time in seconds |
+| `Duration` | `float` | `1` | Duration in seconds |
+| `BlendIn` | `float` | `0` | Crossfade-in duration |
+| `BlendOut` | `float` | `0` | Crossfade-out duration |
+| `Speed` | `float` | `1` | Playback speed multiplier |
+| `AssetPath` | `string` | `""` | Animation/audio file path |
+| `TargetName` | `string` | `""` | Target GameObject name |
+| `EventName` | `string` | `""` | Event name for event tracks |
+| `EventData` | `string` | `""` | String payload for events |
+
+### Track Types
+
+| Type | Runtime Behavior |
+|------|-----------------|
+| **Animation** | Finds the `Animator` on the target GameObject and calls `Play(assetPath)` for each active clip |
+| **Camera** | Enables/disables target camera GameObjects based on clip time ranges (for camera cuts) |
+| **Audio** | Plays audio files via `AudioBackend.Play()` when clips start; stops them when clips end or the timeline stops/loops |
+| **Activation** | Enables target GameObjects during clip time ranges, disables them outside. Original states are restored on `Stop()` |
+| **Event** | Publishes `TimelineEventFired` events via EventBus when the playhead crosses a clip's start time (fires once per playthrough) |
+
+**Script example:**
+```csharp
+var player = GetComponent<TimelinePlayer>();
+var timeline = new TimelineAsset { Name = "Intro Cutscene", Duration = 15f };
+
+var camTrack = timeline.AddTrack("Camera Switches", TrackType.Camera);
+camTrack.Clips.Add(new TimelineClip { StartTime = 0f, Duration = 5f, TargetName = "CinematicCam1" });
+camTrack.Clips.Add(new TimelineClip { StartTime = 5f, Duration = 10f, TargetName = "CinematicCam2" });
+
+var audioTrack = timeline.AddTrack("Music", TrackType.Audio);
+audioTrack.Clips.Add(new TimelineClip { StartTime = 0f, Duration = 15f, AssetPath = "Assets/Audio/intro.wav" });
+
+player.Timeline = timeline;
+player.Play();
+player.OnComplete += () => LogInfo("Cutscene finished!");
+```
 
 ---
 

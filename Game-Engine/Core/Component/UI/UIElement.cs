@@ -37,6 +37,7 @@ namespace Game_Engine.Core.Component.UI
     /// Requires a RectTransform for layout. Provides pointer-event callbacks and
     /// common visual properties.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public abstract class UIElement : Behavior
     {

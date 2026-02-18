@@ -13,6 +13,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI Text element — renders text inside a RectTransform using a bitmap font atlas.
     /// Supports font size scaling, alignment, word wrap, and outline (via SDF if available).
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class UIText : UIElement
     {

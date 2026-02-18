@@ -22,6 +22,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI Image element — renders a sprite/texture inside a RectTransform.
     /// Supports simple, sliced, tiled, and filled image types.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class UIImage : UIElement
     {

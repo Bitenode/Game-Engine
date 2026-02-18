@@ -41,6 +41,7 @@ public partial class MainWindow : Window
             [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
             [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
             [typeof(AnimationPanel)] = ("Animation", DockRegion.Bottom, () => new AnimationPanel()),
+            [typeof(TimelineSequencerPanel)] = ("Timeline", DockRegion.Bottom, () => new TimelineSequencerPanel()),
             [typeof(ProfilerPanel)] = ("Profiler", DockRegion.Bottom, () => new ProfilerPanel()),
             [typeof(ShaderEditorPanel)] = ("Shader Editor", DockRegion.Center, () => new ShaderEditorPanel()),
         };
@@ -73,6 +74,7 @@ public partial class MainWindow : Window
         BindNew("NewProjectTab", typeof(ProjectPanel), DockRegion.BottomLeft);
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
         BindNew("NewAnimationTab", typeof(AnimationPanel), DockRegion.Bottom);
+        BindNew("NewTimelineTab", typeof(TimelineSequencerPanel), DockRegion.Bottom);
         BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
         BindNew("NewProfilerTab", typeof(ProfilerPanel), DockRegion.Bottom);
         BindNew("NewShaderEditorTab", typeof(ShaderEditorPanel), DockRegion.Center);

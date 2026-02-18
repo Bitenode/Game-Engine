@@ -10,6 +10,7 @@ namespace Game_Engine.Core.Component.UI
     /// relative to a parent RectTransform (or the Canvas root).
     /// Lives alongside Transform on the same GameObject.
     /// </summary>
+    [ComponentCategory("UI")]
     public sealed class RectTransform : Behavior
     {
         // ── Anchors (0-1 relative to parent rect) ──

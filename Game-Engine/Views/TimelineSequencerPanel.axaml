@@ -1,0 +1,183 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.TimelineSequencerPanel">
+
+    <UserControl.Styles>
+        <Style Selector="Button.transport">
+            <Setter Property="Background" Value="#3A3F4A"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#55596A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+        <Style Selector="Button.transport:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#4A8CFF"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="Button.action">
+            <Setter Property="Background" Value="#2D6ABF"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#3A7ADF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="Button.action:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3A82E8"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="Button.trackBtn">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#B0BEC5"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="28"/>
+        </Style>
+        <Style Selector="Button.trackBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2E36"/>
+            <Setter Property="Foreground" Value="#E0E4EA"/>
+        </Style>
+        <Style Selector="Button.trackBtnSelected">
+            <Setter Property="Background" Value="#2D4A7A"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#4A8CFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="28"/>
+        </Style>
+        <Style Selector="Button.remove">
+            <Setter Property="Background" Value="#442222"/>
+            <Setter Property="Foreground" Value="#FF6666"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="CornerRadius" Value="3"/>
+        </Style>
+        <Style Selector="Button.remove:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#CC3333"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="Button.mute">
+            <Setter Property="Background" Value="#333844"/>
+            <Setter Property="Foreground" Value="#AABB99"/>
+            <Setter Property="BorderBrush" Value="#55596A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="FontSize" Value="10"/>
+        </Style>
+        <Style Selector="Button.mute:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#FF8800"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+    </UserControl.Styles>
+
+    <DockPanel>
+        <!-- Header -->
+        <TextBlock DockPanel.Dock="Top" Text="Timeline / Cutscene Sequencer" FontSize="14"
+                   FontWeight="SemiBold" Foreground="#E0E4EA" Margin="8,6"/>
+
+        <!-- GameObject selector -->
+        <Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6,4" CornerRadius="4" Background="#26282B">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+                <TextBlock Grid.Column="0" Text="GameObject:" Foreground="#99AABB" FontSize="11"
+                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <ComboBox x:Name="CbGameObject" Grid.Column="1" MinWidth="140" MaxWidth="300"
+                          Height="26" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Stretch"/>
+                <Button x:Name="BtnAddPlayer" Grid.Column="2" Classes="action"
+                        Content="+ Add TimelinePlayer" Height="26" FontSize="11"
+                        Margin="6,0,0,0" VerticalAlignment="Center" IsVisible="False"/>
+                <Button x:Name="BtnNewTimeline" Grid.Column="3" Classes="action"
+                        Content="+ New Timeline" Height="26" FontSize="11"
+                        Margin="6,0,0,0" VerticalAlignment="Center" IsVisible="False"/>
+            </Grid>
+        </Border>
+
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6,4" CornerRadius="4" Background="#26282B">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,12,Auto,Auto,12,Auto,*,Auto">
+                <!-- Transport -->
+                <Button x:Name="BtnPlay" Grid.Column="0" Classes="transport" Margin="0,0,3,0"
+                        ToolTip.Tip="Play" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="▶" FontSize="13" VerticalAlignment="Center"/>
+                        <TextBlock Text="Play" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="BtnPause" Grid.Column="1" Classes="transport" Margin="0,0,3,0"
+                        ToolTip.Tip="Pause" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="❚❚" FontSize="10" VerticalAlignment="Center"/>
+                        <TextBlock Text="Pause" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="BtnStop" Grid.Column="2" Classes="transport" Margin="0,0,3,0"
+                        ToolTip.Tip="Stop" Height="28" Padding="8,0" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="■" FontSize="12" VerticalAlignment="Center"/>
+                        <TextBlock Text="Stop" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <!-- Loop toggle -->
+                <CheckBox x:Name="ChkLoop" Grid.Column="4" Content="Loop" Foreground="#DCE0E6"
+                          FontSize="11" VerticalAlignment="Center"/>
+
+                <!-- Duration -->
+                <StackPanel Grid.Column="5" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Text="Duration:" Foreground="#99AABB" FontSize="11" VerticalAlignment="Center"/>
+                    <TextBox x:Name="TxtDuration" Width="55" Height="22" FontSize="11"
+                             Background="#1A1C20" Foreground="#E0E4EA" BorderBrush="#3A3E48"
+                             VerticalContentAlignment="Center" Text="10.0"/>
+                </StackPanel>
+
+                <!-- Speed -->
+                <StackPanel Grid.Column="7" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Text="Speed:" Foreground="#99AABB" FontSize="11" VerticalAlignment="Center"/>
+                    <TextBox x:Name="TxtSpeed" Width="40" Height="22" FontSize="11"
+                             Background="#1A1C20" Foreground="#E0E4EA" BorderBrush="#3A3E48"
+                             VerticalContentAlignment="Center" Text="1.0"/>
+                </StackPanel>
+
+                <!-- Time display + timeline name -->
+                <StackPanel Grid.Column="9" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBlock x:Name="TxtTime" Text="0:00.000" Foreground="#99AABB" FontSize="11"
+                               VerticalAlignment="Center" MinWidth="55"/>
+                    <TextBox x:Name="TxtTimelineName" Width="120" Height="22" FontSize="11"
+                             Background="#1A1C20" Foreground="#E0E4EA" BorderBrush="#3A3E48"
+                             VerticalContentAlignment="Center" Watermark="Timeline name"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main area: track list (left) | timeline canvas (right) -->
+        <Grid ColumnDefinitions="220,4,*">
+            <!-- Left: track list -->
+            <Border Grid.Column="0" Background="#1E1F22" CornerRadius="4,0,0,4" Margin="6,0,0,6">
+                <DockPanel>
+                    <Button x:Name="BtnAddTrack" DockPanel.Dock="Bottom" Classes="action"
+                            Content="+ Add Track" Margin="4" Height="26" FontSize="11"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="TrackListPanel" Spacing="0" Margin="2"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Width="4" Background="Transparent"/>
+
+            <!-- Right: timeline canvas -->
+            <Border Grid.Column="2" Background="#1A1B1E" CornerRadius="0,4,4,0" Margin="0,0,6,6"
+                    ClipToBounds="True">
+                <local:TimelineSequencerCanvas x:Name="SeqCanvas"/>
+            </Border>
+        </Grid>
+    </DockPanel>
+</UserControl>

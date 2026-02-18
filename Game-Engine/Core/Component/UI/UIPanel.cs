@@ -9,6 +9,7 @@ namespace Game_Engine.Core.Component.UI
     /// UI Panel element — a simple colored or textured rectangular background.
     /// Useful as a container/backdrop for other UI elements.
     /// </summary>
+    [ComponentCategory("UI")]
     [Require(typeof(RectTransform))]
     public sealed class UIPanel : UIElement
     {

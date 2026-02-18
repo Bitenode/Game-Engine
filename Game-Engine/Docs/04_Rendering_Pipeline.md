@@ -22,8 +22,9 @@ Each frame, both SceneView and GameView execute these passes in order:
  9. Transparent Pass        (Back-to-front sorted, alpha blending)
 10. Particle Pass           (Billboard quads, instanced rendering)
 11. Gizmo Pass              (Editor overlays, collider wireframes — Scene View only)
-12. Post-Processing Pass    (Bloom, Fog, Color Grading, FXAA, Vignette, Underwater)
-13. GL State Cleanup        (Restore Avalonia compositor state)
+12. Volumetric Fog Pass     (Ray-marched scattering with shadow sampling — when enabled)
+13. Post-Processing Pass    (Bloom, Fog, Color Grading, FXAA, Vignette, Underwater)
+14. GL State Cleanup        (Restore Avalonia compositor state)
 ```
 
 ---
@@ -53,6 +54,9 @@ Each frame, both SceneView and GameView execute these passes in order:
 | **Minimum Shadow** | 10% minimum light to prevent completely black shadow areas |
 
 Shadow sampling is shared between the Standard and Terrain shaders via the `ShadowCalc()` GLSL function.
+
+### Cascaded Shadow Map Compatibility
+The Standard fragment shader supports cascaded shadow maps (`uShadowVPC[]`, `uCascadeCount`, `uCascadeSplits[]` uniforms). When using the forward pipeline (Scene View), which only produces a single shadow map, the renderer sets `uCascadeCount = 1`, `uShadowVPC[0]` to the single light VP matrix, and `uCascadeSplits[0]` to a large value. This ensures vegetation and other objects using the cascaded shadow path receive correct shadows in both the deferred (Game View) and forward (Scene View) pipelines.
 
 ---
 
@@ -184,6 +188,43 @@ Full-screen post-processing composite pass.
 | **Tone Mapping** | HDR to LDR conversion — Reinhard or ACES filmic methods |
 | **Vignette** | Darkened edges — configurable intensity and smoothness |
 | **Underwater** | Wave distortion, underwater fog, caustic patterns, color absorption (blue channel boosted, red absorbed) |
+
+### Volumetric Fog Shader (VolumetricFogVert + VolumetricFogFrag)
+
+Fullscreen ray-marching shader for volumetric light scattering.
+
+**Fragment shader features:**
+- **Ray marching** — steps along the view ray from camera through each pixel, reconstructing world position from depth
+- **Height-based density** — exponential falloff above `uFogBaseHeight` controlled by `uFogHeightFalloff`
+- **3D noise modulation** — animated 3D noise pattern adds natural density variation
+- **Henyey-Greenstein phase function** — directional scattering controlled by `uFogAnisotropy` (positive = forward scattering toward the light, negative = back-scattering)
+- **Shadow sampling** — at each ray step, the world position is projected into shadow map space and sampled to occlude in-scattered light in shadowed regions
+- **Transmittance accumulation** — Beer-Lambert law for light absorption along the ray
+
+**Key uniforms:**
+
+| Uniform | Type | Description |
+|---------|------|-------------|
+| `uSceneColor` | sampler2D | Scene color texture |
+| `uSceneDepth` | sampler2D | Scene depth texture |
+| `uShadowMap` | sampler2D | Shadow depth texture |
+| `uInvVP` | mat4 | Inverse view-projection matrix |
+| `uShadowVP` | mat4 | Light view-projection matrix |
+| `uCamPos` | vec3 | Camera world position |
+| `uNear` / `uFar` | float | Camera clipping planes |
+| `uSunDir` | vec3 | Directional light direction |
+| `uSunColor` | vec3 | Light color × intensity |
+| `uFogDensity` | float | Base fog density |
+| `uFogAnisotropy` | float | Scattering anisotropy (-1 to 1) |
+| `uFogScattering` | float | In-scattered light multiplier |
+| `uFogHeightFalloff` | float | Height-based density falloff |
+| `uFogBaseHeight` | float | Base height of the fog volume |
+| `uFogNoiseScale` | float | 3D noise spatial scale |
+| `uFogNoiseSpeed` | float | Noise animation speed |
+| `uFogMaxDist` | float | Maximum ray march distance |
+| `uFogColor` | vec3 | Fog color tint |
+| `uFogSteps` | int | Number of ray march steps |
+| `uTime` | float | Elapsed time for noise animation |
 
 ### Other Shaders
 
@@ -371,6 +412,30 @@ Compiles and links GLSL vertex + fragment shaders. Provides:
    - Draw instanced billboard quads
 3. Particles are rendered with alpha blending enabled
 
+### Volumetric Fog Pass
+Rendered when `PostProcessVolume.VolumetricFogEnabled` is `true`. Uses a dedicated ray-marching shader applied as a fullscreen pass between the main scene render and post-processing.
+
+**Pipeline:**
+1. Bind the Volumetric Fog shader and a dedicated FBO
+2. Read the scene color texture (unit 0) and scene depth texture (unit 1)
+3. Bind the shadow map (unit 2) and set the shadow view-projection matrix
+4. Set camera uniforms: inverse view-projection matrix, camera position, near/far planes
+5. Set lighting uniforms: sun direction, sun color
+6. Set fog parameter uniforms from `PostProcessVolume`:
+   - Density, Anisotropy, Scattering intensity, Height falloff, Base height
+   - Noise scale, Noise speed, Max distance, Color tint, Step count
+7. Set elapsed time for noise animation
+8. Draw a fullscreen quad — the fragment shader ray-marches from the camera through each pixel:
+   - Steps along the view ray, sampling fog density at each point
+   - Applies height-based density falloff (`exp(-heightFalloff * (y - baseHeight))`)
+   - Modulates density with 3D noise for natural variation
+   - Computes Henyey-Greenstein phase function for directional scattering
+   - Samples the shadow map at each step to occlude in-scattered light in shadows
+   - Accumulates transmittance and in-scattered light, composites with the scene color
+9. Blit the result back to the scene framebuffer
+
+**Supported in both Game View (deferred pipeline) and Scene View (forward pipeline).**
+
 ### Post-Processing Pass
 1. The scene is rendered to an off-screen framebuffer (color + depth)
 2. Bind the PostProcess shader
@@ -455,9 +520,10 @@ The engine includes a dedicated GPU-accelerated UI rendering pipeline for in-gam
 1. Shadow pass (depth-only)
 2. Opaque pass (MeshRenderers, SkinnedMeshRenderers, Terrain)
 3. Transparent pass (Water, Particles, Decals, World-Space Canvases)
-4. Post-processing (Bloom, Fog, Color Grading, Tone Mapping, Vignette, FXAA)
-5. UI Overlay pass (CanvasRenderer — ScreenSpaceOverlay canvases)
-6. Editor overlays (Grid, Gizmos, Collider wireframes)
+4. Volumetric Fog pass (ray-marched scattering — when enabled)
+5. Post-processing (Bloom, Fog, Color Grading, Tone Mapping, Vignette, FXAA)
+6. UI Overlay pass (CanvasRenderer — ScreenSpaceOverlay canvases)
+7. Editor overlays (Grid, Gizmos, Collider wireframes)
 ```
 
 ### Architecture
