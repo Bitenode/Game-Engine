@@ -543,3 +543,48 @@ if (!UIEventSystem.PointerOverUI)
 ```
 
 See the [Components Reference](03_Components_Reference.md) for full UI component documentation.
+
+---
+
+## Runtime Planet Manipulation API
+
+Planet voxel edits are available at runtime through both `PlanetTerrain` and `PlanetManipulator`.
+In v1, edits are runtime-only (not serialized into scene/project assets).
+
+```csharp
+using System.Linq;
+using Game_Engine.Core.Component;
+using Game_Engine.Core.Input;
+using Game_Engine.Core.Planet;
+using SN = System.Numerics;
+
+public sealed class PlanetTool : Behavior
+{
+    PlanetTerrain? _planet;
+
+    public override void Start()
+    {
+        _planet = PlanetTerrain.ActivePlanets.FirstOrDefault();
+    }
+
+    public override void Update()
+    {
+        if (_planet == null) return;
+
+        // Sample position in front of player/camera.
+        var center = new SN.Vector3(0f, _planet.Radius + 5f, 0f);
+
+        // Direct API on PlanetTerrain
+        if (Input.GetMouse(Input.MouseButton.Left))
+            _planet.DigSphere(center, radius: 8f, strength: 12f, falloff: 0.55f);
+        if (Input.GetMouse(Input.MouseButton.Right))
+            _planet.BuildSphere(center, radius: 8f, strength: 10f, falloff: 0.55f);
+
+        // Convenience static API (auto-select nearest planet)
+        if (Input.GetKeyDown(Input.KeyCode.R))
+            PlanetManipulationApi.DigSphere(center, radius: 14f, strength: 8f);
+    }
+}
+```
+
+`PlanetManipulator` is a reusable brush behavior with persisted settings (`Mode`, `Radius`, `Strength`, `Falloff`, `MaxRatePerSecond`) and helper methods (`ApplyAt`, `DigAt`, `BuildAt`) for tool-style scripts.

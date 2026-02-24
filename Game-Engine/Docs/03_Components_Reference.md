@@ -410,14 +410,46 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 | `EnableWater`           | `bool`  | `true`  | Spawn ocean shell mesh |
 | `MaxActiveChunks`       | `int`   | `120`   | Hard cap of active chunks |
 | `BiomeGraphPath`        | `string`| `""`    | `.biomegraph` path to load/auto-apply |
+| `VoxelIsoSearchRange`   | `float` | `96`    | Radial voxel density search range around the base surface |
+| `VoxelIsoSearchSteps`   | `int`   | `20`    | Density samples along the radial ray per vertex |
+| `MaxEditCommandsPerUpdate` | `int` | `8`    | Runtime voxel edit commands consumed each chunk update |
+| `MaxEditDirtyLeavesPerUpdate` | `int` | `96` | Cap of quadtree leaves invalidated by edits per update |
+| `DefaultManipulationStrength` | `float` | `10` | Default density delta when dig/build strength is omitted |
+| `DefaultManipulationFalloff` | `float` | `0.6` | Default brush falloff used by dig/build APIs |
 
 **Key methods:**
 - `TryLoadBiomeGraph()` — load, compile, and apply graph data
 - `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
 - `SampleSurfaceRadius(sphereDir)` — sample runtime surface radius for physics grounding
 - `UpdateLOD(cameraPos)` — updates camera position used by chunk streamer
+- `DigSphere(worldCenter, radius, strength, falloff)` — subtract density in a spherical brush (dig)
+- `BuildSphere(worldCenter, radius, strength, falloff)` — add density in a spherical brush (build)
+- `SetVoxelDensity(worldPos, targetDensity)` — advanced direct density set for one local region
+- `ClearVoxelEdits(rebuildNow)` — clears runtime edit overlay (v1 runtime-only)
 
 See the Planet System doc for full pipeline details.
+
+---
+
+## PlanetManipulator
+
+Convenience runtime brush component for calling `PlanetTerrain` voxel manipulation APIs from scripts.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Mode` | `PlanetManipulationMode` | `Dig` | Brush mode (`Dig` or `Build`) |
+| `Radius` | `float` | `12` | Brush radius in world units |
+| `Strength` | `float` | `10` | Density delta magnitude per apply |
+| `Falloff` | `float` | `0.6` | Edge softness (0 hard, 1 soft) |
+| `MaxRatePerSecond` | `float` | `8` | Max automatic apply rate |
+| `AutoApply` | `bool` | `false` | If enabled, applies every update at the nearest planet center |
+
+**Key methods:**
+- `ApplyAt(worldPos)` — apply using current `Mode`
+- `DigAt(worldPos, radius?, strength?)` — explicit dig call
+- `BuildAt(worldPos, radius?, strength?)` — explicit build call
+
+Use this when gameplay scripts want a reusable brush/tool behavior instead of manually locating `PlanetTerrain`.
 
 ---
 

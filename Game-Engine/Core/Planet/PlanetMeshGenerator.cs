@@ -10,11 +10,13 @@ public sealed class PlanetMeshGenerator
 {
     readonly BiomeMap _biomeMap;
     readonly PlanetConfig _config;
+    readonly PlanetVoxelEditStore? _editStore;
 
-    public PlanetMeshGenerator(PlanetConfig config, BiomeMap biomeMap)
+    public PlanetMeshGenerator(PlanetConfig config, BiomeMap biomeMap, PlanetVoxelEditStore? editStore = null)
     {
         _config = config;
         _biomeMap = biomeMap;
+        _editStore = editStore;
     }
 
     static FractalMode ParseMode(string mode) => mode switch
@@ -62,6 +64,36 @@ public sealed class PlanetMeshGenerator
             Mode = FractalMode.Ridged,
         };
 
+        var ridgeNoise = _config.RidgeStrength > 0f
+            ? new FractalNoise(seed + 7100)
+            {
+                Octaves = 4,
+                Frequency = _config.MacroFrequency,
+                Persistence = 0.5f,
+                Mode = FractalMode.Ridged,
+            }
+            : null;
+
+        var basinNoise = _config.BasinStrength > 0f
+            ? new FractalNoise(seed + 7200)
+            {
+                Octaves = 3,
+                Frequency = _config.MacroFrequency,
+                Persistence = 0.55f,
+                Mode = FractalMode.FBM,
+            }
+            : null;
+
+        var densitySampler = new PlanetDensitySampler(
+            _config,
+            _biomeMap,
+            biomeNoises,
+            erosionNoise,
+            caveNoise,
+            ridgeNoise,
+            basinNoise,
+            _editStore);
+
         for (int iy = 0; iy < n; iy++)
         {
             float vt = (float)iy / resolution;
@@ -75,46 +107,20 @@ public sealed class PlanetMeshGenerator
                 var sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
                 var blends = _biomeMap.GetBiomes(sphereDir);
 
-                float nx = sphereDir.X * radius;
-                float ny = sphereDir.Y * radius;
-                float nz = sphereDir.Z * radius;
+                float blendedHeight = PlanetSurfaceUtility.SampleHeight(
+                    _config,
+                    _biomeMap,
+                    biomeNoises,
+                    erosionNoise,
+                    caveNoise,
+                    ridgeNoise,
+                    basinNoise,
+                    sphereDir);
 
-                float blendedHeight = SampleBlendedHeight(blends, sphereDir, radius, biomeNoises);
-
-                if (blends.Length > 0)
-                {
-                    float totalErosion = 0f;
-                    for (int b = 0; b < blends.Length && b < 4; b++)
-                    {
-                        var biome = blends[b].Biome;
-                        if (biome.ErosionStrength > 0f)
-                        {
-                            erosionNoise.Frequency = biome.ErosionFrequency;
-                            float e = erosionNoise.Sample3D(nx, ny, nz);
-                            e = Math.Clamp(e, 0f, 1f);
-                            totalErosion += e * biome.ErosionStrength * 5f * blends[b].Weight;
-                        }
-                    }
-                    blendedHeight -= totalErosion;
-                }
-
-                if (caveNoise != null && blends.Length > 0)
-                {
-                    var dominant = blends[0].Biome;
-                    if (dominant.CavesEnabled)
-                    {
-                        float caveSample = caveNoise.Sample3D(nx, ny, nz);
-                        caveSample = Math.Clamp(caveSample, 0f, 1f);
-                        if (caveSample > _config.CaveThreshold)
-                        {
-                            float caveIntensity = (caveSample - _config.CaveThreshold) / (1f - _config.CaveThreshold);
-                            blendedHeight -= caveIntensity * Math.Min(dominant.CaveDepth, 8f);
-                        }
-                    }
-                }
-
-                float surfaceR = radius + blendedHeight;
+                float baseSurfaceR = radius + blendedHeight;
+                float surfaceR = FindSurfaceRadiusOnRay(sphereDir, baseSurfaceR, densitySampler);
                 var pos = sphereDir * surfaceR;
+                var normal = EstimateNormal(pos, densitySampler);
 
                 var blendIdx = new SN.Vector4(0, 0, 0, 0);
                 var blendWt = new SN.Vector4(0, 0, 0, 0);
@@ -130,7 +136,7 @@ public sealed class PlanetMeshGenerator
                 }
 
                 data.Positions.Add(pos);
-                data.Normals.Add(sphereDir);
+                data.Normals.Add(normal);
                 data.UVs.Add(new SN.Vector2(ut, vt));
                 data.BlendIndices.Add(blendIdx);
                 data.BlendWeights.Add(blendWt);
@@ -160,31 +166,78 @@ public sealed class PlanetMeshGenerator
         return data;
     }
 
-    float SampleBlendedHeight(BiomeBlend[] blends, SN.Vector3 sphereDir, float radius, FractalNoise[] biomeNoises)
+    float FindSurfaceRadiusOnRay(SN.Vector3 sphereDir, float baseSurfaceR, PlanetDensitySampler sampler)
     {
-        float blendedHeight = 0f;
-        float nx = sphereDir.X * radius;
-        float ny = sphereDir.Y * radius;
-        float nz = sphereDir.Z * radius;
+        float searchRange = Math.Max(1f, _config.VoxelIsoSearchRange);
+        int steps = Math.Max(8, _config.VoxelIsoSearchSteps);
+        float innerR = Math.Max(1f, baseSurfaceR - searchRange);
+        float outerR = baseSurfaceR + searchRange;
 
-        for (int b = 0; b < blends.Length && b < 4; b++)
+        float prevR = outerR;
+        float prevD = sampler.SampleDensity(sphereDir * prevR);
+        float stepSize = (outerR - innerR) / steps;
+
+        for (int i = 1; i <= steps; i++)
         {
-            var biome = blends[b].Biome;
-            float w = blends[b].Weight;
-
-            int noiseIdx = Math.Clamp(biome.BiomeIndex, 0, biomeNoises.Length - 1);
-            float sample = biomeNoises[noiseIdx].Sample3D(nx, ny, nz);
-
-            var mode = ParseMode(biome.NoiseMode);
-            if (mode == FractalMode.Ridged)
-                sample = sample * 0.7f - 0.3f;
-            else if (mode == FractalMode.Billow)
-                sample = sample * 0.8f;
-
-            blendedHeight += biome.HeightAmplitude * sample * w;
+            float currR = outerR - i * stepSize;
+            float currD = sampler.SampleDensity(sphereDir * currR);
+            if (prevD >= 0f && currD <= 0f)
+                return RefineCrossing(sphereDir, sampler, prevR, currR, prevD, currD);
+            prevR = currR;
+            prevD = currD;
         }
 
-        return blendedHeight;
+        return baseSurfaceR;
+    }
+
+    static float RefineCrossing(
+        SN.Vector3 sphereDir,
+        PlanetDensitySampler sampler,
+        float outerR,
+        float innerR,
+        float outerD,
+        float innerD)
+    {
+        float loR = innerR;
+        float hiR = outerR;
+        float loD = innerD;
+        float hiD = outerD;
+
+        for (int i = 0; i < 6; i++)
+        {
+            float midR = (loR + hiR) * 0.5f;
+            float midD = sampler.SampleDensity(sphereDir * midR);
+            if (midD <= 0f)
+            {
+                loR = midR;
+                loD = midD;
+            }
+            else
+            {
+                hiR = midR;
+                hiD = midD;
+            }
+        }
+
+        float denom = hiD - loD;
+        if (MathF.Abs(denom) <= 1e-6f)
+            return (loR + hiR) * 0.5f;
+        float t = Math.Clamp((-loD) / denom, 0f, 1f);
+        return loR + (hiR - loR) * t;
+    }
+
+    static SN.Vector3 EstimateNormal(SN.Vector3 worldPos, PlanetDensitySampler sampler)
+    {
+        const float eps = 0.35f;
+        float dx = sampler.SampleDensity(worldPos + new SN.Vector3(eps, 0, 0)) - sampler.SampleDensity(worldPos - new SN.Vector3(eps, 0, 0));
+        float dy = sampler.SampleDensity(worldPos + new SN.Vector3(0, eps, 0)) - sampler.SampleDensity(worldPos - new SN.Vector3(0, eps, 0));
+        float dz = sampler.SampleDensity(worldPos + new SN.Vector3(0, 0, eps)) - sampler.SampleDensity(worldPos - new SN.Vector3(0, 0, eps));
+
+        var g = new SN.Vector3(dx, dy, dz);
+        float len = g.Length();
+        if (len <= 1e-6f)
+            return SN.Vector3.Normalize(worldPos);
+        return g / len;
     }
 
     static void RecalcNormals(TransvoxelMeshData meshData)

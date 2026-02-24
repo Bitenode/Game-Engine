@@ -22,18 +22,26 @@ public sealed class PlanetChunkManager
     public BiomeMap BiomeMap { get; }
 
     readonly PlanetMeshGenerator _meshGen;
+    readonly PlanetVoxelEditStore? _editStore;
     readonly ConcurrentQueue<MeshJob> _completed = new();
+    readonly ConcurrentQueue<EditCommand> _pendingEditCommands = new();
     int _activeJobs;
     const int MaxConcurrentJobs = 4;
+    int _lastAppliedEditCommands;
+    int _lastDirtyLeavesFromEdits;
 
     public int ActiveJobs => Volatile.Read(ref _activeJobs);
     public int PendingCompletedJobs => _completed.Count;
+    public int PendingEditCommands => _pendingEditCommands.Count;
+    public int LastAppliedEditCommands => _lastAppliedEditCommands;
+    public int LastDirtyLeavesFromEdits => _lastDirtyLeavesFromEdits;
 
-    public PlanetChunkManager(PlanetConfig config, BiomeMap biomeMap)
+    public PlanetChunkManager(PlanetConfig config, BiomeMap biomeMap, PlanetVoxelEditStore? editStore = null)
     {
         Config = config;
         BiomeMap = biomeMap;
-        _meshGen = new PlanetMeshGenerator(config, biomeMap);
+        _editStore = editStore;
+        _meshGen = new PlanetMeshGenerator(config, biomeMap, editStore);
 
         for (int f = 0; f < 6; f++)
             Faces[f] = new FaceQuadtree(f);
@@ -45,14 +53,40 @@ public sealed class PlanetChunkManager
         public TransvoxelMeshData MeshData;
     }
 
+    readonly struct EditCommand
+    {
+        public SN.Vector3 Center { get; init; }
+        public float Radius { get; init; }
+        public float DensityDelta { get; init; }
+        public float Falloff { get; init; }
+    }
+
+    public void EnqueueSphereEdit(SN.Vector3 center, float radius, float densityDelta, float falloff)
+    {
+        if (radius <= 0.001f || Math.Abs(densityDelta) <= 1e-6f)
+            return;
+
+        _pendingEditCommands.Enqueue(new EditCommand
+        {
+            Center = center,
+            Radius = radius,
+            DensityDelta = densityDelta,
+            Falloff = Math.Clamp(falloff, 0f, 1f),
+        });
+    }
+
     public void Update(SN.Vector3 cameraPos, GameObject parentGO)
     {
+        _lastAppliedEditCommands = 0;
+        _lastDirtyLeavesFromEdits = 0;
+
         for (int f = 0; f < 6; f++)
         {
             Faces[f].Update(cameraPos, Config);
         }
 
         EnforceLeafBudget(cameraPos);
+        ProcessEditCommands();
 
         int applyBudget = Math.Max(1, Config.MaxMeshAppliesPerUpdate);
         int applied = 0;
@@ -95,6 +129,54 @@ public sealed class PlanetChunkManager
                 scheduled++;
             }
         }
+    }
+
+    void ProcessEditCommands()
+    {
+        int cmdBudget = Math.Max(1, Config.MaxEditCommandsPerUpdate);
+        int dirtyBudget = Math.Max(1, Config.MaxEditDirtyLeavesPerUpdate);
+        if (_pendingEditCommands.IsEmpty || _editStore == null)
+            return;
+
+        var leaves = new List<QuadNode>(1024);
+        for (int f = 0; f < 6; f++)
+            leaves.AddRange(Faces[f].GetLeafNodes());
+
+        int processed = 0;
+        int dirtied = 0;
+        while (processed < cmdBudget && _pendingEditCommands.TryDequeue(out var cmd))
+        {
+            _editStore.AddSphere(cmd.Center, cmd.Radius, cmd.DensityDelta, cmd.Falloff);
+            processed++;
+
+            float sphereRadius = cmd.Radius + Math.Max(2f, MathF.Abs(cmd.DensityDelta));
+            for (int i = 0; i < leaves.Count; i++)
+            {
+                if (dirtied >= dirtyBudget)
+                    break;
+
+                var leaf = leaves[i];
+                if (!IntersectsLeaf(leaf, cmd.Center, sphereRadius))
+                    continue;
+
+                if (!leaf.NeedsMeshRebuild)
+                {
+                    leaf.NeedsMeshRebuild = true;
+                    dirtied++;
+                }
+            }
+        }
+
+        _lastAppliedEditCommands = processed;
+        _lastDirtyLeavesFromEdits = dirtied;
+    }
+
+    bool IntersectsLeaf(QuadNode leaf, SN.Vector3 worldCenter, float sphereRadius)
+    {
+        var leafCenter = leaf.WorldCentre(Config.Radius);
+        float leafRadius = Math.Max(leaf.WorldSize(Config.Radius) * 0.75f, Config.Radius * 0.01f);
+        float maxDist = leafRadius + sphereRadius + Config.VoxelIsoSearchRange * 0.15f;
+        return SN.Vector3.DistanceSquared(worldCenter, leafCenter) <= maxDist * maxDist;
     }
 
     static void UnloadLeaf(QuadNode leaf)

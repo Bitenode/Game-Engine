@@ -54,7 +54,15 @@ namespace Game_Engine.Core.Component
 
                 var p = planet.gameObject.Transform.Position;
                 var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
-                float distToCenter = (worldPos - center).Length();
+                var toPos = worldPos - center;
+                float distToCenter = toPos.Length();
+                if (distToCenter <= 1e-5f)
+                    continue;
+
+                float waterMask = planet.SampleWaterMask(toPos / distToCenter);
+                if (waterMask < 0.35f)
+                    continue;
+
                 float depth = planet.Config.SeaLevel - distToCenter;
                 if (depth <= bestDepth)
                     continue;

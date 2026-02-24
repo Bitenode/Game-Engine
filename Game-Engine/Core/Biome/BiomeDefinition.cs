@@ -80,6 +80,7 @@ public sealed class BiomeDefinition
     public float WaterDeepestColorG { get; set; } = 0.03f;
     public float WaterDeepestColorB { get; set; } = 0.1f;
     public float WaterDepthColorRange { get; set; } = 50f;
+    public bool SpawnWater { get; set; } = false;
     public float UnderwaterTintR { get; set; } = 0.08f;
     public float UnderwaterTintG { get; set; } = 0.22f;
     public float UnderwaterTintB { get; set; } = 0.35f;
@@ -108,6 +109,7 @@ public sealed class BiomeDefinition
         WaterDeepColorR = 0.02f, WaterDeepColorG = 0.08f, WaterDeepColorB = 0.22f,
         WaterDeepestColorR = 0.005f, WaterDeepestColorG = 0.015f, WaterDeepestColorB = 0.06f,
         WaterDepthColorRange = 80f,
+        SpawnWater = true,
         UnderwaterTintR = 0.06f, UnderwaterTintG = 0.18f, UnderwaterTintB = 0.30f,
         UnderwaterFogDensity = 0.07f,
         UnderwaterCausticStrength = 0.35f,

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Planet;
@@ -13,11 +14,19 @@ public sealed class PlanetWater
     public float SeaLevelRadius { get; }
 
     readonly int _subdivisions;
+    readonly Func<SN.Vector3, float>? _waterMaskSampler;
+    readonly float _waterThreshold;
 
-    public PlanetWater(float seaLevelRadius, int subdivisions = 40)
+    public PlanetWater(
+        float seaLevelRadius,
+        int subdivisions = 40,
+        Func<SN.Vector3, float>? waterMaskSampler = null,
+        float waterThreshold = 0.35f)
     {
         SeaLevelRadius = seaLevelRadius;
         _subdivisions = Math.Max(4, subdivisions);
+        _waterMaskSampler = waterMaskSampler;
+        _waterThreshold = Math.Clamp(waterThreshold, 0f, 1f);
         BuildMesh();
     }
 
@@ -25,16 +34,13 @@ public sealed class PlanetWater
     {
         int vertsPerFace = (_subdivisions + 1) * (_subdivisions + 1);
         int totalVerts = vertsPerFace * 6;
-        int trisPerFace = _subdivisions * _subdivisions * 6;
-        int totalTris = trisPerFace * 6;
-
         var vertices = new SN.Vector3[totalVerts];
         var normals = new SN.Vector3[totalVerts];
         var uvs = new SN.Vector2[totalVerts];
-        var indices = new int[totalTris];
+        var waterMask = new float[totalVerts];
+        var indices = new List<int>(_subdivisions * _subdivisions * 6 * 6);
 
         int vertIdx = 0;
-        int triIdx = 0;
 
         for (int face = 0; face < 6; face++)
         {
@@ -52,6 +58,7 @@ public sealed class PlanetWater
                     vertices[vertIdx] = pos;
                     normals[vertIdx] = dir;
                     uvs[vertIdx] = new SN.Vector2(u, v);
+                    waterMask[vertIdx] = _waterMaskSampler?.Invoke(dir) ?? 1f;
                     vertIdx++;
                 }
             }
@@ -66,18 +73,25 @@ public sealed class PlanetWater
                     int c = a + rowLen;
                     int d = c + 1;
 
-                    indices[triIdx++] = a;
-                    indices[triIdx++] = b;
-                    indices[triIdx++] = c;
+                    bool wet = waterMask[a] >= _waterThreshold
+                               || waterMask[b] >= _waterThreshold
+                               || waterMask[c] >= _waterThreshold
+                               || waterMask[d] >= _waterThreshold;
+                    if (!wet)
+                        continue;
 
-                    indices[triIdx++] = b;
-                    indices[triIdx++] = d;
-                    indices[triIdx++] = c;
+                    indices.Add(a);
+                    indices.Add(b);
+                    indices.Add(c);
+
+                    indices.Add(b);
+                    indices.Add(d);
+                    indices.Add(c);
                 }
             }
         }
 
-        WaterMesh = new Mesh(vertices, Array.Empty<int>(), indices);
+        WaterMesh = new Mesh(vertices, Array.Empty<int>(), indices.ToArray());
         WaterMesh.Normals = normals;
         WaterMesh.UVs = uvs;
     }
