@@ -13,11 +13,11 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | Category | Components | Directory |
 |----------|-----------|-----------|
 | **Rendering** | Camera, Light, MeshFilter, MeshRenderer, SkinnedMeshRenderer | `Core/Component/Rendering/` |
-| **Physics** | Collider, BoxCollider, CapsuleCollider, MeshCollider, CharacterController, PlayerMovement, Rigidbody, RigidbodyPlayer | `Core/Component/Physics/` |
+| **Physics** | Collider, BoxCollider, CapsuleCollider, MeshCollider, PlanetCollider, CharacterController, PlayerMovement, Rigidbody, RigidbodyPlayer | `Core/Component/Physics/` |
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, PlanetTerrain, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
 | **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
@@ -66,6 +66,7 @@ Defines a viewpoint for rendering. The Game View uses the first enabled Camera f
 | `Clear`        | `ClearFlags`   | `Skybox`      | What to clear: `Skybox`, `SolidColor`, `DepthOnly`, `Nothing` |
 | `Background`   | `Color`        | `#202020`     | Background color when Clear is `SolidColor`   |
 | `IsMain`       | `bool`         | `false`       | Marks this as the primary game camera          |
+| `WorldUp`      | `Vector3`      | `(0, 1, 0)`   | Runtime up-vector used by `GetViewMatrix()` for planet-aware horizon alignment |
 
 **Methods:**
 - `GetViewMatrix()` — computes the view matrix from the Transform's position and rotation
@@ -239,6 +240,24 @@ Uses mesh geometry for precise triangle-based collision detection.
 
 **Use cases:** Complex static geometry (buildings, terrain, irregular shapes).
 
+### PlanetCollider
+Planet-specific collider shell used for broad-phase queries and debug visualization.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `RadiusOverride` | `float` | `0` | Optional forced radius; when 0, radius comes from attached `PlanetTerrain` config |
+
+**Runtime properties:**
+- `MaxRadius` — base radius plus max biome amplitude (or `RadiusOverride`)
+- `BaseRadius` — planet base radius without biome displacement
+- `EffectiveRadius` — compatibility alias for `MaxRadius`
+- `WorldCenter` — center from the planet GameObject world transform
+
+**Behavior:**
+- Provides world AABB for broad-phase collision systems
+- Actual surface-conforming collision uses `PlanetTerrain.SampleSurfaceRadius(...)` inside physics components
+- Gizmo drawing uses base/max radii to show inner/outer collision shell bounds
+
 ---
 
 ## CharacterController
@@ -338,9 +357,67 @@ First-person / third-person player controller integrating input, camera control,
 
 ## Rigidbody
 
-Physics body component that can receive forces from `CharacterController` pushes.
+Physics body component with force/impulse integration, trigger events, collider response, underwater behavior, and planet-relative gravity support.
 
-Provides velocity and mass for dynamic objects that interact with the character controller's `PushForce` system.
+| Property          | Type    | Default | Description |
+|-------------------|---------|---------|-------------|
+| `Mass`            | `float` | `1`     | Body mass used for force integration |
+| `Drag`            | `float` | `0.05`  | Linear damping |
+| `AngularDrag`     | `float` | `0.1`   | Angular damping |
+| `UseGravity`      | `bool`  | `true`  | Applies gravity each fixed tick |
+| `IsKinematic`     | `bool`  | `false` | Skip simulation and move manually |
+| `Bounciness`      | `float` | `0.3`   | Bounce response on impact |
+| `Friction`        | `float` | `0.5`   | Tangential energy loss on impact |
+| `FreezeRotation`  | `bool`  | `false` | Disable angular rotation integration |
+| `FreezePositionX` | `bool`  | `false` | Lock X translation |
+| `FreezePositionY` | `bool`  | `false` | Lock Y translation |
+| `FreezePositionZ` | `bool`  | `false` | Lock Z translation |
+
+**Runtime state:**
+- `Velocity`, `AngularVelocity`
+- `IsGrounded`, `GroundNormal`
+- `IsUnderwater`, `UnderwaterDepth`
+- `LocalUp` — world up relative to nearest planet (falls back to global +Y)
+
+**Planet integration:**
+- Finds nearest active `PlanetTerrain`
+- Applies gravity along `-LocalUp`
+- Grounds against `PlanetTerrain.SampleSurfaceRadius(...)`
+
+**Events:**
+- `OnTriggerEnter(Collider)`, `OnTriggerStay(Collider)`, `OnTriggerExit(Collider)`
+- `OnCollisionEnter(Collider, Vector3 normal)`
+
+**Methods:**
+- `AddForce(force)`, `AddImpulse(impulse)`, `AddForceAtPosition(force, worldPoint)`
+- `WakeUp()` — wakes sleeping rigidbodies
+
+---
+
+## PlanetTerrain
+
+Planet terrain component for cube-sphere planetary worlds with transvoxel chunking and biome graph-driven generation.
+
+| Property                | Type    | Default | Description |
+|-------------------------|---------|---------|-------------|
+| `Radius`                | `float` | `1000`  | Base planet radius |
+| `SeaLevelFraction`      | `float` | `0.25`  | Sea level fraction of terrain min/max range |
+| `MaxLodDepth`           | `int`   | `6`     | Maximum quadtree LOD depth |
+| `ChunkSize`             | `int`   | `32`    | Chunk mesh/voxel resolution |
+| `LodDistanceMultiplier` | `float` | `5.0`   | LOD split tuning |
+| `Seed`                  | `int`   | `42`    | Planet generation seed |
+| `EnableCaves`           | `bool`  | `true`  | Enable cave carving |
+| `EnableWater`           | `bool`  | `true`  | Spawn ocean shell mesh |
+| `MaxActiveChunks`       | `int`   | `120`   | Hard cap of active chunks |
+| `BiomeGraphPath`        | `string`| `""`    | `.biomegraph` path to load/auto-apply |
+
+**Key methods:**
+- `TryLoadBiomeGraph()` — load, compile, and apply graph data
+- `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
+- `SampleSurfaceRadius(sphereDir)` — sample runtime surface radius for physics grounding
+- `UpdateLOD(cameraPos)` — updates camera position used by chunk streamer
+
+See the Planet System doc for full pipeline details.
 
 ---
 
@@ -1108,13 +1185,22 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 | `SwimForce`         | `float`   | `30`             | Swimming movement force              |
 | `SwimMaxSpeed`      | `float`   | `4`              | Maximum swim speed                   |
 | `SwimVerticalSpeed` | `float`   | `3`              | Vertical swim speed                  |
+| `SwimDrag`          | `float`   | `4`              | Underwater drag                      |
 | `LookSensitivity`   | `float`   | `90`             | Mouse look speed                     |
 | `FirstPerson`       | `bool`    | `true`           | First-person camera mode             |
+| `FirstPersonOffset` | `Vector3` | `(0, 1.7, 0)`    | First-person camera offset           |
+| `ThirdPersonOffset` | `Vector3` | `(0, 1.7, -3.5)` | Third-person camera offset           |
+| `CameraFollowLerp`  | `float`   | `12`             | Third-person camera smoothing        |
+| `RotateBodyWithLook`| `bool`    | `true`           | Body follows look yaw                |
+| `TurnBodyWhileMoving`| `bool`   | `false`          | Rotate body only while moving        |
 | `JumpBufferSeconds` | `float`   | `0.12`           | Jump input buffer                    |
 
 **Features:**
 - **Swimming** — automatic underwater movement when the Rigidbody detects submersion
 - **Momentum-based** — natural sliding, pushing, and inertia
+- **Planet movement** — movement projected onto the local tangent plane
+- **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
+- **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
 - **Jump buffering** — responsive jump input
 

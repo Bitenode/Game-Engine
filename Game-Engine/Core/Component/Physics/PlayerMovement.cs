@@ -150,15 +150,27 @@ namespace Game_Engine.Core.Component
         {
             float dt = Time.fixedDeltaTime;
 
-            float speed = MoveSpeed * (_sprintHeld ? SprintMultiplier : 1f);
-            var wishLocal3 = new SN.Vector3(_wishLocal.X, 0f, _wishLocal.Y) * (speed * dt);
+            // Get local up from the motor (planet-aware)
+            var localUp = _motor?.LocalUp ?? SN.Vector3.UnitY;
 
+            float speed = MoveSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+
+            // Build tangent-plane forward/right from yaw + local up
             float r = Deg2Rad(_yawDeg);
-            float c = MathF.Cos(r), s = MathF.Sin(r);
-            var worldDelta = new SN.Vector3(
-                wishLocal3.X * c + wishLocal3.Z * s,
-                0f,
-                -wishLocal3.X * s + wishLocal3.Z * c);
+            float cosR = MathF.Cos(r), sinR = MathF.Sin(r);
+
+            var rawFwd = new SN.Vector3(sinR, 0f, cosR);
+            var rawRight = new SN.Vector3(cosR, 0f, -sinR);
+
+            // Project onto tangent plane
+            var fwd = rawFwd - localUp * SN.Vector3.Dot(rawFwd, localUp);
+            if (fwd.LengthSquared() > 1e-8f) fwd = SN.Vector3.Normalize(fwd); else fwd = rawFwd;
+            var right = rawRight - localUp * SN.Vector3.Dot(rawRight, localUp);
+            if (right.LengthSquared() > 1e-8f) right = SN.Vector3.Normalize(right); else right = rawRight;
+
+            var worldDelta = (right * _wishLocal.X + fwd * (-_wishLocal.Y)) * (speed * dt);
+            // Remove any local-up component
+            worldDelta -= localUp * SN.Vector3.Dot(worldDelta, localUp);
 
             bool wantJump = _jumpBuf > 0f;
 
@@ -166,18 +178,13 @@ namespace Game_Engine.Core.Component
             {
                 _motor.Simulate(worldDelta, wantJump);
 
-                // diagnostics
-              //  if (wantJump)
-              //      Debug.WriteLine($"[PlayerMovement] wantJump=TRUE  grounded={_motor.IsGrounded} vy={_motor.VerticalVelocity:F3}");
-
-                // If we took off, clear buffer; else tick down
                 if (_motor.VerticalVelocity > 0f) _jumpBuf = 0f;
                 else _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
             else
             {
                 var p = Transform.Position;
-                Transform.Position = new Vector3(p.X + worldDelta.X, p.Y, p.Z + worldDelta.Z);
+                Transform.Position = new Vector3(p.X + worldDelta.X, p.Y + worldDelta.Y, p.Z + worldDelta.Z);
                 _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
         }
@@ -187,13 +194,10 @@ namespace Game_Engine.Core.Component
 
         void DriveCameraFirstPerson()
         {
-            var p = Transform.Position;
-            var head = new Vector3(
-                p.X + FirstPersonOffset.X,
-                p.Y + FirstPersonOffset.Y,
-                p.Z + FirstPersonOffset.Z
-            );
-            _camTr.Position = head;
+            var localUp = _motor?.LocalUp ?? SN.Vector3.UnitY;
+            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var head = pos + localUp * (float)FirstPersonOffset.Y;
+            _camTr.Position = new Vector3(head.X, head.Y, head.Z);
 
             var cr = _camTr.Rotation;
             cr.X = _pitchDeg;
@@ -204,13 +208,17 @@ namespace Game_Engine.Core.Component
 
         void DriveCameraThirdPerson(float dt)
         {
+            var localUp = _motor?.LocalUp ?? SN.Vector3.UnitY;
+
             float yawRad = Deg2Rad(_yawDeg);
-            var fwd = new SN.Vector3(MathF.Cos(yawRad), 0f, MathF.Sin(yawRad));
-            var right = new SN.Vector3(-MathF.Sin(yawRad), 0f, MathF.Cos(yawRad));
-            var up = SN.Vector3.UnitY;
+            var rawFwd = new SN.Vector3(MathF.Sin(yawRad), 0f, MathF.Cos(yawRad));
+            var fwd = rawFwd - localUp * SN.Vector3.Dot(rawFwd, localUp);
+            if (fwd.LengthSquared() > 1e-8f) fwd = SN.Vector3.Normalize(fwd); else fwd = rawFwd;
+            var right = SN.Vector3.Cross(fwd, localUp);
+            if (right.LengthSquared() > 1e-8f) right = SN.Vector3.Normalize(right);
 
             var off = new SN.Vector3((float)ThirdPersonOffset.X, (float)ThirdPersonOffset.Y, (float)ThirdPersonOffset.Z);
-            var desired = right * off.X + up * off.Y + (-fwd) * Math.Abs(off.Z);
+            var desired = right * off.X + localUp * off.Y + (-fwd) * MathF.Abs(off.Z);
 
             var target = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
             var desiredPos = target + desired;
@@ -227,7 +235,7 @@ namespace Game_Engine.Core.Component
                 _camTr.Position = new Vector3(blended.X, blended.Y, blended.Z);
             }
 
-            var lookAt = target + up * (float)FirstPersonOffset.Y;
+            var lookAt = target + localUp * (float)FirstPersonOffset.Y;
             var dir = lookAt - new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
             if (dir.LengthSquared() > 1e-6f)
             {

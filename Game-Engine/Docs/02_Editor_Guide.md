@@ -2,7 +2,7 @@
 
 ## Editor Layout
 
-The editor window contains ten dockable panels distributed across five dock regions:
+The editor window contains dockable panels distributed across five dock regions:
 
 ```
 ┌──────────────┬──────────────────────────┬──────────────┐
@@ -497,6 +497,26 @@ Located in `Standard Assets/Shader/`:
 
 ---
 
+## Biome Graph Panel
+
+The Biome Graph panel provides a node-based biome authoring workflow for `PlanetTerrain`.
+
+### Features
+- **Node graph editing** — add/move/connect biome nodes on a zoomable canvas
+- **Undo/Redo** — graph-level history (`Ctrl+Z` / `Ctrl+Y`)
+- **Validation** — checks for missing output wiring, missing biome layers, and circular links
+- **Preview** — equirectangular biome color preview generated from compiled graph data
+- **Compile & apply** — compiles graph and applies it to all scene `PlanetTerrain` components
+- **File workflow** — save/load `.biomegraph` files
+
+### Typical workflow
+1. Open via **Window > Biome Graph**
+2. Build or load a graph (`.biomegraph`)
+3. Click **Validate** to catch graph issues
+4. Click **Compile** to apply updated biome settings to active planets
+
+---
+
 ## Profiler Panel
 
 The Profiler panel displays real-time performance metrics:
@@ -590,6 +610,7 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 |------|-------------|
 | **Reset Layout** | Restore default panel arrangement |
 | **Shader Editor** | Open the visual shader graph editor |
+| **Biome Graph** | Open the biome graph editor for `PlanetTerrain` |
 | **New Animation Tab** | Open a new Animation panel tab |
 | **New Timeline Tab** | Open a new Timeline Sequencer panel tab |
 | **Profiler** | Open the performance profiler panel |

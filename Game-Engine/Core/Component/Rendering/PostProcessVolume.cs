@@ -26,6 +26,9 @@ namespace Game_Engine.Core.Component
         [Persist] public float SSAOIntensity { get; set; } = 1f;
         [Persist] public int SSAOSamples { get; set; } = 16;
 
+        // ── SSR ──
+        [Persist] public bool SSREnabled { get; set; } = false;
+
         // ── Fog ──
         [Persist] public bool FogEnabled { get; set; } = false;
         [Persist] public SN.Vector3 FogColor { get; set; } = new SN.Vector3(0.7f, 0.75f, 0.8f);

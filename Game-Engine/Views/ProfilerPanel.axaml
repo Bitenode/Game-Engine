@@ -13,7 +13,7 @@
 		<Grid Margin="6" RowDefinitions="Auto,*">
 			<!-- Stats summary -->
 			<Border Grid.Row="0" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
-				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto">
+				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto,Auto">
 					<TextBlock Grid.Row="0" Grid.Column="0" x:Name="RenderLabel" Text="Render: -- ms" Margin="4,2" />
 					<TextBlock Grid.Row="0" Grid.Column="1" x:Name="PhysicsLabel" Text="Physics: -- ms" Margin="4,2" />
 					<TextBlock Grid.Row="0" Grid.Column="2" x:Name="ScriptsLabel" Text="Scripts: -- ms" Margin="4,2" />
@@ -28,6 +28,11 @@
 					<TextBlock Grid.Row="2" Grid.Column="1" x:Name="CollidersLabel" Text="Colliders: --" Margin="4,2" />
 					<TextBlock Grid.Row="2" Grid.Column="2" x:Name="AvgFpsLabel" Text="Avg FPS: --" Margin="4,2" />
 					<TextBlock Grid.Row="2" Grid.Column="3" x:Name="AvgFrameLabel" Text="Avg Frame: -- ms" Margin="4,2" />
+
+					<TextBlock Grid.Row="3" Grid.Column="0" x:Name="PlanetCountLabel" Text="Planets: --" Margin="4,2" />
+					<TextBlock Grid.Row="3" Grid.Column="1" x:Name="PlanetChunksLabel" Text="Planet Chunks: --" Margin="4,2" />
+					<TextBlock Grid.Row="3" Grid.Column="2" x:Name="PlanetJobsLabel" Text="Planet Jobs: --/--" Margin="4,2" />
+					<TextBlock Grid.Row="3" Grid.Column="3" x:Name="PlanetMsLabel" Text="Planet LOD/Render: --/-- ms" Margin="4,2" />
 				</Grid>
 			</Border>
 

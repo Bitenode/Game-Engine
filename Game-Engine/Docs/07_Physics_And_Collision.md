@@ -2,7 +2,7 @@
 
 ## Overview
 
-The engine provides a collision detection system with colliders, a character controller, a collision world for runtime physics queries, and raycasting. Physics interactions are processed during `FixedUpdate` in the game loop. The system uses a sweep-and-slide approach for character movement rather than full rigid body dynamics.
+The engine provides a collision detection system with colliders, a character controller, rigidbody simulation, a collision world for runtime physics queries, and raycasting. Physics interactions are processed during `FixedUpdate` in the game loop. The system supports both flat-world physics and planet-relative gravity/grounding through `PlanetTerrain`.
 
 ---
 
@@ -12,7 +12,7 @@ The engine provides a collision detection system with colliders, a character con
 Scene Graph (GameObjects)
     │
     ▼
-Colliders (BoxCollider, CapsuleCollider, MeshCollider)
+Colliders (BoxCollider, CapsuleCollider, MeshCollider, PlanetCollider)
     │ registered in
     ▼
 CollisionWorld (central registry)
@@ -22,6 +22,7 @@ CollisionWorld (central registry)
     ├─► CharacterController (per-frame ground/wall/ceiling detection)
     ├─► PlayerMovement (input → CharacterController.Simulate)
     ├─► RigidbodyPlayer (physics-based player movement)
+    ├─► PlanetTerrain (planet surface sampling + active planet registry)
     ├─► Physics (static API for scripts)
     └─► SceneView (raycasting for object selection)
 ```
@@ -83,6 +84,17 @@ Uses the actual mesh geometry for precise triangle-based collision detection.
 **Fallback:** If no targets are specified, uses all `MeshFilter` components on the same GameObject.
 
 **Use cases:** Complex static geometry (buildings, terrain, irregular shapes, level architecture).
+
+### PlanetCollider
+Planet broad-phase collider shell for planetary worlds.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `RadiusOverride` | `float` | `0` | Manual override for collider radius (0 = derive from `PlanetTerrain`) |
+
+**Purpose:** Supplies a stable world-space AABB and visual shell bounds for planets.
+
+**Important:** Final terrain-conforming contact still comes from per-point `PlanetTerrain.SampleSurfaceRadius(...)` queries used by planet-aware physics (`Rigidbody` / `RigidbodyPlayer`).
 
 ---
 
@@ -366,6 +378,25 @@ An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-ba
 - **Natural push interactions** — momentum transfer between objects
 
 See the [Components Reference](03_Components_Reference.md) for full property details.
+
+---
+
+## Planet Physics Integration
+
+The planet pipeline integrates directly with runtime rigidbody physics:
+
+1. `Rigidbody` finds the nearest active `PlanetTerrain` each fixed tick
+2. `LocalUp` is computed from planet center to body position
+3. Gravity is applied along `-LocalUp` (fallback is world `-Y` when no planet is active)
+4. Grounding is resolved against `PlanetTerrain.SampleSurfaceRadius(...)`
+5. On contact, the into-surface velocity component is removed and tangent motion is preserved
+
+`RigidbodyPlayer` uses `Rigidbody.LocalUp` for movement and jumping:
+- Movement direction is projected onto the local tangent plane
+- Jump impulse is applied along local up
+- Camera controllers set `Camera.WorldUp` from smoothed local up to keep horizon alignment stable while traversing curved surfaces
+
+See [Planet System](13_Planet_System.md) for full biome graph and chunk-streaming details.
 
 ---
 

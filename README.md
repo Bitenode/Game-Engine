@@ -87,7 +87,7 @@ Github Engine/
 │   ├── Views/            # Editor UI panels (Scene View, Inspector, Shader Editor, Profiler, etc.)
 │   ├── Docking/          # Dockable panel system
 │   ├── Standard Assets/  # Built-in shaders, skyboxes, code examples
-│   └── Docs/             # Comprehensive documentation (12 guides)
+│   └── Docs/             # Comprehensive documentation (13 guides)
 │
 ├── Engine.Player/        # Standalone game player (multi-platform)
 │   └── (Loads pre-compiled games without the editor)
@@ -115,6 +115,7 @@ Comprehensive documentation is available in the `Game-Engine/Docs/` folder:
 | [10 — Model Import & Assets](Game-Engine/Docs/10_Model_Import_And_Assets.md) | 3D model import, animation import, skeletal meshes, primitives, asset pipeline |
 | [11 — UIX Framework](Game-Engine/Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
 | [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, project configuration, dependencies, Engine.Player, publishing, ANGLE/OpenGL setup |
+| [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | PlanetTerrain, biome graph workflow, chunk streaming, and planet-aware Rigidbody/Camera behavior |
 
 ---
 

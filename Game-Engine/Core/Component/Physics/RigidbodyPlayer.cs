@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Linq;
+using Game_Engine.Core;
 using GEInput = Game_Engine.Core.Input.Input;
 using SN = System.Numerics;
 
@@ -57,6 +58,7 @@ namespace Game_Engine.Core.Component
         SN.Vector2 _wishLocal;
         bool _sprintHeld;
         float _jumpBuf;
+        SN.Vector3 _cameraUp = SN.Vector3.UnitY;
 
         public override void Awake()
         {
@@ -69,11 +71,11 @@ namespace Game_Engine.Core.Component
             if (GEInput.MouseSensitivity < 0.15f)
                 GEInput.MouseSensitivity = 0.25f;
 
-            // Configure the Rigidbody for player use
             if (_rb != null)
             {
-                _rb.FreezeRotation = true; // no tumbling
-                _rb.Drag = 0f;             // we manage drag ourselves
+                _rb.FreezeRotation = true;
+                _rb.Drag = 0f;
+                _cameraUp = _rb.LocalUp;
             }
         }
 
@@ -108,7 +110,6 @@ namespace Game_Engine.Core.Component
             float lookX = GEInput.GetAxis("Mouse X");
             float lookY = GEInput.GetAxis("Mouse Y");
             _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
-            // Allow full vertical look range when swimming
             float maxPitch = (_rb != null && _rb.IsUnderwater) ? 89f : 89f;
             _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
 
@@ -134,17 +135,24 @@ namespace Game_Engine.Core.Component
             else if (GEInput.GetAction("Jump"))
                 _jumpBuf = Math.Max(_jumpBuf, 0.04f);
 
-            // ── Body rotation ──
+            // ── Body rotation (yaw only, same as original) ──
             if (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f))
             {
                 var rE = Transform.Rotation; rE.Y = _yawDeg; Transform.Rotation = rE;
             }
 
             // ── Camera ──
+            var localUp = _rb?.LocalUp ?? SN.Vector3.UnitY;
+            // Smooth camera up to avoid visible jitter/roll snaps as terrain normals change.
+            float upLerp = 1f - MathF.Exp(-12f * dt);
+            _cameraUp = SN.Vector3.Normalize(_cameraUp + (localUp - _cameraUp) * upLerp);
+            if (_cam != null)
+                _cam.WorldUp = _cameraUp;
+
             if (_camTr != null)
             {
-                if (FirstPerson) DriveCameraFirstPerson();
-                else DriveCameraThirdPerson(dt);
+                if (FirstPerson) DriveCameraFirstPerson(_cameraUp);
+                else DriveCameraThirdPerson(dt, _cameraUp);
             }
         }
 
@@ -162,77 +170,136 @@ namespace Game_Engine.Core.Component
                 return;
             }
 
+            var localUp = _rb.LocalUp;
+            bool onPlanet = localUp.Y < 0.999f || localUp.X * localUp.X + localUp.Z * localUp.Z > 0.001f;
+
             // ── Convert local wish to world direction ──
             float r = Deg2Rad(_yawDeg);
             float c = MathF.Cos(r), s = MathF.Sin(r);
-            var wishWorld = new SN.Vector3(
-                _wishLocal.X * c + _wishLocal.Y * s,
-                0f,
-                -_wishLocal.X * s + _wishLocal.Y * c);
+
+            SN.Vector3 wishWorld;
+            if (onPlanet)
+            {
+                // On a planet: derive movement basis from the actual camera forward,
+                // then project onto the local tangent plane to avoid W/S flips.
+                var srcTr = _camTr ?? Transform;
+                var camFwd = TransformUtil.ForwardFrom(srcTr);
+
+                var fwd = camFwd - localUp * SN.Vector3.Dot(camFwd, localUp);
+                if (fwd.LengthSquared() <= 1e-8f)
+                {
+                    var seed = MathF.Abs(localUp.Y) < 0.99f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+                    fwd = SN.Vector3.Cross(seed, localUp);
+                }
+                fwd = SN.Vector3.Normalize(fwd);
+
+                var right = SN.Vector3.Cross(fwd, localUp);
+                if (right.LengthSquared() <= 1e-8f)
+                    right = new SN.Vector3(c, 0f, -s);
+                else
+                    right = SN.Vector3.Normalize(right);
+
+                wishWorld = right * _wishLocal.X + fwd * (-_wishLocal.Y);
+                wishWorld -= localUp * SN.Vector3.Dot(wishWorld, localUp);
+                if (wishWorld.LengthSquared() > 1e-6f)
+                    wishWorld = SN.Vector3.Normalize(wishWorld);
+            }
+            else
+            {
+                // Flat world: original formula
+                wishWorld = new SN.Vector3(
+                    _wishLocal.X * c + _wishLocal.Y * s,
+                    0f,
+                    -_wishLocal.X * s + _wishLocal.Y * c);
+            }
 
             float speed = MoveForce * (_sprintHeld ? SprintMultiplier : 1f);
             float control = grounded ? 1f : AirControlFactor;
 
-            // Only apply force if under max speed in the wish direction
-            var horizVel = new SN.Vector3(_rb.Velocity.X, 0, _rb.Velocity.Z);
-            float currentSpeed = SN.Vector3.Dot(horizVel, wishWorld);
-            float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
-
-            if (wishWorld.LengthSquared() > 1e-6f)
+            if (onPlanet)
             {
-                float addSpeed = maxSpd - currentSpeed;
-                if (addSpeed > 0f)
+                // Tangent velocity (remove component along local up)
+                var tangentVel = _rb.Velocity - localUp * SN.Vector3.Dot(_rb.Velocity, localUp);
+                float currentSpeed = SN.Vector3.Dot(tangentVel, wishWorld);
+                float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+
+                if (wishWorld.LengthSquared() > 1e-6f)
                 {
-                    float accel = MathF.Min(speed * control * dt, addSpeed);
-                    _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
+                    float addSpeed = maxSpd - currentSpeed;
+                    if (addSpeed > 0f)
+                    {
+                        float accel = MathF.Min(speed * control * dt, addSpeed);
+                        _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
+                    }
+                }
+
+                // Drag (tangent plane only)
+                float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * dt);
+                var vel2 = _rb.Velocity;
+                float radialComp = SN.Vector3.Dot(vel2, localUp);
+                var tangent = vel2 - localUp * radialComp;
+                _rb.Velocity = tangent * dragFactor + (grounded ? SN.Vector3.Zero : localUp * radialComp);
+
+                // Jump (along local up)
+                if (_jumpBuf > 0f && grounded)
+                {
+                    var vel3 = _rb.Velocity;
+                    float upComp = SN.Vector3.Dot(vel3, localUp);
+                    if (upComp < 0f)
+                        _rb.Velocity = vel3 - localUp * upComp;
+                    _rb.AddImpulse(localUp * JumpImpulse);
+                    _jumpBuf = 0f;
+                }
+                else
+                {
+                    _jumpBuf = Math.Max(0f, _jumpBuf - dt);
                 }
             }
-
-            // ── Drag (ground friction vs air resistance) ──
-            if (grounded)
-            {
-                // Apply ground drag to horizontal velocity only
-                float dragFactor = 1f - GroundDrag * dt;
-                dragFactor = MathF.Max(0f, dragFactor);
-                var vel = _rb.Velocity;
-                _rb.Velocity = new SN.Vector3(vel.X * dragFactor, vel.Y, vel.Z * dragFactor);
-            }
             else
             {
-                float dragFactor = 1f - AirDrag * dt;
-                dragFactor = MathF.Max(0f, dragFactor);
+                // ── Original flat-world physics ──
+                var horizVel = new SN.Vector3(_rb.Velocity.X, 0, _rb.Velocity.Z);
+                float currentSpeed = SN.Vector3.Dot(horizVel, wishWorld);
+                float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+
+                if (wishWorld.LengthSquared() > 1e-6f)
+                {
+                    float addSpeed = maxSpd - currentSpeed;
+                    if (addSpeed > 0f)
+                    {
+                        float accel = MathF.Min(speed * control * dt, addSpeed);
+                        _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
+                    }
+                }
+
+                float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * dt);
                 var vel = _rb.Velocity;
                 _rb.Velocity = new SN.Vector3(vel.X * dragFactor, vel.Y, vel.Z * dragFactor);
-            }
 
-            // ── Jump ──
-            if (_jumpBuf > 0f && grounded)
-            {
-                // Set vertical velocity directly for a snappy jump
-                var vel = _rb.Velocity;
-                _rb.Velocity = new SN.Vector3(vel.X, MathF.Max(vel.Y, 0f), vel.Z);
-                _rb.AddImpulse(SN.Vector3.UnitY * JumpImpulse);
-                _jumpBuf = 0f;
-            }
-            else
-            {
-                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+                if (_jumpBuf > 0f && grounded)
+                {
+                    var vel2 = _rb.Velocity;
+                    _rb.Velocity = new SN.Vector3(vel2.X, MathF.Max(vel2.Y, 0f), vel2.Z);
+                    _rb.AddImpulse(SN.Vector3.UnitY * JumpImpulse);
+                    _jumpBuf = 0f;
+                }
+                else
+                {
+                    _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+                }
             }
         }
 
         /// <summary>
         /// Swimming physics: 3D movement following camera direction.
-        /// Space = swim up, Shift = sprint swim, WASD = move in camera-relative direction.
         /// </summary>
         void FixedUpdateSwimming(float dt)
         {
             if (_rb == null) return;
 
-            // ── Build 3D swim direction from camera look + WASD ──
             float yawRad = Deg2Rad(_yawDeg);
             float pitchRad = Deg2Rad(_pitchDeg);
 
-            // Forward vector follows camera pitch (look direction)
             float cosPitch = MathF.Cos(pitchRad);
             float sinPitch = MathF.Sin(pitchRad);
             float cosYaw = MathF.Cos(yawRad);
@@ -245,25 +312,20 @@ namespace Game_Engine.Core.Component
             if (forward.LengthSquared() > 1e-6f)
                 forward = SN.Vector3.Normalize(forward);
 
-            // Right vector is always horizontal
             var right = new SN.Vector3(cosYaw, 0f, -sinYaw);
 
-            // Build wish direction in 3D
             var wishDir = SN.Vector3.Zero;
             if (_wishLocal.LengthSquared() > 1e-6f)
             {
-                // wishLocal.X = strafe (right), wishLocal.Y = forward/back
                 wishDir = right * _wishLocal.X + forward * _wishLocal.Y;
                 if (wishDir.LengthSquared() > 1e-6f)
                     wishDir = SN.Vector3.Normalize(wishDir);
             }
 
-            // Vertical swim input: Space = swim up
             bool jumpHeld = GEInput.GetAction("Jump");
             if (jumpHeld)
                 wishDir += SN.Vector3.UnitY * SwimVerticalSpeed * 0.5f;
 
-            // Apply swim force
             float swimSpeed = SwimForce * (_sprintHeld ? SprintMultiplier : 1f);
             float maxSwimSpd = SwimMaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
 
@@ -278,24 +340,33 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            // ── Swim drag (all axes, heavier than air) ──
             float dragFactor = MathF.Max(0f, 1f - SwimDrag * dt);
             _rb.Velocity *= dragFactor;
 
-            // Clear jump buffer underwater (jump is swim-up, not a ground jump)
             _jumpBuf = 0f;
         }
 
-        // ── Camera helpers (same as PlayerMovement) ──
+        // ── Camera helpers ──
 
-        void DriveCameraFirstPerson()
+        void DriveCameraFirstPerson(SN.Vector3 localUp)
         {
             var p = Transform.Position;
-            var head = new Vector3(
-                p.X + FirstPersonOffset.X,
-                p.Y + FirstPersonOffset.Y,
-                p.Z + FirstPersonOffset.Z);
-            _camTr!.Position = head;
+            float offY = (float)FirstPersonOffset.Y;
+
+            // Use localUp for head offset on planets, world Y on flat ground
+            if (localUp.Y > 0.999f)
+            {
+                _camTr!.Position = new Vector3(
+                    p.X + FirstPersonOffset.X,
+                    p.Y + offY,
+                    p.Z + FirstPersonOffset.Z);
+            }
+            else
+            {
+                var pos = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+                var head = pos + localUp * offY;
+                _camTr!.Position = new Vector3(head.X, head.Y, head.Z);
+            }
 
             var cr = _camTr.Rotation;
             cr.X = _pitchDeg;
@@ -304,15 +375,14 @@ namespace Game_Engine.Core.Component
             _camTr.Rotation = cr;
         }
 
-        void DriveCameraThirdPerson(float dt)
+        void DriveCameraThirdPerson(float dt, SN.Vector3 localUp)
         {
             float yawRad = Deg2Rad(_yawDeg);
             var fwd = new SN.Vector3(MathF.Cos(yawRad), 0f, MathF.Sin(yawRad));
             var right = new SN.Vector3(-MathF.Sin(yawRad), 0f, MathF.Cos(yawRad));
-            var up = SN.Vector3.UnitY;
 
             var off = new SN.Vector3((float)ThirdPersonOffset.X, (float)ThirdPersonOffset.Y, (float)ThirdPersonOffset.Z);
-            var desired = right * off.X + up * off.Y + (-fwd) * Math.Abs(off.Z);
+            var desired = right * off.X + localUp * off.Y + (-fwd) * MathF.Abs(off.Z);
 
             var target = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
             var desiredPos = target + desired;
@@ -329,7 +399,7 @@ namespace Game_Engine.Core.Component
                 _camTr.Position = new Vector3(blended.X, blended.Y, blended.Z);
             }
 
-            var lookAt = target + up * (float)FirstPersonOffset.Y;
+            var lookAt = target + localUp * (float)FirstPersonOffset.Y;
             var dir = lookAt - new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
             if (dir.LengthSquared() > 1e-6f)
             {

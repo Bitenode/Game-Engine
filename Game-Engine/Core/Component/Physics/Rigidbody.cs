@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Game_Engine.Core.Physics;
 using SN = System.Numerics;
 
@@ -9,8 +10,8 @@ namespace Game_Engine.Core.Component
     /// <summary>
     /// Rigidbody component — adds physics simulation (velocity, gravity, collision response)
     /// to a GameObject. Works with the CollisionWorld for overlap detection and triggers.
-    /// Now supports terrain heightmap collision, MeshCollider triangle collision,
-    /// and improved trigger detection.
+    /// Supports terrain heightmap collision, MeshCollider triangle collision,
+    /// planet-relative gravity (pulls toward nearest planet center), and triggers.
     /// </summary>
     [ComponentCategory("Physics")]
     public sealed class Rigidbody : Behavior
@@ -38,6 +39,9 @@ namespace Game_Engine.Core.Component
         public bool IsUnderwater { get; private set; }
         public float UnderwaterDepth { get; private set; }
         public SN.Vector3 GroundNormal { get; private set; } = SN.Vector3.UnitY;
+
+        /// <summary>Local "up" direction: toward planet surface if on a planet, else world +Y.</summary>
+        public SN.Vector3 LocalUp { get; private set; } = SN.Vector3.UnitY;
 
         private SN.Vector3 _forceAccum = SN.Vector3.Zero;
         private SN.Vector3 _impulseAccum = SN.Vector3.Zero;
@@ -127,22 +131,36 @@ namespace Game_Engine.Core.Component
                 UnderwaterDepth = 0f;
             }
 
-            // Gravity (reduced underwater)
+            // ── Planet detection ──
+            var planet = FindNearestPlanet(pos0, out var planetCenter, out float planetSurfaceR);
+            bool onPlanet = planet != null;
+
+            if (onPlanet)
+            {
+                var toBody = pos0 - planetCenter;
+                float dist = toBody.Length();
+                LocalUp = dist > 1e-6f ? toBody / dist : SN.Vector3.UnitY;
+            }
+            else
+            {
+                LocalUp = SN.Vector3.UnitY;
+            }
+
+            // Gravity (planet-relative or world -Y)
             if (UseGravity)
             {
-                float gravityScale = IsUnderwater ? 0.15f : 1f;  // 85% gravity reduction underwater
-                Velocity += new SN.Vector3(0f, -9.81f * gravityScale, 0f) * dt;
+                float gravityScale = IsUnderwater ? 0.15f : 1f;
+                var gravDir = onPlanet ? -LocalUp : new SN.Vector3(0, -1, 0);
+                Velocity += gravDir * (9.81f * gravityScale) * dt;
             }
 
             // Buoyancy: upward force when underwater, stronger the deeper you go
             if (IsUnderwater && waterComp != null)
             {
                 float buoyancy = waterComp.UnderwaterBuoyancy;
-                // Buoyancy scales with submersion depth (clamped)
                 float submersionFactor = MathF.Min(UnderwaterDepth / 2f, 1f);
-                Velocity += new SN.Vector3(0f, buoyancy * submersionFactor, 0f) * dt;
+                Velocity += LocalUp * buoyancy * submersionFactor * dt;
 
-                // Surface bobbing: when near the surface, gently push toward surface height
                 if (UnderwaterDepth < 1.5f)
                 {
                     float surfaceY = waterComp.SampleHeight(pos0.X, pos0.Z);
@@ -174,13 +192,35 @@ namespace Game_Engine.Core.Component
             if (FreezePositionY) newPos.Y = pos.Y;
             if (FreezePositionZ) newPos.Z = pos.Z;
 
-            // ── Terrain heightmap collision (replaces hardcoded Y=0) ──
+            // ── Ground collision ──
             IsGrounded = false;
-            GroundNormal = SN.Vector3.UnitY;
+            GroundNormal = LocalUp;
 
-            if (PhysicsCache.SampleTerrainHeight(newPos.X, newPos.Z, out float terrainY, out var terrainNormal))
+            if (onPlanet)
             {
-                // Get the bottom of the collider (or use object position as bottom)
+                float halfHeight = GetColliderHalfHeight();
+                var toNew = newPos - planetCenter;
+                float distFromCenter = toNew.Length();
+                var surfNorm = distFromCenter > 1e-6f ? toNew / distFromCenter : LocalUp;
+
+                float actualSurfaceR = planet!.SampleSurfaceRadius(surfNorm);
+                float feetDist = distFromCenter - halfHeight;
+
+                if (feetDist < actualSurfaceR)
+                {
+                    // Planet surface = ground. Strip the velocity component going
+                    // into the ground and keep only the tangent (no bounce).
+                    float vDotN = SN.Vector3.Dot(Velocity, surfNorm);
+                    if (vDotN < 0f)
+                        Velocity -= surfNorm * vDotN;
+
+                    newPos = planetCenter + surfNorm * (actualSurfaceR + halfHeight);
+                    IsGrounded = true;
+                    GroundNormal = surfNorm;
+                }
+            }
+            else if (PhysicsCache.SampleTerrainHeight(newPos.X, newPos.Z, out float terrainY, out var terrainNormal))
+            {
                 float halfHeight = GetColliderHalfHeight();
                 float feetY = newPos.Y - halfHeight;
 
@@ -188,32 +228,19 @@ namespace Game_Engine.Core.Component
                 {
                     newPos.Y = terrainY + halfHeight;
 
-                    // Decompose velocity along terrain normal
                     float vDotN = SN.Vector3.Dot(Velocity, terrainNormal);
                     if (vDotN < 0f)
                     {
                         float impactSpeed = MathF.Abs(vDotN);
-
-                        // Remove the component going into the ground
                         var normalComponent = vDotN * terrainNormal;
                         var tangentComponent = Velocity - normalComponent;
 
-                        // Only apply friction + bounce on real impacts (not just
-                        // gravity pulling us into the ground each frame while walking)
                         const float ImpactThreshold = 0.5f;
                         if (impactSpeed > ImpactThreshold)
-                        {
-                            // Significant collision — apply friction and bounce
                             Velocity = tangentComponent * (1f - Friction) + (-normalComponent * Bounciness);
-                        }
                         else
-                        {
-                            // Gentle ground contact — just remove the downward component,
-                            // preserve horizontal speed fully
                             Velocity = tangentComponent;
-                        }
 
-                        // Kill tiny bounces
                         if (MathF.Abs(Velocity.Y) < 0.1f)
                             Velocity = new SN.Vector3(Velocity.X, 0f, Velocity.Z);
                     }
@@ -225,7 +252,7 @@ namespace Game_Engine.Core.Component
             }
             else
             {
-                // Fallback: Y=0 ground plane if no terrain
+                // Fallback: Y=0 ground plane if no terrain or planet
                 float halfHeight = GetColliderHalfHeight();
                 float feetY = newPos.Y - halfHeight;
                 if (feetY < 0f && Velocity.Y < 0f)
@@ -235,13 +262,9 @@ namespace Game_Engine.Core.Component
 
                     const float ImpactThreshold = 0.5f;
                     if (impactSpeed > ImpactThreshold)
-                    {
                         Velocity = new SN.Vector3(Velocity.X * (1f - Friction), -Velocity.Y * Bounciness, Velocity.Z * (1f - Friction));
-                    }
                     else
-                    {
                         Velocity = new SN.Vector3(Velocity.X, 0f, Velocity.Z);
-                    }
 
                     IsGrounded = true;
 
@@ -557,11 +580,59 @@ namespace Game_Engine.Core.Component
             float u = (dot11 * dot02 - dot01 * dot12) * inv;
             float v = (dot00 * dot12 - dot01 * dot02) * inv;
 
-            // Allow a small margin based on triangle edge length
             float edgeLen = MathF.Max(MathF.Sqrt(dot00), MathF.Max(MathF.Sqrt(dot11), (b - c).Length()));
             float eps = edgeLen > 1e-6f ? expand / edgeLen : 0.1f;
 
             return u >= -eps && v >= -eps && (u + v) <= 1f + eps;
+        }
+
+        // ── Planet helpers (shared across physics components) ──
+
+        /// <summary>
+        /// Finds the nearest active PlanetTerrain and returns its center position
+        /// and effective surface radius (base radius + max biome height amplitude).
+        /// </summary>
+        internal static PlanetTerrain? FindNearestPlanet(SN.Vector3 worldPos, out SN.Vector3 center, out float surfaceRadius)
+        {
+            center = SN.Vector3.Zero;
+            surfaceRadius = 0f;
+            PlanetTerrain? best = null;
+            float bestDist2 = float.MaxValue;
+
+            for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
+            {
+                var pt = PlanetTerrain.ActivePlanets[i];
+                if (pt?.Config == null || pt.gameObject == null) continue;
+
+                var W = SceneGraphUtil.AccumulateWorld(pt.gameObject);
+                var pc = new SN.Vector3(W.M41, W.M42, W.M43);
+                float d2 = (worldPos - pc).LengthSquared();
+                if (d2 < bestDist2)
+                {
+                    bestDist2 = d2;
+                    best = pt;
+                    center = pc;
+
+                    float maxAmp = 0f;
+                    foreach (var b in pt.Config.Biomes)
+                        maxAmp = Math.Max(maxAmp, b.HeightAmplitude);
+                    surfaceRadius = pt.Config.Radius + maxAmp;
+                }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Computes the local "up" direction from a planet center to a position.
+        /// Returns UnitY if no planet is active or position is at the center.
+        /// </summary>
+        internal static SN.Vector3 GetPlanetUp(SN.Vector3 worldPos)
+        {
+            var planet = FindNearestPlanet(worldPos, out var center, out _);
+            if (planet == null) return SN.Vector3.UnitY;
+            var up = worldPos - center;
+            float len = up.Length();
+            return len > 1e-6f ? up / len : SN.Vector3.UnitY;
         }
     }
 }

@@ -32,6 +32,7 @@ public sealed class GPUTexture : IDisposable
         Height = tex.Height;
 
         _gl.BindTexture(TextureTarget.Texture2D, Handle);
+        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
 
         fixed (byte* ptr = tex.Rgba)
         {
@@ -48,6 +49,11 @@ public sealed class GPUTexture : IDisposable
             (int)TextureMinFilter.LinearMipmapLinear);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
             (int)TextureMagFilter.Linear);
+
+        // Anisotropic filtering (critical for oblique views on planet terrain)
+        const TextureParameterName GL_TEXTURE_MAX_ANISOTROPY = (TextureParameterName)0x84FE;
+        try { _gl.TexParameter(TextureTarget.Texture2D, GL_TEXTURE_MAX_ANISOTROPY, 16.0f); }
+        catch { }
 
         // Default wrap: repeat
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,

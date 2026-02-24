@@ -2271,4 +2271,350 @@ void main()
     FragColor = vec4(vColor.rgb, vColor.a * alpha);
 }
 ";
+
+    // =====================================================================
+    // PLANET TERRAIN — triplanar, multi-biome, slope-based top/under blend
+    // =====================================================================
+    public const string PlanetTerrainVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec4 aBlendIndices;
+layout(location = 4) in vec4 aBlendWeights;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform mat4 uNormalMatrix;
+uniform mat4 uShadowVP;
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out vec2 vUV;
+out vec4 vShadowCoord;
+flat out ivec4 vBlendIdx;
+out vec4 vBlendWt;
+
+void main()
+{
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vWorldPos = worldPos.xyz;
+    vWorldNormal = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
+    vUV = aUV;
+    vShadowCoord = uShadowVP * worldPos;
+    vBlendIdx = ivec4(aBlendIndices);
+    vBlendWt = aBlendWeights;
+    gl_Position = uProj * uView * worldPos;
+}
+";
+
+    public const string PlanetTerrainFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+in vec4 vShadowCoord;
+flat in ivec4 vBlendIdx;
+in vec4 vBlendWt;
+
+uniform vec3 uPlanetCenter;
+uniform vec3 uLightDir;
+uniform vec3 uCamPos;
+uniform float uAmbient;
+uniform float uDiffuseK;
+
+// One dedicated sampler per biome (units 0-7), 8 + 1 shadow = 9 total
+uniform sampler2D uBiomeTex0;
+uniform sampler2D uBiomeTex1;
+uniform sampler2D uBiomeTex2;
+uniform sampler2D uBiomeTex3;
+uniform sampler2D uBiomeTex4;
+uniform sampler2D uBiomeTex5;
+uniform sampler2D uBiomeTex6;
+uniform sampler2D uBiomeTex7;
+
+uniform float uBiomeTiling[8];
+uniform vec3  uBiomeBaseColor[8];
+uniform vec3  uBiomeUnderColor[8];
+
+uniform sampler2D uShadowMap;
+uniform int uHasShadow;
+
+out vec4 FragColor;
+
+uniform float uPlanetRadius;
+
+vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 ba, float t)
+{
+    vec3 p = worldPos * (t / uPlanetRadius);
+    return texture(tex, p.yz).rgb * ba.x
+         + texture(tex, p.xz).rgb * ba.y
+         + texture(tex, p.xy).rgb * ba.z;
+}
+
+vec3 sampleBiome(int idx, vec3 wp, vec3 ba, float t)
+{
+    if (idx == 0) return triplanar(uBiomeTex0, wp, ba, t);
+    if (idx == 1) return triplanar(uBiomeTex1, wp, ba, t);
+    if (idx == 2) return triplanar(uBiomeTex2, wp, ba, t);
+    if (idx == 3) return triplanar(uBiomeTex3, wp, ba, t);
+    if (idx == 4) return triplanar(uBiomeTex4, wp, ba, t);
+    if (idx == 5) return triplanar(uBiomeTex5, wp, ba, t);
+    if (idx == 6) return triplanar(uBiomeTex6, wp, ba, t);
+    return triplanar(uBiomeTex7, wp, ba, t);
+}
+
+float shadowFactor(vec4 sc)
+{
+    if (uHasShadow == 0) return 1.0;
+    vec3 projCoords = sc.xyz / sc.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    if (projCoords.z > 1.0) return 1.0;
+    float closestDepth = texture(uShadowMap, projCoords.xy).r;
+    return (projCoords.z - 0.005 > closestDepth) ? 0.3 : 1.0;
+}
+
+vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend)
+{
+    float t = uBiomeTiling[idx];
+    vec3 texCol = sampleBiome(idx, worldPos, ba, t);
+    vec3 baseCol = uBiomeBaseColor[idx];
+    vec3 underCol = uBiomeUnderColor[idx];
+
+    float lum = dot(texCol, vec3(0.299, 0.587, 0.114));
+    vec3 topCol = (lum > 0.98) ? baseCol : texCol;
+
+    underCol = max(underCol, vec3(0.12));
+    vec3 cliffCol = mix(underCol, topCol * 0.7, 0.4);
+
+    return mix(cliffCol, topCol, slopeBlend);
+}
+
+void main()
+{
+    vec3 N = normalize(vWorldNormal);
+    vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
+
+    float slope = max(dot(N, radialDir), 0.0);
+    float slopeBlend = smoothstep(0.2, 0.55, slope);
+
+    vec3 blendAxes = abs(N);
+    blendAxes = pow(blendAxes, vec3(4.0));
+    blendAxes = blendAxes / (blendAxes.x + blendAxes.y + blendAxes.z + 0.001);
+
+    vec3 finalColor = vec3(0.0);
+    float totalWeight = 0.0;
+
+    float weights[4] = float[4](vBlendWt.x, vBlendWt.y, vBlendWt.z, vBlendWt.w);
+    int   indices[4] = int[4](vBlendIdx.x, vBlendIdx.y, vBlendIdx.z, vBlendIdx.w);
+
+    for (int i = 0; i < 4; i++)
+    {
+        float w = weights[i];
+        if (w < 0.01) continue;
+        int idx = clamp(indices[i], 0, 7);
+        finalColor += evalBiome(idx, vWorldPos, blendAxes, slopeBlend) * w;
+        totalWeight += w;
+    }
+
+    if (totalWeight > 0.0) finalColor /= totalWeight;
+    else finalColor = vec3(0.5);
+
+    vec3 L = normalize(-uLightDir);
+    float NdotL = max(dot(N, L), 0.0);
+    float diffuse = NdotL * uDiffuseK;
+
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 64.0) * 0.3;
+
+    float shadow = shadowFactor(vShadowCoord);
+    vec3 lit = finalColor * (uAmbient + diffuse * shadow) + vec3(spec * shadow);
+
+    lit = lit / (lit + vec3(1.0));
+    FragColor = vec4(lit, 1.0);
+}
+";
+
+    // =====================================================================
+    // PLANET WATER — spherical waves, depth-dependent color, Fresnel
+    // =====================================================================
+    public const string PlanetWaterVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform mat4 uNormalMatrix;
+
+uniform vec3 uPlanetCenter;
+uniform float uTime;
+uniform float uWaveAmp1;
+uniform float uWaveFreq1;
+uniform float uWaveSteep1;
+uniform float uWaveAmp2;
+uniform float uWaveFreq2;
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out vec2 vUV;
+
+void main()
+{
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vec3 radialDir = normalize(worldPos.xyz - uPlanetCenter);
+
+    vec3 up = abs(radialDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent   = normalize(cross(up, radialDir));
+    vec3 bitangent = cross(radialDir, tangent);
+
+    float tCoord = dot(worldPos.xyz, tangent);
+    float bCoord = dot(worldPos.xyz, bitangent);
+
+    float phase1 = (tCoord * 0.7 + bCoord * 0.7) * uWaveFreq1 + uTime;
+    float s1 = sin(phase1);
+    float c1 = cos(phase1);
+
+    float phase2 = (tCoord * -0.5 + bCoord * 0.86) * uWaveFreq2 + uTime * 0.8;
+    float s2 = sin(phase2);
+    float c2 = cos(phase2);
+
+    worldPos.xyz += radialDir * (uWaveAmp1 * s1 + uWaveAmp2 * s2);
+    worldPos.xyz += tangent * uWaveSteep1 * uWaveAmp1 * c1;
+
+    vec3 waveNormal = normalize(
+        radialDir
+        - tangent   * (uWaveFreq1 * uWaveAmp1 * c1 * 0.7 + uWaveFreq2 * uWaveAmp2 * c2 * -0.5)
+        - bitangent * (uWaveFreq1 * uWaveAmp1 * c1 * 0.7 + uWaveFreq2 * uWaveAmp2 * c2 * 0.86)
+    );
+
+    vWorldPos = worldPos.xyz;
+    vWorldNormal = normalize((uNormalMatrix * vec4(waveNormal, 0.0)).xyz);
+    vUV = aUV;
+    gl_Position = uProj * uView * worldPos;
+}
+";
+
+    public const string PlanetWaterFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+
+uniform vec3 uPlanetCenter;
+uniform float uSeaLevel;
+uniform float uDepthRange;
+
+uniform vec4 uShallowColor;
+uniform vec4 uDeepColor;
+uniform vec4 uDeepestColor;
+
+uniform float uFresnelPower;
+uniform float uReflectivity;
+uniform float uTransparency;
+
+uniform vec3 uLightDir;
+uniform vec3 uCamPos;
+uniform vec3 uSkyColor;
+uniform float uAmbient;
+uniform float uDiffuseK;
+uniform float uTime;
+
+uniform sampler2D uWaterNormalMap;
+uniform sampler2D uWaterTexture;
+uniform int uHasWaterNormalMap;
+uniform int uHasWaterTexture;
+
+uniform int uFoamEnabled;
+uniform float uFoamThreshold;
+uniform float uFoamIntensity;
+uniform vec4 uFoamColor;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
+    vec3 N = normalize(vWorldNormal);
+
+    vec3 up = abs(radialDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, radialDir));
+    vec3 B = cross(radialDir, T);
+
+    float tCoord = dot(vWorldPos, T);
+    float bCoord = dot(vWorldPos, B);
+
+    if (uHasWaterNormalMap == 1)
+    {
+        vec2 uv1 = vec2(tCoord, bCoord) * 0.02 + vec2(uTime * 0.01, uTime * 0.008);
+        vec2 uv2 = vec2(tCoord, bCoord) * 0.035 + vec2(-uTime * 0.007, uTime * 0.012);
+        vec3 n1 = texture(uWaterNormalMap, uv1).rgb * 2.0 - 1.0;
+        vec3 n2 = texture(uWaterNormalMap, uv2).rgb * 2.0 - 1.0;
+        vec3 detailN = normalize(n1 + n2);
+        N = normalize(N + (T * detailN.x + B * detailN.y + radialDir * detailN.z) * 0.3);
+    }
+
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 L = normalize(-uLightDir);
+
+    // View-angle based apparent depth: looking straight down = shallow, grazing = deep
+    float viewAngle = max(dot(V, radialDir), 0.0);
+    float apparentDepth = 1.0 - viewAngle;
+
+    // Subtle noise-based depth variation for visual interest
+    float noiseVal = fract(sin(dot(vec2(tCoord, bCoord) * 0.1, vec2(12.9898, 78.233))) * 43758.5453);
+    apparentDepth = clamp(apparentDepth + noiseVal * 0.1 - 0.05, 0.0, 1.0);
+
+    vec3 waterColor;
+    if (apparentDepth < 0.4)
+        waterColor = mix(uShallowColor.rgb, uDeepColor.rgb, apparentDepth * 2.5);
+    else
+        waterColor = mix(uDeepColor.rgb, uDeepestColor.rgb, (apparentDepth - 0.4) * 1.67);
+
+    if (uHasWaterTexture == 1)
+    {
+        vec2 texUV = vec2(tCoord, bCoord) * 0.01 + vec2(uTime * 0.005);
+        vec3 texCol = texture(uWaterTexture, texUV).rgb;
+        waterColor = mix(waterColor, texCol, 0.15);
+    }
+
+    // Fresnel: strong reflection at grazing angles
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), uFresnelPower);
+
+    vec3 R = reflect(-V, N);
+    float skyFactor = clamp(dot(R, radialDir) * 0.5 + 0.5, 0.0, 1.0);
+    vec3 reflColor = uSkyColor * (0.4 + skyFactor * 0.6);
+    waterColor = mix(waterColor, reflColor, fresnel * uReflectivity);
+
+    // Sun specular
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 256.0) * 1.2;
+
+    // Scattered sub-surface glow
+    float scatter = pow(max(dot(V, -L), 0.0), 4.0) * 0.15;
+    vec3 scatterColor = uShallowColor.rgb * scatter;
+
+    float NdotL = max(dot(N, L), 0.0);
+    float lighting = uAmbient + NdotL * 0.4 * uDiffuseK;
+    vec3 color = waterColor * lighting + vec3(spec) + scatterColor;
+
+    if (uFoamEnabled == 1)
+    {
+        float edgeFoam = smoothstep(0.02, 0.0, apparentDepth * 0.3);
+        float hash = fract(sin(dot(floor(vec2(tCoord, bCoord) * 5.0 + uTime * 0.3), vec2(12.9898, 78.233))) * 43758.5453);
+        float foam = edgeFoam * hash * uFoamIntensity;
+        color = mix(color, uFoamColor.rgb, foam);
+    }
+
+    color = color / (color + vec3(1.0));
+
+    float alpha = mix(uTransparency, 1.0, fresnel * 0.6);
+    alpha = max(alpha, 0.7);
+    FragColor = vec4(color, alpha);
+}
+";
 }

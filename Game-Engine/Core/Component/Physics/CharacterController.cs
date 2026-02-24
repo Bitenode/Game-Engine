@@ -56,12 +56,15 @@ namespace Game_Engine.Core.Component
         // ---------------- Runtime (read-only) ----------------
         public bool IsGrounded { get; private set; }
         public SN.Vector3 GroundNormal { get; private set; } = SN.Vector3.UnitY;
-        public float VerticalVelocity { get; private set; }  // +up
+        public float VerticalVelocity { get; private set; }  // + along local up
         public float CapsuleRadius { get; private set; }
         public float CapsuleHalfCylinder { get; private set; }
 
+        /// <summary>Local "up" for this controller: away from planet center, or world +Y.</summary>
+        public SN.Vector3 LocalUp { get; private set; } = SN.Vector3.UnitY;
+
         float _coyoteTimer = 0f;
-        float _lastHitY = float.NegativeInfinity;
+        float _lastHitDist = float.NegativeInfinity;
         SN.Vector3 _lastHitN = SN.Vector3.UnitY;
 
         CapsuleCollider? _capsule;
@@ -90,146 +93,206 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>
-        /// Call from FixedUpdate. desiredHorizontalDelta is world XZ (meters) built using fixedDeltaTime.
+        /// Call from FixedUpdate. desiredHorizontalDelta is world-space tangent movement (meters)
+        /// built using fixedDeltaTime. On a planet, this should already be in the tangent plane.
         /// jump=true to attempt jump this step.
         /// </summary>
         public void Simulate(SN.Vector3 desiredHorizontalDelta, bool jump)
         {
-            // Refresh shared physics cache (only rebuilds once per tick)
             PhysicsCache.RefreshFrame();
 
             var tr = Transform;
             float dt = Math.Max(0.0001f, Time.fixedDeltaTime);
-
             var pos = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
 
+            // ── Planet detection ──
+            var planet = Rigidbody.FindNearestPlanet(pos, out var planetCenter, out float planetSurfaceR);
+            bool onPlanet = planet != null;
+
+            if (onPlanet)
+            {
+                var toBody = pos - planetCenter;
+                float dist = toBody.Length();
+                LocalUp = dist > 1e-6f ? toBody / dist : SN.Vector3.UnitY;
+            }
+            else
+            {
+                LocalUp = SN.Vector3.UnitY;
+            }
+
+            float capsuleH = CapsuleHalfCylinder + CapsuleRadius;
+            float minSlopeUpDot = MathF.Cos(MaxSlopeAngleDeg * (MathF.PI / 180f));
+
             // ---------- Ground probe ----------
-            float minGroundY = MathF.Cos(MaxSlopeAngleDeg * (float)(Math.PI / 180.0));
-            var rayStart = pos + new SN.Vector3(0, Math.Max(StepUpMax, 0.2f) + 0.002f, 0);
+            if (onPlanet)
+            {
+                float surfR = planet!.SampleSurfaceRadius(LocalUp);
+                float feetDist = (pos - planetCenter).Length() - capsuleH;
+                float diff = feetDist - surfR;
+                bool groundHit = diff < GroundSnapDistance + StepUpMax + 0.75f;
 
-            bool groundHit = RaycastGround(rayStart, new SN.Vector3(0, -1, 0),
-                                           GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
-                                           out float hitY, out SN.Vector3 hitN);
+                IsGrounded = groundHit && diff >= -0.02f && diff <= StepUpMax + 0.02f;
+                GroundNormal = IsGrounded ? LocalUp : LocalUp;
+                if (groundHit) { _lastHitDist = surfR; _lastHitN = LocalUp; }
+            }
+            else
+            {
+                var rayStart = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
+                bool groundHit = RaycastGround(rayStart, -LocalUp,
+                                               GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
+                                               out float hitY, out SN.Vector3 hitN);
+                float feetY = pos.Y - capsuleH;
+                float diff = feetY - hitY;
+                bool slopeOk = groundHit && hitN.Y >= minSlopeUpDot;
 
-            float feetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
-            float diff = feetY - hitY;
-            bool slopeOk = groundHit && hitN.Y >= minGroundY;
+                IsGrounded = slopeOk && diff >= -0.02f && diff <= StepUpMax + 0.02f;
+                GroundNormal = IsGrounded ? hitN : SN.Vector3.UnitY;
+                if (groundHit) { _lastHitDist = hitY; _lastHitN = hitN; }
+            }
 
-            IsGrounded = slopeOk && diff >= -0.02f && diff <= StepUpMax + 0.02f;
-            GroundNormal = IsGrounded ? hitN : SN.Vector3.UnitY;
-
-            if (groundHit) { _lastHitY = hitY; _lastHitN = hitN; }
-
-            // Maintain coyote window so jump survives ground flicker
             if (IsGrounded) _coyoteTimer = CoyoteTimeSeconds;
             else _coyoteTimer = Math.Max(0f, _coyoteTimer - dt);
 
-            // ---------- Horizontal (project along ground if grounded) ----------
-            var deltaXZ = desiredHorizontalDelta; deltaXZ.Y = 0f;
+            // ---------- Horizontal movement (tangent plane) ----------
+            var delta = desiredHorizontalDelta;
+            // Remove any component along local up so movement stays tangential
+            delta -= LocalUp * SN.Vector3.Dot(delta, LocalUp);
+
             if (IsGrounded)
             {
                 var n = SN.Vector3.Normalize(GroundNormal);
-                deltaXZ -= n * SN.Vector3.Dot(deltaXZ, n);
+                delta -= n * SN.Vector3.Dot(delta, n);
             }
 
-            float moveLen = new SN.Vector2(deltaXZ.X, deltaXZ.Z).Length();
+            float moveLen = delta.Length();
             SN.Vector3 moveDir = SN.Vector3.Zero;
-            if (moveLen > 0f)
+            if (moveLen > 1e-6f)
             {
-                moveDir = new SN.Vector3(deltaXZ.X, 0, deltaXZ.Z) / moveLen;
-                var dirXZ = moveDir;
-                float stepLen = MathF.Max(0.01f, CapsuleRadius / 4f);
-                int steps = Math.Max(1, (int)MathF.Ceiling(moveLen / stepLen));
-                var micro = dirXZ * (moveLen / steps);
-                for (int i = 0; i < steps; i++)
+                moveDir = delta / moveLen;
+                if (onPlanet)
                 {
-                    CCD_AdvanceAndSlide(ref pos, micro, CapsuleRadius, CapsuleHalfCylinder);
-                    ResolveHorizontalAABB(ref pos, CapsuleHalfCylinder, CapsuleRadius);
+                    float altBefore = (pos - planetCenter).Length();
+                    pos += delta;
+                    // Re-project onto sphere preserving pre-move altitude
+                    var toNew = pos - planetCenter;
+                    float newDist = toNew.Length();
+                    if (newDist > 1e-6f)
+                        pos = planetCenter + (toNew / newDist) * altBefore;
+                }
+                else
+                {
+                    var dirXZ = new SN.Vector3(delta.X, 0, delta.Z);
+                    float dirLen = dirXZ.Length();
+                    if (dirLen > 1e-6f) dirXZ /= dirLen; else dirXZ = SN.Vector3.UnitX;
+                    float stepLen = MathF.Max(0.01f, CapsuleRadius / 4f);
+                    int steps = Math.Max(1, (int)MathF.Ceiling(moveLen / stepLen));
+                    var micro = dirXZ * (moveLen / steps);
+                    for (int i = 0; i < steps; i++)
+                    {
+                        CCD_AdvanceAndSlide(ref pos, micro, CapsuleRadius, CapsuleHalfCylinder);
+                        ResolveHorizontalAABB(ref pos, CapsuleHalfCylinder, CapsuleRadius);
+                    }
                 }
             }
 
-            // ── Push Rigidbody objects ──
             PushRigidbodies(pos, moveDir, moveLen, dt);
 
-            // Re-probe quickly after horizontal move (helps big steps)
-            rayStart = pos + new SN.Vector3(0, Math.Max(StepUpMax, 0.2f) + 0.002f, 0);
-            groundHit = RaycastGround(rayStart, new SN.Vector3(0, -1, 0),
-                                      GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
-                                      out hitY, out hitN);
-            feetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
-            diff = feetY - hitY;
-            slopeOk = groundHit && hitN.Y >= minGroundY;
-            IsGrounded = slopeOk && diff >= -0.02f && diff <= StepUpMax + 0.02f;
-            if (groundHit) { _lastHitY = hitY; _lastHitN = hitN; }
+            // Re-probe after horizontal move
+            if (onPlanet)
+            {
+                LocalUp = SN.Vector3.Normalize(pos - planetCenter);
+                float surfR2 = planet!.SampleSurfaceRadius(LocalUp);
+                float feetDist2 = (pos - planetCenter).Length() - capsuleH;
+                float diff2 = feetDist2 - surfR2;
+                IsGrounded = diff2 >= -0.02f && diff2 <= StepUpMax + 0.02f;
+                GroundNormal = LocalUp;
+                if (IsGrounded) _lastHitDist = surfR2;
+            }
+            else
+            {
+                var rayStart2 = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
+                bool groundHit2 = RaycastGround(rayStart2, -LocalUp,
+                                                GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
+                                                out float hitY2, out SN.Vector3 hitN2);
+                float feetY2 = pos.Y - capsuleH;
+                float diff2 = feetY2 - hitY2;
+                bool slopeOk2 = groundHit2 && hitN2.Y >= minSlopeUpDot;
+                IsGrounded = slopeOk2 && diff2 >= -0.02f && diff2 <= StepUpMax + 0.02f;
+                if (groundHit2) { _lastHitDist = hitY2; _lastHitN = hitN2; }
+            }
 
-            // ---------- Gravity / Jump / Ceiling ----------
+            // ---------- Gravity / Jump ----------
             if (UseGravity)
             {
-                // Jump allowed when grounded or within coyote time
+                float curSurfR = onPlanet ? planet!.SampleSurfaceRadius(LocalUp) : 0f;
+
                 if (jump && _coyoteTimer > 0f)
                 {
                     float g = Math.Max(0.0001f, Gravity);
                     float h = Math.Max(0.01f, JumpHeight);
-                    VerticalVelocity = MathF.Sqrt(2f * g * h); // kinematic takeoff speed
+                    VerticalVelocity = MathF.Sqrt(2f * g * h);
 
-                    // Slight lift so we don't re-snap this frame
-                    if (groundHit)
-                        pos.Y = Math.Max(pos.Y, hitY + (CapsuleHalfCylinder + CapsuleRadius) + 0.002f);
+                    if (onPlanet)
+                    {
+                        float targetDist = curSurfR + capsuleH + 0.002f;
+                        float curDist = (pos - planetCenter).Length();
+                        if (curDist < targetDist)
+                            pos = planetCenter + LocalUp * targetDist;
+                    }
+                    else if (_lastHitDist > float.NegativeInfinity)
+                    {
+                        pos.Y = Math.Max(pos.Y, _lastHitDist + capsuleH + 0.002f);
+                    }
 
                     IsGrounded = false;
                     _coyoteTimer = 0f;
                 }
-                else
+                else if (IsGrounded && VerticalVelocity <= 0f)
                 {
-                    // Stick to ground when grounded and not already going up
-                    if (IsGrounded && VerticalVelocity <= 0f)
-                    {
-                        if (groundHit)
-                            pos.Y = hitY + (CapsuleHalfCylinder + CapsuleRadius);
+                    if (onPlanet)
+                        pos = planetCenter + LocalUp * (curSurfR + capsuleH);
+                    else if (_lastHitDist > float.NegativeInfinity)
+                        pos.Y = _lastHitDist + capsuleH;
 
-                        VerticalVelocity = 0f;
-                    }
+                    VerticalVelocity = 0f;
                 }
 
-                // Integrate velocity
                 VerticalVelocity -= Gravity * dt;
 
-                // Ceiling clamp (if moving up)
-                if (VerticalVelocity > 0f)
+                // Apply vertical displacement along local up
+                pos += LocalUp * (VerticalVelocity * dt);
+
+                // Prevent sinking below surface
+                if (onPlanet)
                 {
-                    float headY = pos.Y + (CapsuleHalfCylinder + CapsuleRadius);
-                    float travel = VerticalVelocity * dt + 0.02f; // small skin
-                    if (RaycastCeiling(new SN.Vector3(pos.X, headY, pos.Z), SN.Vector3.UnitY, travel, out float ceilY))
+                    // Re-sample after vertical move since LocalUp direction may have shifted
+                    var newUp = SN.Vector3.Normalize(pos - planetCenter);
+                    float snapSurfR = planet!.SampleSurfaceRadius(newUp);
+                    float curDist = (pos - planetCenter).Length();
+                    float minDist = snapSurfR + capsuleH;
+                    if (curDist < minDist)
                     {
-                        pos.Y = ceilY - (CapsuleHalfCylinder + CapsuleRadius);
-                        VerticalVelocity = 0f;
+                        pos = planetCenter + newUp * minDist;
+                        if (VerticalVelocity < 0f) VerticalVelocity = 0f;
+                        IsGrounded = true;
                     }
                 }
-
-                // Apply vertical displacement
-                pos.Y += VerticalVelocity * dt;
-
-                // Prevent sinking below ground on descent
-                if (groundHit)
+                else if (_lastHitDist > float.NegativeInfinity)
                 {
-                    float newFeetY = pos.Y - (CapsuleHalfCylinder + CapsuleRadius);
-                    if (newFeetY < hitY - 0.001f)
+                    float newFeetY = pos.Y - capsuleH;
+                    if (newFeetY < _lastHitDist - 0.001f)
                     {
-                        pos.Y = hitY + (CapsuleHalfCylinder + CapsuleRadius);
+                        pos.Y = _lastHitDist + capsuleH;
                         if (VerticalVelocity < 0f) VerticalVelocity = 0f;
-                        IsGrounded = slopeOk;
+                        IsGrounded = true;
                     }
                 }
             }
 
             // ---------- write back ----------
-            var p3 = tr.Position;
-            p3.X = pos.X; p3.Y = pos.Y; p3.Z = pos.Z;
-            tr.Position = p3;
+            tr.Position = new Vector3(pos.X, pos.Y, pos.Z);
+            GroundNormal = IsGrounded ? LocalUp : LocalUp;
 
-            GroundNormal = IsGrounded ? (slopeOk ? hitN : _lastHitN) : SN.Vector3.UnitY;
-
-            // ── Trigger detection (after final position) ──
             CheckTriggers(pos);
         }
 

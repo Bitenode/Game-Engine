@@ -29,11 +29,17 @@ namespace Game_Engine.Core
             public double ScriptsMs;
             public double AudioMs;
             public double AnimationMs;
+            public double PlanetLodMs;
+            public double PlanetRenderMs;
             public int DrawCalls;
             public int TriangleCount;
             public int BatchCount;
             public int ActiveGameObjects;
             public int ActiveColliders;
+            public int PlanetCount;
+            public int PlanetChunkCount;
+            public int PlanetActiveJobs;
+            public int PlanetPendingJobs;
             public long TextureMemoryBytes;
             public long MeshMemoryBytes;
             public List<ProfileSample> Samples;
@@ -61,6 +67,12 @@ namespace Game_Engine.Core
         private static int _drawCalls;
         private static int _triangles;
         private static int _batches;
+        private static int _planetCount;
+        private static int _planetChunkCount;
+        private static int _planetActiveJobs;
+        private static int _planetPendingJobs;
+        private static double _planetLodMs;
+        private static double _planetRenderMs;
 
         /// <summary>Latest completed frame stats.</summary>
         public static FrameStats Latest => _historyCount > 0
@@ -92,6 +104,12 @@ namespace Game_Engine.Core
             _drawCalls = 0;
             _triangles = 0;
             _batches = 0;
+            _planetCount = 0;
+            _planetChunkCount = 0;
+            _planetActiveJobs = 0;
+            _planetPendingJobs = 0;
+            _planetLodMs = 0;
+            _planetRenderMs = 0;
         }
 
         /// <summary>Call at the end of each frame to finalize stats.</summary>
@@ -125,11 +143,17 @@ namespace Game_Engine.Core
                 ScriptsMs = scriptsMs,
                 AudioMs = audioMs,
                 AnimationMs = animMs,
+                PlanetLodMs = _planetLodMs,
+                PlanetRenderMs = _planetRenderMs,
                 DrawCalls = _drawCalls,
                 TriangleCount = _triangles,
                 BatchCount = _batches,
                 ActiveGameObjects = SceneService.Root?.Count > 0 ? CountGameObjects() : 0,
                 ActiveColliders = Physics.CollisionWorld.All.Count,
+                PlanetCount = _planetCount,
+                PlanetChunkCount = _planetChunkCount,
+                PlanetActiveJobs = _planetActiveJobs,
+                PlanetPendingJobs = _planetPendingJobs,
                 TextureMemoryBytes = 0,
                 MeshMemoryBytes = 0,
                 Samples = new List<ProfileSample>(_currentSamples)
@@ -176,6 +200,24 @@ namespace Game_Engine.Core
 
         /// <summary>Increment the batch counter for this frame.</summary>
         public static void CountBatch() { if (Enabled) _batches++; }
+
+        /// <summary>Set planet system counters/timings for this frame.</summary>
+        public static void SetPlanetStats(
+            int planetCount,
+            int chunkCount,
+            int activeJobs,
+            int pendingJobs,
+            double lodMs,
+            double renderMs)
+        {
+            if (!Enabled) return;
+            _planetCount = planetCount;
+            _planetChunkCount = chunkCount;
+            _planetActiveJobs = activeJobs;
+            _planetPendingJobs = pendingJobs;
+            _planetLodMs = lodMs;
+            _planetRenderMs = renderMs;
+        }
 
         // ── Helpers ──
 

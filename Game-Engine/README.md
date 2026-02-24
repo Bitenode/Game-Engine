@@ -29,6 +29,7 @@ All docs are in the `Docs/` folder:
 | [10 — Model Import & Assets](Docs/10_Model_Import_And_Assets.md) | 3D model import, animation import, skeletal meshes, primitives, asset pipeline |
 | [11 — UIX Framework](Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
 | [12 — Build Settings](Docs/12_Build_Settings.md) | Solution structure, project config, dependencies, Engine.Player, publishing, ANGLE setup |
+| [13 — Planet System](Docs/13_Planet_System.md) | PlanetTerrain, biome graph workflow, chunk streaming, and planet-aware Rigidbody/Camera behavior |
 
 ## Community
 

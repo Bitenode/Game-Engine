@@ -34,6 +34,13 @@ public sealed class Mesh
     /// <summary>True if this mesh has bone skinning data.</summary>
     public bool HasBones => BoneWeights != null && BoneIndices != null && Skeleton != null;
 
+    /// <summary>Per-vertex biome blend indices (up to 4 biomes). Non-null marks this as a planet mesh.</summary>
+    public SN.Vector4[]? PlanetBlendIndices { get; set; }
+    /// <summary>Per-vertex biome blend weights (up to 4 biomes).</summary>
+    public SN.Vector4[]? PlanetBlendWeights { get; set; }
+    /// <summary>True if this mesh carries planet biome blend data.</summary>
+    public bool IsPlanetMesh => PlanetBlendIndices != null;
+
     public Mesh(SN.Vector3[] v, int[] lines, int[] tris)
     {
         Vertices = v;

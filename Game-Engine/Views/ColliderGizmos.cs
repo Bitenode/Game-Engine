@@ -204,6 +204,87 @@ namespace Game_Engine.Views
             Poly(arc);
         }
 
+        /// <summary>
+        /// Emit 3 great-circle rings (XY, XZ, YZ planes) for a sphere collider.
+        /// Provides clear visual coverage of the sphere volume with minimal overdraw.
+        /// </summary>
+        public static void CollectSphere(List<float> verts, SN.Vector3 center, float radius, int segments = 64)
+        {
+            float step = MathF.PI * 2f / segments;
+
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = step * i;
+                float a1 = step * (i + 1);
+                float c0 = MathF.Cos(a0), s0 = MathF.Sin(a0);
+                float c1 = MathF.Cos(a1), s1 = MathF.Sin(a1);
+
+                // XY ring (equator when viewed from Z)
+                Line(verts,
+                    center + new SN.Vector3(c0 * radius, s0 * radius, 0f),
+                    center + new SN.Vector3(c1 * radius, s1 * radius, 0f));
+
+                // XZ ring (equator when viewed from Y)
+                Line(verts,
+                    center + new SN.Vector3(c0 * radius, 0f, s0 * radius),
+                    center + new SN.Vector3(c1 * radius, 0f, s1 * radius));
+
+                // YZ ring (equator when viewed from X)
+                Line(verts,
+                    center + new SN.Vector3(0f, c0 * radius, s0 * radius),
+                    center + new SN.Vector3(0f, c1 * radius, s1 * radius));
+            }
+        }
+
+        /// <summary>
+        /// Emit 3 great-circle rings that follow the actual terrain surface
+        /// by sampling PlanetTerrain.SampleSurfaceRadius at each direction.
+        /// Falls back to fixed-radius spheres if the terrain can't be sampled.
+        /// </summary>
+        public static void CollectPlanetTerrain(
+            List<float> verts,
+            SN.Vector3 center,
+            Game_Engine.Core.Component.PlanetTerrain planet,
+            int segments = 96)
+        {
+            float step = MathF.PI * 2f / segments;
+
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = step * i;
+                float a1 = step * (i + 1);
+                float c0 = MathF.Cos(a0), s0 = MathF.Sin(a0);
+                float c1 = MathF.Cos(a1), s1 = MathF.Sin(a1);
+
+                // XY ring
+                {
+                    var d0 = SN.Vector3.Normalize(new SN.Vector3(c0, s0, 0f));
+                    var d1 = SN.Vector3.Normalize(new SN.Vector3(c1, s1, 0f));
+                    float r0 = planet.SampleSurfaceRadius(d0);
+                    float r1 = planet.SampleSurfaceRadius(d1);
+                    Line(verts, center + d0 * r0, center + d1 * r1);
+                }
+
+                // XZ ring
+                {
+                    var d0 = SN.Vector3.Normalize(new SN.Vector3(c0, 0f, s0));
+                    var d1 = SN.Vector3.Normalize(new SN.Vector3(c1, 0f, s1));
+                    float r0 = planet.SampleSurfaceRadius(d0);
+                    float r1 = planet.SampleSurfaceRadius(d1);
+                    Line(verts, center + d0 * r0, center + d1 * r1);
+                }
+
+                // YZ ring
+                {
+                    var d0 = SN.Vector3.Normalize(new SN.Vector3(0f, c0, s0));
+                    var d1 = SN.Vector3.Normalize(new SN.Vector3(0f, c1, s1));
+                    float r0 = planet.SampleSurfaceRadius(d0);
+                    float r1 = planet.SampleSurfaceRadius(d1);
+                    Line(verts, center + d0 * r0, center + d1 * r1);
+                }
+            }
+        }
+
         /// <summary>Append a single line segment (two endpoints) to the vertex list.</summary>
         static void Line(List<float> verts, SN.Vector3 a, SN.Vector3 b)
         {

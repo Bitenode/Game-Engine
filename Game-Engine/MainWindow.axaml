@@ -44,6 +44,7 @@
 					<Separator/>
 					<MenuItem Header="New Profiler Tab"       x:Name="NewProfilerTab"/>
 					<MenuItem Header="New Shader Editor Tab"  x:Name="NewShaderEditorTab"/>
+					<MenuItem Header="New Biome Graph Tab"    x:Name="NewBiomeGraphTab"/>
 				</MenuItem>
 			</MenuItem>
 

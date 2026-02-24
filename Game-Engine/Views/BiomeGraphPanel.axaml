@@ -1,0 +1,55 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.BiomeGraphPanel">
+	<DockPanel>
+		<!-- Toolbar -->
+		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="8">
+			<TextBlock Text="Biome Graph" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
+			<ComboBox x:Name="NodeTypeCombo" Width="130" SelectedIndex="0">
+				<ComboBoxItem Content="Noise" />
+				<ComboBoxItem Content="Coordinate" />
+				<ComboBoxItem Content="Temperature" />
+				<ComboBoxItem Content="Moisture" />
+				<ComboBoxItem Content="Biome Select" />
+				<ComboBoxItem Content="Biome Layer" />
+				<ComboBoxItem Content="Blend" />
+				<ComboBoxItem Content="Math" />
+				<ComboBoxItem Content="Height" />
+				<ComboBoxItem Content="Cave" />
+				<ComboBoxItem Content="Altitude" />
+				<ComboBoxItem Content="Slope" />
+				<ComboBoxItem Content="Erosion" />
+				<ComboBoxItem Content="Mask" />
+				<ComboBoxItem Content="River" />
+			</ComboBox>
+			<Button x:Name="AddNodeBtn" Content="Add Node" Padding="8,4" />
+			<Button x:Name="DeleteNodeBtn" Content="Delete" Padding="8,4" />
+			<Separator Width="1" Margin="4,0" />
+			<Button x:Name="SaveBtn" Content="Save" Padding="8,4" />
+			<Button x:Name="LoadBtn" Content="Load" Padding="8,4" />
+			<Button x:Name="CompileBtn" Content="Compile" Padding="8,4" />
+			<Button x:Name="NewDefaultBtn" Content="New Default" Padding="8,4" />
+			<Separator Width="1" Margin="4,0" />
+			<Button x:Name="PreviewBtn" Content="Preview" Padding="8,4" />
+			<Button x:Name="ValidateBtn" Content="Validate" Padding="8,4" />
+			<Button x:Name="UndoBtn" Content="Undo" Padding="8,4" />
+			<Button x:Name="RedoBtn" Content="Redo" Padding="8,4" />
+		</StackPanel>
+
+		<Grid ColumnDefinitions="*,250">
+			<!-- Graph Canvas -->
+			<Canvas Grid.Column="0" x:Name="GraphCanvas" Background="#1E1E2E" ClipToBounds="True" />
+
+			<!-- Properties Panel -->
+			<Border Grid.Column="1" BorderBrush="#40808080" BorderThickness="1,0,0,0">
+				<ScrollViewer>
+					<StackPanel x:Name="PropsPanel" Margin="8" Spacing="6">
+						<TextBlock Text="Properties" FontWeight="SemiBold" />
+						<TextBlock x:Name="PropsNodeName" Text="No node selected" Foreground="#808080" />
+					</StackPanel>
+				</ScrollViewer>
+			</Border>
+		</Grid>
+	</DockPanel>
+</UserControl>

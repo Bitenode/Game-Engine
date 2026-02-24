@@ -40,6 +40,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private ShaderProgram? _terrainShader;
     private ShaderProgram? _particleShader;
     private ShaderProgram? _waterShader;
+    private ShaderProgram? _planetTerrainShader;
+    private ShaderProgram? _planetWaterShader;
     private ShaderProgram? _postProcessShader;
     private ShaderProgram? _volFogShader;
     private FullscreenQuad? _fsQuad;
@@ -932,6 +934,17 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
     }
 
+    // ────────────── Planet LOD Update ──────────────
+    static void UpdatePlanetLOD(SN.Vector3 camPos)
+    {
+        foreach (var planet in PlanetTerrain.ActivePlanets)
+        {
+            if (planet == null) continue;
+            planet.UpdateLOD(camPos);
+            planet.Update();
+        }
+    }
+
     // ────────────── Cached Scene Queries ──────────────
     void CacheSkyboxAndLight(GameObject go)
     {
@@ -1163,6 +1176,18 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 ShaderSources.Adapt(ShaderSources.WaterVert, es),
                 ShaderSources.Adapt(ShaderSources.WaterFrag, es));
             DiagLog("[SceneView] Water shader OK");
+
+            DiagLog("[SceneView] Compiling planet terrain shader...");
+            _planetTerrainShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es),
+                ShaderSources.Adapt(ShaderSources.PlanetTerrainFrag, es));
+            DiagLog("[SceneView] Planet terrain shader OK");
+
+            DiagLog("[SceneView] Compiling planet water shader...");
+            _planetWaterShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PlanetWaterVert, es),
+                ShaderSources.Adapt(ShaderSources.PlanetWaterFrag, es));
+            DiagLog("[SceneView] Planet water shader OK");
 
             DiagLog("[SceneView] Compiling post-process shader...");
             _postProcessShader = new ShaderProgram(g,
@@ -1448,6 +1473,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             UpdateTerrainLOD(camPos);
             // Update tree LOD per frame
             UpdateTreeLOD(camPos);
+            // Update planet LOD per frame
+            UpdatePlanetLOD(camPos);
 
             SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
                 view, proj,
@@ -1457,6 +1484,20 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 terrainShader: _terrainShader,
                 lightColor: lightColorNorm);
 
+            // --- PLANET TERRAIN ---
+            if (_planetTerrainShader != null)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache,
+                        view, proj, SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos,
+                        pc, shadowFBO, shadowVP, planet.Config.Biomes);
+                }
+            }
+
             // --- WATER ---
             if (_waterShader != null)
             {
@@ -1465,6 +1506,23 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     : new SN.Vector3(0.5f, 0.6f, 0.8f);
                 SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
                     SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
+            }
+
+            // --- PLANET WATER ---
+            if (_planetWaterShader != null)
+            {
+                var skyC = sky != null
+                    ? new SN.Vector3(sky.Top.R / 255f, sky.Top.G / 255f, sky.Top.B / 255f)
+                    : new SN.Vector3(0.5f, 0.6f, 0.8f);
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
+                        view, proj, SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC,
+                        pc, planet.Config.SeaLevel);
+                }
             }
 
             // --- PARTICLES ---
@@ -2115,9 +2173,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         var eye = _target - dir * _distance;
         var view = SN.Matrix4x4.CreateLookAt(eye, _target, SN.Vector3.UnitY);
         float aspect = size.Width <= 0 || size.Height <= 0 ? 1f : (float)(size.Width / size.Height);
+        float farPlane = PlanetTerrain.ActivePlanets.Count > 0 ? 50000f : 1000f;
         SN.Matrix4x4 proj = Is2D
-            ? SN.Matrix4x4.CreateOrthographic(12f, 12f / aspect, 0.1f, 1000f)
-            : SN.Matrix4x4.CreatePerspectiveFieldOfView(60f * MathF.PI / 180f, aspect, 0.1f, 1000f);
+            ? SN.Matrix4x4.CreateOrthographic(12f, 12f / aspect, 0.1f, farPlane)
+            : SN.Matrix4x4.CreatePerspectiveFieldOfView(60f * MathF.PI / 180f, aspect, 0.5f, farPlane);
         return (view, proj);
     }
     #endregion
@@ -2296,6 +2355,23 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             bool isTrigger = col.IsTrigger;
             var mainBuf = isTrigger ? _colLinesTrigger : _colLinesNormal;
+
+            if (col is PlanetCollider planetCol)
+            {
+                var pc = planetCol.WorldCenter;
+                var pt = go.Behaviors.OfType<PlanetTerrain>().FirstOrDefault();
+                if (pt != null && pt.Config != null)
+                {
+                    ColliderGizmos.CollectPlanetTerrain(mainBuf, pc, pt, 96);
+                }
+                else
+                {
+                    ColliderGizmos.CollectSphere(mainBuf, pc, planetCol.MaxRadius, 64);
+                }
+                var faintBuf = isTrigger ? _colLinesFaintT : _colLinesFaintN;
+                ColliderGizmos.CollectSphere(faintBuf, pc, planetCol.BaseRadius, 48);
+                continue;
+            }
 
             if (col is CapsuleCollider capCol)
             {

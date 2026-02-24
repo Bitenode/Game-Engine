@@ -44,6 +44,7 @@ public partial class MainWindow : Window
             [typeof(TimelineSequencerPanel)] = ("Timeline", DockRegion.Bottom, () => new TimelineSequencerPanel()),
             [typeof(ProfilerPanel)] = ("Profiler", DockRegion.Bottom, () => new ProfilerPanel()),
             [typeof(ShaderEditorPanel)] = ("Shader Editor", DockRegion.Center, () => new ShaderEditorPanel()),
+            [typeof(BiomeGraphPanel)] = ("Biome Graph", DockRegion.Center, () => new BiomeGraphPanel()),
         };
 
         // Defaults
@@ -78,6 +79,7 @@ public partial class MainWindow : Window
         BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
         BindNew("NewProfilerTab", typeof(ProfilerPanel), DockRegion.Bottom);
         BindNew("NewShaderEditorTab", typeof(ShaderEditorPanel), DockRegion.Center);
+        BindNew("NewBiomeGraphTab", typeof(BiomeGraphPanel), DockRegion.Center);
 
         if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
             settings.Click += (_, __) => InputRemappingAsync();

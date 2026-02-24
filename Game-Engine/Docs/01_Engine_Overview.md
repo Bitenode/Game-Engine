@@ -52,6 +52,7 @@ Game-Engine/
 │   │   │   ├── MeshCollider.cs  # Mesh-based collision
 │   │   │   ├── CharacterController.cs # Physics character controller
 │   │   │   ├── PlayerMovement.cs # FPS/TPS player movement
+│   │   │   ├── PlanetCollider.cs # Planet collider shell / AABB provider
 │   │   │   ├── Rigidbody.cs     # Physics body
 │   │   │   └── RigidbodyPlayer.cs # Player physics controller
 │   │   ├── Animation/           # [ComponentCategory("Animation")]
@@ -68,6 +69,7 @@ Game-Engine/
 │   │   ├── Environment/         # [ComponentCategory("Environment")]
 │   │   │   ├── Skybox.cs        # Sky gradient + equirectangular texture
 │   │   │   ├── Terrain.cs       # Heightmap terrain with splatmaps
+│   │   │   ├── PlanetTerrain.cs # Cube-sphere planet terrain with biome graph integration
 │   │   │   ├── Tree.cs          # Procedural/imported trees with wind
 │   │   │   ├── TreeLOD.cs       # Tree level-of-detail management
 │   │   │   ├── VegetationPainter.cs # GPU-instanced vegetation
@@ -128,12 +130,28 @@ Game-Engine/
 │   ├── Meshes/                  # LOD, mesh utilities
 │   │   ├── MeshLod.cs           # Screen-space LOD for procedural meshes
 │   │   └── MeshUtil.cs          # Bounding radius, dimension estimation
+│   ├── Planet/                  # Planet terrain generation + chunk streaming
+│   │   ├── CubeSphereMath.cs    # Cube<->sphere mapping utilities
+│   │   ├── DensityGenerator.cs  # Voxel density generation from biome/noise
+│   │   ├── FaceQuadtree.cs      # Per-face quadtree LOD manager
+│   │   ├── PlanetChunkManager.cs# Async chunk generation/apply scheduler
+│   │   ├── PlanetConfig.cs      # Planet generation/runtime budgets config
+│   │   ├── PlanetMeshGenerator.cs # Planet surface mesh generation
+│   │   ├── PlanetWater.cs       # Planet water shell mesh
+│   │   └── QuadNode.cs          # Quadtree node state
+│   ├── Noise/                   # Procedural noise utilities
+│   │   ├── SimplexNoise.cs      # Base 2D/3D simplex noise
+│   │   └── FractalNoise.cs      # FBM/ridged/billow noise wrapper
 │   ├── Physics/                 # Collision detection and physics
 │   │   ├── CollisionWorld.cs    # Runtime collision manager
 │   │   ├── Physics.cs           # Static convenience wrapper (Unity-style)
 │   │   ├── PhysicsCache.cs      # Per-frame physics query caching
 │   │   ├── PhysicsJoint.cs      # Joint constraints (fixed, hinge, spring, slider, ball-socket)
 │   │   └── BVH.cs               # Bounding Volume Hierarchy for spatial queries
+│   ├── Voxel/                   # Voxel mesh extraction for terrain
+│   │   ├── VoxelChunk.cs        # Density/material grid storage
+│   │   ├── TransvoxelMesher.cs  # Regular + transition-cell meshing
+│   │   └── MarchingCubesTables.cs # Transvoxel lookup tables
 │   ├── UIX/                     # Declarative UI framework (21 widget types)
 │   │   ├── UIX.cs               # VNode definitions + static builder API
 │   │   ├── UIXRenderer.cs       # VNode → Avalonia control renderer
@@ -191,6 +209,7 @@ Game-Engine/
 │   ├── ScriptEditorWindow.axaml.cs # Code editor
 │   ├── InputRemappingWindow.axaml.cs # Input configuration
 │   ├── ShaderEditorPanel.axaml.cs  # Visual shader graph editor
+│   ├── BiomeGraphPanel.axaml.cs # Biome graph editor for planet generation
 │   ├── ProfilerPanel.axaml.cs   # Performance profiler view
 │   ├── BuildSettingsWindow.axaml.cs # Build configuration and packaging
 │   └── ColliderGizmos.cs        # Collider wireframe rendering

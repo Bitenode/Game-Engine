@@ -31,6 +31,12 @@ namespace Game_Engine.Core.Component
         // Default camera for Game mode
         [Persist] public bool IsMain { get; set; } = false;
 
+        /// <summary>
+        /// World-space "up" for the view matrix. Defaults to +Y.
+        /// Set by planet-aware player controllers to align the horizon with the terrain.
+        /// </summary>
+        public SN.Vector3 WorldUp { get; set; } = SN.Vector3.UnitY;
+
         public SN.Matrix4x4 GetViewMatrix()
         {
             static float Deg2Rad(double d) => (float)(Math.PI / 180.0 * d);
@@ -43,7 +49,7 @@ namespace Game_Engine.Core.Component
 
             var forward = SN.Vector3.TransformNormal(new SN.Vector3(0, 0, -1), r);
             var eye = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
-            return SN.Matrix4x4.CreateLookAt(eye, eye + SN.Vector3.Normalize(forward), SN.Vector3.UnitY);
+            return SN.Matrix4x4.CreateLookAt(eye, eye + SN.Vector3.Normalize(forward), SN.Vector3.Normalize(WorldUp));
         }
 
         public SN.Matrix4x4 GetProjectionMatrix(float aspect)

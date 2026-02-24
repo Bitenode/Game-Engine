@@ -57,6 +57,10 @@ public partial class ProfilerPanel : UserControl
         CollidersLabel.Text = $"Colliders: {latest.ActiveColliders}";
         AvgFpsLabel.Text = $"Avg FPS: {fps:F0}";
         AvgFrameLabel.Text = $"Avg Frame: {avgMs:F1} ms";
+        PlanetCountLabel.Text = $"Planets: {latest.PlanetCount}";
+        PlanetChunksLabel.Text = $"Planet Chunks: {latest.PlanetChunkCount}";
+        PlanetJobsLabel.Text = $"Planet Jobs: {latest.PlanetActiveJobs}/{latest.PlanetPendingJobs}";
+        PlanetMsLabel.Text = $"Planet LOD/Render: {latest.PlanetLodMs:F2}/{latest.PlanetRenderMs:F2} ms";
 
         DrawGraph();
     }

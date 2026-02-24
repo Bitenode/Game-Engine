@@ -49,6 +49,8 @@ namespace Game_Engine.Views
         private ShaderProgram? _terrainShader;
         private ShaderProgram? _particleShader;
         private ShaderProgram? _waterShader;
+        private ShaderProgram? _planetTerrainShader;
+        private ShaderProgram? _planetWaterShader;
         private ShaderProgram? _postProcessShader;
         private FullscreenQuad? _fsQuad;
         private ResourceCache? _cache;
@@ -121,6 +123,21 @@ namespace Game_Engine.Views
         static readonly Typeface HudTypeface = new("Segoe UI");
         static readonly IBrush HudText = Brushes.White;
         static readonly IBrush HudBg = new SolidColorBrush(Color.FromArgb(0x80, 0x00, 0x00, 0x00));
+
+        // LOD throttling: updating all terrain/tree/planet LOD every rendered frame is expensive.
+        // We update at a fixed cadence or when the camera moves enough.
+        const double LOD_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz
+        const float LOD_UPDATE_MOVE_THRESHOLD = 2.0f;
+        const int PLAYMODE_MAX_PLANET_LOD_DEPTH = 5;
+        double _lodAccumSec;
+        SN.Vector3 _lastLodCamPos = new(float.NaN);
+
+        // Shadow throttling: render shadow map less frequently and reuse cached map.
+        const double SHADOW_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz
+        const float SHADOW_UPDATE_MOVE_THRESHOLD = 1.5f;
+        double _shadowAccumSec;
+        SN.Vector3 _lastShadowCamPos = new(float.NaN);
+        bool _hasShadowMap;
         #endregion
 
         // Render gating: prevent InvalidateVisual() from piling up.
@@ -221,6 +238,12 @@ namespace Game_Engine.Views
                 _waterShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.WaterVert, es),
                     ShaderSources.Adapt(ShaderSources.WaterFrag, es));
+                _planetTerrainShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es),
+                    ShaderSources.Adapt(ShaderSources.PlanetTerrainFrag, es));
+                _planetWaterShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.PlanetWaterVert, es),
+                    ShaderSources.Adapt(ShaderSources.PlanetWaterFrag, es));
                 _postProcessShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
                     ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
@@ -250,7 +273,7 @@ namespace Game_Engine.Views
 
                 _fsQuad = new FullscreenQuad(g);
                 _cache = new ResourceCache(g);
-                _shadow = new ShadowMapGPU(g, 1024, 1024);
+                _shadow = new ShadowMapGPU(g, 768, 768);
 
                 _canvasRenderer = new Core.Rendering.UI.CanvasRenderer(g, es);
 
@@ -292,6 +315,9 @@ namespace Game_Engine.Views
             _standardShader?.Dispose();
             _glCtx?.Dispose();
             _glCtx = null;
+            _hasShadowMap = false;
+            _shadowAccumSec = 0.0;
+            _lastShadowCamPos = new SN.Vector3(float.NaN);
             base.OnOpenGlDeinit(gl);
         }
 
@@ -309,6 +335,25 @@ namespace Game_Engine.Views
             foreach (var b in go.Behaviors)
                 if (b is Terrain t && t.Enabled) { t.UpdateLOD(cam); break; }
             foreach (var c in go.Children) WalkTerrainLOD(c, cam);
+        }
+
+        static void CollectPlanetProfilerStats(out int planetCount, out int chunkCount, out int activeJobs, out int pendingJobs)
+        {
+            planetCount = 0;
+            chunkCount = 0;
+            activeJobs = 0;
+            pendingJobs = 0;
+
+            var planets = PlanetTerrain.ActivePlanets;
+            for (int i = 0; i < planets.Count; i++)
+            {
+                var p = planets[i];
+                if (p == null || !p.IsActiveAndEnabled) continue;
+                planetCount++;
+                chunkCount += p.ActiveChunkCount;
+                activeJobs += p.ActiveGenerationJobs;
+                pendingJobs += p.PendingMeshJobs;
+            }
         }
 
         // Shadows can be disabled at runtime to boost framerate on weak GPUs
@@ -477,17 +522,41 @@ namespace Game_Engine.Views
                 var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
                 var sceneCenter = camPos + camFwd * 12f;
                 float sceneRadius = 50f;
-                shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, sceneRadius);
-                _shadow.LightVP = shadowVP;
 
-                _shadow.Begin(g);
-                g.Enable(EnableCap.DepthTest);
-                g.DepthFunc(DepthFunction.Less);
-                SceneRenderer.RenderShadowPass(g, _depthShader, _cache!, shadowVP);
-                _shadow.End(g, (uint)fb);
+                _shadowAccumSec += Math.Max(0.0, dt);
+                bool updateShadow = _shadowAccumSec >= SHADOW_UPDATE_INTERVAL_SEC || !_hasShadowMap;
+                if (!float.IsNaN(_lastShadowCamPos.X))
+                {
+                    var d = camPos - _lastShadowCamPos;
+                    if (d.LengthSquared() >= SHADOW_UPDATE_MOVE_THRESHOLD * SHADOW_UPDATE_MOVE_THRESHOLD)
+                        updateShadow = true;
+                }
+                else
+                {
+                    updateShadow = true;
+                }
 
-                // Restore main viewport after shadow pass
-                g.Viewport(0, 0, (uint)W, (uint)H);
+                if (updateShadow)
+                {
+                    _shadowAccumSec = 0.0;
+                    _lastShadowCamPos = camPos;
+                    shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, sceneRadius);
+                    _shadow.LightVP = shadowVP;
+
+                    _shadow.Begin(g);
+                    g.Enable(EnableCap.DepthTest);
+                    g.DepthFunc(DepthFunction.Less);
+                    SceneRenderer.RenderShadowPass(g, _depthShader, _cache!, shadowVP);
+                    _shadow.End(g, (uint)fb);
+
+                    // Restore main viewport after shadow pass
+                    g.Viewport(0, 0, (uint)W, (uint)H);
+                    _hasShadowMap = true;
+                }
+                else
+                {
+                    shadowVP = _shadow.LightVP;
+                }
                 shadowFBO = _shadow.FBO;
             }
 
@@ -505,11 +574,43 @@ namespace Game_Engine.Views
             // --- POST-PROCESSING setup ---
             var postVolume = PostProcessVolume.GetActive();
             bool usePostFX = (postVolume != null || underwaterWater != null) && _postProcessShader != null;
+            bool useSSAO = postVolume?.SSAOEnabled == true;
+            bool useSSR = postVolume?.SSREnabled == true;
+            double planetLodMs = 0.0;
 
-            // Update terrain LOD per frame
-            foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
-            // Update tree LOD per frame
-            foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
+            bool shouldUpdateLod = false;
+            _lodAccumSec += Math.Max(0.0, dt);
+            if (_lodAccumSec >= LOD_UPDATE_INTERVAL_SEC)
+                shouldUpdateLod = true;
+
+            if (!float.IsNaN(_lastLodCamPos.X))
+            {
+                var d = camPos - _lastLodCamPos;
+                if (d.LengthSquared() >= LOD_UPDATE_MOVE_THRESHOLD * LOD_UPDATE_MOVE_THRESHOLD)
+                    shouldUpdateLod = true;
+            }
+            else
+            {
+                shouldUpdateLod = true;
+            }
+
+            if (shouldUpdateLod)
+            {
+                var lodSw = Stopwatch.StartNew();
+                _lodAccumSec = 0.0;
+                _lastLodCamPos = camPos;
+
+                foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
+                foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config != null && planet.Config.MaxLodDepth > PLAYMODE_MAX_PLANET_LOD_DEPTH)
+                        planet.Config.MaxLodDepth = PLAYMODE_MAX_PLANET_LOD_DEPTH;
+                    planet?.UpdateLOD(camPos);
+                }
+                lodSw.Stop();
+                planetLodMs = lodSw.Elapsed.TotalMilliseconds;
+            }
 
             var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
             bool isES = _glCtx.IsES;
@@ -533,7 +634,7 @@ namespace Game_Engine.Views
 
             // 2. SSAO PASS — screen-space ambient occlusion (half resolution)
             GPUTexture? ssaoResult = null;
-            if (_ssaoShader != null && _ssaoBlurShader != null && _ssaoKernel != null)
+            if (useSSAO && _ssaoShader != null && _ssaoBlurShader != null && _ssaoKernel != null)
             {
                 int ssaoW = Math.Max(1, W / 2);
                 int ssaoH = Math.Max(1, H / 2);
@@ -551,8 +652,10 @@ namespace Game_Engine.Views
                 g.ClearColor(1f, 1f, 1f, 1f);
                 g.Clear(ClearBufferMask.ColorBufferBit);
 
+                float ssaoRadius = postVolume != null ? Math.Clamp(postVolume.SSAORadius, 0.05f, 3f) : 0.5f;
+                float ssaoBias = 0.025f / Math.Max(0.1f, postVolume?.SSAOIntensity ?? 1f);
                 SceneRenderer.RenderSSAO(g, _ssaoShader, _fsQuad!, _gbufferFBO,
-                    view, proj, _ssaoKernel, W, H, 0.5f, 0.025f);
+                    view, proj, _ssaoKernel, W, H, ssaoRadius, ssaoBias);
 
                 // Blur SSAO
                 _ssaoBlurFBO.Bind();
@@ -604,7 +707,22 @@ namespace Game_Engine.Views
                 terrainShader: _terrainShader, isES: isES,
                 lightColor: lightColorNorm);
 
-            // 8. WATER
+            // 8. PLANET TERRAIN
+            var planetRenderSw = Stopwatch.StartNew();
+            if (_planetTerrainShader != null)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache,
+                        view, proj, SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos,
+                        pc, shadowFBO, shadowVP, planet.Config.Biomes);
+                }
+            }
+
+            // 8b. WATER
             if (_waterShader != null)
             {
                 var skyC = _sky != null
@@ -613,6 +731,25 @@ namespace Game_Engine.Views
                 SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
                     SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
             }
+
+            // 8c. PLANET WATER
+            if (_planetWaterShader != null)
+            {
+                var skyC = _sky != null
+                    ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
+                    : new SN.Vector3(0.5f, 0.6f, 0.8f);
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
+                        view, proj, SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC,
+                        pc, planet.Config.SeaLevel);
+                }
+            }
+            planetRenderSw.Stop();
+            double planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;
 
             // 9. PARTICLES
             if (_particleShader != null)
@@ -631,7 +768,7 @@ namespace Game_Engine.Views
 
             // 10. SSR — screen-space reflections (reads lit scene + G-buffer)
             GPUTexture? finalSceneTex = _sceneFBO.ColorTexture;
-            if (_ssrShader != null && _sceneFBO.ColorTexture != null)
+            if (useSSR && _ssrShader != null && _sceneFBO.ColorTexture != null)
             {
                 if (_ssrFBO == null) _ssrFBO = new GPUFramebuffer(g);
                 if (_ssrFBO.Width != W || _ssrFBO.Height != H)
@@ -703,6 +840,12 @@ namespace Game_Engine.Views
             if (_canvasRenderer != null && _cache != null)
             {
                 _canvasRenderer.RenderOverlays(W, H, _cache);
+            }
+
+            if (Profiler.Enabled)
+            {
+                CollectPlanetProfilerStats(out int planetCount, out int chunkCount, out int activeJobs, out int pendingJobs);
+                Profiler.SetPlanetStats(planetCount, chunkCount, activeJobs, pendingJobs, planetLodMs, planetRenderMs);
             }
 
             Profiler.End(); // end "Render"

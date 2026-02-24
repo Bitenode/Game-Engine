@@ -580,11 +580,12 @@ namespace Game_Engine.Core
                 {
                     if (item.Terrain == null || item.Terrain.Layers.Count <= 0) continue;
 
-                    // Bind per-terrain state only when the terrain reference changes
                     if (!ReferenceEquals(item.Terrain, boundTerrain))
                     {
                         boundTerrain = item.Terrain;
                         BindTerrainState(gl, terrainShader, cache, boundTerrain);
+
+                gl.Enable(EnableCap.CullFace);
                     }
                     DrawTerrainChunk(gl, terrainShader, cache, item);
                 }
@@ -734,8 +735,11 @@ namespace Game_Engine.Core
         {
             if (!go.Enabled) return;
 
+            // Skip planet chunks and water — they're rendered by the dedicated planet pipeline.
+            if (go.Name != null && (go.Name.StartsWith("PlanetChunk_") || go.Name == "PlanetWater"))
+                return;
+
             // Fast skip for vegetation chunks whose MeshRenderer was disabled by distance culling.
-            // Avoids expensive matrix computation and behavior iteration for distant grass.
             if (go.Name.StartsWith("chunk_"))
             {
                 var bh = go.Behaviors;
@@ -1418,6 +1422,54 @@ namespace Game_Engine.Core
         // Cache loaded layer textures by path
         private static readonly Dictionary<string, Texture2D?> s_layerTextureCache = new();
 
+        private static string? ResolveTexturePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            try
+            {
+                // 1) Absolute path as-is
+                if (System.IO.Path.IsPathRooted(path))
+                {
+                    string abs = System.IO.Path.GetFullPath(path);
+                    if (System.IO.File.Exists(abs)) return abs;
+                }
+
+                // 2) Project-relative path (preferred)
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    string fromProj = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, path));
+                    if (System.IO.File.Exists(fromProj)) return fromProj;
+                }
+
+                // 3) Current working directory relative
+                string fromCwd = System.IO.Path.GetFullPath(path);
+                if (System.IO.File.Exists(fromCwd)) return fromCwd;
+
+                // 4) App base directory relative (e.g. bin/Debug launch)
+                string fromBase = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppContext.BaseDirectory, path));
+                if (System.IO.File.Exists(fromBase)) return fromBase;
+
+                // 5) If stored as Assets/..., walk parent directories to find project root
+                string norm = path.Replace('\\', '/');
+                if (norm.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+                    while (dir != null)
+                    {
+                        string candidate = System.IO.Path.GetFullPath(System.IO.Path.Combine(dir.FullName, path));
+                        if (System.IO.File.Exists(candidate)) return candidate;
+                        dir = dir.Parent;
+                    }
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
         private static Texture2D? TryLoadLayerTexture(string path)
         {
             if (s_layerTextureCache.TryGetValue(path, out var cached))
@@ -1426,12 +1478,8 @@ namespace Game_Engine.Core
             Texture2D? tex = null;
             try
             {
-                string abs = path;
-                var proj = ProjectService.Current;
-                if (proj != null && !System.IO.Path.IsPathRooted(path))
-                    abs = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, path));
-
-                if (System.IO.File.Exists(abs))
+                var abs = ResolveTexturePath(path);
+                if (abs != null)
                     tex = Texture2D.FromFile(abs);
             }
             catch { }
@@ -1999,6 +2047,10 @@ namespace Game_Engine.Core
         {
             if (!go.Enabled) return;
 
+            // Planet chunks are rendered by the planet pipeline, not the standard shadow pass.
+            if (go.Name != null && (go.Name.StartsWith("PlanetChunk_") || go.Name == "PlanetWater"))
+                return;
+
             // Fast skip for culled vegetation chunks
             if (go.Name.StartsWith("chunk_"))
             {
@@ -2072,6 +2124,346 @@ namespace Game_Engine.Core
             var ch = go.Children;
             for (int i = 0; i < ch.Count; i++)
                 RenderShadowNode(gl, depthShader, cache, ch[i], world, lightVP, planes);
+        }
+
+        // ==================================================================
+        // PLANET TERRAIN rendering
+        // ==================================================================
+
+        public static void RenderPlanetTerrain(
+            GL gl,
+            ShaderProgram planetShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 lightDir,
+            float ambient,
+            float diffuseK,
+            SN.Vector3 camPos,
+            SN.Vector3 planetCenter,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            Game_Engine.Core.Biome.BiomeDefinition[] biomes)
+        {
+            var planets = Component.PlanetTerrain.ActivePlanets;
+            if (planets == null || planets.Count == 0) return;
+
+            var vp = view * proj;
+            ExtractFrustumPlanes(vp, out var frustumPlanes);
+
+            planetShader.Use();
+            planetShader.SetMatrix4("uView", view);
+            planetShader.SetMatrix4("uProj", proj);
+            planetShader.SetVector3("uLightDir", lightDir);
+            planetShader.SetVector3("uCamPos", camPos);
+            planetShader.SetFloat("uAmbient", ambient);
+            planetShader.SetFloat("uDiffuseK", diffuseK);
+            planetShader.SetVector3("uPlanetCenter", planetCenter);
+
+            float planetRadius = 1000f;
+            if (planets.Count > 0 && planets[0]?.Config != null)
+                planetRadius = planets[0].Config.Radius;
+            planetShader.SetFloat("uPlanetRadius", planetRadius);
+
+            if (shadowFBO != null)
+            {
+                planetShader.SetMatrix4("uShadowVP", shadowVP);
+                planetShader.SetInt("uHasShadow", 1);
+                gl.ActiveTexture(TextureUnit.Texture15);
+                gl.BindTexture(TextureTarget.Texture2D, shadowFBO.DepthTexture?.Handle ?? 0);
+                planetShader.SetTexture("uShadowMap", 15);
+            }
+            else
+            {
+                planetShader.SetInt("uHasShadow", 0);
+            }
+
+            BindBiomeTextures(gl, planetShader, cache, biomes);
+
+            gl.Enable(EnableCap.CullFace);
+            gl.CullFace(TriangleFace.Back);
+
+            foreach (var planet in planets)
+            {
+                if (planet?.gameObject == null || !planet.IsActiveAndEnabled) continue;
+
+                var go = planet.gameObject;
+                var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
+
+                foreach (var child in go.Children)
+                {
+                    if (!child.Enabled) continue;
+                    if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
+
+                    MeshFilter? mf = null;
+                    foreach (var b in child.Behaviors)
+                        if (b is MeshFilter f && f.Enabled) { mf = f; break; }
+                    if (mf?.Mesh == null) continue;
+
+                    var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
+                    var chunkSphere = GetMeshSphere(mf.Mesh);
+                    // Frustum test in world space (center transformed by model matrix).
+                    var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
+                    var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                    var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                    var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                    float worldRadius = chunkSphere.Radius * MathF.Max(sx, MathF.Max(sy, sz));
+                    if (!SphereInFrustum(frustumPlanes, worldCenter, worldRadius))
+                        continue;
+
+                    planetShader.SetMatrix4("uModel", world);
+                    SN.Matrix4x4.Invert(world, out var invWorld);
+                    planetShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
+
+                    var gpuMesh = cache.GetMesh(mf.Mesh);
+
+            gl.Enable(EnableCap.CullFace);
+                    gpuMesh.Draw();
+                }
+            }
+        }
+
+        private static void ExtractFrustumPlanes(in SN.Matrix4x4 vp, out SN.Vector4[] planes)
+        {
+            planes = new SN.Vector4[6];
+            planes[0] = new SN.Vector4(vp.M14 + vp.M11, vp.M24 + vp.M21, vp.M34 + vp.M31, vp.M44 + vp.M41); // Left
+            planes[1] = new SN.Vector4(vp.M14 - vp.M11, vp.M24 - vp.M21, vp.M34 - vp.M31, vp.M44 - vp.M41); // Right
+            planes[2] = new SN.Vector4(vp.M14 + vp.M12, vp.M24 + vp.M22, vp.M34 + vp.M32, vp.M44 + vp.M42); // Bottom
+            planes[3] = new SN.Vector4(vp.M14 - vp.M12, vp.M24 - vp.M22, vp.M34 - vp.M32, vp.M44 - vp.M42); // Top
+            planes[4] = new SN.Vector4(vp.M14 + vp.M13, vp.M24 + vp.M23, vp.M34 + vp.M33, vp.M44 + vp.M43); // Near
+            planes[5] = new SN.Vector4(vp.M14 - vp.M13, vp.M24 - vp.M23, vp.M34 - vp.M33, vp.M44 - vp.M43); // Far
+            for (int i = 0; i < 6; i++)
+            {
+                float len = new SN.Vector3(planes[i].X, planes[i].Y, planes[i].Z).Length();
+                if (len > 0.0001f) planes[i] /= len;
+            }
+        }
+
+        private static bool SphereInFrustum(SN.Vector4[] planes, SN.Vector3 center, float radius)
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                float dist = planes[i].X * center.X + planes[i].Y * center.Y + planes[i].Z * center.Z + planes[i].W;
+                if (dist < -radius) return false;
+            }
+            return true;
+        }
+
+        // Keep CPU textures cached globally; convert to GPU per-context via ResourceCache.
+        private static Texture2D?[]? _boundBiomeTex2D;
+        private static string?[]? _boundBiomePaths;
+        private static bool _biomeTexDirty = true;
+        private static float[]? _cachedTiling;
+        private static SN.Vector3[]? _cachedBaseColor;
+        private static SN.Vector3[]? _cachedUnderColor;
+
+        public static void ResetBiomeTexDebug() { _biomeTexDirty = true; }
+
+        private static void BindBiomeTextures(GL gl, ShaderProgram shader, ResourceCache cache,
+            Game_Engine.Core.Biome.BiomeDefinition[] biomes)
+        {
+            if (_boundBiomeTex2D == null)
+            {
+                _boundBiomeTex2D = new Texture2D?[8];
+                _boundBiomePaths = new string[8];
+                _cachedTiling = new float[8];
+                _cachedBaseColor = new SN.Vector3[8];
+                _cachedUnderColor = new SN.Vector3[8];
+            }
+
+            bool needRebuild = _biomeTexDirty;
+            if (!needRebuild)
+            {
+                for (int i = 0; i < 8 && i < biomes.Length; i++)
+                {
+                    if (_boundBiomePaths![i] != biomes[i].TopTexturePath)
+                    { needRebuild = true; break; }
+                }
+            }
+
+            if (needRebuild)
+            {
+                Log.Info("[BiomeTex] Rebuilding biome texture bindings...");
+
+                for (int i = 0; i < 8 && i < biomes.Length; i++)
+                {
+                    var b = biomes[i];
+                    _boundBiomePaths![i] = b.TopTexturePath;
+                    _boundBiomeTex2D[i] = null;
+
+                    if (!string.IsNullOrWhiteSpace(b.TopTexturePath))
+                    {
+                        try
+                        {
+                            var absPath = ResolveTexturePath(b.TopTexturePath);
+                            if (absPath != null && System.IO.File.Exists(absPath))
+                            {
+                                var tex2d = Texture2D.FromFile(absPath);
+                                _boundBiomeTex2D[i] = tex2d;
+                                Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': {tex2d.Width}x{tex2d.Height} OK");
+                            }
+                            else
+                            {
+                                Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': file not found '{b.TopTexturePath}'");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}' EXCEPTION: {ex.Message}");
+                        }
+                    }
+
+                    // Keep null here; bind fallback white per-context below.
+
+                    _cachedTiling![i] = b.TopTiling;
+                    _cachedBaseColor![i] = new SN.Vector3(b.BaseColorR, b.BaseColorG, b.BaseColorB);
+
+                    // Under-texture: compute average color if path is set, else darken base
+                    var underCol = new SN.Vector3(
+                        Math.Max(b.BaseColorR * 0.6f, 0.12f),
+                        Math.Max(b.BaseColorG * 0.5f, 0.1f),
+                        Math.Max(b.BaseColorB * 0.5f, 0.1f));
+                    if (!string.IsNullOrWhiteSpace(b.UnderTexturePath))
+                    {
+                        try
+                        {
+                            var underAbs = ResolveTexturePath(b.UnderTexturePath);
+                            if (underAbs != null && System.IO.File.Exists(underAbs))
+                            {
+                                var underTex = Texture2D.FromFile(underAbs);
+                                var pixels = underTex.Rgba;
+                                long rSum = 0, gSum = 0, bSum = 0;
+                                int step = Math.Max(1, pixels.Length / 256);
+                                int samples = 0;
+                                for (int px = 0; px < pixels.Length; px += step * 4)
+                                {
+                                    if (px + 2 < pixels.Length)
+                                    {
+                                        rSum += pixels[px]; gSum += pixels[px + 1]; bSum += pixels[px + 2];
+                                        samples++;
+                                    }
+                                }
+                                if (samples > 0)
+                                    underCol = new SN.Vector3(rSum / (samples * 255f), gSum / (samples * 255f), bSum / (samples * 255f));
+                            }
+                        }
+                        catch { /* fall back to darkened base */ }
+                    }
+                    _cachedUnderColor![i] = underCol;
+                }
+
+                _biomeTexDirty = false;
+            }
+
+            for (int i = 0; i < 8 && i < biomes.Length; i++)
+            {
+                var tex2d = _boundBiomeTex2D![i];
+                var gpu = tex2d != null ? cache.GetTexture(tex2d) : cache.GetWhiteTexture();
+                gpu.Bind((TextureUnit)((int)TextureUnit.Texture0 + i));
+                shader.SetTexture($"uBiomeTex{i}", i);
+            }
+
+            for (int i = 0; i < 8 && i < biomes.Length; i++)
+            {
+                shader.SetFloat($"uBiomeTiling[{i}]", _cachedTiling![i]);
+                shader.SetVector3($"uBiomeBaseColor[{i}]", _cachedBaseColor![i]);
+                shader.SetVector3($"uBiomeUnderColor[{i}]", _cachedUnderColor![i]);
+            }
+        }
+
+        // ==================================================================
+        // PLANET WATER rendering
+        // ==================================================================
+
+        public static void RenderPlanetWater(
+            GL gl,
+            ShaderProgram waterShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 lightDir,
+            float ambient,
+            float diffuseK,
+            SN.Vector3 camPos,
+            SN.Vector3 skyColor,
+            SN.Vector3 planetCenter,
+            float seaLevel)
+        {
+            var planets = Component.PlanetTerrain.ActivePlanets;
+            if (planets == null || planets.Count == 0) return;
+
+            foreach (var planet in planets)
+            {
+                if (planet?.gameObject == null || !planet.IsActiveAndEnabled) continue;
+                if (!planet.EnableWater) continue;
+
+                var waterObj = planet.WaterGO;
+                if (waterObj == null) continue;
+
+                var mf = waterObj.Behaviors.OfType<MeshFilter>().FirstOrDefault();
+                if (mf?.Mesh == null) continue;
+
+                var world = TransformUtil.WorldFromTransform(waterObj.Transform)
+                          * TransformUtil.WorldFromTransform(planet.gameObject.Transform);
+
+                waterShader.Use();
+                waterShader.SetMatrix4("uModel", world);
+                waterShader.SetMatrix4("uView", view);
+                waterShader.SetMatrix4("uProj", proj);
+
+                SN.Matrix4x4.Invert(world, out var invWorld);
+                waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
+
+                waterShader.SetVector3("uPlanetCenter", planetCenter);
+                waterShader.SetFloat("uTime", planet.WaterAnimTime);
+                waterShader.SetFloat("uWaveAmp1", 0.4f);
+                waterShader.SetFloat("uWaveFreq1", 0.6f);
+                waterShader.SetFloat("uWaveSteep1", 0.25f);
+                waterShader.SetFloat("uWaveAmp2", 0.2f);
+                waterShader.SetFloat("uWaveFreq2", 1.2f);
+
+                var oceanBiome = planet.OceanBiome;
+                waterShader.SetVector4("uShallowColor",
+                    oceanBiome.WaterShallowColorR, oceanBiome.WaterShallowColorG,
+                    oceanBiome.WaterShallowColorB, 1f);
+                waterShader.SetVector4("uDeepColor",
+                    oceanBiome.WaterDeepColorR, oceanBiome.WaterDeepColorG,
+                    oceanBiome.WaterDeepColorB, 1f);
+                waterShader.SetVector4("uDeepestColor",
+                    oceanBiome.WaterDeepestColorR, oceanBiome.WaterDeepestColorG,
+                    oceanBiome.WaterDeepestColorB, 1f);
+
+                waterShader.SetVector3("uPlanetCenter", planetCenter);
+                waterShader.SetFloat("uSeaLevel", seaLevel);
+                waterShader.SetFloat("uDepthRange", oceanBiome.WaterDepthColorRange);
+
+                waterShader.SetFloat("uFresnelPower", 4.0f);
+                waterShader.SetFloat("uReflectivity", 0.65f);
+                waterShader.SetFloat("uTransparency", 0.75f);
+
+                waterShader.SetVector3("uLightDir", lightDir);
+                waterShader.SetVector3("uCamPos", camPos);
+                waterShader.SetVector3("uSkyColor", skyColor);
+                waterShader.SetFloat("uAmbient", ambient);
+                waterShader.SetFloat("uDiffuseK", diffuseK);
+
+                waterShader.SetInt("uHasWaterNormalMap", 0);
+                waterShader.SetInt("uHasWaterTexture", 0);
+                waterShader.SetInt("uFoamEnabled", 1);
+                waterShader.SetFloat("uFoamThreshold", 0.6f);
+                waterShader.SetFloat("uFoamIntensity", 0.4f);
+                waterShader.SetVector4("uFoamColor", 0.9f, 0.95f, 1.0f, 1.0f);
+
+                gl.Enable(EnableCap.Blend);
+                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                gl.Disable(EnableCap.CullFace);
+
+                var gpuMesh = cache.GetMesh(mf.Mesh);
+                gpuMesh.Draw();
+
+                gl.Enable(EnableCap.CullFace);
+                gl.Disable(EnableCap.Blend);
+            }
         }
     }
 }
