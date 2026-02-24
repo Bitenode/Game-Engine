@@ -210,6 +210,10 @@ public partial class InspectorPanel : UserControl
         {
             panel.Children.Add(BuildVegetationActionsPanel(vp));
         }
+        else if (b is Game_Engine.Core.Component.PlanetAtmosphere pa)
+        {
+            panel.Children.Add(BuildPlanetAtmospherePresetPanel(pa));
+        }
 
         return panel;
     }
@@ -588,6 +592,49 @@ public partial class InspectorPanel : UserControl
             lblCount.Text = $"Instances: {vp.InstanceCount}";
         };
 
+        return container;
+    }
+
+    Control BuildPlanetAtmospherePresetPanel(Game_Engine.Core.Component.PlanetAtmosphere pa)
+    {
+        var container = new StackPanel { Spacing = 6, Margin = new Thickness(0, 8, 0, 0) };
+
+        container.Children.Add(new Border
+        {
+            Height = 1,
+            Background = Brushes.Gray,
+            Opacity = 0.4,
+            Margin = new Thickness(0, 2)
+        });
+
+        container.Children.Add(new TextBlock
+        {
+            Text = "Quick Presets",
+            FontWeight = Avalonia.Media.FontWeight.SemiBold,
+            Margin = new Thickness(0, 2)
+        });
+
+        var row1 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var row2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+
+        Button MakePresetButton(string title, Game_Engine.Core.Component.PlanetAtmospherePreset preset)
+        {
+            var btn = new Button { Content = title, Padding = new Thickness(10, 3), MinWidth = 90 };
+            btn.Click += (_, __) =>
+            {
+                pa.ApplyPreset(preset);
+                SceneService.NotifyChanged();
+            };
+            return btn;
+        }
+
+        row1.Children.Add(MakePresetButton("Thin", Game_Engine.Core.Component.PlanetAtmospherePreset.Thin));
+        row1.Children.Add(MakePresetButton("EarthLike", Game_Engine.Core.Component.PlanetAtmospherePreset.EarthLike));
+        row2.Children.Add(MakePresetButton("Dense", Game_Engine.Core.Component.PlanetAtmospherePreset.Dense));
+        row2.Children.Add(MakePresetButton("AlienViolet", Game_Engine.Core.Component.PlanetAtmospherePreset.AlienViolet));
+
+        container.Children.Add(row1);
+        container.Children.Add(row2);
         return container;
     }
 
@@ -5486,10 +5533,67 @@ public partial class InspectorPanel : UserControl
         // ---- string -----------------------------------------------------------
         if (t == typeof(string))
         {
+            static string NormalizeInspectorPath(string raw)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) return raw;
+                try
+                {
+                    var proj = ProjectService.Current;
+                    if (proj == null) return raw.Replace('\\', '/');
+
+                    var abs = Path.GetFullPath(raw);
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (abs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        return Path.GetRelativePath(root, abs).Replace('\\', '/');
+
+                    return raw.Replace('\\', '/');
+                }
+                catch
+                {
+                    return raw.Replace('\\', '/');
+                }
+            }
+
             var tb = new TextBox { Width = 240 };
             tb.Bind(TextBox.TextProperty, new Binding(p.Name) { Source = target, Mode = BindingMode.TwoWay });
             tb.GotFocus += (_, __) => BeginPropertyEdit(target, p);
-            tb.LostFocus += (_, __) => CommitPropertyEdit(target, p);
+
+            // Normalize absolute paths to project-relative for all *Path fields.
+            bool isPathField = p.Name.EndsWith("Path", StringComparison.OrdinalIgnoreCase);
+            if (isPathField)
+            {
+                try
+                {
+                    var cur = p.GetValue(target) as string;
+                    var norm = NormalizeInspectorPath(cur ?? "");
+                    if (!string.Equals(cur, norm, StringComparison.Ordinal))
+                    {
+                        p.SetValue(target, norm);
+                        tb.Text = norm;
+                    }
+                }
+                catch { }
+            }
+
+            tb.LostFocus += (_, __) =>
+            {
+                if (isPathField)
+                {
+                    try
+                    {
+                        var cur = p.GetValue(target) as string;
+                        var norm = NormalizeInspectorPath(cur ?? "");
+                        if (!string.Equals(cur, norm, StringComparison.Ordinal))
+                        {
+                            p.SetValue(target, norm);
+                            tb.Text = norm;
+                            SceneService.NotifyChanged();
+                        }
+                    }
+                    catch { }
+                }
+                CommitPropertyEdit(target, p);
+            };
             return tb;
         }
         

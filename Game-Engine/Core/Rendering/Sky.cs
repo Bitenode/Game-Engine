@@ -56,6 +56,9 @@ public static class Sky
         {
             var gpuTex = cache.GetTexture(skyTex!);
             gpuTex.Bind(TextureUnit.Texture0);
+            // Equirectangular maps should repeat horizontally but clamp vertically.
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
             skyShader.SetTexture("uSkyTex", 0);
         }
 

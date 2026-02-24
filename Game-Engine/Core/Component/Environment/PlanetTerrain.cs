@@ -42,6 +42,9 @@ public sealed class PlanetTerrain : Behavior
 
     public BiomeDefinition OceanBiome => _config?.Biomes?.FirstOrDefault(b => b.Name == "Ocean")
         ?? BiomeDefinition.Ocean;
+    public PlanetAtmosphere? Atmosphere => gameObject?.Behaviors
+        .OfType<PlanetAtmosphere>()
+        .FirstOrDefault(a => a.IsActiveAndEnabled);
 
     public PlanetConfig? Config => _config;
     public BiomeMap? Map => _biomeMap;

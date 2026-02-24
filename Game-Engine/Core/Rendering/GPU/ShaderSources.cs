@@ -1185,7 +1185,22 @@ void main()
     {
         float u = 0.5 + atan(dir.x, -dir.z) / (2.0 * PI);
         float v = 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / PI;
-        vec4 texSamp = texture(uSkyTex, vec2(u, v));
+
+        // Wrap longitude explicitly and clamp latitude to avoid pole bleed.
+        vec2 uv = vec2(fract(u), clamp(v, 0.0, 1.0));
+        vec4 texSamp = texture(uSkyTex, uv);
+
+        // Feather the 0/1 longitude seam by blending to averaged edge texels.
+        // This reduces visible vertical seams in non-perfectly seamless panoramas.
+        float seamDist = min(uv.x, 1.0 - uv.x);
+        float seamWidth = max(1.5 / float(textureSize(uSkyTex, 0).x), 0.002);
+        if (seamDist < seamWidth)
+        {
+            vec4 edgeAvg = 0.5 * (texture(uSkyTex, vec2(0.0, uv.y)) + texture(uSkyTex, vec2(1.0, uv.y)));
+            float keepOriginal = smoothstep(0.0, seamWidth, seamDist);
+            texSamp = mix(edgeAvg, texSamp, keepOriginal);
+        }
+
         gradColor = mix(gradColor, texSamp.rgb, uSkyBlend * texSamp.a);
     }
 
@@ -2323,6 +2338,20 @@ uniform vec3 uLightDir;
 uniform vec3 uCamPos;
 uniform float uAmbient;
 uniform float uDiffuseK;
+uniform int uAtmoEnabled;
+uniform vec3 uAtmoSunDir;
+uniform float uAtmoSunIntensity;
+uniform float uAtmoBlend;
+uniform float uAtmoRayleigh;
+uniform float uAtmoMie;
+uniform float uAtmoDensityFalloff;
+uniform float uAtmoHorizonBlend;
+uniform float uAtmoSunsetBoost;
+uniform float uAtmoHeight;
+uniform int uAtmoSampleCount;
+uniform vec3 uAtmoZenithTint;
+uniform vec3 uAtmoHorizonTint;
+uniform vec3 uAtmoSkyTint;
 
 // One dedicated sampler per biome (units 0-7), 8 + 1 shadow = 9 total
 uniform sampler2D uBiomeTex0;
@@ -2391,6 +2420,28 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend)
     return mix(cliffCol, topCol, slopeBlend);
 }
 
+vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
+{
+    if (uAtmoEnabled == 0) return vec3(0.0);
+
+    float altitude = max(length(worldPos - uPlanetCenter) - uPlanetRadius, 0.0);
+    float atmoDepth = clamp(altitude / max(uAtmoHeight, 1.0), 0.0, 1.0);
+    float density = exp(-atmoDepth * max(uAtmoDensityFalloff, 0.1));
+
+    float horizon = pow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8);
+    horizon *= max(uAtmoHorizonBlend, 0.0);
+
+    float sunForward = pow(clamp(dot(viewDir, normalize(uAtmoSunDir)), 0.0, 1.0), 4.0);
+    float sunset = pow(1.0 - clamp(dot(radialDir, normalize(uAtmoSunDir)), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
+
+    vec3 grad = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 rayleigh = grad * (0.3 + horizon * 0.9) * max(uAtmoRayleigh, 0.0);
+    vec3 mie = vec3(1.0, 0.96, 0.90) * (sunForward * 0.7 + sunset * 0.35) * max(uAtmoMie, 0.0);
+    vec3 color = (rayleigh + mie + uAtmoSkyTint * 0.2) * density * max(uAtmoSunIntensity, 0.01);
+
+    return color * clamp(uAtmoBlend, 0.0, 1.5);
+}
+
 void main()
 {
     vec3 N = normalize(vWorldNormal);
@@ -2431,6 +2482,7 @@ void main()
 
     float shadow = shadowFactor(vShadowCoord);
     vec3 lit = finalColor * (uAmbient + diffuse * shadow) + vec3(spec * shadow);
+    lit += evalAtmosphere(vWorldPos, V, radialDir);
 
     lit = lit / (lit + vec3(1.0));
     FragColor = vec4(lit, 1.0);
@@ -2523,6 +2575,19 @@ uniform vec3 uSkyColor;
 uniform float uAmbient;
 uniform float uDiffuseK;
 uniform float uTime;
+uniform int uAtmoEnabled;
+uniform vec3 uAtmoSunDir;
+uniform float uAtmoSunIntensity;
+uniform float uAtmoBlend;
+uniform float uAtmoRayleigh;
+uniform float uAtmoMie;
+uniform float uAtmoDensityFalloff;
+uniform float uAtmoHorizonBlend;
+uniform float uAtmoSunsetBoost;
+uniform float uAtmoHeight;
+uniform vec3 uAtmoZenithTint;
+uniform vec3 uAtmoHorizonTint;
+uniform float uPlanetRadius;
 
 uniform sampler2D uWaterNormalMap;
 uniform sampler2D uWaterTexture;
@@ -2535,6 +2600,21 @@ uniform float uFoamIntensity;
 uniform vec4 uFoamColor;
 
 out vec4 FragColor;
+
+vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
+{
+    if (uAtmoEnabled == 0) return vec3(0.0);
+    float altitude = max(length(worldPos - uPlanetCenter) - uPlanetRadius, 0.0);
+    float atmoDepth = clamp(altitude / max(uAtmoHeight, 1.0), 0.0, 1.0);
+    float density = exp(-atmoDepth * max(uAtmoDensityFalloff, 0.1));
+    float horizon = pow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8) * max(uAtmoHorizonBlend, 0.0);
+    float sunForward = pow(clamp(dot(viewDir, normalize(uAtmoSunDir)), 0.0, 1.0), 4.0);
+    float sunset = pow(1.0 - clamp(dot(radialDir, normalize(uAtmoSunDir)), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
+    vec3 grad = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 rayleigh = grad * (0.3 + horizon * 0.9) * max(uAtmoRayleigh, 0.0);
+    vec3 mie = vec3(1.0, 0.96, 0.90) * (sunForward * 0.7 + sunset * 0.35) * max(uAtmoMie, 0.0);
+    return (rayleigh + mie) * density * max(uAtmoSunIntensity, 0.01) * clamp(uAtmoBlend, 0.0, 1.5);
+}
 
 void main()
 {
@@ -2588,6 +2668,7 @@ void main()
     vec3 R = reflect(-V, N);
     float skyFactor = clamp(dot(R, radialDir) * 0.5 + 0.5, 0.0, 1.0);
     vec3 reflColor = uSkyColor * (0.4 + skyFactor * 0.6);
+    reflColor += evalAtmosphere(vWorldPos, V, radialDir);
     waterColor = mix(waterColor, reflColor, fresnel * uReflectivity);
 
     // Sun specular
@@ -2601,6 +2682,9 @@ void main()
     float NdotL = max(dot(N, L), 0.0);
     float lighting = uAmbient + NdotL * 0.4 * uDiffuseK;
     vec3 color = waterColor * lighting + vec3(spec) + scatterColor;
+    color += evalAtmosphere(vWorldPos, V, radialDir) * 0.45;
+    float viewExtinction = exp(-max(0.0, 1.0 - dot(V, radialDir)) * 2.2);
+    color *= mix(0.82, 1.0, viewExtinction);
 
     if (uFoamEnabled == 1)
     {
@@ -2615,6 +2699,207 @@ void main()
     float alpha = mix(uTransparency, 1.0, fresnel * 0.6);
     alpha = max(alpha, 0.7);
     FragColor = vec4(color, alpha);
+}
+";
+
+    public const string PlanetCloudsVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform vec3 uPlanetCenter;
+uniform float uPlanetRadius;
+uniform float uCloudBaseHeight;
+uniform float uCloudTopHeight;
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+
+void main()
+{
+    vec4 terrainWorldPos = uModel * vec4(aPosition, 1.0);
+    vec3 radialDir = normalize(terrainWorldPos.xyz - uPlanetCenter);
+    float shellHeight = max(0.0, 0.5 * (uCloudBaseHeight + uCloudTopHeight));
+    vec3 shellPos = uPlanetCenter + radialDir * (uPlanetRadius + shellHeight);
+
+    vWorldPos = shellPos;
+    vWorldNormal = radialDir;
+    gl_Position = uProj * uView * vec4(shellPos, 1.0);
+}
+";
+
+    public const string PlanetAtmosphereVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform vec3 uPlanetCenter;
+uniform float uPlanetRadius;
+uniform float uAtmosphereHeight;
+
+out vec3 vWorldPos;
+out vec3 vRadialDir;
+
+void main()
+{
+    vec4 terrainWorldPos = uModel * vec4(aPosition, 1.0);
+    vec3 radialDir = normalize(terrainWorldPos.xyz - uPlanetCenter);
+    vec3 shellPos = uPlanetCenter + radialDir * (uPlanetRadius + max(uAtmosphereHeight, 1.0));
+    vWorldPos = shellPos;
+    vRadialDir = radialDir;
+    gl_Position = uProj * uView * vec4(shellPos, 1.0);
+}
+";
+
+    public const string PlanetAtmosphereFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vRadialDir;
+
+uniform vec3 uCamPos;
+uniform vec3 uPlanetCenter;
+uniform float uPlanetRadius;
+uniform float uAtmosphereHeight;
+uniform vec3 uSunDir;
+uniform float uSunIntensity;
+uniform float uAtmoBlend;
+uniform float uRayleighStrength;
+uniform float uMieStrength;
+uniform float uDensityFalloff;
+uniform float uHorizonBlend;
+uniform float uSunsetBoost;
+uniform vec3 uZenithTint;
+uniform vec3 uHorizonTint;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec3 V = normalize(vWorldPos - uCamPos);
+    vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
+    vec3 sunDir = normalize(uSunDir);
+
+    float horizonBase = clamp(1.0 - abs(dot(V, radialDir)), 0.0, 1.0);
+    float horizon = pow(horizonBase, 2.1) * max(uHorizonBlend, 0.0);
+    float sunForward = pow(clamp(dot(V, sunDir), 0.0, 1.0), 10.0);
+    float sunset = pow(1.0 - clamp(dot(radialDir, sunDir), 0.0, 1.0), 2.4) * max(uSunsetBoost, 0.0);
+    float heightFade = exp(-max(uDensityFalloff, 0.05));
+    float shellFade = clamp(pow(horizonBase, 1.6), 0.0, 1.0) * heightFade;
+
+    vec3 grad = mix(uHorizonTint, uZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 rayleigh = grad * (0.08 + horizon * 0.70) * max(uRayleighStrength, 0.0);
+    vec3 mie = vec3(1.0, 0.96, 0.90) * (sunForward * 0.28 + sunset * 0.18) * max(uMieStrength, 0.0);
+    vec3 col = (rayleigh + mie) * max(uSunIntensity, 0.01);
+    float camDist = length(uCamPos - uPlanetCenter);
+    float inside01 = clamp(((uPlanetRadius + uAtmosphereHeight) - camDist) / max(uAtmosphereHeight, 1.0), 0.0, 1.0);
+    float insideHaze = inside01 * (0.025 + (1.0 - horizonBase) * 0.05);
+    float alpha = clamp((horizon * 0.22) * max(uAtmoBlend, 0.0) + insideHaze * max(uAtmoBlend, 0.0), 0.0, 0.38) * shellFade;
+    FragColor = vec4(col, alpha);
+}
+";
+
+    public const string PlanetCloudsFrag = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+
+uniform vec3 uCamPos;
+uniform vec3 uPlanetCenter;
+uniform float uPlanetRadius;
+uniform float uCloudBaseHeight;
+uniform float uCloudTopHeight;
+uniform float uCloudCoverage;
+uniform float uCloudDensity;
+uniform float uCloudDetail;
+uniform float uCloudSpeed;
+uniform float uCloudSoftness;
+uniform float uCloudLightResponse;
+uniform float uCloudSilverLining;
+uniform int uCloudStepCount;
+uniform vec3 uSunDir;
+uniform float uSunIntensity;
+uniform vec3 uSkyTint;
+uniform float uTime;
+
+out vec4 FragColor;
+
+float hash31(vec3 p)
+{
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+float noise3(vec3 p)
+{
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+    float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+    float nxy0 = mix(nx00, nx10, u.y);
+    float nxy1 = mix(nx01, nx11, u.y);
+    return mix(nxy0, nxy1, u.z);
+}
+
+float fbm(vec3 p)
+{
+    float value = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 4; i++)
+    {
+        value += noise3(p) * amp;
+        p = p * 2.0 + vec3(17.0, 11.0, 7.0);
+        amp *= 0.5;
+    }
+    return value;
+}
+
+void main()
+{
+    vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 L = normalize(uSunDir);
+
+    float midHeight = max(1.0, 0.5 * (uCloudBaseHeight + uCloudTopHeight));
+    vec3 shellPos = uPlanetCenter + radialDir * (uPlanetRadius + midHeight);
+
+    vec3 wind = vec3(uTime * uCloudSpeed, 0.0, uTime * uCloudSpeed * 0.73);
+    float baseN = fbm(shellPos * (0.0025 * uCloudDetail) + wind);
+    float detailN = fbm(shellPos * (0.0080 * uCloudDetail) - wind * 2.1);
+    float density = mix(baseN, detailN, 0.55);
+    density = density * density;
+
+    float threshold = mix(0.80, 0.25, clamp(uCloudCoverage, 0.0, 1.0));
+    float edge = max(0.02, uCloudSoftness) * 0.45;
+    float coverage = smoothstep(threshold - edge, threshold + edge, density);
+    float cloudAlpha = coverage * clamp((density - threshold + edge) / max(edge * 2.0, 0.001), 0.0, 1.0);
+    cloudAlpha *= clamp(uCloudDensity * 0.45, 0.0, 1.0);
+
+    if (cloudAlpha < 0.01) discard;
+
+    float sunFacing = clamp(dot(radialDir, L) * 0.5 + 0.5, 0.0, 1.0);
+    float silver = pow(clamp(1.0 - max(dot(V, L), 0.0), 0.0, 1.0), 6.0) * uCloudSilverLining;
+    float lightTerm = (0.25 + sunFacing * 0.75) * uCloudLightResponse;
+    vec3 cloudColor = mix(uSkyTint * 0.75, vec3(0.92, 0.94, 0.98), lightTerm);
+    cloudColor += vec3(1.0, 0.97, 0.92) * silver * 0.35 * uSunIntensity;
+
+    FragColor = vec4(cloudColor, clamp(cloudAlpha, 0.0, 0.55));
 }
 ";
 }

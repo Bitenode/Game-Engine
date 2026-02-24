@@ -201,3 +201,19 @@ Recommended setup:
 3. Ensure there is a `Camera` for the player/controller
 4. Author and compile a biome graph, then assign/verify `BiomeGraphPath`
 
+---
+
+## Atmosphere and Clouds
+
+Planet visuals support a dedicated atmosphere workflow via `PlanetAtmosphere`.
+
+- Add `PlanetAtmosphere` beside `PlanetTerrain` on the planet root object
+- Atmosphere settings are persisted and editable in Inspector
+- Terrain and planet-water shading consume atmosphere uniforms per planet
+- Clouds are rendered in a dedicated planet cloud pass (`PlanetClouds*` shaders)
+
+Separation contract:
+- Planet atmosphere/clouds are independent from `Skybox`
+- `Skybox` remains a background sky system only
+- Multi-planet scenes can use different atmosphere/cloud presets per planet
+

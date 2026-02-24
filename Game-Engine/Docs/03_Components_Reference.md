@@ -1645,3 +1645,19 @@ public class HealthBar : Behavior
     }
 }
 ```
+
+---
+
+## PlanetAtmosphere
+
+`PlanetAtmosphere` is an Environment component that provides per-planet atmosphere and cloud rendering controls.
+
+Attach it to the same `GameObject` as `PlanetTerrain` to drive:
+- atmosphere blending (Rayleigh/Mie style controls, height and falloff)
+- per-planet sun direction/intensity override or directional light usage
+- planet ambient and sky tint used by terrain/water shading
+- cloud shell controls (coverage, density, detail, speed, softness, lighting)
+
+Key design rule:
+- `PlanetAtmosphere` is independent from `Skybox`.
+- Planet terrain/water/cloud rendering reads `PlanetAtmosphere` values, not `Skybox.Top`, `Skybox.Ambient`, or `Skybox.SunElevation`.

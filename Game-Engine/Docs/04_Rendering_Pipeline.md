@@ -560,3 +560,17 @@ World-space canvases are rendered during the transparent pass. The canvas rect i
 ### Screen-Space Scaling
 
 The `CanvasScaleMode.ScaleWithScreenSize` mode computes a scale factor from the viewport vs. reference resolution using a logarithmic blend between width and height matching (controlled by `MatchWidthOrHeight`). This ensures UI elements look consistent across different screen sizes.
+
+---
+
+## Planet Atmosphere and Clouds (Skybox-Decoupled)
+
+Planet atmosphere rendering is now an isolated path and does not depend on `Skybox` runtime values.
+
+- **Planet data source:** `PlanetTerrain` + `PlanetAtmosphere` component state
+- **Resolver:** `SceneRenderer.ResolvePlanetAtmosphere(...)` produces per-planet render params
+- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting
+- **Planet water pass:** `PlanetWaterFrag` uses atmosphere-driven reflection and extinction
+- **Cloud pass:** `PlanetCloudsFrag` is rendered as a dedicated planet pass
+
+`Skybox` still controls only the world background sky pass. Changing `Skybox` values should not change planet terrain/water/cloud shading.

@@ -51,6 +51,8 @@ namespace Game_Engine.Views
         private ShaderProgram? _waterShader;
         private ShaderProgram? _planetTerrainShader;
         private ShaderProgram? _planetWaterShader;
+        private ShaderProgram? _planetAtmosphereShader;
+        private ShaderProgram? _planetCloudShader;
         private ShaderProgram? _postProcessShader;
         private FullscreenQuad? _fsQuad;
         private ResourceCache? _cache;
@@ -164,12 +166,19 @@ namespace Game_Engine.Views
             _fixedTimer.Interval = TimeSpan.FromMilliseconds(8);
             _fixedTimer.Tick += (_, __) => TickFixedUpdate();
 
-            SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; _cache?.InvalidateAll(); InvalidateVisual(); };
+            SceneService.Changed += () =>
+            {
+                RebuildSceneCaches();
+                _needsWarm = true;
+                _cache?.InvalidateAll();
+                InvalidateVisual();
+            };
 
             // Full scene replacement: request a full GPU cache flush on the next render pass
             SceneService.SceneReplaced += () =>
             {
                 if (_cache != null) _cache.FlushRequested = true;
+                SceneRenderer.ResetBiomeTexDebug();
                 Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
                     Avalonia.Threading.DispatcherPriority.Render);
             };
@@ -244,6 +253,12 @@ namespace Game_Engine.Views
                 _planetWaterShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.PlanetWaterVert, es),
                     ShaderSources.Adapt(ShaderSources.PlanetWaterFrag, es));
+                _planetAtmosphereShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.PlanetAtmosphereVert, es),
+                    ShaderSources.Adapt(ShaderSources.PlanetAtmosphereFrag, es));
+                _planetCloudShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.PlanetCloudsVert, es),
+                    ShaderSources.Adapt(ShaderSources.PlanetCloudsFrag, es));
                 _postProcessShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
                     ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
@@ -303,6 +318,8 @@ namespace Game_Engine.Views
             _gbufferShader?.Dispose(); _gbufferShader = null;
 
             _postProcessShader?.Dispose(); _postProcessShader = null;
+            _planetCloudShader?.Dispose(); _planetCloudShader = null;
+            _planetAtmosphereShader?.Dispose(); _planetAtmosphereShader = null;
             _waterShader?.Dispose(); _waterShader = null;
             _particleShader?.Dispose(); _particleShader = null;
             _terrainShader?.Dispose();
@@ -480,6 +497,9 @@ namespace Game_Engine.Views
                     lightRange = Math.Max(0.001f, light.Range);
                 }
             }
+            var fallbackPlanetSunDir = SN.Vector3.Normalize(-L);
+            if (fallbackPlanetSunDir.LengthSquared() < 1e-5f)
+                fallbackPlanetSunDir = SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
 
             // Camera
             var cams = _cams;
@@ -501,6 +521,29 @@ namespace Game_Engine.Views
             SN.Matrix4x4.Invert(view, out var invView);
             var camPos = new SN.Vector3(invView.M41, invView.M42, invView.M43);
 
+            // If camera is inside a planet atmosphere shell, suppress skybox stars/textures.
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null || planet.gameObject == null || !planet.IsActiveAndEnabled) continue;
+                var atmo = planet.Atmosphere;
+                if (atmo == null || !atmo.Enabled) continue;
+
+                var p = planet.gameObject.Transform.Position;
+                var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+                float groundR = atmo.GroundRadiusOverride > 0.01f ? atmo.GroundRadiusOverride : planet.Config.Radius;
+                float atmoR = groundR + Math.Max(1f, atmo.AtmosphereHeight);
+                if ((camPos - center).LengthSquared() <= atmoR * atmoR)
+                {
+                    skyTex = null;
+                    skyMix = 0f;
+                    var top = atmo.ZenithTint;
+                    var bot = atmo.HorizonTint;
+                    skyTop = Color.FromRgb((byte)Math.Clamp((int)(top.X * 255f), 0, 255), (byte)Math.Clamp((int)(top.Y * 255f), 0, 255), (byte)Math.Clamp((int)(top.Z * 255f), 0, 255));
+                    skyBot = Color.FromRgb((byte)Math.Clamp((int)(bot.X * 255f), 0, 255), (byte)Math.Clamp((int)(bot.Y * 255f), 0, 255), (byte)Math.Clamp((int)(bot.Z * 255f), 0, 255));
+                    break;
+                }
+            }
+
             // --- CLEAR ---
             g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
             g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
@@ -516,7 +559,7 @@ namespace Game_Engine.Views
             GPUFramebuffer? shadowFBO = null;
             if (ShowShadows && _shadow != null && _depthShader != null)
             {
-                var sunShineDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
+                var sunShineDir = fallbackPlanetSunDir;
 
                 SN.Matrix4x4.Invert(view, out var invV);
                 var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
@@ -612,7 +655,7 @@ namespace Game_Engine.Views
                 planetLodMs = lodSw.Elapsed.TotalMilliseconds;
             }
 
-            var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
+            var sunSD = fallbackPlanetSunDir;
             bool isES = _glCtx.IsES;
 
             // ═══════════ DEFERRED RENDERING PIPELINE ═══════════
@@ -716,9 +759,10 @@ namespace Game_Engine.Views
                     if (planet?.Config == null) continue;
                     var tp = planet.gameObject?.Transform?.Position;
                     var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
                     SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache,
-                        view, proj, SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos,
-                        pc, shadowFBO, shadowVP, planet.Config.Biomes);
+                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                        pc, shadowFBO, shadowVP);
                 }
             }
 
@@ -735,17 +779,43 @@ namespace Game_Engine.Views
             // 8c. PLANET WATER
             if (_planetWaterShader != null)
             {
-                var skyC = _sky != null
-                    ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
-                    : new SN.Vector3(0.5f, 0.6f, 0.8f);
                 foreach (var planet in PlanetTerrain.ActivePlanets)
                 {
                     if (planet?.Config == null) continue;
                     var tp = planet.gameObject?.Transform?.Position;
                     var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
                     SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
-                        view, proj, SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC,
+                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
                         pc, planet.Config.SeaLevel);
+                }
+            }
+
+            // 8d. PLANET ATMOSPHERE SHELL (visible from outside and inside)
+            if (_planetAtmosphereShader != null)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                    SceneRenderer.RenderPlanetAtmosphere(g, _planetAtmosphereShader, _cache,
+                        view, proj, planet, atmo, camPos, pc);
+                }
+            }
+
+            // 8e. PLANET CLOUDS (separate from Skybox path)
+            if (_planetCloudShader != null)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                    SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache,
+                        view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
                 }
             }
             planetRenderSw.Stop();
@@ -1019,6 +1089,7 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Playing:
                     EnsurePlaySnapshot(); EnsureAwakeStart();
                     _needsWarm = true; Focus();
+                    SceneRenderer.ResetBiomeTexDebug();
                     Core.Time.Reset();
                     _updateWatch.Restart(); _fixedWatch.Restart();
                     Input.ClearAll();
@@ -1039,6 +1110,7 @@ namespace Game_Engine.Views
                     Light.ClearAll();
                     SceneManager.Reset();
                     RestorePlaySnapshot();
+                    SceneRenderer.ResetBiomeTexDebug();
                     // After scene restore, the old selected GO no longer exists in the new scene tree.
                     // Try to re-select a GO with the same name, or clear the selection.
                     ReSelectAfterRestore();

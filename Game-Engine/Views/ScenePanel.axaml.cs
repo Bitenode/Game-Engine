@@ -11,11 +11,20 @@ public partial class ScenePanel : UserControl
         InitializeComponent();
 
         ProjectService.ProjectOpened += OnProjectOpened;
+        AttachedToVisualTree += (_, _) => TryLoadViewSettings();
+        DetachedFromVisualTree += (_, _) => ProjectService.ProjectOpened -= OnProjectOpened;
+
+        // Handles flows where a project is already loaded before this panel is created.
+        TryLoadViewSettings();
     }
 
     private void OnProjectOpened()
     {
-        var scene = this.FindControl<SceneView>("Scene");
-        scene?.LoadViewSettings();
+        TryLoadViewSettings();
+    }
+
+    private void TryLoadViewSettings()
+    {
+        this.FindControl<SceneView>("Scene")?.LoadViewSettings();
     }
 }

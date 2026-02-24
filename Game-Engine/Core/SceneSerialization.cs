@@ -441,7 +441,7 @@ namespace Game_Engine.Core
             try { instance.PostDeserialize(); } catch { }
         }
 
-        
+
 
 
 
@@ -719,11 +719,30 @@ namespace Game_Engine.Core
             {
                 var full = Path.GetFullPath(path);
                 var proj = ProjectService.Current;
-                if (proj == null) return full;
-                var root = Path.GetFullPath(proj.RootPath);
-                if (full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                    return Path.GetRelativePath(root, full);
-                return full;
+                if (proj != null)
+                {
+                    var root = Path.GetFullPath(proj.RootPath);
+                    if (full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rel = Path.GetRelativePath(root, full).Replace('\\', '/');
+                        return rel;
+                    }
+                }
+
+                // Fallback: if the path contains an Assets folder anywhere (e.g. bin/Debug/.../Assets/...),
+                // persist from Assets/ onward so scene files remain portable.
+                var norm = full.Replace('\\', '/');
+                const string marker = "/Assets/";
+                int idx = norm.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                    return norm.Substring(idx + 1); // keep "Assets/..."
+
+                // Already relative and includes Assets prefix (defensive path normalization).
+                var relNorm = path.Replace('\\', '/');
+                if (relNorm.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                    return relNorm;
+
+                return norm;
             }
             catch { return path; }
         }

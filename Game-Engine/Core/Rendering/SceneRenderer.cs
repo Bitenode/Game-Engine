@@ -2130,23 +2130,177 @@ namespace Game_Engine.Core
         // PLANET TERRAIN rendering
         // ==================================================================
 
+        public readonly struct PlanetAtmosphereRenderParams
+        {
+            public readonly bool Enabled;
+            public readonly bool CloudsEnabled;
+            public readonly SN.Vector3 SunDir;
+            public readonly float SunIntensity;
+            public readonly float Ambient;
+            public readonly float GroundRadius;
+            public readonly float AtmosphereHeight;
+            public readonly float AtmosphereBlend;
+            public readonly float RayleighStrength;
+            public readonly float MieStrength;
+            public readonly float DensityFalloff;
+            public readonly float HorizonBlend;
+            public readonly float SunsetBoost;
+            public readonly int SampleCount;
+            public readonly SN.Vector3 ZenithTint;
+            public readonly SN.Vector3 HorizonTint;
+            public readonly SN.Vector3 SkyTint;
+            public readonly float CloudBaseHeight;
+            public readonly float CloudTopHeight;
+            public readonly float CloudCoverage;
+            public readonly float CloudDensity;
+            public readonly float CloudDetail;
+            public readonly float CloudSpeed;
+            public readonly float CloudSoftness;
+            public readonly float CloudLightResponse;
+            public readonly float CloudSilverLining;
+            public readonly int CloudStepCount;
+
+            public PlanetAtmosphereRenderParams(
+                bool enabled,
+                bool cloudsEnabled,
+                SN.Vector3 sunDir,
+                float sunIntensity,
+                float ambient,
+                float groundRadius,
+                float atmosphereHeight,
+                float atmosphereBlend,
+                float rayleighStrength,
+                float mieStrength,
+                float densityFalloff,
+                float horizonBlend,
+                float sunsetBoost,
+                int sampleCount,
+                SN.Vector3 zenithTint,
+                SN.Vector3 horizonTint,
+                SN.Vector3 skyTint,
+                float cloudBaseHeight,
+                float cloudTopHeight,
+                float cloudCoverage,
+                float cloudDensity,
+                float cloudDetail,
+                float cloudSpeed,
+                float cloudSoftness,
+                float cloudLightResponse,
+                float cloudSilverLining,
+                int cloudStepCount)
+            {
+                Enabled = enabled;
+                CloudsEnabled = cloudsEnabled;
+                SunDir = sunDir;
+                SunIntensity = sunIntensity;
+                Ambient = ambient;
+                GroundRadius = groundRadius;
+                AtmosphereHeight = atmosphereHeight;
+                AtmosphereBlend = atmosphereBlend;
+                RayleighStrength = rayleighStrength;
+                MieStrength = mieStrength;
+                DensityFalloff = densityFalloff;
+                HorizonBlend = horizonBlend;
+                SunsetBoost = sunsetBoost;
+                SampleCount = sampleCount;
+                ZenithTint = zenithTint;
+                HorizonTint = horizonTint;
+                SkyTint = skyTint;
+                CloudBaseHeight = cloudBaseHeight;
+                CloudTopHeight = cloudTopHeight;
+                CloudCoverage = cloudCoverage;
+                CloudDensity = cloudDensity;
+                CloudDetail = cloudDetail;
+                CloudSpeed = cloudSpeed;
+                CloudSoftness = cloudSoftness;
+                CloudLightResponse = cloudLightResponse;
+                CloudSilverLining = cloudSilverLining;
+                CloudStepCount = cloudStepCount;
+            }
+        }
+
+        public static PlanetAtmosphereRenderParams ResolvePlanetAtmosphere(
+            PlanetTerrain planet,
+            Light? sceneLight,
+            SN.Vector3 fallbackSunDir,
+            float fallbackAmbient)
+        {
+            var atmo = planet.Atmosphere;
+            float radius = planet.Config?.Radius ?? planet.Radius;
+            if (atmo != null && atmo.GroundRadiusOverride > 0.01f)
+                radius = atmo.GroundRadiusOverride;
+
+            SN.Vector3 sunDir = fallbackSunDir.LengthSquared() > 1e-5f
+                ? SN.Vector3.Normalize(fallbackSunDir)
+                : SN.Vector3.Normalize(new SN.Vector3(0.20f, 0.82f, 0.53f));
+            if (atmo != null)
+            {
+                if (atmo.UseDirectionalLight && sceneLight?.Type == LightType.Directional && sceneLight.gameObject != null)
+                {
+                    var world = TransformUtil.WorldFromTransform(sceneLight.gameObject.Transform);
+                    var fwd = new SN.Vector3(world.M13, world.M23, world.M33);
+                    if (fwd.LengthSquared() > 1e-6f) sunDir = SN.Vector3.Normalize(fwd);
+                }
+                else
+                {
+                    sunDir = atmo.SunDirectionOverride;
+                }
+            }
+
+            float sunIntensity = atmo?.SunIntensity ?? 1f;
+            var zenith = atmo?.ZenithTint ?? new SN.Vector3(0.26f, 0.40f, 0.92f);
+            var horizon = atmo?.HorizonTint ?? new SN.Vector3(0.82f, 0.86f, 0.98f);
+            float sunUp = Math.Clamp(sunDir.Y * 0.5f + 0.5f, 0f, 1f);
+            var skyTint = SN.Vector3.Lerp(horizon, zenith, sunUp);
+            skyTint *= 0.35f + sunIntensity * 0.65f;
+
+            return new PlanetAtmosphereRenderParams(
+                enabled: atmo?.Enabled ?? false,
+                cloudsEnabled: atmo?.EnableClouds ?? false,
+                sunDir: sunDir,
+                sunIntensity: Math.Max(0.01f, sunIntensity),
+                ambient: Math.Clamp(atmo?.Ambient ?? fallbackAmbient, 0f, 1f),
+                groundRadius: Math.Max(1f, radius),
+                atmosphereHeight: Math.Max(1f, atmo?.AtmosphereHeight ?? 120f),
+                atmosphereBlend: Math.Clamp(atmo?.AtmosphereBlend ?? 0.45f, 0f, 1.25f),
+                rayleighStrength: Math.Max(0f, atmo?.RayleighStrength ?? 1.0f),
+                mieStrength: Math.Max(0f, atmo?.MieStrength ?? 0.30f),
+                densityFalloff: Math.Max(0.1f, atmo?.DensityFalloff ?? 1.25f),
+                horizonBlend: Math.Max(0f, atmo?.HorizonBlend ?? 1.0f),
+                sunsetBoost: Math.Max(0f, atmo?.SunsetBoost ?? 1.0f),
+                sampleCount: Math.Clamp(atmo?.SampleCount ?? 8, 2, 32),
+                zenithTint: zenith,
+                horizonTint: horizon,
+                skyTint: skyTint,
+                cloudBaseHeight: Math.Max(1f, atmo?.CloudBaseHeight ?? 32f),
+                cloudTopHeight: Math.Max(2f, atmo?.CloudTopHeight ?? 88f),
+                cloudCoverage: Math.Clamp(atmo?.CloudCoverage ?? 0.46f, 0f, 1f),
+                cloudDensity: Math.Max(0f, atmo?.CloudDensity ?? 1.0f),
+                cloudDetail: Math.Max(0.1f, atmo?.CloudDetail ?? 2.0f),
+                cloudSpeed: Math.Max(0f, atmo?.CloudSpeed ?? 0.025f),
+                cloudSoftness: Math.Clamp(atmo?.CloudSoftness ?? 0.30f, 0.01f, 1.0f),
+                cloudLightResponse: Math.Max(0f, atmo?.CloudLightResponse ?? 0.9f),
+                cloudSilverLining: Math.Max(0f, atmo?.CloudSilverLining ?? 0.65f),
+                cloudStepCount: Math.Clamp(atmo?.CloudStepCount ?? 16, 4, 64));
+        }
+
         public static void RenderPlanetTerrain(
             GL gl,
             ShaderProgram planetShader,
             ResourceCache cache,
             in SN.Matrix4x4 view,
             in SN.Matrix4x4 proj,
+            PlanetTerrain planet,
+            in PlanetAtmosphereRenderParams atmo,
             SN.Vector3 lightDir,
-            float ambient,
             float diffuseK,
             SN.Vector3 camPos,
             SN.Vector3 planetCenter,
             GPUFramebuffer? shadowFBO,
-            in SN.Matrix4x4 shadowVP,
-            Game_Engine.Core.Biome.BiomeDefinition[] biomes)
+            in SN.Matrix4x4 shadowVP)
         {
-            var planets = Component.PlanetTerrain.ActivePlanets;
-            if (planets == null || planets.Count == 0) return;
+            if (planet.Config == null || planet.gameObject == null || !planet.IsActiveAndEnabled)
+                return;
 
             var vp = view * proj;
             ExtractFrustumPlanes(vp, out var frustumPlanes);
@@ -2156,14 +2310,25 @@ namespace Game_Engine.Core
             planetShader.SetMatrix4("uProj", proj);
             planetShader.SetVector3("uLightDir", lightDir);
             planetShader.SetVector3("uCamPos", camPos);
-            planetShader.SetFloat("uAmbient", ambient);
+            planetShader.SetFloat("uAmbient", atmo.Ambient);
             planetShader.SetFloat("uDiffuseK", diffuseK);
             planetShader.SetVector3("uPlanetCenter", planetCenter);
+            planetShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
 
-            float planetRadius = 1000f;
-            if (planets.Count > 0 && planets[0]?.Config != null)
-                planetRadius = planets[0].Config.Radius;
-            planetShader.SetFloat("uPlanetRadius", planetRadius);
+            planetShader.SetInt("uAtmoEnabled", atmo.Enabled ? 1 : 0);
+            planetShader.SetVector3("uAtmoSunDir", atmo.SunDir);
+            planetShader.SetFloat("uAtmoSunIntensity", atmo.SunIntensity);
+            planetShader.SetFloat("uAtmoBlend", atmo.AtmosphereBlend);
+            planetShader.SetFloat("uAtmoRayleigh", atmo.RayleighStrength);
+            planetShader.SetFloat("uAtmoMie", atmo.MieStrength);
+            planetShader.SetFloat("uAtmoDensityFalloff", atmo.DensityFalloff);
+            planetShader.SetFloat("uAtmoHorizonBlend", atmo.HorizonBlend);
+            planetShader.SetFloat("uAtmoSunsetBoost", atmo.SunsetBoost);
+            planetShader.SetFloat("uAtmoHeight", atmo.AtmosphereHeight);
+            planetShader.SetInt("uAtmoSampleCount", atmo.SampleCount);
+            planetShader.SetVector3("uAtmoZenithTint", atmo.ZenithTint);
+            planetShader.SetVector3("uAtmoHorizonTint", atmo.HorizonTint);
+            planetShader.SetVector3("uAtmoSkyTint", atmo.SkyTint);
 
             if (shadowFBO != null)
             {
@@ -2178,48 +2343,41 @@ namespace Game_Engine.Core
                 planetShader.SetInt("uHasShadow", 0);
             }
 
-            BindBiomeTextures(gl, planetShader, cache, biomes);
+            BindBiomeTextures(gl, planetShader, cache, planet.Config.Biomes);
 
             gl.Enable(EnableCap.CullFace);
             gl.CullFace(TriangleFace.Back);
 
-            foreach (var planet in planets)
+            var go = planet.gameObject;
+            var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
+
+            foreach (var child in go.Children)
             {
-                if (planet?.gameObject == null || !planet.IsActiveAndEnabled) continue;
+                if (!child.Enabled) continue;
+                if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
 
-                var go = planet.gameObject;
-                var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
+                MeshFilter? mf = null;
+                foreach (var b in child.Behaviors)
+                    if (b is MeshFilter f && f.Enabled) { mf = f; break; }
+                if (mf?.Mesh == null) continue;
 
-                foreach (var child in go.Children)
-                {
-                    if (!child.Enabled) continue;
-                    if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
+                var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
+                var chunkSphere = GetMeshSphere(mf.Mesh);
+                // Frustum test in world space (center transformed by model matrix).
+                var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
+                var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                float worldRadius = chunkSphere.Radius * MathF.Max(sx, MathF.Max(sy, sz));
+                if (!SphereInFrustum(frustumPlanes, worldCenter, worldRadius))
+                    continue;
 
-                    MeshFilter? mf = null;
-                    foreach (var b in child.Behaviors)
-                        if (b is MeshFilter f && f.Enabled) { mf = f; break; }
-                    if (mf?.Mesh == null) continue;
+                planetShader.SetMatrix4("uModel", world);
+                SN.Matrix4x4.Invert(world, out var invWorld);
+                planetShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
 
-                    var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
-                    var chunkSphere = GetMeshSphere(mf.Mesh);
-                    // Frustum test in world space (center transformed by model matrix).
-                    var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
-                    var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
-                    var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
-                    var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
-                    float worldRadius = chunkSphere.Radius * MathF.Max(sx, MathF.Max(sy, sz));
-                    if (!SphereInFrustum(frustumPlanes, worldCenter, worldRadius))
-                        continue;
-
-                    planetShader.SetMatrix4("uModel", world);
-                    SN.Matrix4x4.Invert(world, out var invWorld);
-                    planetShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
-
-                    var gpuMesh = cache.GetMesh(mf.Mesh);
-
-            gl.Enable(EnableCap.CullFace);
-                    gpuMesh.Draw();
-                }
+                var gpuMesh = cache.GetMesh(mf.Mesh);
+                gpuMesh.Draw();
             }
         }
 
@@ -2381,89 +2539,240 @@ namespace Game_Engine.Core
             ResourceCache cache,
             in SN.Matrix4x4 view,
             in SN.Matrix4x4 proj,
+            PlanetTerrain planet,
+            in PlanetAtmosphereRenderParams atmo,
             SN.Vector3 lightDir,
-            float ambient,
             float diffuseK,
             SN.Vector3 camPos,
-            SN.Vector3 skyColor,
             SN.Vector3 planetCenter,
             float seaLevel)
         {
-            var planets = Component.PlanetTerrain.ActivePlanets;
-            if (planets == null || planets.Count == 0) return;
+            if (planet.gameObject == null || !planet.IsActiveAndEnabled || !planet.EnableWater)
+                return;
 
-            foreach (var planet in planets)
+            var waterObj = planet.WaterGO;
+            if (waterObj == null) return;
+
+            var mf = waterObj.Behaviors.OfType<MeshFilter>().FirstOrDefault();
+            if (mf?.Mesh == null) return;
+
+            var world = TransformUtil.WorldFromTransform(waterObj.Transform)
+                      * TransformUtil.WorldFromTransform(planet.gameObject.Transform);
+
+            waterShader.Use();
+            waterShader.SetMatrix4("uModel", world);
+            waterShader.SetMatrix4("uView", view);
+            waterShader.SetMatrix4("uProj", proj);
+
+            SN.Matrix4x4.Invert(world, out var invWorld);
+            waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
+
+            waterShader.SetVector3("uPlanetCenter", planetCenter);
+            waterShader.SetFloat("uTime", planet.WaterAnimTime);
+            waterShader.SetFloat("uWaveAmp1", 0.4f);
+            waterShader.SetFloat("uWaveFreq1", 0.6f);
+            waterShader.SetFloat("uWaveSteep1", 0.25f);
+            waterShader.SetFloat("uWaveAmp2", 0.2f);
+            waterShader.SetFloat("uWaveFreq2", 1.2f);
+
+            var oceanBiome = planet.OceanBiome;
+            waterShader.SetVector4("uShallowColor",
+                oceanBiome.WaterShallowColorR, oceanBiome.WaterShallowColorG,
+                oceanBiome.WaterShallowColorB, 1f);
+            waterShader.SetVector4("uDeepColor",
+                oceanBiome.WaterDeepColorR, oceanBiome.WaterDeepColorG,
+                oceanBiome.WaterDeepColorB, 1f);
+            waterShader.SetVector4("uDeepestColor",
+                oceanBiome.WaterDeepestColorR, oceanBiome.WaterDeepestColorG,
+                oceanBiome.WaterDeepestColorB, 1f);
+
+            waterShader.SetVector3("uPlanetCenter", planetCenter);
+            waterShader.SetFloat("uSeaLevel", seaLevel);
+            waterShader.SetFloat("uDepthRange", oceanBiome.WaterDepthColorRange);
+
+            waterShader.SetFloat("uFresnelPower", 4.0f);
+            waterShader.SetFloat("uReflectivity", 0.65f);
+            waterShader.SetFloat("uTransparency", 0.75f);
+
+            waterShader.SetVector3("uLightDir", lightDir);
+            waterShader.SetVector3("uCamPos", camPos);
+            waterShader.SetVector3("uSkyColor", atmo.SkyTint);
+            waterShader.SetFloat("uAmbient", atmo.Ambient);
+            waterShader.SetFloat("uDiffuseK", diffuseK);
+            waterShader.SetInt("uAtmoEnabled", atmo.Enabled ? 1 : 0);
+            waterShader.SetVector3("uAtmoSunDir", atmo.SunDir);
+            waterShader.SetFloat("uAtmoSunIntensity", atmo.SunIntensity);
+            waterShader.SetFloat("uAtmoBlend", atmo.AtmosphereBlend);
+            waterShader.SetFloat("uAtmoRayleigh", atmo.RayleighStrength);
+            waterShader.SetFloat("uAtmoMie", atmo.MieStrength);
+            waterShader.SetFloat("uAtmoDensityFalloff", atmo.DensityFalloff);
+            waterShader.SetFloat("uAtmoHorizonBlend", atmo.HorizonBlend);
+            waterShader.SetFloat("uAtmoSunsetBoost", atmo.SunsetBoost);
+            waterShader.SetFloat("uAtmoHeight", atmo.AtmosphereHeight);
+            waterShader.SetVector3("uAtmoZenithTint", atmo.ZenithTint);
+            waterShader.SetVector3("uAtmoHorizonTint", atmo.HorizonTint);
+            waterShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
+
+            waterShader.SetInt("uHasWaterNormalMap", 0);
+            waterShader.SetInt("uHasWaterTexture", 0);
+            waterShader.SetInt("uFoamEnabled", 1);
+            waterShader.SetFloat("uFoamThreshold", 0.6f);
+            waterShader.SetFloat("uFoamIntensity", 0.4f);
+            waterShader.SetVector4("uFoamColor", 0.9f, 0.95f, 1.0f, 1.0f);
+
+            gl.Enable(EnableCap.Blend);
+            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            gl.Disable(EnableCap.CullFace);
+
+            var gpuMesh = cache.GetMesh(mf.Mesh);
+            gpuMesh.Draw();
+
+            gl.Enable(EnableCap.CullFace);
+            gl.Disable(EnableCap.Blend);
+        }
+
+        public static void RenderPlanetClouds(
+            GL gl,
+            ShaderProgram cloudShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            PlanetTerrain planet,
+            in PlanetAtmosphereRenderParams atmo,
+            SN.Vector3 camPos,
+            SN.Vector3 planetCenter,
+            float timeSec)
+        {
+            if (!atmo.Enabled || !atmo.CloudsEnabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
+                return;
+
+            cloudShader.Use();
+            cloudShader.SetMatrix4("uView", view);
+            cloudShader.SetMatrix4("uProj", proj);
+            cloudShader.SetVector3("uCamPos", camPos);
+            cloudShader.SetVector3("uPlanetCenter", planetCenter);
+            cloudShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
+            cloudShader.SetFloat("uCloudBaseHeight", atmo.CloudBaseHeight);
+            cloudShader.SetFloat("uCloudTopHeight", Math.Max(atmo.CloudBaseHeight + 0.01f, atmo.CloudTopHeight));
+            cloudShader.SetFloat("uCloudCoverage", atmo.CloudCoverage);
+            cloudShader.SetFloat("uCloudDensity", atmo.CloudDensity);
+            cloudShader.SetFloat("uCloudDetail", atmo.CloudDetail);
+            cloudShader.SetFloat("uCloudSpeed", atmo.CloudSpeed);
+            cloudShader.SetFloat("uCloudSoftness", atmo.CloudSoftness);
+            cloudShader.SetFloat("uCloudLightResponse", atmo.CloudLightResponse);
+            cloudShader.SetFloat("uCloudSilverLining", atmo.CloudSilverLining);
+            cloudShader.SetInt("uCloudStepCount", atmo.CloudStepCount);
+            cloudShader.SetVector3("uSunDir", atmo.SunDir);
+            cloudShader.SetFloat("uSunIntensity", atmo.SunIntensity);
+            cloudShader.SetVector3("uSkyTint", atmo.SkyTint);
+            cloudShader.SetFloat("uTime", timeSec);
+
+            gl.Enable(EnableCap.Blend);
+            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            gl.Disable(EnableCap.CullFace);
+            gl.DepthMask(false);
+
+            var go = planet.gameObject;
+            var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
+            var shellMf = planet.WaterGO?.Behaviors.OfType<MeshFilter>().FirstOrDefault();
+            if (shellMf?.Mesh != null && planet.WaterGO != null)
             {
-                if (planet?.gameObject == null || !planet.IsActiveAndEnabled) continue;
-                if (!planet.EnableWater) continue;
-
-                var waterObj = planet.WaterGO;
-                if (waterObj == null) continue;
-
-                var mf = waterObj.Behaviors.OfType<MeshFilter>().FirstOrDefault();
-                if (mf?.Mesh == null) continue;
-
-                var world = TransformUtil.WorldFromTransform(waterObj.Transform)
-                          * TransformUtil.WorldFromTransform(planet.gameObject.Transform);
-
-                waterShader.Use();
-                waterShader.SetMatrix4("uModel", world);
-                waterShader.SetMatrix4("uView", view);
-                waterShader.SetMatrix4("uProj", proj);
-
-                SN.Matrix4x4.Invert(world, out var invWorld);
-                waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
-
-                waterShader.SetVector3("uPlanetCenter", planetCenter);
-                waterShader.SetFloat("uTime", planet.WaterAnimTime);
-                waterShader.SetFloat("uWaveAmp1", 0.4f);
-                waterShader.SetFloat("uWaveFreq1", 0.6f);
-                waterShader.SetFloat("uWaveSteep1", 0.25f);
-                waterShader.SetFloat("uWaveAmp2", 0.2f);
-                waterShader.SetFloat("uWaveFreq2", 1.2f);
-
-                var oceanBiome = planet.OceanBiome;
-                waterShader.SetVector4("uShallowColor",
-                    oceanBiome.WaterShallowColorR, oceanBiome.WaterShallowColorG,
-                    oceanBiome.WaterShallowColorB, 1f);
-                waterShader.SetVector4("uDeepColor",
-                    oceanBiome.WaterDeepColorR, oceanBiome.WaterDeepColorG,
-                    oceanBiome.WaterDeepColorB, 1f);
-                waterShader.SetVector4("uDeepestColor",
-                    oceanBiome.WaterDeepestColorR, oceanBiome.WaterDeepestColorG,
-                    oceanBiome.WaterDeepestColorB, 1f);
-
-                waterShader.SetVector3("uPlanetCenter", planetCenter);
-                waterShader.SetFloat("uSeaLevel", seaLevel);
-                waterShader.SetFloat("uDepthRange", oceanBiome.WaterDepthColorRange);
-
-                waterShader.SetFloat("uFresnelPower", 4.0f);
-                waterShader.SetFloat("uReflectivity", 0.65f);
-                waterShader.SetFloat("uTransparency", 0.75f);
-
-                waterShader.SetVector3("uLightDir", lightDir);
-                waterShader.SetVector3("uCamPos", camPos);
-                waterShader.SetVector3("uSkyColor", skyColor);
-                waterShader.SetFloat("uAmbient", ambient);
-                waterShader.SetFloat("uDiffuseK", diffuseK);
-
-                waterShader.SetInt("uHasWaterNormalMap", 0);
-                waterShader.SetInt("uHasWaterTexture", 0);
-                waterShader.SetInt("uFoamEnabled", 1);
-                waterShader.SetFloat("uFoamThreshold", 0.6f);
-                waterShader.SetFloat("uFoamIntensity", 0.4f);
-                waterShader.SetVector4("uFoamColor", 0.9f, 0.95f, 1.0f, 1.0f);
-
-                gl.Enable(EnableCap.Blend);
-                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-                gl.Disable(EnableCap.CullFace);
-
-                var gpuMesh = cache.GetMesh(mf.Mesh);
+                var world = TransformUtil.WorldFromTransform(planet.WaterGO.Transform) * parentWorld;
+                cloudShader.SetMatrix4("uModel", world);
+                var gpuMesh = cache.GetMesh(shellMf.Mesh);
                 gpuMesh.Draw();
-
-                gl.Enable(EnableCap.CullFace);
-                gl.Disable(EnableCap.Blend);
             }
+            else
+            {
+                foreach (var child in go.Children)
+                {
+                    if (!child.Enabled) continue;
+                    if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
+
+                    MeshFilter? mf = null;
+                    foreach (var b in child.Behaviors)
+                        if (b is MeshFilter f && f.Enabled) { mf = f; break; }
+                    if (mf?.Mesh == null) continue;
+
+                    var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
+                    cloudShader.SetMatrix4("uModel", world);
+                    var gpuMesh = cache.GetMesh(mf.Mesh);
+                    gpuMesh.Draw();
+                }
+            }
+
+            gl.DepthMask(true);
+            gl.Disable(EnableCap.Blend);
+        }
+
+        public static void RenderPlanetAtmosphere(
+            GL gl,
+            ShaderProgram atmoShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            PlanetTerrain planet,
+            in PlanetAtmosphereRenderParams atmo,
+            SN.Vector3 camPos,
+            SN.Vector3 planetCenter)
+        {
+            if (!atmo.Enabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
+                return;
+
+            atmoShader.Use();
+            atmoShader.SetMatrix4("uView", view);
+            atmoShader.SetMatrix4("uProj", proj);
+            atmoShader.SetVector3("uCamPos", camPos);
+            atmoShader.SetVector3("uPlanetCenter", planetCenter);
+            atmoShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
+            atmoShader.SetFloat("uAtmosphereHeight", atmo.AtmosphereHeight);
+            atmoShader.SetVector3("uSunDir", atmo.SunDir);
+            atmoShader.SetFloat("uSunIntensity", atmo.SunIntensity);
+            atmoShader.SetFloat("uAtmoBlend", atmo.AtmosphereBlend);
+            atmoShader.SetFloat("uRayleighStrength", atmo.RayleighStrength);
+            atmoShader.SetFloat("uMieStrength", atmo.MieStrength);
+            atmoShader.SetFloat("uDensityFalloff", atmo.DensityFalloff);
+            atmoShader.SetFloat("uHorizonBlend", atmo.HorizonBlend);
+            atmoShader.SetFloat("uSunsetBoost", atmo.SunsetBoost);
+            atmoShader.SetVector3("uZenithTint", atmo.ZenithTint);
+            atmoShader.SetVector3("uHorizonTint", atmo.HorizonTint);
+
+            gl.Enable(EnableCap.Blend);
+            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            gl.Disable(EnableCap.CullFace);
+            gl.DepthMask(false);
+
+            var go = planet.gameObject;
+            var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
+            var shellMf = planet.WaterGO?.Behaviors.OfType<MeshFilter>().FirstOrDefault();
+            if (shellMf?.Mesh != null && planet.WaterGO != null)
+            {
+                var world = TransformUtil.WorldFromTransform(planet.WaterGO.Transform) * parentWorld;
+                atmoShader.SetMatrix4("uModel", world);
+                var gpuMesh = cache.GetMesh(shellMf.Mesh);
+                gpuMesh.Draw();
+            }
+            else
+            {
+                foreach (var child in go.Children)
+                {
+                    if (!child.Enabled) continue;
+                    if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
+
+                    MeshFilter? mf = null;
+                    foreach (var b in child.Behaviors)
+                        if (b is MeshFilter f && f.Enabled) { mf = f; break; }
+                    if (mf?.Mesh == null) continue;
+
+                    var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
+                    atmoShader.SetMatrix4("uModel", world);
+                    var gpuMesh = cache.GetMesh(mf.Mesh);
+                    gpuMesh.Draw();
+                }
+            }
+
+            gl.DepthMask(true);
+            gl.Disable(EnableCap.Blend);
         }
     }
 }

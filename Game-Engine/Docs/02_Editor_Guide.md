@@ -623,3 +623,20 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 
 ### Extension Menus
 Additional menus appear dynamically when editor extensions are compiled. Each `EditorExtension` class can add top-level menus with items, separators, sub-menus, toggles, and command invocations.
+
+---
+
+## Planet Atmosphere Authoring
+
+To author atmosphere and clouds for a planet:
+
+1. Select your planet root object with `PlanetTerrain`
+2. Add `PlanetAtmosphere` from the Environment component list
+3. Tune atmosphere properties (height, blend, scattering controls, tints)
+4. Tune cloud properties (coverage, density, detail, speed, softness)
+5. Optionally set `UseDirectionalLight` or provide a per-planet sun override
+
+Important:
+- Planet atmosphere/clouds are not driven by `Skybox`.
+- `Skybox` still controls world background sky only.
+- You can keep a `Skybox` for scene backdrop while each planet has distinct atmosphere settings.
