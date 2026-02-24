@@ -48,8 +48,31 @@ namespace Game_Engine.Core.Component
                 Deg2Rad(tr.Rotation.Y), Deg2Rad(tr.Rotation.X), Deg2Rad(tr.Rotation.Z));
 
             var forward = SN.Vector3.TransformNormal(new SN.Vector3(0, 0, -1), r);
+            if (forward.LengthSquared() <= 1e-10f)
+                forward = new SN.Vector3(0, 0, -1);
+            else
+                forward = SN.Vector3.Normalize(forward);
+
+            var up = WorldUp;
+            if (up.LengthSquared() <= 1e-10f)
+                up = SN.Vector3.UnitY;
+            else
+                up = SN.Vector3.Normalize(up);
+
+            // Keep LookAt stable even if forward and up become nearly collinear.
+            up -= forward * SN.Vector3.Dot(up, forward);
+            if (up.LengthSquared() <= 1e-8f)
+            {
+                var seed = MathF.Abs(forward.Y) < 0.99f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+                up = SN.Vector3.Normalize(seed - forward * SN.Vector3.Dot(seed, forward));
+            }
+            else
+            {
+                up = SN.Vector3.Normalize(up);
+            }
+
             var eye = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
-            return SN.Matrix4x4.CreateLookAt(eye, eye + SN.Vector3.Normalize(forward), SN.Vector3.Normalize(WorldUp));
+            return SN.Matrix4x4.CreateLookAt(eye, eye + forward, up);
         }
 
         public SN.Matrix4x4 GetProjectionMatrix(float aspect)
