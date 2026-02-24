@@ -346,17 +346,11 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
 
         // --- UNDERWATER DETECTION ---
-        var underwaterWater = Water.GetUnderwaterWater(camPos);
-        float underwaterDepth = 0f;
-        if (underwaterWater != null)
-        {
-            float surfaceY = underwaterWater.SampleHeight(camPos.X, camPos.Z);
-            underwaterDepth = Math.Max(0f, surfaceY - camPos.Y);
-        }
+        var underwater = UnderwaterQuery.GetState(camPos);
 
         // --- POST-PROCESSING FBO setup ---
         var postVolume = PostProcessVolume.GetActive();
-        bool usePostFX = (postVolume != null || underwaterWater != null) && _postProcessShader != null;
+        bool usePostFX = (postVolume != null || underwater != null) && _postProcessShader != null;
 
         if (usePostFX)
         {
@@ -413,7 +407,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
             g.BindVertexArray(_fsQuad!.VAO);
             SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, W, H,
-                postVolume, underwaterWater, underwaterDepth, (float)Core.Time.time);
+                postVolume, underwater, (float)Core.Time.time);
             g.BindVertexArray(0);
 
             g.Enable(EnableCap.DepthTest);

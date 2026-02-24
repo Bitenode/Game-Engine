@@ -119,17 +119,9 @@ namespace Game_Engine.Core.Component
 
             // ── Underwater detection ──
             var pos0 = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
-            var waterComp = Water.GetUnderwaterWater(pos0);
-            IsUnderwater = waterComp != null;
-            if (waterComp != null)
-            {
-                float surfaceY = waterComp.SampleHeight(pos0.X, pos0.Z);
-                UnderwaterDepth = MathF.Max(0f, surfaceY - pos0.Y);
-            }
-            else
-            {
-                UnderwaterDepth = 0f;
-            }
+            var underwaterState = UnderwaterQuery.GetState(pos0);
+            IsUnderwater = underwaterState.HasValue;
+            UnderwaterDepth = underwaterState?.Depth ?? 0f;
 
             // ── Planet detection ──
             var planet = FindNearestPlanet(pos0, out var planetCenter, out float planetSurfaceR);
@@ -155,18 +147,17 @@ namespace Game_Engine.Core.Component
             }
 
             // Buoyancy: upward force when underwater, stronger the deeper you go
-            if (IsUnderwater && waterComp != null)
+            if (underwaterState.HasValue)
             {
-                float buoyancy = waterComp.UnderwaterBuoyancy;
+                var uw = underwaterState.Value;
+                float buoyancy = uw.Buoyancy;
                 float submersionFactor = MathF.Min(UnderwaterDepth / 2f, 1f);
                 Velocity += LocalUp * buoyancy * submersionFactor * dt;
 
                 if (UnderwaterDepth < 1.5f)
                 {
-                    float surfaceY = waterComp.SampleHeight(pos0.X, pos0.Z);
                     float pullStrength = 2f * (1f - UnderwaterDepth / 1.5f);
-                    float yDiff = surfaceY - pos0.Y;
-                    Velocity += new SN.Vector3(0f, yDiff * pullStrength, 0f) * dt;
+                    Velocity += LocalUp * pullStrength * dt;
                 }
             }
 
@@ -178,7 +169,7 @@ namespace Game_Engine.Core.Component
             _impulseAccum = SN.Vector3.Zero;
 
             // Drag (greatly increased underwater)
-            float dragMultiplier = IsUnderwater && waterComp != null ? waterComp.UnderwaterDrag : 1f;
+            float dragMultiplier = underwaterState?.Drag ?? 1f;
             Velocity *= (1f - Drag * dragMultiplier * dt);
             if (!FreezeRotation)
                 AngularVelocity *= (1f - AngularDrag * dt);

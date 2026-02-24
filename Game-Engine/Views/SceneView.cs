@@ -1482,11 +1482,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         _tShadow = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
 
+        // --- UNDERWATER DETECTION ---
+        var underwater = UnderwaterQuery.GetState(camPos);
+
         // --- POST-PROCESSING FBO setup ---
         // If a PostProcessVolume is active, render the scene to an offscreen FBO
         // so we can apply screen-space effects before blitting to Avalonia's FB.
         var postVolume = PostProcessVolume.GetActive();
-        bool usePostFX = postVolume != null && _postProcessShader != null && !ShowWire;
+        bool usePostFX = (postVolume != null || underwater != null) && _postProcessShader != null && !ShowWire;
 
         if (usePostFX)
         {
@@ -1645,7 +1648,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             g.Disable(EnableCap.DepthTest);
 
             g.BindVertexArray(_fsQuad!.VAO);
-            SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, postInputTex, pxW, pxH, postVolume);
+            SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, postInputTex, pxW, pxH, postVolume, underwater, (float)Core.Time.time);
             g.BindVertexArray(0);
 
             g.Enable(EnableCap.DepthTest);

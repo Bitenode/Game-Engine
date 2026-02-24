@@ -606,17 +606,11 @@ namespace Game_Engine.Views
             _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
             // --- UNDERWATER DETECTION ---
-            var underwaterWater = Water.GetUnderwaterWater(camPos);
-            float underwaterDepth = 0f;
-            if (underwaterWater != null)
-            {
-                float surfaceY = underwaterWater.SampleHeight(camPos.X, camPos.Z);
-                underwaterDepth = Math.Max(0f, surfaceY - camPos.Y);
-            }
+            var underwater = UnderwaterQuery.GetState(camPos);
 
             // --- POST-PROCESSING setup ---
             var postVolume = PostProcessVolume.GetActive();
-            bool usePostFX = (postVolume != null || underwaterWater != null) && _postProcessShader != null;
+            bool usePostFX = (postVolume != null || underwater != null) && _postProcessShader != null;
             bool useSSAO = postVolume?.SSAOEnabled == true;
             bool useSSR = postVolume?.SSREnabled == true;
             double planetLodMs = 0.0;
@@ -889,7 +883,7 @@ namespace Game_Engine.Views
                 g.Disable(EnableCap.DepthTest);
                 g.BindVertexArray(_fsQuad!.VAO);
                 SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, finalSceneTex, W, H,
-                    postVolume, underwaterWater, underwaterDepth, (float)Core.Time.time);
+                    postVolume, underwater, (float)Core.Time.time);
                 g.BindVertexArray(0);
                 g.Enable(EnableCap.DepthTest);
             }
@@ -899,7 +893,7 @@ namespace Game_Engine.Views
                 g.Disable(EnableCap.DepthTest);
                 g.BindVertexArray(_fsQuad!.VAO);
                 SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, finalSceneTex, W, H,
-                    null, null, 0f, 0f);
+                    null, null, 0f);
                 g.BindVertexArray(0);
                 g.Enable(EnableCap.DepthTest);
             }

@@ -351,8 +351,7 @@ namespace Game_Engine.Core
             int viewportWidth,
             int viewportHeight,
             PostProcessVolume? volume = null,
-            Component.Water? underwaterWater = null,
-            float underwaterDepth = 0f,
+            UnderwaterState? underwater = null,
             float underwaterTime = 0f)
         {
             // Always bind the post-process shader, even for passthrough —
@@ -409,15 +408,16 @@ namespace Game_Engine.Core
             }
 
             // Underwater
-            if (underwaterWater != null)
+            if (underwater.HasValue)
             {
+                var uw = underwater.Value;
                 postShader.SetInt("uUnderwaterEnabled", 1);
-                postShader.SetVector3("uUnderwaterTint", underwaterWater.UnderwaterTint);
-                postShader.SetFloat("uUnderwaterFogDensity", underwaterWater.UnderwaterFogDensity);
-                postShader.SetFloat("uUnderwaterCausticStr", underwaterWater.UnderwaterCausticStrength);
-                postShader.SetFloat("uUnderwaterDistortion", underwaterWater.UnderwaterDistortion);
+                postShader.SetVector3("uUnderwaterTint", uw.Tint);
+                postShader.SetFloat("uUnderwaterFogDensity", uw.FogDensity);
+                postShader.SetFloat("uUnderwaterCausticStr", uw.CausticStrength);
+                postShader.SetFloat("uUnderwaterDistortion", uw.Distortion);
                 postShader.SetFloat("uUnderwaterTime", underwaterTime);
-                postShader.SetFloat("uUnderwaterDepth", underwaterDepth);
+                postShader.SetFloat("uUnderwaterDepth", uw.Depth);
             }
             else
             {

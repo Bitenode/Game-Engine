@@ -80,6 +80,14 @@ public sealed class BiomeDefinition
     public float WaterDeepestColorG { get; set; } = 0.03f;
     public float WaterDeepestColorB { get; set; } = 0.1f;
     public float WaterDepthColorRange { get; set; } = 50f;
+    public float UnderwaterTintR { get; set; } = 0.08f;
+    public float UnderwaterTintG { get; set; } = 0.22f;
+    public float UnderwaterTintB { get; set; } = 0.35f;
+    public float UnderwaterFogDensity { get; set; } = 0.05f;
+    public float UnderwaterCausticStrength { get; set; } = 0.3f;
+    public float UnderwaterDistortion { get; set; } = 0.003f;
+    public float UnderwaterBuoyancy { get; set; } = 6f;
+    public float UnderwaterDrag { get; set; } = 3f;
 
     public float VegetationDensity { get; set; } = 0f;
     public float TreeDensity { get; set; } = 0f;
@@ -100,6 +108,12 @@ public sealed class BiomeDefinition
         WaterDeepColorR = 0.02f, WaterDeepColorG = 0.08f, WaterDeepColorB = 0.22f,
         WaterDeepestColorR = 0.005f, WaterDeepestColorG = 0.015f, WaterDeepestColorB = 0.06f,
         WaterDepthColorRange = 80f,
+        UnderwaterTintR = 0.06f, UnderwaterTintG = 0.18f, UnderwaterTintB = 0.30f,
+        UnderwaterFogDensity = 0.07f,
+        UnderwaterCausticStrength = 0.35f,
+        UnderwaterDistortion = 0.0035f,
+        UnderwaterBuoyancy = 6f,
+        UnderwaterDrag = 3f,
     };
 
     public static BiomeDefinition Beach => new()
