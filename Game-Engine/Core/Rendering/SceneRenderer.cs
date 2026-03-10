@@ -2350,19 +2350,17 @@ namespace Game_Engine.Core
 
             var go = planet.gameObject;
             var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
+            var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
+            if (renderableLeaves == null) return;
 
-            foreach (var child in go.Children)
+            for (int i = 0; i < renderableLeaves.Count; i++)
             {
-                if (!child.Enabled) continue;
-                if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
+                var leaf = renderableLeaves[i];
+                var mesh = leaf.GeneratedMesh;
+                if (mesh == null) continue;
 
-                MeshFilter? mf = null;
-                foreach (var b in child.Behaviors)
-                    if (b is MeshFilter f && f.Enabled) { mf = f; break; }
-                if (mf?.Mesh == null) continue;
-
-                var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
-                var chunkSphere = GetMeshSphere(mf.Mesh);
+                var world = parentWorld;
+                var chunkSphere = GetMeshSphere(mesh);
                 // Frustum test in world space (center transformed by model matrix).
                 var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
                 var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
@@ -2376,7 +2374,7 @@ namespace Game_Engine.Core
                 SN.Matrix4x4.Invert(world, out var invWorld);
                 planetShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
 
-                var gpuMesh = cache.GetMesh(mf.Mesh);
+                var gpuMesh = cache.GetMesh(mesh);
                 gpuMesh.Draw();
             }
         }
@@ -2589,6 +2587,23 @@ namespace Game_Engine.Core
             waterShader.SetVector3("uPlanetCenter", planetCenter);
             waterShader.SetFloat("uSeaLevel", seaLevel);
             waterShader.SetFloat("uDepthRange", oceanBiome.WaterDepthColorRange);
+            waterShader.SetFloat("uShorelineThreshold", 0.35f);
+            waterShader.SetFloat("uShorelineSoftness", 0.18f);
+            waterShader.SetFloat("uShoreBiomeBlend", 0.35f);
+
+            int biomeColorCount = 0;
+            var biomes = planet.Config?.Biomes;
+            if (biomes != null)
+            {
+                biomeColorCount = Math.Min(8, biomes.Length);
+                for (int i = 0; i < biomeColorCount; i++)
+                {
+                    var b = biomes[i];
+                    waterShader.SetVector3($"uBiomeBaseColor[{i}]",
+                        new SN.Vector3(b.BaseColorR, b.BaseColorG, b.BaseColorB));
+                }
+            }
+            waterShader.SetInt("uBiomeColorCount", biomeColorCount);
 
             waterShader.SetFloat("uFresnelPower", 4.0f);
             waterShader.SetFloat("uReflectivity", 0.65f);
@@ -2684,19 +2699,17 @@ namespace Game_Engine.Core
             }
             else
             {
-                foreach (var child in go.Children)
+                var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
+                if (renderableLeaves == null)
+                    return;
+
+                for (int i = 0; i < renderableLeaves.Count; i++)
                 {
-                    if (!child.Enabled) continue;
-                    if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
-
-                    MeshFilter? mf = null;
-                    foreach (var b in child.Behaviors)
-                        if (b is MeshFilter f && f.Enabled) { mf = f; break; }
-                    if (mf?.Mesh == null) continue;
-
-                    var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
+                    var mesh = renderableLeaves[i].GeneratedMesh;
+                    if (mesh == null) continue;
+                    var world = parentWorld;
                     cloudShader.SetMatrix4("uModel", world);
-                    var gpuMesh = cache.GetMesh(mf.Mesh);
+                    var gpuMesh = cache.GetMesh(mesh);
                     gpuMesh.Draw();
                 }
             }
@@ -2754,19 +2767,17 @@ namespace Game_Engine.Core
             }
             else
             {
-                foreach (var child in go.Children)
+                var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
+                if (renderableLeaves == null)
+                    return;
+
+                for (int i = 0; i < renderableLeaves.Count; i++)
                 {
-                    if (!child.Enabled) continue;
-                    if (child.Name == null || !child.Name.StartsWith("PlanetChunk_")) continue;
-
-                    MeshFilter? mf = null;
-                    foreach (var b in child.Behaviors)
-                        if (b is MeshFilter f && f.Enabled) { mf = f; break; }
-                    if (mf?.Mesh == null) continue;
-
-                    var world = TransformUtil.WorldFromTransform(child.Transform) * parentWorld;
+                    var mesh = renderableLeaves[i].GeneratedMesh;
+                    if (mesh == null) continue;
+                    var world = parentWorld;
                     atmoShader.SetMatrix4("uModel", world);
-                    var gpuMesh = cache.GetMesh(mf.Mesh);
+                    var gpuMesh = cache.GetMesh(mesh);
                     gpuMesh.Draw();
                 }
             }

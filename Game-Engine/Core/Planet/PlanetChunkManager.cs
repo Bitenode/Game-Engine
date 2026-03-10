@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Game_Engine.Core.Biome;
-using Game_Engine.Core.Component;
 using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
 
@@ -13,7 +11,7 @@ namespace Game_Engine.Core.Planet;
 
 /// <summary>
 /// Manages the 6 face quadtrees, queues async mesh generation for dirty
-/// leaf nodes, and applies finished meshes to their GameObjects on the main thread.
+/// leaf nodes, and applies finished meshes to runtime chunk data on the main thread.
 /// </summary>
 public sealed class PlanetChunkManager
 {
@@ -75,24 +73,26 @@ public sealed class PlanetChunkManager
         });
     }
 
-    public void Update(SN.Vector3 cameraPos, GameObject parentGO)
+    public void Update(SN.Vector3 cameraPos, SN.Vector3 planetCenter)
     {
         _lastAppliedEditCommands = 0;
         _lastDirtyLeavesFromEdits = 0;
+        var localCameraPos = cameraPos - planetCenter;
 
         for (int f = 0; f < 6; f++)
         {
-            Faces[f].Update(cameraPos, Config);
+            Faces[f].Update(localCameraPos, Config);
+            Faces[f].UpdateTransitionMasks();
         }
 
-        EnforceLeafBudget(cameraPos);
-        ProcessEditCommands();
+        EnforceLeafBudget(localCameraPos);
+        ProcessEditCommands(planetCenter);
 
         int applyBudget = Math.Max(1, Config.MaxMeshAppliesPerUpdate);
         int applied = 0;
         while (applied < applyBudget && _completed.TryDequeue(out var job))
         {
-            ApplyMesh(job.Node, job.MeshData, parentGO);
+            ApplyMesh(job.Node, job.MeshData);
             job.Node.IsGenerating = false;
             applied++;
         }
@@ -103,25 +103,23 @@ public sealed class PlanetChunkManager
             leaves.AddRange(Faces[f].GetLeafNodes());
         leaves.Sort((a, b) =>
         {
-            float da = SN.Vector3.DistanceSquared(cameraPos, a.WorldCentre(Config.Radius));
-            float db = SN.Vector3.DistanceSquared(cameraPos, b.WorldCentre(Config.Radius));
+            float da = SN.Vector3.DistanceSquared(localCameraPos, a.WorldCentre(Config.Radius));
+            float db = SN.Vector3.DistanceSquared(localCameraPos, b.WorldCentre(Config.Radius));
             return da.CompareTo(db);
         });
 
-        // Hard active chunk cap: unload distant chunk GameObjects to keep runtime cost bounded.
-        int activeChunkCap = Math.Max(64, Config.MaxActiveChunks);
-        for (int i = activeChunkCap; i < leaves.Count; i++)
-            UnloadLeaf(leaves[i]);
-
         int scheduleBudget = Math.Max(1, Config.MaxGenerationSchedulesPerUpdate);
         int scheduled = 0;
+        int fillBudget = Math.Clamp(scheduleBudget / 3, 8, 128);
+        int detailBudget = Math.Max(1, scheduleBudget - fillBudget);
+        int activeChunkCap = Math.Max(64, Config.MaxActiveChunks);
         int nearCount = Math.Min(activeChunkCap, leaves.Count);
         for (int i = 0; i < nearCount; i++)
         {
             var leaf = leaves[i];
-            if (scheduled >= scheduleBudget) break;
+            if (scheduled >= detailBudget) break;
             if (_activeJobs >= MaxConcurrentJobs) break;
-            if (leaf.NeedsMeshRebuild && !leaf.IsGenerating)
+            if ((leaf.NeedsMeshRebuild || leaf.GeneratedMesh == null) && !leaf.IsGenerating)
             {
                 leaf.NeedsMeshRebuild = false;
                 leaf.IsGenerating = true;
@@ -129,9 +127,93 @@ public sealed class PlanetChunkManager
                 scheduled++;
             }
         }
+
+        // Always reserve budget to fill missing meshes anywhere on the planet.
+        // This prevents persistent "holes" when near-camera detail keeps consuming
+        // all scheduling budget.
+        int filled = 0;
+        if (_activeJobs < MaxConcurrentJobs)
+        {
+            for (int i = 0; i < leaves.Count; i++)
+            {
+                var leaf = leaves[i];
+                if (filled >= fillBudget) break;
+                if (scheduled >= scheduleBudget) break;
+                if (_activeJobs >= MaxConcurrentJobs) break;
+
+                if (leaf.GeneratedMesh == null && !leaf.IsGenerating)
+                {
+                    leaf.NeedsMeshRebuild = false;
+                    leaf.IsGenerating = true;
+                    ScheduleGeneration(leaf);
+                    scheduled++;
+                    filled++;
+                }
+            }
+        }
+
+        // Spend any remaining budget on near-camera detail.
+        if (scheduled < scheduleBudget && _activeJobs < MaxConcurrentJobs)
+        {
+            for (int i = 0; i < nearCount; i++)
+            {
+                var leaf = leaves[i];
+                if (scheduled >= scheduleBudget) break;
+                if (_activeJobs >= MaxConcurrentJobs) break;
+
+                if (leaf.NeedsMeshRebuild && !leaf.IsGenerating)
+                {
+                    leaf.NeedsMeshRebuild = false;
+                    leaf.IsGenerating = true;
+                    ScheduleGeneration(leaf);
+                    scheduled++;
+                }
+            }
+        }
     }
 
-    void ProcessEditCommands()
+    public void UpdateNoLod(SN.Vector3 planetCenter)
+    {
+        _lastAppliedEditCommands = 0;
+        _lastDirtyLeavesFromEdits = 0;
+
+        // Force a non-LOD representation for editor scene view:
+        // one root chunk per face, always visible.
+        for (int f = 0; f < 6; f++)
+        {
+            var root = Faces[f].Root;
+            if (!root.IsLeaf)
+                root.Merge();
+            root.NeedsMeshRebuild = true;
+            Faces[f].UpdateTransitionMasks();
+        }
+
+        ProcessEditCommands(planetCenter);
+
+        int applyBudget = Math.Max(6, Config.MaxMeshAppliesPerUpdate);
+        int applied = 0;
+        while (applied < applyBudget && _completed.TryDequeue(out var job))
+        {
+            ApplyMesh(job.Node, job.MeshData);
+            job.Node.IsGenerating = false;
+            applied++;
+        }
+
+        // Schedule all root chunks so full planet appears quickly.
+        for (int f = 0; f < 6; f++)
+        {
+            var root = Faces[f].Root;
+            if (_activeJobs >= MaxConcurrentJobs) break;
+            if ((root.NeedsMeshRebuild || root.GeneratedMesh == null) && !root.IsGenerating)
+            {
+                root.NeedsMeshRebuild = false;
+                root.IsGenerating = true;
+                ScheduleGeneration(root);
+            }
+        }
+    }
+
+    void ProcessEditCommands(SN.Vector3 planetCenter)
     {
         int cmdBudget = Math.Max(1, Config.MaxEditCommandsPerUpdate);
         int dirtyBudget = Math.Max(1, Config.MaxEditDirtyLeavesPerUpdate);
@@ -156,7 +238,7 @@ public sealed class PlanetChunkManager
                     break;
 
                 var leaf = leaves[i];
-                if (!IntersectsLeaf(leaf, cmd.Center, sphereRadius))
+                if (!IntersectsLeaf(leaf, cmd.Center - planetCenter, sphereRadius))
                     continue;
 
                 if (!leaf.NeedsMeshRebuild)
@@ -171,25 +253,12 @@ public sealed class PlanetChunkManager
         _lastDirtyLeavesFromEdits = dirtied;
     }
 
-    bool IntersectsLeaf(QuadNode leaf, SN.Vector3 worldCenter, float sphereRadius)
+    bool IntersectsLeaf(QuadNode leaf, SN.Vector3 localCenter, float sphereRadius)
     {
         var leafCenter = leaf.WorldCentre(Config.Radius);
         float leafRadius = Math.Max(leaf.WorldSize(Config.Radius) * 0.75f, Config.Radius * 0.01f);
         float maxDist = leafRadius + sphereRadius + Config.VoxelIsoSearchRange * 0.15f;
-        return SN.Vector3.DistanceSquared(worldCenter, leafCenter) <= maxDist * maxDist;
-    }
-
-    static void UnloadLeaf(QuadNode leaf)
-    {
-        if (leaf.IsGenerating) return; // let in-flight work complete naturally
-        if (leaf.ChunkGO != null)
-        {
-            leaf.ChunkGO.RemoveFromParent();
-            leaf.ChunkGO = null;
-        }
-        leaf.GeneratedMesh = null;
-        leaf.Chunk = null;
-        leaf.NeedsMeshRebuild = true;
+        return SN.Vector3.DistanceSquared(localCenter, leafCenter) <= maxDist * maxDist;
     }
 
     void EnforceLeafBudget(SN.Vector3 cameraPos)
@@ -261,9 +330,11 @@ public sealed class PlanetChunkManager
                 var meshData = _meshGen.Generate(face, u0, v0, u1, v1, resolution);
                 _completed.Enqueue(new MeshJob { Node = node, MeshData = meshData });
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Info($"[PlanetChunkManager] Mesh generation failed for face={face} lod={node.LodLevel}: {ex.Message}");
                 node.IsGenerating = false;
+                node.NeedsMeshRebuild = true;
             }
             finally
             {
@@ -272,38 +343,17 @@ public sealed class PlanetChunkManager
         });
     }
 
-    void ApplyMesh(QuadNode node, TransvoxelMeshData meshData, GameObject parentGO)
+    void ApplyMesh(QuadNode node, TransvoxelMeshData meshData)
     {
         if (meshData.IsEmpty)
         {
-            if (node.ChunkGO != null)
-            {
-                node.ChunkGO.RemoveFromParent();
-                node.ChunkGO = null;
-            }
+            // Keep existing mesh to avoid visual holes; retry later.
+            node.NeedsMeshRebuild = true;
             return;
         }
 
         var mesh = meshData.ToEngineMesh();
         node.GeneratedMesh = mesh;
-
-        if (node.ChunkGO == null)
-        {
-            var go = new GameObject($"PlanetChunk_{node.Face}_{node.LodLevel}_{node.U0:F2}_{node.V0:F2}");
-
-            var mf = new MeshFilter();
-            go.AddBehavior(mf);
-
-            parentGO.AddChild(go);
-            node.ChunkGO = go;
-        }
-
-        var meshFilter = node.ChunkGO.Behaviors
-            .OfType<MeshFilter>().FirstOrDefault();
-        if (meshFilter != null)
-        {
-            meshFilter.Mesh = mesh;
-        }
     }
 
     public void Dispose()
@@ -313,12 +363,18 @@ public sealed class PlanetChunkManager
             var leaves = Faces[f].GetLeafNodes();
             foreach (var leaf in leaves)
             {
-                if (leaf.ChunkGO != null)
-                {
-                    leaf.ChunkGO.RemoveFromParent();
-                    leaf.ChunkGO = null;
-                }
+                leaf.GeneratedMesh = null;
+                leaf.Chunk = null;
             }
         }
+    }
+
+    public List<QuadNode> GetRenderableLeaves()
+    {
+        var leaves = new List<QuadNode>(1024);
+        for (int f = 0; f < 6; f++)
+            leaves.AddRange(Faces[f].GetLeafNodes());
+        leaves.RemoveAll(l => l.GeneratedMesh == null);
+        return leaves;
     }
 }

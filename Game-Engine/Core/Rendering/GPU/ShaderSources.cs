@@ -2564,6 +2564,11 @@ uniform float uDepthRange;
 uniform vec4 uShallowColor;
 uniform vec4 uDeepColor;
 uniform vec4 uDeepestColor;
+uniform vec3 uBiomeBaseColor[8];
+uniform int uBiomeColorCount;
+uniform float uShorelineThreshold;
+uniform float uShorelineSoftness;
+uniform float uShoreBiomeBlend;
 
 uniform float uFresnelPower;
 uniform float uReflectivity;
@@ -2600,6 +2605,20 @@ uniform float uFoamIntensity;
 uniform vec4 uFoamColor;
 
 out vec4 FragColor;
+
+vec3 sampleBiomeColor(int idx)
+{
+    if (uBiomeColorCount <= 0) return uShallowColor.rgb;
+    int clampedIdx = clamp(idx, 0, min(7, uBiomeColorCount - 1));
+    if (clampedIdx == 0) return uBiomeBaseColor[0];
+    if (clampedIdx == 1) return uBiomeBaseColor[1];
+    if (clampedIdx == 2) return uBiomeBaseColor[2];
+    if (clampedIdx == 3) return uBiomeBaseColor[3];
+    if (clampedIdx == 4) return uBiomeBaseColor[4];
+    if (clampedIdx == 5) return uBiomeBaseColor[5];
+    if (clampedIdx == 6) return uBiomeBaseColor[6];
+    return uBiomeBaseColor[7];
+}
 
 vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
 {
@@ -2655,6 +2674,16 @@ void main()
     else
         waterColor = mix(uDeepColor.rgb, uDeepestColor.rgb, (apparentDepth - 0.4) * 1.67);
 
+    int shorelineBiomeIdx = int(clamp(floor(vUV.x + 0.5), 0.0, 7.0));
+    vec3 shorelineBiomeColor = sampleBiomeColor(shorelineBiomeIdx);
+    float waterMask = clamp(vUV.y, 0.0, 1.0);
+    float shoreWetness = smoothstep(
+        max(0.0, uShorelineThreshold - uShorelineSoftness),
+        min(1.0, uShorelineThreshold + uShorelineSoftness),
+        waterMask);
+    vec3 shoreTint = mix(uShallowColor.rgb, shorelineBiomeColor, clamp(uShoreBiomeBlend, 0.0, 1.0));
+    waterColor = mix(shoreTint, waterColor, shoreWetness);
+
     if (uHasWaterTexture == 1)
     {
         vec2 texUV = vec2(tCoord, bCoord) * 0.01 + vec2(uTime * 0.005);
@@ -2697,6 +2726,7 @@ void main()
     color = color / (color + vec3(1.0));
 
     float alpha = mix(uTransparency, 1.0, fresnel * 0.6);
+    alpha *= mix(0.8, 1.0, shoreWetness);
     alpha = max(alpha, 0.7);
     FragColor = vec4(color, alpha);
 }

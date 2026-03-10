@@ -6,7 +6,7 @@ namespace Game_Engine.Core.Planet;
 
 /// <summary>
 /// One node in a per-face quadtree. Leaf nodes own a VoxelChunk and a generated Mesh.
-/// Each leaf creates a child GameObject with MeshFilter+MeshRenderer for rendering.
+/// Rendering is runtime-managed from GeneratedMesh (no per-leaf GameObjects).
 /// </summary>
 public sealed class QuadNode
 {
@@ -23,7 +23,6 @@ public sealed class QuadNode
 
     public VoxelChunk? Chunk { get; set; }
     public Mesh? GeneratedMesh { get; set; }
-    public GameObject? ChunkGO { get; set; }
 
     /// <summary>
     /// 4 bits for the 4 edges of this quad (±U, ±V), set when the neighbor across
@@ -103,11 +102,6 @@ public sealed class QuadNode
 
     static void DisposeChunkData(QuadNode node)
     {
-        if (node.ChunkGO != null)
-        {
-            node.ChunkGO.RemoveFromParent();
-            node.ChunkGO = null;
-        }
         node.Chunk = null;
         node.GeneratedMesh = null;
     }

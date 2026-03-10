@@ -44,4 +44,10 @@
     <Folder Include="Standard Assets\Code Examples\Custom Menu%27s\" />
     <Folder Include="Standard Assets\Code Examples\Inspector\" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="artifacts\**\*.cs" />
+    <EmbeddedResource Remove="artifacts\**\*" />
+    <None Remove="artifacts\**\*" />
+  </ItemGroup>
 </Project>

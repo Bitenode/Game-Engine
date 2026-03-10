@@ -943,6 +943,39 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         foreach (var planet in PlanetTerrain.ActivePlanets)
         {
             if (planet == null) continue;
+            var cfg = planet.Config;
+            if (cfg != null && planet.gameObject != null)
+            {
+                var p = planet.gameObject.Transform.Position;
+                var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+                float radius = Math.Max(1f, cfg.Radius);
+                float dist = (camPos - center).Length();
+
+                // Orbit-aware LOD profile:
+                // far away -> fewer splits + shallower depth so the whole planet remains visible.
+                // close in -> normal LOD so planet can unload when camera gets too close.
+                float orbitStart = radius * 1.02f;
+                float orbitFull = radius * 1.35f;
+                float t = 0f;
+                if (orbitFull > orbitStart)
+                    t = Math.Clamp((dist - orbitStart) / (orbitFull - orbitStart), 0f, 1f);
+
+                int baseDepth = Math.Clamp(planet.MaxLodDepth, 2, 4);
+                int orbitDepth = 2;
+                cfg.MaxLodDepth = (int)MathF.Round(baseDepth + (orbitDepth - baseDepth) * t);
+                cfg.SplitDistanceScale = 0.60f + (0.04f - 0.60f) * t;
+                cfg.MaxLeafNodes = (int)MathF.Round(2048f + (8192f - 2048f) * t);
+
+                int baseActive = Math.Max(1024, planet.MaxActiveChunks);
+                cfg.MaxActiveChunks = (int)MathF.Round(baseActive + (4096 - baseActive) * t);
+
+                // Speed up fill when entering orbit so full-planet coverage appears quickly.
+                int baseSched = Math.Max(160, cfg.MaxGenerationSchedulesPerUpdate);
+                cfg.MaxGenerationSchedulesPerUpdate = (int)MathF.Round(baseSched + (512 - baseSched) * t);
+                int baseApply = Math.Max(160, cfg.MaxMeshAppliesPerUpdate);
+                cfg.MaxMeshAppliesPerUpdate = (int)MathF.Round(baseApply + (512 - baseApply) * t);
+            }
+
             planet.UpdateLOD(camPos);
             planet.Update();
         }

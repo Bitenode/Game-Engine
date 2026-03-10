@@ -20,6 +20,7 @@ Core goals:
 | `PlanetChunkManager` | Updates 6 face quadtrees, schedules async mesh generation, applies completed meshes on main thread |
 | `BiomeMap` | Resolves biome blends per sphere direction |
 | `BiomeGraph` | Node graph that compiles into biome generation parameters |
+| `PlanetAssetIO` | Reads/writes `.planet` assets (config + graph path + water settings) |
 | `PlanetCollider` | Planet collider shell used for broad-phase AABB and gizmo bounds |
 | `Rigidbody` | Planet-aware gravity, grounding, and collision response |
 | `RigidbodyPlayer` | Tangent-plane movement + camera alignment for planets |
@@ -43,16 +44,33 @@ Core goals:
 | `Seed` | `42` | Planet seed |
 | `EnableCaves` | `true` | Enables cave carving in the density pipeline |
 | `EnableWater` | `true` | Enables ocean shell mesh |
-| `MaxActiveChunks` | `120` | Hard cap for loaded chunk GameObjects |
+| `MaxActiveChunks` | `120` | Hard cap for active runtime chunk meshes |
+| `PlanetAssetPath` | `""` | Project-relative or absolute `.planet` path |
 | `BiomeGraphPath` | `""` | Project-relative or absolute `.biomegraph` path |
 
 ### Runtime behavior highlights
 
 - Registers itself in `PlanetTerrain.ActivePlanets` for global planet queries
-- Loads and compiles `BiomeGraphPath` in `TryLoadBiomeGraph()`
+- Loads `.planet` data first (if `PlanetAssetPath` is set), then loads/compiles `BiomeGraphPath`
 - Rebuilds biome map, noise caches, chunk manager, and water after graph apply
 - Updates chunk streaming on interval and movement threshold (not every frame)
 - Exposes `SampleSurfaceRadius(sphereDir)` for accurate physics grounding
+
+---
+
+## Planet Asset Workflow (`.planet`)
+
+Planet state can now be stored in a dedicated `.planet` file:
+
+- Includes `PlanetConfig`, `SeaLevelFraction`, `EnableWater`, and `BiomeGraphPath`
+- Supports project-relative paths and absolute paths
+- Uses `PlanetAssetIO` for normalized load/save behavior
+- Keeps planet setup portable across scenes while preserving graph-driven generation style
+
+Recommended order:
+1. Save/load `.planet` for structural planet settings
+2. Save/load `.biomegraph` for biome style authoring
+3. Apply/compile graph to rebuild runtime terrain and water
 
 ---
 
@@ -82,6 +100,11 @@ The Biome Graph editor (`BiomeGraphPanel`) is a node-based authoring tool that w
 
 When applied, planet runtime state is rebuilt so generated chunks immediately reflect new biome graph data.
 
+Water output notes:
+- Layer `SpawnWater` contributes to biome water masks
+- Shoreline tinting blends water color toward nearby non-water biome colors
+- River settings (`RiverWidth`, `RiverDepth`, `Frequency`, `Meander`, `AllowedBiomes`) are compiled into planet runtime config
+
 ---
 
 ## Chunk Streaming and Budgets
@@ -103,6 +126,11 @@ High-level update sequence:
 5. Unload far leaves beyond active cap
 6. Schedule new mesh generation for nearest dirty leaves (bounded)
 
+Hierarchy/runtime note:
+- Chunk `GameObject` children are no longer created (no `PlanetChunk_*` scene hierarchy spam)
+- Runtime chunk meshes are cached on quadtree leaves and rendered directly
+- Rendering reads `PlanetChunkManager.GetRenderableLeaves()` for terrain/water/cloud passes
+
 ---
 
 ## File Map
@@ -114,11 +142,14 @@ High-level update sequence:
 | `PlanetConfig.cs` | Planet generation settings and runtime chunk/job budgets |
 | `PlanetChunkManager.cs` | Face quadtree updates, job scheduling, mesh apply/unload |
 | `FaceQuadtree.cs` | Per-face split/merge logic and neighbor lookup |
-| `QuadNode.cs` | Quadtree node state (`NeedsMeshRebuild`, `TransitionMask`, `ChunkGO`) |
+| `QuadNode.cs` | Quadtree node state (`NeedsMeshRebuild`, `TransitionMask`, generated mesh cache) |
 | `CubeSphereMath.cs` | Cube-face UV <-> sphere direction conversions |
 | `DensityGenerator.cs` | Voxel density/material generation for spherical terrain fields |
 | `PlanetMeshGenerator.cs` | Surface mesh generation with biome blends/erosion/caves |
 | `PlanetWater.cs` | Planet ocean shell mesh generation |
+| `PlanetAssetIO.cs` | `.planet` DTO + load/save + path normalization |
+| `PlanetWaterSimulation.cs` | Runtime water simulation state for planet rendering integration |
+| `PlanetWaterVoxelGenerator.cs` | Water-related voxel contribution utilities |
 
 ### Noise folder (`Core/Noise/`)
 
@@ -191,8 +222,10 @@ For planet traversal:
 ## Editor and Data Notes
 
 - Biome graphs are saved as `.biomegraph` JSON files
+- Planet assets are saved as `.planet` JSON files
 - Graph paths are stored as project-relative paths when possible
 - `PlanetTerrain.TryLoadBiomeGraph()` resolves both relative and absolute paths
+- `PlanetTerrain` normalizes and persists `PlanetAssetPath`/`BiomeGraphPath` project-relative when possible
 - Scene compile applies graph results live and triggers `SceneService.NotifyChanged()`
 
 Recommended setup:
@@ -200,6 +233,16 @@ Recommended setup:
 2. Add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`
 3. Ensure there is a `Camera` for the player/controller
 4. Author and compile a biome graph, then assign/verify `BiomeGraphPath`
+
+---
+
+## Scene View LOD Behavior
+
+Scene View uses an orbit-aware profile so whole-planet visibility is stable while orbiting:
+
+- Near-orbit to far-orbit range scales LOD depth/split aggressiveness smoothly
+- Fill/apply budgets increase when farther out to populate full-planet coverage quickly
+- Close-range no longer forces always-loaded safety locks; normal streaming can merge/unload near-camera chunks
 
 ---
 

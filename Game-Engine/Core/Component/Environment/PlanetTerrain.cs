@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Planet;
@@ -44,6 +45,7 @@ public sealed class PlanetTerrain : Behavior
     [Persist] public float DefaultManipulationStrength { get; set; } = 10f;
     [Persist] public float DefaultManipulationFalloff { get; set; } = 0.6f;
 
+    [Persist] public string PlanetAssetPath { get; set; } = "";
     [Persist] public string BiomeGraphPath { get; set; } = "";
 
     PlanetConfig? _config;
@@ -71,6 +73,7 @@ public sealed class PlanetTerrain : Behavior
 
     public PlanetConfig? Config => _config;
     public BiomeMap? Map => _biomeMap;
+    public PlanetChunkManager? ChunkManager => _chunkManager;
     public int ActiveGenerationJobs => _chunkManager?.ActiveJobs ?? 0;
     public int PendingMeshJobs => _chunkManager?.PendingCompletedJobs ?? 0;
     public int PendingVoxelEditCommands => _chunkManager?.PendingEditCommands ?? 0;
@@ -80,16 +83,8 @@ public sealed class PlanetTerrain : Behavior
     {
         get
         {
-            if (gameObject == null) return 0;
-            int count = 0;
-            var children = gameObject.Children;
-            for (int i = 0; i < children.Count; i++)
-            {
-                var n = children[i].Name;
-                if (n != null && n.StartsWith("PlanetChunk_"))
-                    count++;
-            }
-            return count;
+            if (_chunkManager == null) return 0;
+            return _chunkManager.GetRenderableLeaves().Count;
         }
     }
 
@@ -103,18 +98,26 @@ public sealed class PlanetTerrain : Behavior
     {
         if (!ActivePlanets.Contains(this))
             ActivePlanets.Add(this);
+        EnsurePlanetAssetPath();
         Initialize();
     }
 
     public override void PostDeserialize()
     {
-        TryLoadBiomeGraph();
+        EnsurePlanetAssetPath();
+        TryLoadPlanetAsset();
+        Initialize();
     }
 
     public override void OnEnable()
     {
         if (!ActivePlanets.Contains(this))
             ActivePlanets.Add(this);
+
+        EnsurePlanetAssetPath();
+        var abs = PlanetAssetIO.ToAbsolutePath(PlanetAssetPath);
+        if (!File.Exists(abs))
+            SavePlanetAsset();
 
         if (_chunkManager == null)
             Initialize();
@@ -135,32 +138,36 @@ public sealed class PlanetTerrain : Behavior
 
     void Initialize()
     {
-        _config = new PlanetConfig
-        {
-            Radius = Radius,
-            MaxLodDepth = MaxLodDepth,
-            ChunkSize = ChunkSize,
-            LodDistanceMultiplier = LodDistanceMultiplier,
-            Seed = Seed,
-            EnableCaves = EnableCaves,
-            MaxActiveChunks = Math.Max(64, MaxActiveChunks),
-            MacroFrequency = MacroFrequency,
-            RidgeStrength = RidgeStrength,
-            BasinStrength = BasinStrength,
-            TemperatureBias = TemperatureBias,
-            MoistureBias = MoistureBias,
-            EnableAdaptiveScheduling = EnableAdaptiveScheduling,
-            AdaptiveMinScheduleBudget = AdaptiveMinScheduleBudget,
-            AdaptiveMaxScheduleBudget = AdaptiveMaxScheduleBudget,
-            AdaptiveMotionBoost = AdaptiveMotionBoost,
-            AdaptiveAltitudeBoost = AdaptiveAltitudeBoost,
-            AdaptiveActiveChunkBoost = AdaptiveActiveChunkBoost,
-            MergeDistanceScale = MergeDistanceScale,
-            VoxelIsoSearchRange = VoxelIsoSearchRange,
-            VoxelIsoSearchSteps = VoxelIsoSearchSteps,
-            MaxEditCommandsPerUpdate = MaxEditCommandsPerUpdate,
-            MaxEditDirtyLeavesPerUpdate = MaxEditDirtyLeavesPerUpdate,
-        };
+        EnsurePlanetAssetPath();
+        TryLoadPlanetAsset();
+
+        var baseConfig = _config != null ? CloneConfig(_config) : new PlanetConfig();
+        _config = baseConfig;
+        _config.Radius = Radius;
+        _config.MaxLodDepth = MaxLodDepth;
+        _config.ChunkSize = ChunkSize;
+        _config.LodDistanceMultiplier = LodDistanceMultiplier;
+        _config.Seed = Seed;
+        _config.EnableCaves = EnableCaves;
+        _config.MaxActiveChunks = Math.Max(64, MaxActiveChunks);
+        _config.MacroFrequency = MacroFrequency;
+        _config.RidgeStrength = RidgeStrength;
+        _config.BasinStrength = BasinStrength;
+        _config.TemperatureBias = TemperatureBias;
+        _config.MoistureBias = MoistureBias;
+        _config.EnableAdaptiveScheduling = EnableAdaptiveScheduling;
+        _config.AdaptiveMinScheduleBudget = AdaptiveMinScheduleBudget;
+        _config.AdaptiveMaxScheduleBudget = AdaptiveMaxScheduleBudget;
+        _config.AdaptiveMotionBoost = AdaptiveMotionBoost;
+        _config.AdaptiveAltitudeBoost = AdaptiveAltitudeBoost;
+        _config.AdaptiveActiveChunkBoost = AdaptiveActiveChunkBoost;
+        _config.MergeDistanceScale = MergeDistanceScale;
+        _config.VoxelIsoSearchRange = VoxelIsoSearchRange;
+        _config.VoxelIsoSearchSteps = VoxelIsoSearchSteps;
+        _config.MaxEditCommandsPerUpdate = MaxEditCommandsPerUpdate;
+        _config.MaxEditDirtyLeavesPerUpdate = MaxEditDirtyLeavesPerUpdate;
+        _config.Biomes = CloneBiomes(_config.Biomes);
+        _config.RiverAllowedBiomes = _config.RiverAllowedBiomes?.ToArray() ?? Array.Empty<string>();
         _voxelEditStore ??= new PlanetVoxelEditStore();
 
         // If a graph path is present, apply it immediately so runtime/game view
@@ -186,6 +193,36 @@ public sealed class PlanetTerrain : Behavior
 
         if (EnableWater && WaterGO == null)
             SetupWater();
+    }
+
+    public void SavePlanetAsset()
+    {
+        EnsurePlanetAssetPath();
+        var data = BuildPlanetAssetData();
+        if (PlanetAssetIO.TrySave(PlanetAssetPath, data, out var error))
+        {
+            Log.Info($"[PlanetTerrain] Planet asset saved: {PlanetAssetPath}");
+            ProjectService.TouchModified();
+        }
+        else if (!string.IsNullOrWhiteSpace(error))
+        {
+            Log.Info($"[PlanetTerrain] {error}");
+        }
+    }
+
+    public void LoadPlanetAsset()
+    {
+        EnsurePlanetAssetPath();
+        if (!TryLoadPlanetAsset())
+            return;
+
+        _chunkManager?.Dispose();
+        _chunkManager = null;
+        _biomeMap = null;
+        RebuildWater();
+        Initialize();
+        SceneRenderer.ResetBiomeTexDebug();
+        SceneService.NotifyChanged();
     }
 
     void RebuildPhysicsNoise()
@@ -391,6 +428,49 @@ public sealed class PlanetTerrain : Behavior
         return Math.Clamp(Math.Max(biomeWater, riverWater), 0f, 1f);
     }
 
+    public float SampleShoreBiomeIndex(SN.Vector3 sphereDir)
+    {
+        if (_config == null || _biomeMap == null)
+            return 0f;
+
+        if (sphereDir.LengthSquared() < 1e-8f)
+            return 0f;
+
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        var blends = _biomeMap.GetBiomes(sphereDir);
+        if (blends == null || blends.Length == 0)
+            return 0f;
+
+        int bestIndex = 0;
+        float bestScore = float.MinValue;
+        for (int i = 0; i < blends.Length; i++)
+        {
+            var biome = blends[i].Biome;
+            int idx = FindBiomeIndex(biome.Name);
+            if (idx < 0) continue;
+            float score = blends[i].Weight + (biome.SpawnWater ? 0f : 0.25f);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestIndex = idx;
+            }
+        }
+
+        return bestIndex;
+    }
+
+    int FindBiomeIndex(string name)
+    {
+        if (_config?.Biomes == null || string.IsNullOrWhiteSpace(name))
+            return -1;
+        for (int i = 0; i < _config.Biomes.Length; i++)
+        {
+            if (string.Equals(_config.Biomes[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
     void RecalcSeaLevel()
     {
         if (_config == null) return;
@@ -408,7 +488,7 @@ public sealed class PlanetTerrain : Behavior
     {
         if (WaterGO != null || gameObject == null || _config == null) return;
 
-        _planetWater = new PlanetWater(_config.SeaLevel, 48, SampleWaterMask, 0.35f);
+        _planetWater = new PlanetWater(_config.SeaLevel, 48, SampleWaterMask, SampleShoreBiomeIndex, 0.35f);
         if (_planetWater.WaterMesh == null) return;
 
         WaterGO = new GameObject("PlanetWater");
@@ -460,7 +540,9 @@ public sealed class PlanetTerrain : Behavior
         {
             _chunkUpdateAccumSec = 0f;
             _lastChunkUpdateCamPos = LastCameraPosition;
-            _chunkManager.Update(LastCameraPosition, gameObject);
+            var p = gameObject.Transform.Position;
+            var planetCenter = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+            _chunkManager.Update(LastCameraPosition, planetCenter);
         }
 
         // Cloud animation also uses this timeline, so keep ticking even when water is disabled.
@@ -472,6 +554,19 @@ public sealed class PlanetTerrain : Behavior
         LastCameraPosition = cameraPos;
     }
 
+    public void UpdateSceneViewNoLod(SN.Vector3 cameraPos)
+    {
+        LastCameraPosition = cameraPos;
+        if (_chunkManager == null || gameObject == null) return;
+
+        var p = gameObject.Transform.Position;
+        var planetCenter = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+        _chunkManager.UpdateNoLod(planetCenter);
+
+        // Keep water/cloud timeline advancing in Scene View too.
+        WaterAnimTime += Math.Max(0f, (float)Time.deltaTime);
+    }
+
     /// <summary>
     /// Load and apply a .biomegraph file if BiomeGraphPath is set.
     /// </summary>
@@ -481,6 +576,186 @@ public sealed class PlanetTerrain : Behavior
         if (System.IO.Path.IsPathRooted(path)) return path;
         var proj = ProjectService.Current;
         return proj != null ? System.IO.Path.Combine(proj.RootPath, path) : path;
+    }
+
+    void EnsurePlanetAssetPath()
+    {
+        if (!string.IsNullOrWhiteSpace(PlanetAssetPath))
+        {
+            PlanetAssetPath = PlanetAssetIO.NormalizeProjectRelative(PlanetAssetPath);
+            return;
+        }
+
+        string goName = gameObject?.Name ?? "Planet";
+        string relPath = Path.Combine("Assets", "Planets", MakeSafeFileName(goName) + ".planet");
+        PlanetAssetPath = PlanetAssetIO.NormalizeProjectRelative(relPath);
+    }
+
+    static string MakeSafeFileName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "Planet";
+        var chars = name.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            char ch = chars[i];
+            if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' || ch == ' '))
+                chars[i] = '_';
+        }
+        var s = new string(chars).Trim();
+        return string.IsNullOrWhiteSpace(s) ? "Planet" : s;
+    }
+
+    bool TryLoadPlanetAsset()
+    {
+        if (string.IsNullOrWhiteSpace(PlanetAssetPath))
+            return false;
+
+        if (!PlanetAssetIO.TryLoad(PlanetAssetPath, out var data, out var error) || data == null)
+        {
+            if (!string.IsNullOrWhiteSpace(error) && !error.Contains("not found", StringComparison.OrdinalIgnoreCase))
+                Log.Info($"[PlanetTerrain] {error}");
+            return false;
+        }
+
+        ApplyPlanetAssetData(data);
+        return true;
+    }
+
+    PlanetAssetData BuildPlanetAssetData()
+    {
+        var cfg = _config ?? new PlanetConfig
+        {
+            Radius = Radius,
+            MaxLodDepth = MaxLodDepth,
+            ChunkSize = ChunkSize,
+            LodDistanceMultiplier = LodDistanceMultiplier,
+            Seed = Seed,
+            EnableCaves = EnableCaves,
+            MaxActiveChunks = Math.Max(64, MaxActiveChunks),
+            MacroFrequency = MacroFrequency,
+            RidgeStrength = RidgeStrength,
+            BasinStrength = BasinStrength,
+            TemperatureBias = TemperatureBias,
+            MoistureBias = MoistureBias,
+            EnableAdaptiveScheduling = EnableAdaptiveScheduling,
+            AdaptiveMinScheduleBudget = AdaptiveMinScheduleBudget,
+            AdaptiveMaxScheduleBudget = AdaptiveMaxScheduleBudget,
+            AdaptiveMotionBoost = AdaptiveMotionBoost,
+            AdaptiveAltitudeBoost = AdaptiveAltitudeBoost,
+            AdaptiveActiveChunkBoost = AdaptiveActiveChunkBoost,
+            MergeDistanceScale = MergeDistanceScale,
+            VoxelIsoSearchRange = VoxelIsoSearchRange,
+            VoxelIsoSearchSteps = VoxelIsoSearchSteps,
+            MaxEditCommandsPerUpdate = MaxEditCommandsPerUpdate,
+            MaxEditDirtyLeavesPerUpdate = MaxEditDirtyLeavesPerUpdate,
+            Biomes = CloneBiomes(BiomeDefinition.AllPresets),
+            RiverAllowedBiomes = Array.Empty<string>(),
+        };
+
+        return new PlanetAssetData
+        {
+            Version = 1,
+            BiomeGraphPath = PlanetAssetIO.NormalizeProjectRelative(BiomeGraphPath),
+            SeaLevelFraction = SeaLevelFraction,
+            EnableWater = EnableWater,
+            Config = CloneConfig(cfg),
+        };
+    }
+
+    void ApplyPlanetAssetData(PlanetAssetData data)
+    {
+        if (data.Config == null)
+            return;
+
+        var c = data.Config;
+        Radius = c.Radius;
+        MaxLodDepth = c.MaxLodDepth;
+        ChunkSize = c.ChunkSize;
+        LodDistanceMultiplier = c.LodDistanceMultiplier;
+        Seed = c.Seed;
+        EnableCaves = c.EnableCaves;
+        MaxActiveChunks = c.MaxActiveChunks;
+        MacroFrequency = c.MacroFrequency;
+        RidgeStrength = c.RidgeStrength;
+        BasinStrength = c.BasinStrength;
+        TemperatureBias = c.TemperatureBias;
+        MoistureBias = c.MoistureBias;
+        EnableAdaptiveScheduling = c.EnableAdaptiveScheduling;
+        AdaptiveMinScheduleBudget = c.AdaptiveMinScheduleBudget;
+        AdaptiveMaxScheduleBudget = c.AdaptiveMaxScheduleBudget;
+        AdaptiveMotionBoost = c.AdaptiveMotionBoost;
+        AdaptiveAltitudeBoost = c.AdaptiveAltitudeBoost;
+        AdaptiveActiveChunkBoost = c.AdaptiveActiveChunkBoost;
+        MergeDistanceScale = c.MergeDistanceScale;
+        VoxelIsoSearchRange = c.VoxelIsoSearchRange;
+        VoxelIsoSearchSteps = c.VoxelIsoSearchSteps;
+        MaxEditCommandsPerUpdate = c.MaxEditCommandsPerUpdate;
+        MaxEditDirtyLeavesPerUpdate = c.MaxEditDirtyLeavesPerUpdate;
+
+        SeaLevelFraction = data.SeaLevelFraction;
+        EnableWater = data.EnableWater;
+        if (!string.IsNullOrWhiteSpace(data.BiomeGraphPath))
+            BiomeGraphPath = PlanetAssetIO.NormalizeProjectRelative(data.BiomeGraphPath);
+
+        _config = CloneConfig(c);
+    }
+
+    static PlanetConfig CloneConfig(PlanetConfig src)
+    {
+        return new PlanetConfig
+        {
+            Radius = src.Radius,
+            SeaLevel = src.SeaLevel,
+            MaxLodDepth = src.MaxLodDepth,
+            ChunkSize = src.ChunkSize,
+            LodDistanceMultiplier = src.LodDistanceMultiplier,
+            SplitDistanceScale = src.SplitDistanceScale,
+            Seed = src.Seed,
+            EnableCaves = src.EnableCaves,
+            Biomes = CloneBiomes(src.Biomes),
+            MaxLeafNodes = src.MaxLeafNodes,
+            MaxActiveChunks = src.MaxActiveChunks,
+            MaxMeshAppliesPerUpdate = src.MaxMeshAppliesPerUpdate,
+            MaxGenerationSchedulesPerUpdate = src.MaxGenerationSchedulesPerUpdate,
+            CaveFrequency = src.CaveFrequency,
+            CaveThreshold = src.CaveThreshold,
+            CaveDepth = src.CaveDepth,
+            TemperatureLatWeight = src.TemperatureLatWeight,
+            TemperatureNoiseWeight = src.TemperatureNoiseWeight,
+            MoistureNoiseScale = src.MoistureNoiseScale,
+            MacroFrequency = src.MacroFrequency,
+            RidgeStrength = src.RidgeStrength,
+            BasinStrength = src.BasinStrength,
+            TemperatureBias = src.TemperatureBias,
+            MoistureBias = src.MoistureBias,
+            AltitudeWeight = src.AltitudeWeight,
+            EdgeDistortionFreq = src.EdgeDistortionFreq,
+            EdgeDistortionAmp = src.EdgeDistortionAmp,
+            EnableAdaptiveScheduling = src.EnableAdaptiveScheduling,
+            AdaptiveMinScheduleBudget = src.AdaptiveMinScheduleBudget,
+            AdaptiveMaxScheduleBudget = src.AdaptiveMaxScheduleBudget,
+            AdaptiveMotionBoost = src.AdaptiveMotionBoost,
+            AdaptiveAltitudeBoost = src.AdaptiveAltitudeBoost,
+            AdaptiveActiveChunkBoost = src.AdaptiveActiveChunkBoost,
+            MergeDistanceScale = src.MergeDistanceScale,
+            HasRiver = src.HasRiver,
+            RiverWidth = src.RiverWidth,
+            RiverDepth = src.RiverDepth,
+            RiverFrequency = src.RiverFrequency,
+            RiverMeander = src.RiverMeander,
+            RiverAllowedBiomes = src.RiverAllowedBiomes?.ToArray() ?? Array.Empty<string>(),
+            VoxelIsoSearchRange = src.VoxelIsoSearchRange,
+            VoxelIsoSearchSteps = src.VoxelIsoSearchSteps,
+            MaxEditCommandsPerUpdate = src.MaxEditCommandsPerUpdate,
+            MaxEditDirtyLeavesPerUpdate = src.MaxEditDirtyLeavesPerUpdate,
+        };
+    }
+
+    static BiomeDefinition[] CloneBiomes(BiomeDefinition[]? src)
+    {
+        src ??= BiomeDefinition.AllPresets;
+        var json = System.Text.Json.JsonSerializer.Serialize(src);
+        return System.Text.Json.JsonSerializer.Deserialize<BiomeDefinition[]>(json) ?? BiomeDefinition.AllPresets;
     }
 
     public void TryLoadBiomeGraph()
@@ -587,10 +862,13 @@ public sealed class PlanetTerrain : Behavior
             }
         }
 
-        foreach (var biome in _config.Biomes)
+        var presets = BiomeDefinition.AllPresets;
+        for (int i = 0; i < _config.Biomes.Length; i++)
         {
-            biome.HeightAmplitude *= ampScale;
-            biome.NoiseFrequency *= freqScale;
+            var biome = _config.Biomes[i];
+            var preset = presets[Math.Min(i, presets.Length - 1)];
+            biome.HeightAmplitude = preset.HeightAmplitude * ampScale;
+            biome.NoiseFrequency = MathF.Max(0.0001f, preset.NoiseFrequency * freqScale);
         }
 
         RecalcSeaLevel();
@@ -598,16 +876,6 @@ public sealed class PlanetTerrain : Behavior
 
         _chunkManager?.Dispose();
         _chunkManager = null;
-
-        if (gameObject != null)
-        {
-            for (int i = gameObject.Children.Count - 1; i >= 0; i--)
-            {
-                var child = gameObject.Children[i];
-                if (child.Name != null && child.Name.StartsWith("PlanetChunk_"))
-                    child.RemoveFromParent();
-            }
-        }
 
         _biomeMap = new BiomeMap(_config.Seed, _config.Biomes,
             noiseScale: 2f,
@@ -621,6 +889,7 @@ public sealed class PlanetTerrain : Behavior
         RebuildPhysicsNoise();
 
         SceneRenderer.ResetBiomeTexDebug();
+        SavePlanetAsset();
         SceneService.NotifyChanged();
     }
 
@@ -659,17 +928,8 @@ public sealed class PlanetTerrain : Behavior
         _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
         RebuildPhysicsNoise();
 
-        if (gameObject != null)
-        {
-            for (int i = gameObject.Children.Count - 1; i >= 0; i--)
-            {
-                var child = gameObject.Children[i];
-                if (child.Name != null && child.Name.StartsWith("PlanetChunk_"))
-                    child.RemoveFromParent();
-            }
-        }
-
         SceneRenderer.ResetBiomeTexDebug();
+        SavePlanetAsset();
         SceneService.NotifyChanged();
     }
 
@@ -700,13 +960,6 @@ public sealed class PlanetTerrain : Behavior
     {
         _voxelEditStore?.Clear();
         if (!rebuildNow || gameObject == null) return;
-
-        for (int i = gameObject.Children.Count - 1; i >= 0; i--)
-        {
-            var child = gameObject.Children[i];
-            if (child.Name != null && child.Name.StartsWith("PlanetChunk_"))
-                child.RemoveFromParent();
-        }
 
         if (_chunkManager != null)
         {

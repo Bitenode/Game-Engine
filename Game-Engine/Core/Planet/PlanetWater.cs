@@ -15,17 +15,20 @@ public sealed class PlanetWater
 
     readonly int _subdivisions;
     readonly Func<SN.Vector3, float>? _waterMaskSampler;
+    readonly Func<SN.Vector3, float>? _shoreBiomeSampler;
     readonly float _waterThreshold;
 
     public PlanetWater(
         float seaLevelRadius,
         int subdivisions = 40,
         Func<SN.Vector3, float>? waterMaskSampler = null,
+        Func<SN.Vector3, float>? shoreBiomeSampler = null,
         float waterThreshold = 0.35f)
     {
         SeaLevelRadius = seaLevelRadius;
         _subdivisions = Math.Max(4, subdivisions);
         _waterMaskSampler = waterMaskSampler;
+        _shoreBiomeSampler = shoreBiomeSampler;
         _waterThreshold = Math.Clamp(waterThreshold, 0f, 1f);
         BuildMesh();
     }
@@ -54,11 +57,14 @@ public sealed class PlanetWater
                     float u = (float)x / _subdivisions;
                     SN.Vector3 dir = CubeSphereMath.FaceUVToDirection(face, u, v);
                     SN.Vector3 pos = dir * SeaLevelRadius;
+                    float mask = _waterMaskSampler?.Invoke(dir) ?? 1f;
+                    float shoreBiome = _shoreBiomeSampler?.Invoke(dir) ?? 0f;
 
                     vertices[vertIdx] = pos;
                     normals[vertIdx] = dir;
-                    uvs[vertIdx] = new SN.Vector2(u, v);
-                    waterMask[vertIdx] = _waterMaskSampler?.Invoke(dir) ?? 1f;
+                    // UV.x stores dominant shore biome index, UV.y stores water mask.
+                    uvs[vertIdx] = new SN.Vector2(shoreBiome, mask);
+                    waterMask[vertIdx] = mask;
                     vertIdx++;
                 }
             }

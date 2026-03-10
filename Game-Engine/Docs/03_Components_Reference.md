@@ -408,7 +408,8 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 | `Seed`                  | `int`   | `42`    | Planet generation seed |
 | `EnableCaves`           | `bool`  | `true`  | Enable cave carving |
 | `EnableWater`           | `bool`  | `true`  | Spawn ocean shell mesh |
-| `MaxActiveChunks`       | `int`   | `120`   | Hard cap of active chunks |
+| `MaxActiveChunks`       | `int`   | `120`   | Hard cap of active runtime chunk meshes |
+| `PlanetAssetPath`       | `string`| `""`    | `.planet` path for loading/saving planet config + style references |
 | `BiomeGraphPath`        | `string`| `""`    | `.biomegraph` path to load/auto-apply |
 | `VoxelIsoSearchRange`   | `float` | `96`    | Radial voxel density search range around the base surface |
 | `VoxelIsoSearchSteps`   | `int`   | `20`    | Density samples along the radial ray per vertex |
@@ -418,6 +419,7 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 | `DefaultManipulationFalloff` | `float` | `0.6` | Default brush falloff used by dig/build APIs |
 
 **Key methods:**
+- `SavePlanetAsset()` / `TryLoadPlanetAsset()` — persist/load `.planet` data
 - `TryLoadBiomeGraph()` — load, compile, and apply graph data
 - `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
 - `SampleSurfaceRadius(sphereDir)` — sample runtime surface radius for physics grounding
@@ -426,6 +428,9 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 - `BuildSphere(worldCenter, radius, strength, falloff)` — add density in a spherical brush (build)
 - `SetVoxelDensity(worldPos, targetDensity)` — advanced direct density set for one local region
 - `ClearVoxelEdits(rebuildNow)` — clears runtime edit overlay (v1 runtime-only)
+
+**Runtime rendering note:**
+- Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches.
 
 See the Planet System doc for full pipeline details.
 
