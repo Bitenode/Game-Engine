@@ -46,6 +46,7 @@ namespace Game_Engine.Core.Component
         [Persist] public bool AvoidCameraGroundClip { get; set; } = true;
         [Persist] public float CameraCollisionPadding { get; set; } = 0.2f;
         [Persist] public float CameraCollisionStartOffset { get; set; } = 0.05f;
+        [Persist] public float CameraUpSmoothing { get; set; } = 10f;
 
         // ── Body facing ──
         [Persist] public bool RotateBodyWithLook { get; set; } = true;
@@ -65,10 +66,7 @@ namespace Game_Engine.Core.Component
         bool _sprintHeld;
         float _jumpBuf;
         SN.Vector3 _cameraUp = SN.Vector3.UnitY;
-        bool _onPlanetMode;
-
-        const float OnPlanetEnterTiltSq = 0.0006f;
-        const float OnPlanetExitTiltSq = 0.0002f;
+        SN.Vector3 _lastMoveForward = new(0f, 0f, -1f);
 
         public override void Awake()
         {
@@ -152,8 +150,9 @@ namespace Game_Engine.Core.Component
             }
 
             // ── Camera ──
-            // Keep camera horizon globally upright like a gyroscope.
-            _cameraUp = SN.Vector3.UnitY;
+            var desiredCameraUp = _rb != null ? SafeNormalize(_rb.LocalUp, SN.Vector3.UnitY) : SN.Vector3.UnitY;
+            float upLerp = 1f - MathF.Exp(-MathF.Max(0f, CameraUpSmoothing) * dt);
+            _cameraUp = SafeNormalize(SN.Vector3.Lerp(_cameraUp, desiredCameraUp, upLerp), desiredCameraUp);
             if (_cam != null)
                 _cam.WorldUp = _cameraUp;
 
@@ -178,9 +177,9 @@ namespace Game_Engine.Core.Component
                 return;
             }
 
-            var localUp = _rb.LocalUp;
-            UpdateOnPlanetMode(localUp);
-            bool onPlanet = _onPlanetMode;
+            var localUp = SafeNormalize(_rb.LocalUp, SN.Vector3.UnitY);
+            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            bool onPlanet = Rigidbody.FindNearestPlanet(pos, out _, out _) != null;
 
             // ── Convert local wish to world direction ──
             float r = Deg2Rad(_yawDeg);
@@ -189,22 +188,8 @@ namespace Game_Engine.Core.Component
             SN.Vector3 wishWorld;
             if (onPlanet)
             {
-                // On a planet: derive movement basis from yaw only, then project to the
-                // tangent plane so slopes behind/in front do not rotate input axes.
                 var yawForward = new SN.Vector3(-s, 0f, -c);
-                var fwd = yawForward - localUp * SN.Vector3.Dot(yawForward, localUp);
-                if (fwd.LengthSquared() <= 1e-8f)
-                {
-                    var seed = MathF.Abs(localUp.Y) < 0.99f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
-                    fwd = SN.Vector3.Cross(seed, localUp);
-                }
-                fwd = SN.Vector3.Normalize(fwd);
-
-                var right = SN.Vector3.Cross(fwd, localUp);
-                if (right.LengthSquared() <= 1e-8f)
-                    right = new SN.Vector3(c, 0f, -s);
-                else
-                    right = SN.Vector3.Normalize(right);
+                BuildTangentBasis(localUp, yawForward, out var fwd, out var right);
 
                 wishWorld = right * _wishLocal.X + fwd * (-_wishLocal.Y);
                 wishWorld -= localUp * SN.Vector3.Dot(wishWorld, localUp);
@@ -357,23 +342,14 @@ namespace Game_Engine.Core.Component
 
         void DriveCameraFirstPerson(SN.Vector3 localUp)
         {
-            var p = Transform.Position;
-            float offY = (float)FirstPersonOffset.Y;
+            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            float yawRad = Deg2Rad(_yawDeg);
+            var yawForward = new SN.Vector3(-MathF.Sin(yawRad), 0f, -MathF.Cos(yawRad));
+            BuildTangentBasis(localUp, yawForward, out var fwd, out var right);
 
-            // Use localUp for head offset on planets, world Y on flat ground
-            if (localUp.Y > 0.999f)
-            {
-                _camTr!.Position = new Vector3(
-                    p.X + FirstPersonOffset.X,
-                    p.Y + offY,
-                    p.Z + FirstPersonOffset.Z);
-            }
-            else
-            {
-                var pos = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
-                var head = pos + localUp * offY;
-                _camTr!.Position = new Vector3(head.X, head.Y, head.Z);
-            }
+            var off = new SN.Vector3((float)FirstPersonOffset.X, (float)FirstPersonOffset.Y, (float)FirstPersonOffset.Z);
+            var cameraPos = pos + right * off.X + localUp * off.Y + fwd * off.Z;
+            _camTr!.Position = new Vector3(cameraPos.X, cameraPos.Y, cameraPos.Z);
 
             var cr = _camTr.Rotation;
             cr.X = _pitchDeg;
@@ -385,8 +361,8 @@ namespace Game_Engine.Core.Component
         void DriveCameraThirdPerson(float dt, SN.Vector3 localUp)
         {
             float yawRad = Deg2Rad(_yawDeg);
-            var fwd = new SN.Vector3(MathF.Cos(yawRad), 0f, MathF.Sin(yawRad));
-            var right = new SN.Vector3(-MathF.Sin(yawRad), 0f, MathF.Cos(yawRad));
+            var yawForward = new SN.Vector3(-MathF.Sin(yawRad), 0f, -MathF.Cos(yawRad));
+            BuildTangentBasis(localUp, yawForward, out var fwd, out var right);
 
             var off = new SN.Vector3((float)ThirdPersonOffset.X, (float)ThirdPersonOffset.Y, (float)ThirdPersonOffset.Z);
             var desired = right * off.X + localUp * off.Y + (-fwd) * MathF.Abs(off.Z);
@@ -429,14 +405,33 @@ namespace Game_Engine.Core.Component
             return a;
         }
         static float Clamp(float v, float min, float max) => v < min ? min : (v > max ? max : v);
-
-        void UpdateOnPlanetMode(SN.Vector3 localUp)
+        static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)
         {
-            float tiltSq = localUp.X * localUp.X + localUp.Z * localUp.Z;
-            bool next = _onPlanetMode ? tiltSq > OnPlanetExitTiltSq : tiltSq > OnPlanetEnterTiltSq;
-            if (next == _onPlanetMode) return;
+            float lenSq = v.LengthSquared();
+            if (lenSq <= 1e-10f) return fallback;
+            return v / MathF.Sqrt(lenSq);
+        }
 
-            _onPlanetMode = next;
+        void BuildTangentBasis(SN.Vector3 localUp, SN.Vector3 preferredForward, out SN.Vector3 forward, out SN.Vector3 right)
+        {
+            localUp = SafeNormalize(localUp, SN.Vector3.UnitY);
+            forward = preferredForward - localUp * SN.Vector3.Dot(preferredForward, localUp);
+            if (forward.LengthSquared() <= 1e-8f)
+                forward = _lastMoveForward - localUp * SN.Vector3.Dot(_lastMoveForward, localUp);
+            if (forward.LengthSquared() <= 1e-8f)
+            {
+                var seed = MathF.Abs(localUp.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+                forward = SN.Vector3.Cross(seed, localUp);
+            }
+            forward = SafeNormalize(forward, SN.Vector3.UnitZ);
+
+            right = SN.Vector3.Cross(forward, localUp);
+            if (right.LengthSquared() <= 1e-8f)
+                right = SN.Vector3.Cross(MathF.Abs(localUp.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX, localUp);
+            right = SafeNormalize(right, SN.Vector3.UnitX);
+
+            forward = SafeNormalize(SN.Vector3.Cross(localUp, right), forward);
+            _lastMoveForward = forward;
         }
 
         SN.Vector3 ResolveThirdPersonCameraObstruction(SN.Vector3 anchor, SN.Vector3 desiredPos)

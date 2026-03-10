@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Game_Engine.Core;
 using Game_Engine.Core.Physics;
 using SN = System.Numerics;
 
@@ -607,7 +608,16 @@ namespace Game_Engine.Core.Component
                     float maxAmp = 0f;
                     foreach (var b in pt.Config.Biomes)
                         maxAmp = Math.Max(maxAmp, b.HeightAmplitude);
-                    surfaceRadius = pt.Config.Radius + maxAmp;
+                    float scale = 1f;
+                    if (pt.gameObject != null)
+                    {
+                        var scaleW = SceneGraphUtil.AccumulateWorld(pt.gameObject);
+                        float sx = new SN.Vector3(scaleW.M11, scaleW.M12, scaleW.M13).Length();
+                        float sy = new SN.Vector3(scaleW.M21, scaleW.M22, scaleW.M23).Length();
+                        float sz = new SN.Vector3(scaleW.M31, scaleW.M32, scaleW.M33).Length();
+                        scale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+                    }
+                    surfaceRadius = (pt.Config.Radius + maxAmp) * scale;
                 }
             }
             return best;

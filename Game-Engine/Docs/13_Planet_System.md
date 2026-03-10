@@ -55,6 +55,7 @@ Core goals:
 - Rebuilds biome map, noise caches, chunk manager, and water after graph apply
 - Updates chunk streaming on interval and movement threshold (not every frame)
 - Exposes `SampleSurfaceRadius(sphereDir)` for accurate physics grounding
+- Tracks effective world radius from transform scale so LOD, water, and physics stay in sync on scaled planets
 
 ---
 
@@ -102,6 +103,7 @@ When applied, planet runtime state is rebuilt so generated chunks immediately re
 
 Water output notes:
 - Layer `SpawnWater` contributes to biome water masks
+- Water mesh uses a continuous shell; shoreline appearance is blended in shader using mask/tint data (avoids patchy mesh holes)
 - Shoreline tinting blends water color toward nearby non-water biome colors
 - River settings (`RiverWidth`, `RiverDepth`, `Frequency`, `Meander`, `AllowedBiomes`) are compiled into planet runtime config
 
@@ -116,6 +118,7 @@ Key limits from `PlanetConfig`:
 - `MaxActiveChunks` - loaded chunk cap near camera
 - `MaxMeshAppliesPerUpdate` - completed mesh apply budget per tick
 - `MaxGenerationSchedulesPerUpdate` - new generation schedules per tick
+- `SplitDistanceScale` / `MergeDistanceScale` - split/merge hysteresis controls to reduce LOD churn
 - Internal `MaxConcurrentJobs` - async mesh worker limit
 
 High-level update sequence:
@@ -180,6 +183,7 @@ Hierarchy/runtime note:
 - Grounds against sampled planet surface radius (`PlanetTerrain.SampleSurfaceRadius`)
 - Keeps tangent velocity when grounded (removes into-surface component)
 - Preserves existing non-planet collision paths (terrain, mesh, AABB, triggers)
+- Resolves underwater state against world-space sea level (including planet transform scale)
 
 Additional runtime state:
 - `LocalUp`
@@ -190,7 +194,7 @@ Additional runtime state:
 
 `PlanetCollider` complements `PlanetTerrain` for broad-phase and tooling:
 
-- Computes planet world AABB from max radius (`base radius + biome max amplitude`)
+- Computes planet world AABB from max radius (`base radius + biome max amplitude`) with world-scale awareness
 - Exposes `BaseRadius`, `MaxRadius`, and optional `RadiusOverride`
 - Provides debug shell bounds for collider visualization
 - Defers exact terrain-conforming contact to `PlanetTerrain.SampleSurfaceRadius(...)`
@@ -199,9 +203,10 @@ Additional runtime state:
 
 `RigidbodyPlayer` is planet-aware and uses `Rigidbody.LocalUp`:
 
-- Builds move axes from camera forward projected onto local tangent plane
+- Builds move axes from a robust tangent basis derived from `LocalUp`
 - Applies acceleration and drag in tangent space on planets
 - Jumps along `LocalUp` (not always world +Y)
+- Avoids pole-specific movement mode switching to prevent axis flips/discontinuities
 - Smooths camera up-vector transitions to reduce horizon jitter
 - Writes smoothed up-vector into `Camera.WorldUp`
 - Supports both first-person and third-person camera offsets on curved surfaces
@@ -215,6 +220,7 @@ Additional runtime state:
 For planet traversal:
 - Controllers such as `RigidbodyPlayer` set `Camera.WorldUp` each frame
 - View matrix uses this vector in `CreateLookAt(...)`
+- `Camera.GetViewMatrix()` includes forward/up collinearity safeguards for stability
 - Result: the horizon aligns with the local planet surface instead of snapping to global Y-up
 
 ---

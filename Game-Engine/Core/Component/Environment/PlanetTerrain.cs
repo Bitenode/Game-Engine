@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Planet;
 using SN = System.Numerics;
@@ -143,6 +144,7 @@ public sealed class PlanetTerrain : Behavior
 
         var baseConfig = _config != null ? CloneConfig(_config) : new PlanetConfig();
         _config = baseConfig;
+        _config.WorldRadiusScale = GetWorldRadiusScale();
         _config.Radius = Radius;
         _config.MaxLodDepth = MaxLodDepth;
         _config.ChunkSize = ChunkSize;
@@ -293,8 +295,9 @@ public sealed class PlanetTerrain : Behavior
     /// </summary>
     public float SampleSurfaceRadius(SN.Vector3 sphereDir)
     {
+        float worldScale = GetWorldRadiusScale();
         if (_config == null || _biomeMap == null || _biomeNoises == null)
-            return Radius;
+            return Radius * worldScale;
 
         float height = PlanetSurfaceUtility.SampleHeight(
             _config,
@@ -309,9 +312,9 @@ public sealed class PlanetTerrain : Behavior
 
         var sampler = CreateDensitySampler();
         if (sampler == null)
-            return baseSurfaceR;
+            return baseSurfaceR * worldScale;
 
-        return FindSurfaceRadiusOnRay(sphereDir, baseSurfaceR, sampler);
+        return FindSurfaceRadiusOnRay(sphereDir, baseSurfaceR, sampler) * worldScale;
     }
 
     PlanetDensitySampler? CreateDensitySampler()
@@ -488,7 +491,7 @@ public sealed class PlanetTerrain : Behavior
     {
         if (WaterGO != null || gameObject == null || _config == null) return;
 
-        _planetWater = new PlanetWater(_config.SeaLevel, 48, SampleWaterMask, SampleShoreBiomeIndex, 0.35f);
+        _planetWater = new PlanetWater(_config.SeaLevel, 48, SampleWaterMask, SampleShoreBiomeIndex);
         if (_planetWater.WaterMesh == null) return;
 
         WaterGO = new GameObject("PlanetWater");
@@ -540,8 +543,9 @@ public sealed class PlanetTerrain : Behavior
         {
             _chunkUpdateAccumSec = 0f;
             _lastChunkUpdateCamPos = LastCameraPosition;
-            var p = gameObject.Transform.Position;
-            var planetCenter = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+            if (_config != null)
+                _config.WorldRadiusScale = GetWorldRadiusScale();
+            var planetCenter = GetWorldCenter();
             _chunkManager.Update(LastCameraPosition, planetCenter);
         }
 
@@ -559,8 +563,9 @@ public sealed class PlanetTerrain : Behavior
         LastCameraPosition = cameraPos;
         if (_chunkManager == null || gameObject == null) return;
 
-        var p = gameObject.Transform.Position;
-        var planetCenter = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+        if (_config != null)
+            _config.WorldRadiusScale = GetWorldRadiusScale();
+        var planetCenter = GetWorldCenter();
         _chunkManager.UpdateNoLod(planetCenter);
 
         // Keep water/cloud timeline advancing in Scene View too.
@@ -576,6 +581,24 @@ public sealed class PlanetTerrain : Behavior
         if (System.IO.Path.IsPathRooted(path)) return path;
         var proj = ProjectService.Current;
         return proj != null ? System.IO.Path.Combine(proj.RootPath, path) : path;
+    }
+
+    SN.Vector3 GetWorldCenter()
+    {
+        if (gameObject == null) return SN.Vector3.Zero;
+        var world = SceneGraphUtil.AccumulateWorld(gameObject);
+        return new SN.Vector3(world.M41, world.M42, world.M43);
+    }
+
+    float GetWorldRadiusScale()
+    {
+        if (gameObject == null) return 1f;
+        var world = SceneGraphUtil.AccumulateWorld(gameObject);
+        float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+        float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+        float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+        float uniform = (sx + sy + sz) / 3f;
+        return MathF.Max(0.0001f, uniform);
     }
 
     void EnsurePlanetAssetPath()
@@ -705,6 +728,7 @@ public sealed class PlanetTerrain : Behavior
         return new PlanetConfig
         {
             Radius = src.Radius,
+            WorldRadiusScale = src.WorldRadiusScale,
             SeaLevel = src.SeaLevel,
             MaxLodDepth = src.MaxLodDepth,
             ChunkSize = src.ChunkSize,

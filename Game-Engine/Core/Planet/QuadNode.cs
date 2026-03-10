@@ -60,12 +60,19 @@ public sealed class QuadNode
         return SN.Vector3.Distance(a, b);
     }
 
-    public bool ShouldSplit(SN.Vector3 cameraPos, float radius, float lodMultiplier, int maxDepth)
+    public bool ShouldSplit(SN.Vector3 cameraPos, float worldRadius, float splitMultiplier, int maxDepth)
     {
         if (LodLevel >= maxDepth) return false;
-        float size = WorldSize(radius);
-        float dist = SN.Vector3.Distance(cameraPos, WorldCentre(radius));
-        return dist < size * lodMultiplier;
+        float size = WorldSize(worldRadius);
+        float dist = SN.Vector3.Distance(cameraPos, WorldCentre(worldRadius));
+        return dist < size * splitMultiplier;
+    }
+
+    public bool ShouldMerge(SN.Vector3 cameraPos, float worldRadius, float mergeMultiplier)
+    {
+        float size = WorldSize(worldRadius);
+        float dist = SN.Vector3.Distance(cameraPos, WorldCentre(worldRadius));
+        return dist > size * mergeMultiplier;
     }
 
     public void Split()

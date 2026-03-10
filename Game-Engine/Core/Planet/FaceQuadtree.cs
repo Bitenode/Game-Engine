@@ -26,14 +26,16 @@ public sealed class FaceQuadtree
 
     void UpdateRecursive(QuadNode node, SN.Vector3 cameraPos, PlanetConfig config)
     {
+        float worldRadius = Math.Max(0.001f, config.EffectiveWorldRadius);
         float splitMult = Math.Max(0.05f, config.LodDistanceMultiplier * Math.Max(0.05f, config.SplitDistanceScale));
-        bool shouldSplit = node.ShouldSplit(cameraPos, config.Radius, splitMult, config.MaxLodDepth);
+        float mergeMult = splitMult * Math.Max(1.01f, config.MergeDistanceScale);
+        bool shouldSplit = node.ShouldSplit(cameraPos, worldRadius, splitMult, config.MaxLodDepth);
 
         if (shouldSplit && node.IsLeaf)
         {
             node.Split();
         }
-        else if (!shouldSplit && !node.IsLeaf)
+        else if (!node.IsLeaf && node.ShouldMerge(cameraPos, worldRadius, mergeMult))
         {
             bool allChildrenLeaves = true;
             for (int i = 0; i < 4; i++)

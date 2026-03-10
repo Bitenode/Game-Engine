@@ -218,7 +218,19 @@ namespace Game_Engine.Core.VirtualCamera
         private static SN.Quaternion LookRotation(SN.Vector3 forward, SN.Vector3 up)
         {
             forward = SN.Vector3.Normalize(forward);
-            var right = SN.Vector3.Normalize(SN.Vector3.Cross(up, forward));
+            up = up.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(up) : SN.Vector3.UnitY;
+
+            float alignment = MathF.Abs(SN.Vector3.Dot(forward, up));
+            if (alignment > 0.999f)
+            {
+                var alt = MathF.Abs(forward.Y) < 0.9f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+                up = SN.Vector3.Normalize(alt - forward * SN.Vector3.Dot(alt, forward));
+            }
+
+            var right = SN.Vector3.Cross(up, forward);
+            if (right.LengthSquared() <= 1e-8f)
+                right = SN.Vector3.Cross(SN.Vector3.UnitX, forward);
+            right = SN.Vector3.Normalize(right);
             up = SN.Vector3.Cross(forward, right);
 
             var m = new SN.Matrix4x4(

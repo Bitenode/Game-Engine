@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Game_Engine.Core;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -27,7 +28,16 @@ namespace Game_Engine.Core.Component
                     float maxAmp = 0f;
                     foreach (var b in pt.Config.Biomes)
                         maxAmp = Math.Max(maxAmp, b.HeightAmplitude);
-                    return pt.Config.Radius + maxAmp;
+                    float scale = 1f;
+                    if (gameObject != null)
+                    {
+                        var world = SceneGraphUtil.AccumulateWorld(gameObject);
+                        float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                        float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                        float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                        scale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+                    }
+                    return (pt.Config.Radius + maxAmp) * scale;
                 }
                 return 1000f;
             }
@@ -39,7 +49,17 @@ namespace Game_Engine.Core.Component
             get
             {
                 var pt = gameObject?.Behaviors.OfType<PlanetTerrain>().FirstOrDefault();
-                return pt?.Config?.Radius ?? 1000f;
+                if (pt?.Config == null) return 1000f;
+                float scale = 1f;
+                if (gameObject != null)
+                {
+                    var world = SceneGraphUtil.AccumulateWorld(gameObject);
+                    float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                    float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                    float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                    scale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+                }
+                return pt.Config.Radius * scale;
             }
         }
 

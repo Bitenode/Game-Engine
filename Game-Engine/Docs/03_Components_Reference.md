@@ -383,6 +383,7 @@ Physics body component with force/impulse integration, trigger events, collider 
 - Finds nearest active `PlanetTerrain`
 - Applies gravity along `-LocalUp`
 - Grounds against `PlanetTerrain.SampleSurfaceRadius(...)`
+- Uses scale-aware planet radius/sea-level queries for grounding and underwater state
 
 **Events:**
 - `OnTriggerEnter(Collider)`, `OnTriggerStay(Collider)`, `OnTriggerExit(Collider)`
@@ -423,6 +424,7 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 - `TryLoadBiomeGraph()` — load, compile, and apply graph data
 - `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
 - `SampleSurfaceRadius(sphereDir)` — sample runtime surface radius for physics grounding
+- `SampleWaterMask(sphereDir)` — sample biome/river water coverage mask used by planet water shading
 - `UpdateLOD(cameraPos)` — updates camera position used by chunk streamer
 - `DigSphere(worldCenter, radius, strength, falloff)` — subtract density in a spherical brush (dig)
 - `BuildSphere(worldCenter, radius, strength, falloff)` — add density in a spherical brush (build)
@@ -431,6 +433,7 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 
 **Runtime rendering note:**
 - Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches.
+- Planet water uses a continuous shell mesh with shoreline blending in shader for smooth coast transitions.
 
 See the Planet System doc for full pipeline details.
 
@@ -1228,6 +1231,7 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 | `FirstPersonOffset` | `Vector3` | `(0, 1.7, 0)`    | First-person camera offset           |
 | `ThirdPersonOffset` | `Vector3` | `(0, 1.7, -3.5)` | Third-person camera offset           |
 | `CameraFollowLerp`  | `float`   | `12`             | Third-person camera smoothing        |
+| `CameraUpSmoothing` | `float`   | `10`             | How fast camera `WorldUp` follows local planet up |
 | `RotateBodyWithLook`| `bool`    | `true`           | Body follows look yaw                |
 | `TurnBodyWhileMoving`| `bool`   | `false`          | Rotate body only while moving        |
 | `JumpBufferSeconds` | `float`   | `0.12`           | Jump input buffer                    |
@@ -1235,10 +1239,11 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 **Features:**
 - **Swimming** — automatic underwater movement when the Rigidbody detects submersion
 - **Momentum-based** — natural sliding, pushing, and inertia
-- **Planet movement** — movement projected onto the local tangent plane
+- **Planet movement** — robust tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
 - **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
+- **Pole stability** — avoids pole-only movement mode toggles that can flip controls
 - **Jump buffering** — responsive jump input
 
 **Requires:** Rigidbody, CapsuleCollider (auto-added via `[Require]`)

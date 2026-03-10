@@ -2556,6 +2556,13 @@ namespace Game_Engine.Core
 
             var world = TransformUtil.WorldFromTransform(waterObj.Transform)
                       * TransformUtil.WorldFromTransform(planet.gameObject.Transform);
+            var resolvedPlanetCenter = new SN.Vector3(world.M41, world.M42, world.M43);
+            float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+            float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+            float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+            float radiusScale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+            float seaLevelWorld = seaLevel * radiusScale;
+            float planetRadiusWorld = MathF.Max(1f, atmo.GroundRadius * radiusScale);
 
             waterShader.Use();
             waterShader.SetMatrix4("uModel", world);
@@ -2565,7 +2572,7 @@ namespace Game_Engine.Core
             SN.Matrix4x4.Invert(world, out var invWorld);
             waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
 
-            waterShader.SetVector3("uPlanetCenter", planetCenter);
+            waterShader.SetVector3("uPlanetCenter", resolvedPlanetCenter);
             waterShader.SetFloat("uTime", planet.WaterAnimTime);
             waterShader.SetFloat("uWaveAmp1", 0.4f);
             waterShader.SetFloat("uWaveFreq1", 0.6f);
@@ -2584,8 +2591,8 @@ namespace Game_Engine.Core
                 oceanBiome.WaterDeepestColorR, oceanBiome.WaterDeepestColorG,
                 oceanBiome.WaterDeepestColorB, 1f);
 
-            waterShader.SetVector3("uPlanetCenter", planetCenter);
-            waterShader.SetFloat("uSeaLevel", seaLevel);
+            waterShader.SetVector3("uPlanetCenter", resolvedPlanetCenter);
+            waterShader.SetFloat("uSeaLevel", seaLevelWorld);
             waterShader.SetFloat("uDepthRange", oceanBiome.WaterDepthColorRange);
             waterShader.SetFloat("uShorelineThreshold", 0.35f);
             waterShader.SetFloat("uShorelineSoftness", 0.18f);
@@ -2626,7 +2633,7 @@ namespace Game_Engine.Core
             waterShader.SetFloat("uAtmoHeight", atmo.AtmosphereHeight);
             waterShader.SetVector3("uAtmoZenithTint", atmo.ZenithTint);
             waterShader.SetVector3("uAtmoHorizonTint", atmo.HorizonTint);
-            waterShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
+            waterShader.SetFloat("uPlanetRadius", planetRadiusWorld);
 
             waterShader.SetInt("uHasWaterNormalMap", 0);
             waterShader.SetInt("uHasWaterTexture", 0);

@@ -103,8 +103,9 @@ public sealed class PlanetChunkManager
             leaves.AddRange(Faces[f].GetLeafNodes());
         leaves.Sort((a, b) =>
         {
-            float da = SN.Vector3.DistanceSquared(localCameraPos, a.WorldCentre(Config.Radius));
-            float db = SN.Vector3.DistanceSquared(localCameraPos, b.WorldCentre(Config.Radius));
+            float worldRadius = Config.EffectiveWorldRadius;
+            float da = SN.Vector3.DistanceSquared(localCameraPos, a.WorldCentre(worldRadius));
+            float db = SN.Vector3.DistanceSquared(localCameraPos, b.WorldCentre(worldRadius));
             return da.CompareTo(db);
         });
 
@@ -255,8 +256,9 @@ public sealed class PlanetChunkManager
 
     bool IntersectsLeaf(QuadNode leaf, SN.Vector3 localCenter, float sphereRadius)
     {
-        var leafCenter = leaf.WorldCentre(Config.Radius);
-        float leafRadius = Math.Max(leaf.WorldSize(Config.Radius) * 0.75f, Config.Radius * 0.01f);
+        float worldRadius = Config.EffectiveWorldRadius;
+        var leafCenter = leaf.WorldCentre(worldRadius);
+        float leafRadius = Math.Max(leaf.WorldSize(worldRadius) * 0.75f, worldRadius * 0.01f);
         float maxDist = leafRadius + sphereRadius + Config.VoxelIsoSearchRange * 0.15f;
         return SN.Vector3.DistanceSquared(localCenter, leafCenter) <= maxDist * maxDist;
     }
@@ -279,8 +281,9 @@ public sealed class PlanetChunkManager
             // Merge farthest leaves first.
             leaves.Sort((a, b) =>
             {
-                float da = SN.Vector3.DistanceSquared(cameraPos, a.WorldCentre(Config.Radius));
-                float db = SN.Vector3.DistanceSquared(cameraPos, b.WorldCentre(Config.Radius));
+                float worldRadius = Config.EffectiveWorldRadius;
+                float da = SN.Vector3.DistanceSquared(cameraPos, a.WorldCentre(worldRadius));
+                float db = SN.Vector3.DistanceSquared(cameraPos, b.WorldCentre(worldRadius));
                 return db.CompareTo(da);
             });
 

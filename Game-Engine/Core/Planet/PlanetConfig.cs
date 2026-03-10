@@ -1,3 +1,4 @@
+using System;
 using Game_Engine.Core.Biome;
 
 namespace Game_Engine.Core.Planet;
@@ -5,6 +6,9 @@ namespace Game_Engine.Core.Planet;
 public sealed class PlanetConfig
 {
     public float Radius { get; set; } = 1000f;
+    /// <summary>World-space uniform scale multiplier from the planet transform.</summary>
+    public float WorldRadiusScale { get; set; } = 1f;
+    public float EffectiveWorldRadius => Radius * MathF.Max(0.0001f, WorldRadiusScale);
     public float SeaLevel { get; set; } = 0.35f;
     public int MaxLodDepth { get; set; } = 8;
     public int ChunkSize { get; set; } = 32;

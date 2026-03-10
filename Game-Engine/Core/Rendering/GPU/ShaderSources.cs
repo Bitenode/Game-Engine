@@ -2725,9 +2725,9 @@ void main()
 
     color = color / (color + vec3(1.0));
 
-    float alpha = mix(uTransparency, 1.0, fresnel * 0.6);
-    alpha *= mix(0.8, 1.0, shoreWetness);
-    alpha = max(alpha, 0.7);
+    float alpha = mix(uTransparency, 0.98, fresnel * 0.6);
+    alpha *= mix(0.75, 1.0, shoreWetness);
+    if (alpha < 0.02) discard;
     FragColor = vec4(color, alpha);
 }
 ";

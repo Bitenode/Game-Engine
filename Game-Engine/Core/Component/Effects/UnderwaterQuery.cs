@@ -1,4 +1,6 @@
+using System;
 using SN = System.Numerics;
+using Game_Engine.Core;
 
 namespace Game_Engine.Core.Component
 {
@@ -52,18 +54,19 @@ namespace Game_Engine.Core.Component
                 if (planet?.gameObject == null || !planet.IsActiveAndEnabled || !planet.EnableWater || planet.Config == null)
                     continue;
 
-                var p = planet.gameObject.Transform.Position;
-                var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+                var world = SceneGraphUtil.AccumulateWorld(planet.gameObject);
+                var center = new SN.Vector3(world.M41, world.M42, world.M43);
                 var toPos = worldPos - center;
                 float distToCenter = toPos.Length();
                 if (distToCenter <= 1e-5f)
                     continue;
 
-                float waterMask = planet.SampleWaterMask(toPos / distToCenter);
-                if (waterMask < 0.35f)
-                    continue;
-
-                float depth = planet.Config.SeaLevel - distToCenter;
+                float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                float radiusScale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+                float seaLevelWorld = planet.Config.SeaLevel * radiusScale;
+                float depth = seaLevelWorld - distToCenter;
                 if (depth <= bestDepth)
                     continue;
 

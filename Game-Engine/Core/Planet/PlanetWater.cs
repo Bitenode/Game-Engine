@@ -16,20 +16,17 @@ public sealed class PlanetWater
     readonly int _subdivisions;
     readonly Func<SN.Vector3, float>? _waterMaskSampler;
     readonly Func<SN.Vector3, float>? _shoreBiomeSampler;
-    readonly float _waterThreshold;
 
     public PlanetWater(
         float seaLevelRadius,
         int subdivisions = 40,
         Func<SN.Vector3, float>? waterMaskSampler = null,
-        Func<SN.Vector3, float>? shoreBiomeSampler = null,
-        float waterThreshold = 0.35f)
+        Func<SN.Vector3, float>? shoreBiomeSampler = null)
     {
         SeaLevelRadius = seaLevelRadius;
         _subdivisions = Math.Max(4, subdivisions);
         _waterMaskSampler = waterMaskSampler;
         _shoreBiomeSampler = shoreBiomeSampler;
-        _waterThreshold = Math.Clamp(waterThreshold, 0f, 1f);
         BuildMesh();
     }
 
@@ -78,13 +75,6 @@ public sealed class PlanetWater
                     int b = a + 1;
                     int c = a + rowLen;
                     int d = c + 1;
-
-                    bool wet = waterMask[a] >= _waterThreshold
-                               || waterMask[b] >= _waterThreshold
-                               || waterMask[c] >= _waterThreshold
-                               || waterMask[d] >= _waterThreshold;
-                    if (!wet)
-                        continue;
 
                     indices.Add(a);
                     indices.Add(b);
