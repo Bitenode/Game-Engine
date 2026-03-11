@@ -98,6 +98,15 @@ The Biome Graph editor (`BiomeGraphPanel`) is a node-based authoring tool that w
   - Per-layer noise mode/octaves
   - Erosion strength/frequency
   - Optional water color overrides
+  - Vegetation defaults:
+    - `VegetationProfileId`
+    - `VegetationDensity` / `TreeDensity`
+    - `VegetationPatchiness`
+    - `SeasonalGrowthMultiplier`
+  - Weather defaults:
+    - `WeatherProfileId`
+    - `RainChance` / `SnowChance` / `StormChance`
+    - `WindBias` / `CloudCoverageBias` / `FogDensityBias`
 
 When applied, planet runtime state is rebuilt so generated chunks immediately reflect new biome graph data.
 
@@ -106,6 +115,9 @@ Water output notes:
 - Water mesh uses a continuous shell; shoreline appearance is blended in shader using mask/tint data (avoids patchy mesh holes)
 - Shoreline tinting blends water color toward nearby non-water biome colors
 - River settings (`RiverWidth`, `RiverDepth`, `Frequency`, `Meander`, `AllowedBiomes`) are compiled into planet runtime config
+- Vegetation profiles are authored per biome layer in the Biome Graph properties panel:
+  - profile selector + `New/Save/Delete/Reload`
+  - editable grass/tree type lists with per-item mesh path, weight, density multiplier, and min/max scale
 
 ---
 
@@ -265,4 +277,56 @@ Separation contract:
 - Planet atmosphere/clouds are independent from `Skybox`
 - `Skybox` remains a background sky system only
 - Multi-planet scenes can use different atmosphere/cloud presets per planet
+
+### Day/Night Cycle (PlanetAtmosphere)
+
+`PlanetAtmosphere` now includes a built-in optional day/night cycle:
+
+- `EnableDayNightCycle` toggles cycle logic
+- `DayLengthMinutes` and `TimeOfDay` control temporal progression
+- `AxisX/Y/Z` + `NoonDirectionX/Y/Z` define orbital sun path
+- Optional automatic lighting curves:
+  - `AutoAdjustSunIntensity` (`DaySunIntensity` / `NightSunIntensity`)
+  - `AutoAdjustAmbient` (`DayAmbient` / `NightAmbient`)
+
+Cycle output feeds existing planet terrain/water/atmosphere shaders via `SunDirectionOverride` and `SunIntensity`.
+
+---
+
+## Vegetation + Weather Runtime Controllers
+
+Planet ecosystem/weather runtime is implemented with companion components on the planet root:
+
+| Type | Role |
+|------|------|
+| `PlanetVegetationSystem` | Chunk-aware biome vegetation spawning/despawning, growth/decay lifecycle, weather response |
+| `PlanetWeatherController` | Hybrid biome-blended weather state machine (`Clear/Cloudy/Rain/Snow/Storm`) driving atmosphere/fog/wind/precipitation |
+
+### Vegetation Profiles
+
+Vegetation profile data is stored in:
+
+- `Assets/Biomes/vegetation-profiles.json`
+
+Each profile supports:
+
+- global biome-level tuning (`VegetationDensity`, `TreeDensity`, `Patchiness`, `SeasonalGrowthMultiplier`)
+- multiple weighted grass types (`GrassItems`)
+- multiple weighted tree types (`TreeItems`)
+- per-item controls:
+  - mesh/model path
+  - selection weight
+  - density multiplier
+  - min/max scale multipliers
+
+Runtime spawning uses weighted selection from the active biome profile.
+
+### Planet Precipitation Notes
+
+Planet weather precipitation uses layered particle emitters around the camera:
+
+- supports multiple vertical layers for continuous volume coverage
+- rain/snow emission remains continuous while state is active
+- particles are removed on planet surface hit
+- emitters support planet gravity alignment (nearest active planet center)
 

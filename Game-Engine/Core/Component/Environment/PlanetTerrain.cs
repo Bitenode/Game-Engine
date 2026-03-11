@@ -45,6 +45,12 @@ public sealed class PlanetTerrain : Behavior
     [Persist] public int MaxEditDirtyLeavesPerUpdate { get; set; } = 96;
     [Persist] public float DefaultManipulationStrength { get; set; } = 10f;
     [Persist] public float DefaultManipulationFalloff { get; set; } = 0.6f;
+    [Persist] public int WeatherSeed { get; set; } = 1337;
+    [Persist] public float SeasonLengthMinutes { get; set; } = 18f;
+    [Persist] public float GlobalWeatherIntensity { get; set; } = 1f;
+    [Persist] public float GlobalWindMultiplier { get; set; } = 1f;
+    [Persist] public int MaxVegetationInstances { get; set; } = 20000;
+    [Persist] public int MaxVegetationSpawnsPerUpdate { get; set; } = 256;
 
     [Persist] public string PlanetAssetPath { get; set; } = "";
     [Persist] public string BiomeGraphPath { get; set; } = "";
@@ -168,6 +174,12 @@ public sealed class PlanetTerrain : Behavior
         _config.VoxelIsoSearchSteps = VoxelIsoSearchSteps;
         _config.MaxEditCommandsPerUpdate = MaxEditCommandsPerUpdate;
         _config.MaxEditDirtyLeavesPerUpdate = MaxEditDirtyLeavesPerUpdate;
+        _config.WeatherSeed = WeatherSeed;
+        _config.SeasonLengthMinutes = SeasonLengthMinutes;
+        _config.GlobalWeatherIntensity = GlobalWeatherIntensity;
+        _config.GlobalWindMultiplier = GlobalWindMultiplier;
+        _config.MaxVegetationInstances = MaxVegetationInstances;
+        _config.MaxVegetationSpawnsPerUpdate = MaxVegetationSpawnsPerUpdate;
         _config.Biomes = CloneBiomes(_config.Biomes);
         _config.RiverAllowedBiomes = _config.RiverAllowedBiomes?.ToArray() ?? Array.Empty<string>();
         _voxelEditStore ??= new PlanetVoxelEditStore();
@@ -601,6 +613,44 @@ public sealed class PlanetTerrain : Behavior
         return MathF.Max(0.0001f, uniform);
     }
 
+    public bool TryGetSphereDirectionAtWorldPos(SN.Vector3 worldPos, out SN.Vector3 sphereDir)
+    {
+        sphereDir = SN.Vector3.UnitY;
+        var center = GetWorldCenter();
+        var toPos = worldPos - center;
+        float lenSq = toPos.LengthSquared();
+        if (lenSq <= 1e-10f)
+            return false;
+        sphereDir = toPos / MathF.Sqrt(lenSq);
+        return true;
+    }
+
+    public bool TryGetBiomeBlendsAtWorldPos(SN.Vector3 worldPos, out BiomeBlend[] blends)
+    {
+        blends = Array.Empty<BiomeBlend>();
+        if (_biomeMap == null || _config == null)
+            return false;
+        if (!TryGetSphereDirectionAtWorldPos(worldPos, out var sphereDir))
+            return false;
+
+        float worldScale = GetWorldRadiusScale();
+        float worldRadius = Math.Max(0.001f, _config.Radius * worldScale);
+        float worldSea = _config.SeaLevel * worldScale;
+        float dist = (worldPos - GetWorldCenter()).Length();
+        float altitudeNorm = Math.Clamp((dist - worldSea) / Math.Max(worldRadius * 0.25f, 1f), 0f, 1f);
+        blends = _biomeMap.GetBiomes(sphereDir, altitudeNorm);
+        return blends.Length > 0;
+    }
+
+    public bool TryGetDominantBiomeAtWorldPos(SN.Vector3 worldPos, out BiomeDefinition biome)
+    {
+        biome = OceanBiome;
+        if (!TryGetBiomeBlendsAtWorldPos(worldPos, out var blends) || blends.Length == 0)
+            return false;
+        biome = blends[0].Biome;
+        return true;
+    }
+
     void EnsurePlanetAssetPath()
     {
         if (!string.IsNullOrWhiteSpace(PlanetAssetPath))
@@ -671,6 +721,12 @@ public sealed class PlanetTerrain : Behavior
             VoxelIsoSearchSteps = VoxelIsoSearchSteps,
             MaxEditCommandsPerUpdate = MaxEditCommandsPerUpdate,
             MaxEditDirtyLeavesPerUpdate = MaxEditDirtyLeavesPerUpdate,
+            WeatherSeed = WeatherSeed,
+            SeasonLengthMinutes = SeasonLengthMinutes,
+            GlobalWeatherIntensity = GlobalWeatherIntensity,
+            GlobalWindMultiplier = GlobalWindMultiplier,
+            MaxVegetationInstances = MaxVegetationInstances,
+            MaxVegetationSpawnsPerUpdate = MaxVegetationSpawnsPerUpdate,
             Biomes = CloneBiomes(BiomeDefinition.AllPresets),
             RiverAllowedBiomes = Array.Empty<string>(),
         };
@@ -714,6 +770,12 @@ public sealed class PlanetTerrain : Behavior
         VoxelIsoSearchSteps = c.VoxelIsoSearchSteps;
         MaxEditCommandsPerUpdate = c.MaxEditCommandsPerUpdate;
         MaxEditDirtyLeavesPerUpdate = c.MaxEditDirtyLeavesPerUpdate;
+        WeatherSeed = c.WeatherSeed;
+        SeasonLengthMinutes = c.SeasonLengthMinutes;
+        GlobalWeatherIntensity = c.GlobalWeatherIntensity;
+        GlobalWindMultiplier = c.GlobalWindMultiplier;
+        MaxVegetationInstances = c.MaxVegetationInstances;
+        MaxVegetationSpawnsPerUpdate = c.MaxVegetationSpawnsPerUpdate;
 
         SeaLevelFraction = data.SeaLevelFraction;
         EnableWater = data.EnableWater;
@@ -772,6 +834,12 @@ public sealed class PlanetTerrain : Behavior
             VoxelIsoSearchSteps = src.VoxelIsoSearchSteps,
             MaxEditCommandsPerUpdate = src.MaxEditCommandsPerUpdate,
             MaxEditDirtyLeavesPerUpdate = src.MaxEditDirtyLeavesPerUpdate,
+            WeatherSeed = src.WeatherSeed,
+            SeasonLengthMinutes = src.SeasonLengthMinutes,
+            GlobalWeatherIntensity = src.GlobalWeatherIntensity,
+            GlobalWindMultiplier = src.GlobalWindMultiplier,
+            MaxVegetationInstances = src.MaxVegetationInstances,
+            MaxVegetationSpawnsPerUpdate = src.MaxVegetationSpawnsPerUpdate,
         };
     }
 
@@ -884,6 +952,19 @@ public sealed class PlanetTerrain : Behavior
                 biome.WaterDeepColorG = layer.WaterDeepG;
                 biome.WaterDeepColorB = layer.WaterDeepB;
             }
+
+            biome.VegetationDensity = Math.Max(0f, layer.VegetationDensity);
+            biome.TreeDensity = Math.Max(0f, layer.TreeDensity);
+            biome.VegetationProfileId = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
+            biome.VegetationPatchiness = Math.Clamp(layer.VegetationPatchiness, 0f, 1f);
+            biome.WeatherProfileId = string.IsNullOrWhiteSpace(layer.WeatherProfileId) ? "Temperate" : layer.WeatherProfileId;
+            biome.RainChance = Math.Clamp(layer.RainChance, 0f, 1f);
+            biome.SnowChance = Math.Clamp(layer.SnowChance, 0f, 1f);
+            biome.StormChance = Math.Clamp(layer.StormChance, 0f, 1f);
+            biome.WindBias = Math.Max(0f, layer.WindBias);
+            biome.CloudCoverageBias = Math.Max(0f, layer.CloudCoverageBias);
+            biome.FogDensityBias = Math.Max(0f, layer.FogDensityBias);
+            biome.SeasonalGrowthMultiplier = Math.Max(0f, layer.SeasonalGrowthMultiplier);
         }
 
         var presets = BiomeDefinition.AllPresets;
@@ -938,6 +1019,12 @@ public sealed class PlanetTerrain : Behavior
         _config.VoxelIsoSearchSteps = Math.Max(8, VoxelIsoSearchSteps);
         _config.MaxEditCommandsPerUpdate = Math.Max(1, MaxEditCommandsPerUpdate);
         _config.MaxEditDirtyLeavesPerUpdate = Math.Max(1, MaxEditDirtyLeavesPerUpdate);
+        _config.WeatherSeed = WeatherSeed;
+        _config.SeasonLengthMinutes = Math.Max(1f, SeasonLengthMinutes);
+        _config.GlobalWeatherIntensity = Math.Max(0f, GlobalWeatherIntensity);
+        _config.GlobalWindMultiplier = Math.Max(0f, GlobalWindMultiplier);
+        _config.MaxVegetationInstances = Math.Max(1024, MaxVegetationInstances);
+        _config.MaxVegetationSpawnsPerUpdate = Math.Max(8, MaxVegetationSpawnsPerUpdate);
 
         _biomeMap = new BiomeMap(_config.Seed, _config.Biomes,
             noiseScale: 2f,

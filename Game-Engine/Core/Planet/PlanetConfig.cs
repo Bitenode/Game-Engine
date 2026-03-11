@@ -81,4 +81,12 @@ public sealed class PlanetConfig
 
     /// <summary>Max leaves marked dirty by manipulation edits per chunk update.</summary>
     public int MaxEditDirtyLeavesPerUpdate { get; set; } = 96;
+
+    // Biome ecosystem/weather defaults
+    public int WeatherSeed { get; set; } = 1337;
+    public float SeasonLengthMinutes { get; set; } = 18f;
+    public float GlobalWeatherIntensity { get; set; } = 1f;
+    public float GlobalWindMultiplier { get; set; } = 1f;
+    public int MaxVegetationInstances { get; set; } = 20000;
+    public int MaxVegetationSpawnsPerUpdate { get; set; } = 256;
 }

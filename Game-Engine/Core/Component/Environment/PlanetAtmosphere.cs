@@ -17,6 +17,7 @@ public sealed class PlanetAtmosphere : Behavior
 {
     PlanetAtmospherePreset _preset = PlanetAtmospherePreset.EarthLike;
     bool _applyingPreset;
+    bool _dayNightInitialized;
     [Persist]
     public PlanetAtmospherePreset Preset
     {
@@ -38,6 +39,22 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float SunDirectionY { get; set; } = 0.82f;
     [Persist] public float SunDirectionZ { get; set; } = 0.53f;
     [Persist] public float SunIntensity { get; set; } = 1.0f;
+    [Persist] public bool EnableDayNightCycle { get; set; } = false;
+    [Persist] public bool AutoAdvanceTime { get; set; } = true;
+    [Persist] public float DayLengthMinutes { get; set; } = 20f;
+    [Persist] public float TimeOfDay { get; set; } = 0.25f; // 0..1, wraps
+    [Persist] public float AxisX { get; set; } = 0f;
+    [Persist] public float AxisY { get; set; } = 1f;
+    [Persist] public float AxisZ { get; set; } = 0f;
+    [Persist] public float NoonDirectionX { get; set; } = 0.20f;
+    [Persist] public float NoonDirectionY { get; set; } = 0.82f;
+    [Persist] public float NoonDirectionZ { get; set; } = 0.53f;
+    [Persist] public bool AutoAdjustSunIntensity { get; set; } = true;
+    [Persist] public float DaySunIntensity { get; set; } = 1.0f;
+    [Persist] public float NightSunIntensity { get; set; } = 0.08f;
+    [Persist] public bool AutoAdjustAmbient { get; set; } = true;
+    [Persist] public float DayAmbient { get; set; } = 0.18f;
+    [Persist] public float NightAmbient { get; set; } = 0.04f;
 
     [Persist] public float GroundRadiusOverride { get; set; } = 0f;
     [Persist] public float AtmosphereHeight { get; set; } = 220f;
@@ -87,6 +104,27 @@ public sealed class PlanetAtmosphere : Behavior
                 return new SN.Vector3(0.20f, 0.82f, 0.53f);
             return SN.Vector3.Normalize(raw);
         }
+    }
+
+    public override void Update()
+    {
+        if (!EnableDayNightCycle) return;
+
+        if (!_dayNightInitialized)
+        {
+            // Initialize day values from current atmosphere settings once.
+            DaySunIntensity = Math.Max(0.01f, SunIntensity);
+            DayAmbient = Math.Max(0f, Ambient);
+            _dayNightInitialized = true;
+        }
+
+        if (AutoAdvanceTime)
+        {
+            float seconds = Math.Max(30f, DayLengthMinutes * 60f);
+            TimeOfDay = Wrap01(TimeOfDay + (float)Time.deltaTime / seconds);
+        }
+
+        ApplyDayNightState();
     }
 
     public void ApplyPreset(PlanetAtmospherePreset preset)
@@ -190,11 +228,50 @@ public sealed class PlanetAtmosphere : Behavior
     {
         if (Preset != PlanetAtmospherePreset.Custom)
             ApplyPreset(Preset);
+        if (EnableDayNightCycle)
+            ApplyDayNightState();
     }
 
     public override void PostDeserialize()
     {
         if (Preset != PlanetAtmospherePreset.Custom)
             ApplyPreset(Preset);
+        if (EnableDayNightCycle)
+            ApplyDayNightState();
     }
+
+    void ApplyDayNightState()
+    {
+        var axis = SafeNormalize(new SN.Vector3(AxisX, AxisY, AxisZ), SN.Vector3.UnitY);
+        var noon = SafeNormalize(new SN.Vector3(NoonDirectionX, NoonDirectionY, NoonDirectionZ), new SN.Vector3(0.20f, 0.82f, 0.53f));
+        float theta = Wrap01(TimeOfDay) * MathF.Tau;
+        var rot = SN.Matrix4x4.CreateFromAxisAngle(axis, theta);
+        var sunDir = SafeNormalize(SN.Vector3.TransformNormal(noon, rot), noon);
+        SunDirectionX = sunDir.X;
+        SunDirectionY = sunDir.Y;
+        SunDirectionZ = sunDir.Z;
+
+        // 1 at noon, 0 at midnight. Soften transitions around dawn/dusk.
+        float dayLerp = MathF.Pow(Math.Clamp(0.5f + 0.5f * MathF.Cos(theta), 0f, 1f), 0.75f);
+        if (AutoAdjustSunIntensity)
+            SunIntensity = Lerp(NightSunIntensity, DaySunIntensity, dayLerp);
+        if (AutoAdjustAmbient)
+            Ambient = Lerp(NightAmbient, DayAmbient, dayLerp);
+    }
+
+    static float Wrap01(float t)
+    {
+        t %= 1f;
+        if (t < 0f) t += 1f;
+        return t;
+    }
+
+    static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)
+    {
+        float lsq = v.LengthSquared();
+        if (lsq < 1e-8f) return fallback;
+        return v / MathF.Sqrt(lsq);
+    }
+
+    static float Lerp(float a, float b, float t) => a + (b - a) * Math.Clamp(t, 0f, 1f);
 }

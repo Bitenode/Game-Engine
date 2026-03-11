@@ -72,6 +72,18 @@ public sealed class BiomeLayerInfo
     public float WaterDeepR { get; set; } = 0.02f;
     public float WaterDeepG { get; set; } = 0.08f;
     public float WaterDeepB { get; set; } = 0.22f;
+    public float VegetationDensity { get; set; } = 0f;
+    public float TreeDensity { get; set; } = 0f;
+    public string VegetationProfileId { get; set; } = "Default";
+    public float VegetationPatchiness { get; set; } = 0.45f;
+    public string WeatherProfileId { get; set; } = "Temperate";
+    public float RainChance { get; set; } = 0.15f;
+    public float SnowChance { get; set; } = 0.04f;
+    public float StormChance { get; set; } = 0.01f;
+    public float WindBias { get; set; } = 1f;
+    public float CloudCoverageBias { get; set; } = 1f;
+    public float FogDensityBias { get; set; } = 1f;
+    public float SeasonalGrowthMultiplier { get; set; } = 1f;
 }
 
 /// <summary>
@@ -265,6 +277,18 @@ public sealed class BiomeGraph
                     WaterDeepR = ln.WaterDeepR,
                     WaterDeepG = ln.WaterDeepG,
                     WaterDeepB = ln.WaterDeepB,
+                    VegetationDensity = ln.VegetationDensity,
+                    TreeDensity = ln.TreeDensity,
+                    VegetationProfileId = ln.VegetationProfileId,
+                    VegetationPatchiness = ln.VegetationPatchiness,
+                    WeatherProfileId = ln.WeatherProfileId,
+                    RainChance = ln.RainChance,
+                    SnowChance = ln.SnowChance,
+                    StormChance = ln.StormChance,
+                    WindBias = ln.WindBias,
+                    CloudCoverageBias = ln.CloudCoverageBias,
+                    FogDensityBias = ln.FogDensityBias,
+                    SeasonalGrowthMultiplier = ln.SeasonalGrowthMultiplier,
                 });
             }
         }
@@ -491,6 +515,18 @@ public sealed class BiomeGraph
                     obj["waterShallowR"] = n.WaterShallowR; obj["waterShallowG"] = n.WaterShallowG; obj["waterShallowB"] = n.WaterShallowB;
                     obj["waterDeepR"] = n.WaterDeepR; obj["waterDeepG"] = n.WaterDeepG; obj["waterDeepB"] = n.WaterDeepB;
                 }
+                obj["vegetationDensity"] = n.VegetationDensity;
+                obj["treeDensity"] = n.TreeDensity;
+                obj["vegetationProfileId"] = n.VegetationProfileId;
+                obj["vegetationPatchiness"] = n.VegetationPatchiness;
+                obj["weatherProfileId"] = n.WeatherProfileId;
+                obj["rainChance"] = n.RainChance;
+                obj["snowChance"] = n.SnowChance;
+                obj["stormChance"] = n.StormChance;
+                obj["windBias"] = n.WindBias;
+                obj["cloudCoverageBias"] = n.CloudCoverageBias;
+                obj["fogDensityBias"] = n.FogDensityBias;
+                obj["seasonalGrowthMultiplier"] = n.SeasonalGrowthMultiplier;
                 break;
             case BiomeMathNode n:
                 obj["operation"] = n.Operation.ToString(); break;
@@ -551,6 +587,18 @@ public sealed class BiomeGraph
                 n.WaterDeepR = item["waterDeepR"]?.GetValue<float>() ?? 0.02f;
                 n.WaterDeepG = item["waterDeepG"]?.GetValue<float>() ?? 0.08f;
                 n.WaterDeepB = item["waterDeepB"]?.GetValue<float>() ?? 0.22f;
+                n.VegetationDensity = item["vegetationDensity"]?.GetValue<float>() ?? 0f;
+                n.TreeDensity = item["treeDensity"]?.GetValue<float>() ?? 0f;
+                n.VegetationProfileId = item["vegetationProfileId"]?.GetValue<string>() ?? "Default";
+                n.VegetationPatchiness = item["vegetationPatchiness"]?.GetValue<float>() ?? 0.45f;
+                n.WeatherProfileId = item["weatherProfileId"]?.GetValue<string>() ?? "Temperate";
+                n.RainChance = item["rainChance"]?.GetValue<float>() ?? 0.15f;
+                n.SnowChance = item["snowChance"]?.GetValue<float>() ?? 0.04f;
+                n.StormChance = item["stormChance"]?.GetValue<float>() ?? 0.01f;
+                n.WindBias = item["windBias"]?.GetValue<float>() ?? 1f;
+                n.CloudCoverageBias = item["cloudCoverageBias"]?.GetValue<float>() ?? 1f;
+                n.FogDensityBias = item["fogDensityBias"]?.GetValue<float>() ?? 1f;
+                n.SeasonalGrowthMultiplier = item["seasonalGrowthMultiplier"]?.GetValue<float>() ?? 1f;
                 break;
             case BiomeMathNode n:
                 if (Enum.TryParse<BiomeMathOp>(item["operation"]?.GetValue<string>(), out var op))

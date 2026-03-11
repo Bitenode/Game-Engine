@@ -17,7 +17,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, PlanetTerrain, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
 | **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
@@ -637,6 +637,10 @@ Billboard particle system with emission shapes, sub-emitters, and preset configu
 - **Emission shapes** — `Sphere`, `Cone`, `Box` with configurable dimensions
 - **Sub-emitters** — spawn additional particles on collision, death, or other events
 - **Soft circular particles** — alpha falloff from center to edge for smooth appearance
+- **Planet-aware precipitation support**:
+  - optional planet gravity alignment (`UsePlanetGravity`, `AlignEmissionToGravity`)
+  - configurable emission direction (`EmissionDirection`)
+  - optional surface termination (`StopOnPlanetSurfaceHit`)
 
 ### Presets
 | Preset   | Description                                |
@@ -1703,3 +1707,62 @@ Attach it to the same `GameObject` as `PlanetTerrain` to drive:
 Key design rule:
 - `PlanetAtmosphere` is independent from `Skybox`.
 - Planet terrain/water/cloud rendering reads `PlanetAtmosphere` values, not `Skybox.Top`, `Skybox.Ambient`, or `Skybox.SunElevation`.
+
+### Day/Night Cycle
+
+`PlanetAtmosphere` includes optional built-in day/night controls:
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `EnableDayNightCycle` | `bool` | `false` | Enables automatic sun orbiting/time-of-day updates |
+| `AutoAdvanceTime` | `bool` | `true` | Advances `TimeOfDay` each frame |
+| `DayLengthMinutes` | `float` | `20` | Full cycle duration |
+| `TimeOfDay` | `float` | `0.25` | Normalized cycle time (0..1) |
+| `AxisX/Y/Z` | `float` | `(0,1,0)` | Orbit axis |
+| `NoonDirectionX/Y/Z` | `float` | `(0.20,0.82,0.53)` | Sun direction at noon |
+| `AutoAdjustSunIntensity` | `bool` | `true` | Blend `SunIntensity` through day/night |
+| `DaySunIntensity` / `NightSunIntensity` | `float` | `1.0 / 0.08` | Day/night direct light levels |
+| `AutoAdjustAmbient` | `bool` | `true` | Blend `Ambient` through day/night |
+| `DayAmbient` / `NightAmbient` | `float` | `0.18 / 0.04` | Day/night ambient levels |
+
+---
+
+## PlanetWeatherController
+
+Biome-driven runtime weather controller for planets (`Clear`, `Cloudy`, `Rain`, `Snow`, `Storm`).
+
+Primary responsibilities:
+
+- biome-blended weather target selection and transition timing
+- layered precipitation spawning around camera
+- optional driving of atmosphere, post-process fog, and wind systems
+- weather coupling output for vegetation (`Wetness`, `SnowCoverage`, wind response)
+
+Key toggles:
+
+- `DriveAtmosphere`
+- `DriveAtmosphereLighting` (separate from cloud controls to avoid overriding atmosphere lighting unintentionally)
+- `DrivePostProcessFog`
+- `DriveWind`
+
+---
+
+## PlanetVegetationSystem
+
+Chunk-aware planet vegetation runtime system.
+
+Primary responsibilities:
+
+- spawn/despawn vegetation by visible planet leaves and biome weights
+- consume vegetation profiles and weighted grass/tree item lists
+- apply weather/ecosystem response (growth/decay, wind response)
+- enforce runtime spawn/update budgets
+
+Profile-backed data source:
+
+- `Assets/Biomes/vegetation-profiles.json`
+- multiple grass/tree item entries per profile with per-item:
+  - model path
+  - weight
+  - density multiplier
+  - scale multipliers

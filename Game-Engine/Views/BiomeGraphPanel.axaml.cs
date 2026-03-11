@@ -10,6 +10,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Game_Engine.Core.Biome;
 using Game_Engine.Core.Biome.Graph;
 
 namespace Game_Engine.Views;
@@ -24,6 +25,7 @@ public partial class BiomeGraphPanel : UserControl
     ComboBox? _nodeTypeCombo;
     bool _loadedOnce;
     string _currentGraphPath = "";
+    Dictionary<string, VegetationProfile> _vegProfiles = new(StringComparer.OrdinalIgnoreCase);
 
     BiomeNode? _selectedNode;
     BiomeNode? _draggingNode;
@@ -99,6 +101,7 @@ public partial class BiomeGraphPanel : UserControl
         }
 
         _graph = BiomeGraph.CreateDefault();
+        LoadVegetationProfiles();
         CaptureUndo();
         Redraw();
     }
@@ -923,6 +926,251 @@ public partial class BiomeGraphPanel : UserControl
         }
     }
 
+    // ── Vegetation Profiles ──
+
+    void LoadVegetationProfiles()
+    {
+        _vegProfiles = VegetationProfileLibrary.LoadAll();
+    }
+
+    void SaveVegetationProfiles()
+    {
+        VegetationProfileLibrary.SaveAll(_vegProfiles);
+    }
+
+    string[] GetVegetationProfileIds()
+    {
+        if (_vegProfiles.Count == 0)
+            LoadVegetationProfiles();
+        if (!_vegProfiles.ContainsKey("Default"))
+            _vegProfiles["Default"] = new VegetationProfile();
+        return _vegProfiles.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    void ApplyVegetationProfileToLayer(BiomeLayerNode layer, string profileId)
+    {
+        if (!_vegProfiles.TryGetValue(profileId, out var p))
+            return;
+        layer.VegetationProfileId = p.Id;
+        layer.VegetationDensity = p.VegetationDensity;
+        layer.TreeDensity = p.TreeDensity;
+        layer.VegetationPatchiness = p.VegetationPatchiness;
+        layer.SeasonalGrowthMultiplier = p.SeasonalGrowthMultiplier;
+    }
+
+    void SaveLayerAsVegetationProfile(BiomeLayerNode layer, string profileId)
+    {
+        if (string.IsNullOrWhiteSpace(profileId))
+            profileId = "Default";
+        _vegProfiles.TryGetValue(profileId, out var existing);
+        _vegProfiles[profileId] = new VegetationProfile
+        {
+            Id = profileId,
+            VegetationDensity = Math.Clamp(layer.VegetationDensity, 0f, 2f),
+            TreeDensity = Math.Clamp(layer.TreeDensity, 0f, 2f),
+            VegetationPatchiness = Math.Clamp(layer.VegetationPatchiness, 0f, 1f),
+            SeasonalGrowthMultiplier = Math.Clamp(layer.SeasonalGrowthMultiplier, 0f, 3f),
+            GrassModelPath = existing?.GrassModelPath ?? "",
+            TreeModelPath = existing?.TreeModelPath ?? "",
+            GrassItems = existing?.GrassItems?.Select(i => new VegetationProfileItem
+            {
+                ModelPath = i.ModelPath,
+                Weight = i.Weight,
+                DensityMultiplier = i.DensityMultiplier,
+                MinScale = i.MinScale,
+                MaxScale = i.MaxScale,
+            }).ToList() ?? new List<VegetationProfileItem>(),
+            TreeItems = existing?.TreeItems?.Select(i => new VegetationProfileItem
+            {
+                ModelPath = i.ModelPath,
+                Weight = i.Weight,
+                DensityMultiplier = i.DensityMultiplier,
+                MinScale = i.MinScale,
+                MaxScale = i.MaxScale,
+            }).ToList() ?? new List<VegetationProfileItem>(),
+        };
+        SaveVegetationProfiles();
+    }
+
+    string BuildUniqueVegetationProfileId(string baseId)
+    {
+        string root = string.IsNullOrWhiteSpace(baseId) ? "Profile" : baseId.Trim();
+        if (!_vegProfiles.ContainsKey(root))
+            return root;
+        for (int i = 2; i < 1000; i++)
+        {
+            string candidate = $"{root}_{i}";
+            if (!_vegProfiles.ContainsKey(candidate))
+                return candidate;
+        }
+        return $"{root}_{Guid.NewGuid().ToString("N")[..4]}";
+    }
+
+    void AddVegetationProfileMenu(BiomeLayerNode layer)
+    {
+        var ids = GetVegetationProfileIds();
+        if (ids.Length == 0) ids = new[] { "Default" };
+        string current = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
+
+        AddPropCombo("Veg Profile", ids, current, v =>
+        {
+            if (string.IsNullOrWhiteSpace(v)) return;
+            ApplyVegetationProfileToLayer(layer, v);
+            CaptureUndo();
+            UpdateProperties();
+        });
+
+        var row = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+        var newBtn = new Button { Content = "New", Padding = new Thickness(6, 2), MinWidth = 40 };
+        var saveBtn = new Button { Content = "Save", Padding = new Thickness(6, 2), MinWidth = 40 };
+        var delBtn = new Button { Content = "Delete", Padding = new Thickness(6, 2), MinWidth = 48 };
+        var reloadBtn = new Button { Content = "Reload", Padding = new Thickness(6, 2), MinWidth = 50 };
+
+        newBtn.Click += (_, _) =>
+        {
+            string id = BuildUniqueVegetationProfileId(layer.BiomeName);
+            layer.VegetationProfileId = id;
+            SaveLayerAsVegetationProfile(layer, id);
+            CaptureUndo();
+            UpdateProperties();
+        };
+
+        saveBtn.Click += (_, _) =>
+        {
+            string id = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? BuildUniqueVegetationProfileId(layer.BiomeName) : layer.VegetationProfileId;
+            layer.VegetationProfileId = id;
+            SaveLayerAsVegetationProfile(layer, id);
+            CaptureUndo();
+            UpdateProperties();
+        };
+
+        delBtn.Click += (_, _) =>
+        {
+            string id = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
+            if (string.Equals(id, "Default", StringComparison.OrdinalIgnoreCase))
+                return;
+            _vegProfiles.Remove(id);
+            SaveVegetationProfiles();
+            layer.VegetationProfileId = "Default";
+            ApplyVegetationProfileToLayer(layer, "Default");
+            CaptureUndo();
+            UpdateProperties();
+        };
+
+        reloadBtn.Click += (_, _) =>
+        {
+            LoadVegetationProfiles();
+            string id = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
+            if (_vegProfiles.ContainsKey(id))
+                ApplyVegetationProfileToLayer(layer, id);
+            CaptureUndo();
+            UpdateProperties();
+        };
+
+        row.Children.Add(newBtn);
+        row.Children.Add(saveBtn);
+        row.Children.Add(delBtn);
+        row.Children.Add(reloadBtn);
+        _propsPanel?.Children.Add(row);
+
+        AddPropFloat("Veg Density", layer.VegetationDensity, v => layer.VegetationDensity = Math.Clamp(v, 0f, 2f));
+        AddPropFloat("Tree Density", layer.TreeDensity, v => layer.TreeDensity = Math.Clamp(v, 0f, 2f));
+        AddPropFloat("Patchiness", layer.VegetationPatchiness, v => layer.VegetationPatchiness = Math.Clamp(v, 0f, 1f));
+        AddPropFloat("Season Growth", layer.SeasonalGrowthMultiplier, v => layer.SeasonalGrowthMultiplier = Math.Clamp(v, 0f, 3f));
+
+        string activeId = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
+        if (_vegProfiles.TryGetValue(activeId, out var profile))
+        {
+            AddPropSeparator("Grass Types");
+            AddVegetationItemsEditor(profile, isGrass: true);
+            AddPropSeparator("Tree Types");
+            AddVegetationItemsEditor(profile, isGrass: false);
+        }
+    }
+
+    void AddVegetationItemsEditor(VegetationProfile profile, bool isGrass)
+    {
+        var items = isGrass ? profile.GrassItems : profile.TreeItems;
+        items ??= new List<VegetationProfileItem>();
+        if (isGrass) profile.GrassItems = items; else profile.TreeItems = items;
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            int idx = i;
+            var it = items[idx];
+            _propsPanel?.Children.Add(new TextBlock
+            {
+                Text = $"{(isGrass ? "Grass" : "Tree")} #{idx + 1}",
+                FontSize = 10,
+                Foreground = Brushes.Gray,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+            AddPropFilePicker("Model", it.ModelPath, v =>
+            {
+                it.ModelPath = v ?? "";
+                SaveVegetationProfiles();
+                CaptureUndo();
+            });
+            AddPropFloat("Weight", it.Weight, v =>
+            {
+                it.Weight = Math.Clamp(v, 0f, 100f);
+                SaveVegetationProfiles();
+                CaptureUndo();
+            });
+            AddPropFloat("Density Mul", it.DensityMultiplier, v =>
+            {
+                it.DensityMultiplier = Math.Clamp(v, 0f, 3f);
+                SaveVegetationProfiles();
+                CaptureUndo();
+            });
+            AddPropFloat("Min Scale", it.MinScale, v =>
+            {
+                it.MinScale = Math.Clamp(v, 0.05f, 8f);
+                SaveVegetationProfiles();
+                CaptureUndo();
+            });
+            AddPropFloat("Max Scale", it.MaxScale, v =>
+            {
+                it.MaxScale = Math.Clamp(v, 0.05f, 8f);
+                SaveVegetationProfiles();
+                CaptureUndo();
+            });
+
+            var delRow = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+            var delBtn = new Button { Content = "Remove Item", Padding = new Thickness(6, 2), MinWidth = 90 };
+            delBtn.Click += (_, _) =>
+            {
+                if (idx >= 0 && idx < items.Count)
+                {
+                    items.RemoveAt(idx);
+                    SaveVegetationProfiles();
+                    CaptureUndo();
+                    UpdateProperties();
+                }
+            };
+            delRow.Children.Add(delBtn);
+            _propsPanel?.Children.Add(delRow);
+        }
+
+        var addRow = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+        var addBtn = new Button { Content = isGrass ? "Add Grass Type" : "Add Tree Type", Padding = new Thickness(6, 2), MinWidth = 110 };
+        addBtn.Click += (_, _) =>
+        {
+            items.Add(new VegetationProfileItem
+            {
+                Weight = 1f,
+                DensityMultiplier = 1f,
+                MinScale = 0.9f,
+                MaxScale = 1.1f
+            });
+            SaveVegetationProfiles();
+            CaptureUndo();
+            UpdateProperties();
+        };
+        addRow.Children.Add(addBtn);
+        _propsPanel?.Children.Add(addRow);
+    }
+
     // ── Properties panel ──
 
     void UpdateProperties()
@@ -982,6 +1230,16 @@ public partial class BiomeGraphPanel : UserControl
                     AddPropColor("Deep Color", n.WaterDeepR, n.WaterDeepG, n.WaterDeepB,
                         (r, g, b) => { n.WaterDeepR = r; n.WaterDeepG = g; n.WaterDeepB = b; });
                 }
+                AddPropSeparator("Vegetation");
+                AddVegetationProfileMenu(n);
+                AddPropSeparator("Weather");
+                AddPropText("Weather Profile", n.WeatherProfileId, v => n.WeatherProfileId = v);
+                AddPropFloat("Rain Chance", n.RainChance, v => n.RainChance = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Snow Chance", n.SnowChance, v => n.SnowChance = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Storm Chance", n.StormChance, v => n.StormChance = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Wind Bias", n.WindBias, v => n.WindBias = Math.Max(0f, v));
+                AddPropFloat("Cloud Bias", n.CloudCoverageBias, v => n.CloudCoverageBias = Math.Max(0f, v));
+                AddPropFloat("Fog Bias", n.FogDensityBias, v => n.FogDensityBias = Math.Max(0f, v));
                 break;
             case BiomeMathNode n:
                 var ops = Enum.GetNames<BiomeMathOp>();

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Game_Engine.Core;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -37,6 +38,10 @@ namespace Game_Engine.Core.Component
         [Persist] public float EndSize { get; set; } = 0.05f;
         [Persist] public float GravityMultiplier { get; set; } = 0f;
         [Persist] public float Drag { get; set; } = 0.02f;
+        [Persist] public SN.Vector3 EmissionDirection { get; set; } = SN.Vector3.UnitY;
+        [Persist] public bool AlignEmissionToGravity { get; set; } = false;
+        [Persist] public bool UsePlanetGravity { get; set; } = false;
+        [Persist] public bool StopOnPlanetSurfaceHit { get; set; } = false;
 
         // ── Color (start → end gradient) ──
         [Persist] public SN.Vector4 StartColor { get; set; } = new SN.Vector4(1f, 0.8f, 0.2f, 1f);
@@ -114,6 +119,8 @@ namespace Game_Engine.Core.Component
             }
 
             // Simulate existing particles
+            var emitterPos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var gravityDir = ResolveGravityDirection(emitterPos);
             int alive = 0;
             for (int i = 0; i < Particles.Length; i++)
             {
@@ -131,9 +138,15 @@ namespace Game_Engine.Core.Component
                 }
 
                 // Physics
-                p.Velocity.Y -= 9.81f * GravityMultiplier * dt;
+                p.Velocity += gravityDir * (9.81f * GravityMultiplier * dt);
                 p.Velocity *= (1f - Drag * dt);
                 p.Position += p.Velocity * dt;
+
+                if (StopOnPlanetSurfaceHit && HasHitPlanetSurface(p.Position))
+                {
+                    p.Active = false;
+                    continue;
+                }
                 alive++;
             }
             AliveCount = alive;
@@ -170,13 +183,13 @@ namespace Game_Engine.Core.Component
         {
             var worldPos = Transform.Position;
             SN.Vector3 pos = new SN.Vector3((float)worldPos.X, (float)worldPos.Y, (float)worldPos.Z);
-            SN.Vector3 dir;
+            SN.Vector3 dir = SafeNormalize(EmissionDirection, SN.Vector3.UnitY);
 
             switch (Shape)
             {
                 case EmitterShape.Sphere:
-                    dir = RandomOnSphere();
-                    pos += dir * ShapeRadius * (float)_rng.NextDouble();
+                    var radial = RandomOnSphere();
+                    pos += radial * ShapeRadius * (float)_rng.NextDouble();
                     break;
                 case EmitterShape.Cone:
                     float angle = ConeAngle * MathF.PI / 180f;
@@ -192,12 +205,10 @@ namespace Game_Engine.Core.Component
                         (float)(_rng.NextDouble() - 0.5) * BoxSize.X,
                         (float)(_rng.NextDouble() - 0.5) * BoxSize.Y,
                         (float)(_rng.NextDouble() - 0.5) * BoxSize.Z);
-                    dir = SN.Vector3.UnitY;
-                    break;
-                default:
-                    dir = SN.Vector3.UnitY;
                     break;
             }
+            if (AlignEmissionToGravity)
+                dir = ResolveGravityDirection(pos);
 
             float speed = StartSpeed + (float)(_rng.NextDouble() - 0.5) * 2f * SpeedVariation;
 
@@ -265,19 +276,29 @@ namespace Game_Engine.Core.Component
                     SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Rain:
-                    EmissionRate = 200f; MaxParticles = 2000; Lifetime = 2f; StartSpeed = 8f; SpeedVariation = 1f;
-                    StartSize = 0.02f; EndSize = 0.02f; GravityMultiplier = 1f; Drag = 0f;
-                    StartColor = new SN.Vector4(0.6f, 0.7f, 0.9f, 0.6f);
-                    EndColor = new SN.Vector4(0.6f, 0.7f, 0.9f, 0f);
-                    Shape = EmitterShape.Box; BoxSize = new SN.Vector3(30f, 0f, 30f);
+                    EmissionRate = 1300f; MaxParticles = 18000; Lifetime = 35f; StartSpeed = 14f; SpeedVariation = 3f;
+                    StartSize = 0.040f; EndSize = 0.026f; GravityMultiplier = 0.70f; Drag = 0.01f;
+                    // Slight neutral-gray tint with high alpha for readability in motion.
+                    StartColor = new SN.Vector4(0.82f, 0.84f, 0.86f, 0.92f);
+                    EndColor = new SN.Vector4(0.76f, 0.79f, 0.82f, 0.76f);
+                    // Vertical thickness is critical so rain doesn't appear as a single popping sheet.
+                    Shape = EmitterShape.Box; BoxSize = new SN.Vector3(42f, 80f, 42f);
+                    EmissionDirection = -SN.Vector3.UnitY;
+                    AlignEmissionToGravity = true;
+                    UsePlanetGravity = true;
+                    StopOnPlanetSurfaceHit = true;
                     SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Snow:
-                    EmissionRate = 80f; MaxParticles = 1000; Lifetime = 5f; StartSpeed = 0.5f; SpeedVariation = 0.3f;
+                    EmissionRate = 80f; MaxParticles = 1000; Lifetime = 60f; StartSpeed = 0.5f; SpeedVariation = 0.3f;
                     StartSize = 0.08f; EndSize = 0.04f; GravityMultiplier = 0.2f; Drag = 0.5f;
                     StartColor = new SN.Vector4(1f, 1f, 1f, 0.9f);
-                    EndColor = new SN.Vector4(1f, 1f, 1f, 0f);
+                    EndColor = new SN.Vector4(1f, 1f, 1f, 0.9f);
                     Shape = EmitterShape.Box; BoxSize = new SN.Vector3(20f, 0f, 20f);
+                    EmissionDirection = -SN.Vector3.UnitY;
+                    AlignEmissionToGravity = true;
+                    UsePlanetGravity = true;
+                    StopOnPlanetSurfaceHit = true;
                     SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Dust:
@@ -290,6 +311,77 @@ namespace Game_Engine.Core.Component
                     break;
             }
             Preset = preset;
+        }
+
+        private bool HasHitPlanetSurface(SN.Vector3 worldPos)
+        {
+            if (PlanetTerrain.ActivePlanets.Count == 0) return false;
+
+            PlanetTerrain? nearest = null;
+            SN.Vector3 nearestCenter = SN.Vector3.Zero;
+            float nearestSq = float.MaxValue;
+
+            for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
+            {
+                var p = PlanetTerrain.ActivePlanets[i];
+                if (p?.gameObject == null) continue;
+
+                var world = SceneGraphUtil.AccumulateWorld(p.gameObject);
+                var center = new SN.Vector3(world.M41, world.M42, world.M43);
+                float d2 = SN.Vector3.DistanceSquared(worldPos, center);
+                if (d2 < nearestSq)
+                {
+                    nearestSq = d2;
+                    nearest = p;
+                    nearestCenter = center;
+                }
+            }
+
+            if (nearest == null) return false;
+
+            var toPos = worldPos - nearestCenter;
+            float lenSq = toPos.LengthSquared();
+            if (lenSq <= 1e-8f) return true;
+
+            float dist = MathF.Sqrt(lenSq);
+            var dir = toPos / dist;
+            float surfaceRadius = nearest.SampleSurfaceRadius(dir);
+            return dist <= surfaceRadius;
+        }
+
+        private SN.Vector3 ResolveGravityDirection(SN.Vector3 atWorldPos)
+        {
+            if (!UsePlanetGravity || PlanetTerrain.ActivePlanets.Count == 0)
+                return -SN.Vector3.UnitY;
+
+            SN.Vector3 nearestCenter = SN.Vector3.Zero;
+            float nearestSq = float.MaxValue;
+            for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
+            {
+                var p = PlanetTerrain.ActivePlanets[i];
+                if (p?.gameObject == null) continue;
+                var world = SceneGraphUtil.AccumulateWorld(p.gameObject);
+                var center = new SN.Vector3(world.M41, world.M42, world.M43);
+                float d2 = SN.Vector3.DistanceSquared(atWorldPos, center);
+                if (d2 < nearestSq)
+                {
+                    nearestSq = d2;
+                    nearestCenter = center;
+                }
+            }
+
+            if (nearestSq >= float.MaxValue)
+                return -SN.Vector3.UnitY;
+
+            var down = nearestCenter - atWorldPos;
+            return SafeNormalize(down, -SN.Vector3.UnitY);
+        }
+
+        private static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)
+        {
+            float lsq = v.LengthSquared();
+            if (lsq <= 1e-10f) return fallback;
+            return v / MathF.Sqrt(lsq);
         }
 
         /// <summary>

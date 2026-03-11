@@ -154,6 +154,18 @@ public sealed class BiomeLayerNode : BiomeNode
     public float WaterDeepR { get; set; } = 0.02f;
     public float WaterDeepG { get; set; } = 0.08f;
     public float WaterDeepB { get; set; } = 0.22f;
+    public float VegetationDensity { get; set; } = 0f;
+    public float TreeDensity { get; set; } = 0f;
+    public string VegetationProfileId { get; set; } = "Default";
+    public float VegetationPatchiness { get; set; } = 0.45f;
+    public string WeatherProfileId { get; set; } = "Temperate";
+    public float RainChance { get; set; } = 0.15f;
+    public float SnowChance { get; set; } = 0.04f;
+    public float StormChance { get; set; } = 0.01f;
+    public float WindBias { get; set; } = 1f;
+    public float CloudCoverageBias { get; set; } = 1f;
+    public float FogDensityBias { get; set; } = 1f;
+    public float SeasonalGrowthMultiplier { get; set; } = 1f;
 
     public BiomeLayerNode()
     {

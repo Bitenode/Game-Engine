@@ -508,6 +508,9 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 - **Preview** — equirectangular biome color preview generated from compiled graph data
 - **Compile & apply** — compiles graph and applies it to all scene `PlanetTerrain` components
 - **File workflow** — save/load `.biomegraph` files
+- **Vegetation profile management** — select or create vegetation profiles per biome layer (`New`, `Save`, `Delete`, `Reload`)
+- **Per-biome vegetation tuning** — `VegetationDensity`, `TreeDensity`, `Patchiness`, and `SeasonalGrowthMultiplier` are exposed directly under profile controls
+- **Multi-item grass/tree authoring** — each profile supports multiple weighted grass and tree entries with per-item model path, density multiplier, and scale range
 
 ### Typical workflow
 1. Open via **Window > Biome Graph**

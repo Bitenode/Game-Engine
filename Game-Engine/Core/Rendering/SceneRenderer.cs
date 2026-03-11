@@ -965,7 +965,6 @@ namespace Game_Engine.Core
             {
                 shader.SetInt("uIsVegetation", 0);
             }
-
             // Bone skinning matrices
             if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
             {

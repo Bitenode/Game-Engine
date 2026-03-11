@@ -92,6 +92,32 @@ public sealed class BiomeDefinition
 
     public float VegetationDensity { get; set; } = 0f;
     public float TreeDensity { get; set; } = 0f;
+    public string VegetationProfileId { get; set; } = "Default";
+    public float GrassMinScale { get; set; } = 0.8f;
+    public float GrassMaxScale { get; set; } = 1.2f;
+    public float TreeMinScale { get; set; } = 0.85f;
+    public float TreeMaxScale { get; set; } = 1.3f;
+    public float VegetationPatchiness { get; set; } = 0.45f;
+    public float VegetationRegrowthRate { get; set; } = 0.06f;
+    public float VegetationDecayRate { get; set; } = 0.03f;
+
+    public string WeatherProfileId { get; set; } = "Temperate";
+    public float ClearChance { get; set; } = 0.45f;
+    public float CloudyChance { get; set; } = 0.35f;
+    public float RainChance { get; set; } = 0.15f;
+    public float SnowChance { get; set; } = 0.04f;
+    public float StormChance { get; set; } = 0.01f;
+    public float WeatherTransitionSpeed { get; set; } = 0.35f;
+    public float WindBias { get; set; } = 1f;
+    public float CloudCoverageBias { get; set; } = 1f;
+    public float FogDensityBias { get; set; } = 1f;
+    public float TemperatureResponse { get; set; } = 1f;
+    public float MoistureResponse { get; set; } = 1f;
+    public float GrowthTemperatureMin { get; set; } = 0.2f;
+    public float GrowthTemperatureMax { get; set; } = 0.8f;
+    public float GrowthMoistureMin { get; set; } = 0.2f;
+    public float GrowthMoistureMax { get; set; } = 0.9f;
+    public float SeasonalGrowthMultiplier { get; set; } = 1f;
 
     // --- Built-in presets ---
 
@@ -116,6 +142,13 @@ public sealed class BiomeDefinition
         UnderwaterDistortion = 0.0035f,
         UnderwaterBuoyancy = 6f,
         UnderwaterDrag = 3f,
+        WeatherProfileId = "Marine",
+        ClearChance = 0.25f,
+        CloudyChance = 0.40f,
+        RainChance = 0.25f,
+        SnowChance = 0.02f,
+        StormChance = 0.08f,
+        FogDensityBias = 1.35f,
     };
 
     public static BiomeDefinition Beach => new()
@@ -128,6 +161,12 @@ public sealed class BiomeDefinition
         MinMoisture = 0.4f, MaxMoisture = 0.8f,
         TopTiling = 25f, UnderTiling = 15f,
         CavesEnabled = false,
+        WeatherProfileId = "Coastal",
+        ClearChance = 0.55f,
+        CloudyChance = 0.30f,
+        RainChance = 0.10f,
+        SnowChance = 0.01f,
+        StormChance = 0.04f,
     };
 
     public static BiomeDefinition Grassland => new()
@@ -139,8 +178,11 @@ public sealed class BiomeDefinition
         MinTemperature = 0.3f, MaxTemperature = 0.7f,
         MinMoisture = 0.3f, MaxMoisture = 0.6f,
         VegetationDensity = 0.5f,
+        TreeDensity = 0.15f,
         TopTiling = 15f, UnderTiling = 10f,
         CavesEnabled = true,
+        VegetationProfileId = "Grassland",
+        WeatherProfileId = "Temperate",
     };
 
     public static BiomeDefinition Forest => new()
@@ -154,6 +196,11 @@ public sealed class BiomeDefinition
         VegetationDensity = 0.8f, TreeDensity = 0.6f,
         TopTiling = 12f, UnderTiling = 8f,
         CavesEnabled = true,
+        VegetationProfileId = "Forest",
+        WeatherProfileId = "Humid",
+        RainChance = 0.26f,
+        StormChance = 0.05f,
+        FogDensityBias = 1.15f,
     };
 
     public static BiomeDefinition Desert => new()
@@ -166,6 +213,14 @@ public sealed class BiomeDefinition
         MinMoisture = 0f, MaxMoisture = 0.3f,
         TopTiling = 30f, UnderTiling = 20f,
         CavesEnabled = false,
+        VegetationProfileId = "Desert",
+        WeatherProfileId = "Arid",
+        ClearChance = 0.78f,
+        CloudyChance = 0.17f,
+        RainChance = 0.03f,
+        SnowChance = 0f,
+        StormChance = 0.02f,
+        FogDensityBias = 0.55f,
     };
 
     public static BiomeDefinition Tundra => new()
@@ -178,6 +233,13 @@ public sealed class BiomeDefinition
         MinMoisture = 0f, MaxMoisture = 0.5f,
         TopTiling = 20f, UnderTiling = 12f,
         CavesEnabled = true,
+        VegetationProfileId = "Tundra",
+        WeatherProfileId = "Cold",
+        ClearChance = 0.36f,
+        CloudyChance = 0.39f,
+        RainChance = 0.03f,
+        SnowChance = 0.19f,
+        StormChance = 0.03f,
     };
 
     public static BiomeDefinition Mountains => new()
@@ -190,6 +252,11 @@ public sealed class BiomeDefinition
         MinMoisture = 0.2f, MaxMoisture = 0.6f,
         TopTiling = 18f, UnderTiling = 10f,
         CavesEnabled = true,
+        VegetationProfileId = "Alpine",
+        WeatherProfileId = "Mountain",
+        SnowChance = 0.12f,
+        StormChance = 0.04f,
+        WindBias = 1.25f,
     };
 
     public static BiomeDefinition Volcanic => new()
@@ -203,6 +270,14 @@ public sealed class BiomeDefinition
         MinMoisture = 0f, MaxMoisture = 0.3f,
         TopTiling = 15f, UnderTiling = 10f,
         CavesEnabled = true,
+        VegetationProfileId = "Volcanic",
+        WeatherProfileId = "Volcanic",
+        ClearChance = 0.50f,
+        CloudyChance = 0.36f,
+        RainChance = 0.06f,
+        SnowChance = 0f,
+        StormChance = 0.08f,
+        VegetationRegrowthRate = 0.02f,
     };
 
     public static BiomeDefinition[] AllPresets => new[]
