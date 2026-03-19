@@ -121,6 +121,8 @@ namespace Game_Engine.Core.Component
             // Simulate existing particles
             var emitterPos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
             var gravityDir = ResolveGravityDirection(emitterPos);
+            var nearestSurfaceCenter = SN.Vector3.Zero;
+            var nearestSurfacePlanet = StopOnPlanetSurfaceHit ? ResolveNearestPlanet(emitterPos, out nearestSurfaceCenter) : null;
             int alive = 0;
             for (int i = 0; i < Particles.Length; i++)
             {
@@ -142,7 +144,7 @@ namespace Game_Engine.Core.Component
                 p.Velocity *= (1f - Drag * dt);
                 p.Position += p.Velocity * dt;
 
-                if (StopOnPlanetSurfaceHit && HasHitPlanetSurface(p.Position))
+                if (StopOnPlanetSurfaceHit && HasHitPlanetSurface(p.Position, nearestSurfacePlanet, nearestSurfaceCenter))
                 {
                     p.Active = false;
                     continue;
@@ -313,12 +315,26 @@ namespace Game_Engine.Core.Component
             Preset = preset;
         }
 
-        private bool HasHitPlanetSurface(SN.Vector3 worldPos)
+        private bool HasHitPlanetSurface(SN.Vector3 worldPos, PlanetTerrain? nearest, SN.Vector3 nearestCenter)
         {
-            if (PlanetTerrain.ActivePlanets.Count == 0) return false;
+            if (nearest == null) return false;
+
+            var toPos = worldPos - nearestCenter;
+            float lenSq = toPos.LengthSquared();
+            if (lenSq <= 1e-8f) return true;
+
+            float dist = MathF.Sqrt(lenSq);
+            var dir = toPos / dist;
+            float surfaceRadius = nearest.SampleSurfaceRadius(dir);
+            return dist <= surfaceRadius;
+        }
+
+        private PlanetTerrain? ResolveNearestPlanet(SN.Vector3 worldPos, out SN.Vector3 nearestCenter)
+        {
+            nearestCenter = SN.Vector3.Zero;
+            if (PlanetTerrain.ActivePlanets.Count == 0) return null;
 
             PlanetTerrain? nearest = null;
-            SN.Vector3 nearestCenter = SN.Vector3.Zero;
             float nearestSq = float.MaxValue;
 
             for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
@@ -337,16 +353,7 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            if (nearest == null) return false;
-
-            var toPos = worldPos - nearestCenter;
-            float lenSq = toPos.LengthSquared();
-            if (lenSq <= 1e-8f) return true;
-
-            float dist = MathF.Sqrt(lenSq);
-            var dir = toPos / dist;
-            float surfaceRadius = nearest.SampleSurfaceRadius(dir);
-            return dist <= surfaceRadius;
+            return nearest;
         }
 
         private SN.Vector3 ResolveGravityDirection(SN.Vector3 atWorldPos)

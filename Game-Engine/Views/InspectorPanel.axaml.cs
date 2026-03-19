@@ -2106,6 +2106,12 @@ public partial class InspectorPanel : UserControl
             outer.Children.Add(TreeInspectorUI(owner, treeComp));
         }
 
+        // Planet vegetation runtime controls (manual Scene View spawn)
+        if (b is PlanetVegetationSystem vegSys)
+        {
+            outer.Children.Add(PlanetVegetationInspectorUI(owner, vegSys));
+        }
+
         // DialogueRunner: full dialogue tree editor
         if (b is DialogueRunner dialogueRunner)
         {
@@ -3827,22 +3833,9 @@ public partial class InspectorPanel : UserControl
                 initialRel = fromSlots;
             }
 
-            // Final fallback — inspect the runtime material and try to auto-bind a .material file
-            if (string.IsNullOrWhiteSpace(initialRel))
-            {
-                var matForSeed = GetPrimaryMaterial(listTargetHeader, prop);
-                if (matForSeed != null)
-                {
-                    var guessAbs = TryAutoFindMaterialAsset(matForSeed);
-                    if (!string.IsNullOrWhiteSpace(guessAbs) && File.Exists(guessAbs))
-                    {
-                        System.Diagnostics.Debug.WriteLine("[MatTrace:Inspector] Auto-bound material asset: " + guessAbs);
-                        AssignFromPathTop(guessAbs); // this updates lists + tbPath + summary
-                                                     // AssignFromPathTop already set everything; stop further init header work
-                        return box;
-                    }
-                }
-            }
+            // Intentionally no auto-binding fallback here.
+            // Material assets are assigned only via explicit user action
+            // (browse/new/drop/save), avoiding accidental first-match selection.
 
             tbPath.Text = string.IsNullOrWhiteSpace(initialRel) ? "(unsaved)" : initialRel;
             UpdateSummary(tbPath.Text);
@@ -7905,6 +7898,62 @@ public partial class InspectorPanel : UserControl
         panel.Children.Add(addRow);
 
         return panel;
+    }
+
+    // ═══════════════════════ Tree Inspector UI ═══════════════════════
+
+    Control PlanetVegetationInspectorUI(GameObject owner, PlanetVegetationSystem veg)
+    {
+        var panel = new StackPanel { Spacing = 6 };
+        panel.Children.Add(SectionTitle("Planet Vegetation"));
+
+        var info = new TextBlock
+        {
+            Text = $"Leaf Groups: {veg.ActiveLeafGroups}   Instances: {veg.ActiveVegetationInstances}",
+            Opacity = 0.8
+        };
+        panel.Children.Add(info);
+
+        var fullPopulateCb = new CheckBox
+        {
+            Content = "Full Biome Populate",
+            IsChecked = veg.FullBiomePopulate
+        };
+        fullPopulateCb.Checked += (_, _) =>
+        {
+            veg.FullBiomePopulate = true;
+            SceneService.NotifyChanged();
+        };
+        fullPopulateCb.Unchecked += (_, _) =>
+        {
+            veg.FullBiomePopulate = false;
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(fullPopulateCb);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        var spawnBtn = new Button { Content = "Spawn Vegetation (Scene View)" };
+        spawnBtn.Click += (_, _) =>
+        {
+            veg.SpawnNow(clearExisting: false);
+            SceneService.NotifyChanged();
+            BuildUI(owner);
+        };
+        row.Children.Add(spawnBtn);
+
+        var respawnBtn = new Button { Content = "Respawn (Clear + Spawn)" };
+        respawnBtn.Click += (_, _) =>
+        {
+            veg.SpawnNow(clearExisting: true);
+            SceneService.NotifyChanged();
+            BuildUI(owner);
+        };
+        row.Children.Add(respawnBtn);
+
+        panel.Children.Add(row);
+
+        return ToolbarShell(panel);
     }
 
     // ═══════════════════════ Tree Inspector UI ═══════════════════════

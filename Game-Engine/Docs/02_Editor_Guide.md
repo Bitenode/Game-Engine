@@ -243,6 +243,7 @@ Several built-in components have dedicated custom inspectors:
 
 | Component | Inspector Features |
 |-----------|-------------------|
+| **PlanetVegetationSystem** | Planet Vegetation runtime controls — live `Leaf Groups` / `Instances` stats, `Full Biome Populate` mode toggle, and one-click `Spawn Vegetation (Scene View)` / `Respawn (Clear + Spawn)` actions |
 | **DialogueRunner** | Dialogue tree editor — node list with type/speaker/text, choice linking, variable store, voice clip paths per node, dialogue mode selector (Text / Voice / Both) |
 | **BehaviorTreeRunner** | Behavior tree editor — hierarchical node view with type selectors, child management, blackboard key-value editor, tick interval and running state |
 | **TimelinePlayer** | Timeline asset editor — name/duration/loop, playback status, track list with type badges and mute toggles, per-clip start/duration/blend/speed editors, track-type-specific fields |

@@ -46,14 +46,9 @@ namespace Game_Engine.Core.Component
             if (ResolvedMaterials.Count == 0)
                 ResolvedMaterials.Add(DefaultMaterial());
 
-            // When MaterialPaths explicitly reference .material files, promote
-            // the first successfully loaded material to be the primary Material
-            // so the SceneRenderer uses it (it only reads mr.Material, not
-            // ResolvedMaterials).
-            if (count > 0 && ResolvedMaterials.Count > 0)
-            {
-                Material = ResolvedMaterials[0];
-            }
+            // Do not auto-promote MaterialPaths into Material.
+            // Material assignment is explicit (inspector/user code) to avoid
+            // unintended "first material" binding across different systems.
         }
 
         private Material TryLoadRuntimeMaterial(string rel)

@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using SN = System.Numerics;
 
@@ -61,22 +62,49 @@ namespace Game_Engine.Core.Component
         {
             _meshDirty = false;
             var mf = GetComponent<MeshFilter>();
+            var mrSelf = GetComponent<MeshRenderer>();
             var lod = GetComponent<TreeLOD>();
             if (mf == null) return;
 
+            bool importedResolved = false;
             if (IsImportMode)
             {
-                // Import mode — load model meshes
-                // LOD0 comes from the main ModelPath (already handled by MeshFilter persistence)
-                // Populate TreeLOD with lower LOD meshes if paths are set
-                // The actual model loading is handled by the scene serialization / import pipeline.
-                // Here we just set ModelPath on the MeshFilter so it resolves at load time.
+                // Import mode — resolve meshes immediately for runtime-spawned vegetation.
                 if (!string.IsNullOrEmpty(ModelPath))
+                {
                     mf.ModelPath = ModelPath;
+                    var lod0 = TryResolveModelMesh(ModelPath);
+                    if (lod0 != null)
+                    {
+                        mf.Mesh = lod0;
+                        importedResolved = true;
+                        if (lod != null)
+                            lod.Lod0 = lod0;
+                    }
+
+                    // Keep imported tree materials runtime-only (do not bind .material asset paths).
+                    if (mrSelf != null)
+                    {
+                        mrSelf.MaterialPaths.Clear();
+                        mrSelf.ResolvedMaterials.Clear();
+                        var importedMat = TryResolveModelRuntimeMaterial(ModelPath);
+                        if (importedMat != null)
+                            mrSelf.Material = importedMat;
+                    }
+                }
+
+                if (lod != null)
+                {
+                    var lod1 = TryResolveModelMesh(Lod1Path);
+                    if (lod1 != null) lod.Lod1 = lod1;
+                    var lod2 = TryResolveModelMesh(Lod2Path);
+                    if (lod2 != null) lod.Lod2 = lod2;
+                }
             }
-            else
+
+            if (!IsImportMode || !importedResolved)
             {
-                // Procedural mode
+                // Procedural mode, or fallback when import mesh failed to resolve.
                 var fullMesh = GenerateProceduralTree(1f);
                 mf.Mesh = fullMesh;
 
@@ -86,6 +114,99 @@ namespace Game_Engine.Core.Component
                     lod.Lod1 = GenerateProceduralTree(0.5f);
                     lod.Lod2 = GenerateProceduralTree(0.25f);
                 }
+            }
+        }
+
+        static Mesh? TryResolveModelMesh(string? modelPath)
+        {
+            if (string.IsNullOrWhiteSpace(modelPath)) return null;
+            string? abs = ResolveModelPath(modelPath);
+            if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
+                return null;
+
+            try
+            {
+                if (SceneSerialization.ResolveMeshesFromModelPath != null)
+                {
+                    var list = SceneSerialization.ResolveMeshesFromModelPath(abs);
+                    if (list != null && list.Count > 0 && list[0] != null)
+                        return list[0];
+                }
+                if (SceneSerialization.ResolveMeshFromModelPath != null)
+                    return SceneSerialization.ResolveMeshFromModelPath(abs);
+            }
+            catch { }
+            return null;
+        }
+
+        static Material? TryResolveModelRuntimeMaterial(string? modelPath)
+        {
+            if (string.IsNullOrWhiteSpace(modelPath)) return null;
+            string? abs = ResolveModelPath(modelPath);
+            if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
+                return null;
+
+            try
+            {
+                var root = SceneSerialization.ResolveMeshesFromModelPath != null
+                    ? Importers.ModelImporter.ImportModel(abs)
+                    : null;
+                if (root == null) return null;
+
+                var impMr = FindFirstComponent<MeshRenderer>(root);
+                Material? src = impMr?.Material;
+                if (src == null && impMr != null && impMr.MaterialPaths.Count > 0)
+                {
+                    try { src = ProjectService.MaterialsLoad(impMr.MaterialPaths[0]); } catch { }
+                }
+                if (src == null) return null;
+
+                // Clone and detach from asset-path driven assignment.
+                var rt = src.Clone(copyTextures: true);
+                rt.Name = string.IsNullOrWhiteSpace(rt.Name) ? "TreeImportedRuntime" : rt.Name;
+                rt.ShaderAssetPath = "";
+                return rt;
+            }
+            catch { }
+            return null;
+        }
+
+        static T? FindFirstComponent<T>(GameObject go) where T : Behavior
+        {
+            foreach (var b in go.Behaviors)
+                if (b is T t) return t;
+            foreach (var c in go.Children)
+            {
+                var t = FindFirstComponent<T>(c);
+                if (t != null) return t;
+            }
+            return null;
+        }
+
+        static string? ResolveModelPath(string stored)
+        {
+            if (string.IsNullOrWhiteSpace(stored)) return null;
+            try
+            {
+                if (Path.IsPathRooted(stored)) return stored;
+                var proj = ProjectService.Current;
+                if (proj == null) return stored;
+
+                string rel = stored.Replace('\\', '/');
+                string fromRoot = Path.Combine(proj.RootPath, rel);
+                if (File.Exists(fromRoot)) return fromRoot;
+
+                if (!string.IsNullOrWhiteSpace(proj.AssetsPath))
+                {
+                    string fromAssets = Path.Combine(proj.AssetsPath, rel);
+                    if (File.Exists(fromAssets)) return fromAssets;
+                }
+
+                return fromRoot;
+            }
+            catch
+            {
+                return stored;
             }
         }
 

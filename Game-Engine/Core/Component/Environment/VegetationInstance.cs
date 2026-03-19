@@ -100,7 +100,7 @@ namespace Game_Engine.Core.Component
 
         /// <summary>Image extensions recognised as textures (vs 3D models).</summary>
         private static readonly HashSet<string> s_imageExts = new(StringComparer.OrdinalIgnoreCase)
-            { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp" };
+            { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp", ".psd", ".psb" };
 
         /// <summary>3D model extensions.</summary>
         private static readonly HashSet<string> s_modelExts = new(StringComparer.OrdinalIgnoreCase)
@@ -159,7 +159,7 @@ namespace Game_Engine.Core.Component
                 {
                     string? absPath = ResolvePath(CustomMeshPath);
                     if (absPath != null && File.Exists(absPath))
-                        _resolvedTex = Texture2D.FromFile(absPath);
+                        _resolvedTex = TryLoadTextureWithFallback(absPath);
                 }
                 catch { /* silently ignore bad textures */ }
             }
@@ -189,7 +189,7 @@ namespace Game_Engine.Core.Component
                         {
                             string? absPath = ResolvePath(TexturePath);
                             if (absPath != null && File.Exists(absPath))
-                                _manualTex = Texture2D.FromFile(absPath);
+                                _manualTex = TryLoadTextureWithFallback(absPath);
                         }
                         catch { _manualTex = null; }
                     }
@@ -217,6 +217,103 @@ namespace Game_Engine.Core.Component
 
                 // 3) Image loaded from CustomMeshPath (when it's an image, not a model)
                 return _resolvedTex;
+            }
+        }
+
+        static Texture2D? TryLoadTextureWithFallback(string absPath)
+        {
+            try
+            {
+                return Texture2D.FromFile(absPath);
+            }
+            catch
+            {
+                // PSD decode can fail depending on codec support; try sibling flattened exports.
+                string ext = Path.GetExtension(absPath).ToLowerInvariant();
+                if (!string.Equals(ext, ".psd", StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                string dir = Path.GetDirectoryName(absPath) ?? "";
+                string baseName = Path.GetFileNameWithoutExtension(absPath);
+                string[] fallbackExts = { ".png", ".tga", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp" };
+                for (int i = 0; i < fallbackExts.Length; i++)
+                {
+                    string candidate = Path.Combine(dir, baseName + fallbackExts[i]);
+                    if (!File.Exists(candidate)) continue;
+                    try
+                    {
+                        return Texture2D.FromFile(candidate);
+                    }
+                    catch { }
+                }
+
+                // Broader fallback for texture-pack naming differences:
+                // pick the closest image filename in the same folder.
+                try
+                {
+                    if (!Directory.Exists(dir)) return null;
+
+                    static string Norm(string s)
+                    {
+                        var chars = s.Where(char.IsLetterOrDigit).ToArray();
+                        return new string(chars).ToLowerInvariant();
+                    }
+
+                    string normBase = Norm(baseName);
+                    var files = Directory.EnumerateFiles(dir, "*.*", SearchOption.TopDirectoryOnly)
+                        .Where(p =>
+                        {
+                            string e = Path.GetExtension(p).ToLowerInvariant();
+                            return e == ".png" || e == ".tga" || e == ".jpg" || e == ".jpeg" || e == ".bmp" || e == ".tiff" || e == ".webp";
+                        })
+                        .Select(p => new
+                        {
+                            Path = p,
+                            Name = Path.GetFileNameWithoutExtension(p),
+                            Ext = Path.GetExtension(p).ToLowerInvariant()
+                        })
+                        .ToList();
+
+                    if (files.Count == 0) return null;
+
+                    int Score(string name, string ext2)
+                    {
+                        string n = Norm(name);
+                        if (n == normBase) return 1000;
+                        if (n.StartsWith(normBase, StringComparison.Ordinal) || normBase.StartsWith(n, StringComparison.Ordinal)) return 800;
+                        if (n.Contains(normBase, StringComparison.Ordinal) || normBase.Contains(n, StringComparison.Ordinal)) return 600;
+
+                        // Token overlap fallback
+                        var t1 = normBase.Chunk(4).Select(c => new string(c)).ToHashSet(StringComparer.Ordinal);
+                        var t2 = n.Chunk(4).Select(c => new string(c)).ToHashSet(StringComparer.Ordinal);
+                        int overlap = t1.Count == 0 ? 0 : t1.Count(x => t2.Contains(x));
+                        int extPref = ext2 switch
+                        {
+                            ".png" => 40,
+                            ".tga" => 30,
+                            ".jpg" => 20,
+                            ".jpeg" => 18,
+                            ".bmp" => 10,
+                            ".tiff" => 8,
+                            ".webp" => 6,
+                            _ => 0
+                        };
+                        return overlap * 5 + extPref;
+                    }
+
+                    var best = files
+                        .Select(f => new { f.Path, Score = Score(f.Name, f.Ext) })
+                        .OrderByDescending(x => x.Score)
+                        .FirstOrDefault();
+
+                    if (best != null && best.Score > 0)
+                    {
+                        try { return Texture2D.FromFile(best.Path); } catch { }
+                    }
+                }
+                catch { }
+
+                return null;
             }
         }
 
@@ -419,7 +516,7 @@ namespace Game_Engine.Core.Component
         private struct ChunkInfo
         {
             public GameObject ChunkGO;
-            public float CenterX, CenterZ;
+            public float CenterX, CenterY, CenterZ;
         }
         private readonly List<ChunkInfo> _chunks = new();
 
@@ -454,26 +551,11 @@ namespace Game_Engine.Core.Component
 
             // Resolve mesh and texture
             var grassMesh = ResolvedMesh ?? CreateGrassBladeMesh();
-            var grassTex = ResolvedTexture;
+            var grassTex = PrepareGrassTextureForCutout(ResolvedTexture);
 
             string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) ? ToRelativePath(TexturePath) : "";
 
-            var grassMat = new Material
-            {
-                Name = "VegetationGrass",
-                Roughness = 0.8f,
-                Metallic = 0f,
-                AlphaCutoff = grassTex != null ? 0.1f : 0f,
-            };
-            if (grassTex != null)
-            {
-                grassMat.Textures.Add(new RuntimeTexSlot
-                {
-                    Texture = grassTex,
-                    Usage = "Albedo",
-                    SourcePath = relTexPath
-                });
-            }
+            var grassMat = BuildGrassMaterial(grassTex, relTexPath);
 
             // Model exclusion
             var excludeBoxes = new List<ExclusionBox>();
@@ -652,7 +734,7 @@ namespace Game_Engine.Core.Component
 
                 float centerX = minX + (cx + 0.5f) * chunkW;
                 float centerZ = minZ + (cz + 0.5f) * chunkH;
-                _chunks.Add(new ChunkInfo { ChunkGO = chunkGO, CenterX = centerX, CenterZ = centerZ });
+                _chunks.Add(new ChunkInfo { ChunkGO = chunkGO, CenterX = centerX, CenterY = oy, CenterZ = centerZ });
             }
 
             GrassBuilt = placed > 0;
@@ -660,6 +742,408 @@ namespace Game_Engine.Core.Component
             Log.Info($"[VegetationPainter] Built {placed} grass blades in {_chunks.Count} chunks (skipped {skipped}). " +
                      $"Draw calls = {_chunks.Count} max.");
             return placed;
+        }
+
+        /// <summary>
+        /// Build a single grass patch on a planet surface around a sphere direction.
+        /// Keeps Terrain workflow untouched; this is planet-only authoring support.
+        /// </summary>
+        public int BuildOnPlanetPatch(PlanetTerrain planet, SN.Vector3 centerDir, float patchRadius, int bladeCount)
+        {
+            if (planet == null || planet.gameObject == null) return 0;
+            if (bladeCount <= 0) return 0;
+
+            ClearAll();
+
+            // Resolve mesh/texture for this painter's current asset setup.
+            var grassMesh = ResolvedMesh ?? CreateGrassBladeMesh();
+            var grassTex = PrepareGrassTextureForCutout(ResolvedTexture);
+            string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) ? ToRelativePath(TexturePath) : "";
+            var grassMat = BuildGrassMaterial(grassTex, relTexPath);
+
+            // Create a single chunk for this clump patch.
+            var chunkGO = new GameObject("chunk_planet_0");
+            gameObject.AddChild(chunkGO);
+
+            var rng = new Random(42 + bladeCount);
+            var center = SceneGraphUtil.AccumulateWorld(planet.gameObject);
+            var planetCenter = new SN.Vector3(center.M41, center.M42, center.M43);
+            var selfWorld = SceneGraphUtil.AccumulateWorld(gameObject!);
+            SN.Matrix4x4.Invert(selfWorld, out var selfWorldInv);
+
+            var n = SN.Vector3.Normalize(centerDir);
+            var t = SN.Vector3.Cross(MathF.Abs(n.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, n);
+            if (t.LengthSquared() < 1e-8f) t = SN.Vector3.UnitX;
+            t = SN.Vector3.Normalize(t);
+            var b = SN.Vector3.Normalize(SN.Vector3.Cross(n, t));
+
+            var srcVerts = grassMesh.Vertices ?? Array.Empty<SN.Vector3>();
+            var srcNorms = grassMesh.Normals ?? Array.Empty<SN.Vector3>();
+            var srcUVs = grassMesh.UVs ?? Array.Empty<SN.Vector2>();
+            var srcTris = grassMesh.TriIndices ?? Array.Empty<int>();
+            int vPerBlade = srcVerts.Length;
+            int tPerBlade = srcTris.Length;
+            if (vPerBlade == 0 || tPerBlade == 0) return 0;
+            float srcMinY = srcVerts[0].Y;
+            for (int vi = 1; vi < vPerBlade; vi++)
+                if (srcVerts[vi].Y < srcMinY) srcMinY = srcVerts[vi].Y;
+
+            int totalV = bladeCount * vPerBlade;
+            int totalT = bladeCount * tPerBlade;
+            var mergedVerts = new SN.Vector3[totalV];
+            var mergedNorms = new SN.Vector3[totalV];
+            var mergedUVs = new SN.Vector2[totalV];
+            var mergedTris = new int[totalT];
+
+            SN.Vector3 centerAccum = SN.Vector3.Zero;
+            for (int bi = 0; bi < bladeCount; bi++)
+            {
+                float ang = (float)rng.NextDouble() * MathF.Tau;
+                float rad = MathF.Sqrt((float)rng.NextDouble()) * Math.Max(0.05f, patchRadius);
+                var offset = t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
+                var approx = planetCenter + n * planet.SampleSurfaceRadius(n) + offset;
+                var dir = SN.Vector3.Normalize(approx - planetCenter);
+                float surf = planet.SampleSurfaceRadius(dir);
+                var basePos = planetCenter + dir * surf;
+                var surfN = SamplePlanetSurfaceNormal(planet, planetCenter, dir);
+                // Use radial-up as the contact anchor and blend in slope normal for visual tilt.
+                // This prevents floating caused by aggressive normal deviations on steep relief.
+                var placeUp = SafeNormalize(SN.Vector3.Lerp(dir, surfN, 0.45f), dir);
+
+                // Build local basis where Y aligns to sampled terrain surface normal.
+                var side = SN.Vector3.Cross(MathF.Abs(placeUp.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, placeUp);
+                if (side.LengthSquared() < 1e-8f) side = SN.Vector3.UnitX;
+                side = SN.Vector3.Normalize(side);
+                var fwd = SN.Vector3.Normalize(SN.Vector3.Cross(placeUp, side));
+                float yaw = RandomRotation ? (float)rng.NextDouble() * MathF.Tau : 0f;
+                float cy = MathF.Cos(yaw), sy = MathF.Sin(yaw);
+                var xAxis = side * cy + fwd * sy;
+                var zAxis = -side * sy + fwd * cy;
+
+                float scale = MinScale + (float)rng.NextDouble() * (MaxScale - MinScale);
+                float rootEmbed = Math.Clamp(Math.Max(0.10f, GrassHeight * 0.28f) * Math.Max(0.6f, scale), 0.10f, 0.65f);
+                int vOff = bi * vPerBlade;
+                int triOff = bi * tPerBlade;
+
+                for (int vi = 0; vi < vPerBlade; vi++)
+                {
+                    // Anchor to mesh bottom so imported meshes whose pivot is centered
+                    // still sit on the terrain surface correctly.
+                    var sv = srcVerts[vi];
+                    var lv = new SN.Vector3(sv.X * scale, (sv.Y - srcMinY) * scale, sv.Z * scale);
+                    var wp = (basePos - dir * rootEmbed) + xAxis * lv.X + placeUp * lv.Y + zAxis * lv.Z;
+                    mergedVerts[vOff + vi] = SN.Vector3.Transform(wp, selfWorldInv);
+
+                    var ln = vi < srcNorms.Length ? srcNorms[vi] : SN.Vector3.UnitY;
+                    var wn = xAxis * ln.X + placeUp * ln.Y + zAxis * ln.Z;
+                    if (wn.LengthSquared() <= 1e-8f) wn = placeUp;
+                    wn = SN.Vector3.Normalize(wn);
+                    mergedNorms[vOff + vi] = SN.Vector3.Normalize(SN.Vector3.TransformNormal(wn, selfWorldInv));
+                    mergedUVs[vOff + vi] = vi < srcUVs.Length ? srcUVs[vi] : SN.Vector2.Zero;
+                }
+
+                centerAccum += basePos;
+
+                for (int ti = 0; ti < tPerBlade; ti++)
+                    mergedTris[triOff + ti] = srcTris[ti] + vOff;
+            }
+
+            var chunkMesh = new Mesh(mergedVerts, Array.Empty<int>(), mergedTris)
+            {
+                Normals = mergedNorms,
+                UVs = mergedUVs
+            };
+
+            var mf = new MeshFilter { Mesh = chunkMesh };
+            chunkGO.AddBehavior(mf);
+            var mr = new MeshRenderer { Material = grassMat, DoubleSided = true };
+            chunkGO.AddBehavior(mr);
+            _chunks.Add(new ChunkInfo
+            {
+                ChunkGO = chunkGO,
+                CenterX = (centerAccum / bladeCount).X,
+                CenterY = (centerAccum / bladeCount).Y,
+                CenterZ = (centerAccum / bladeCount).Z
+            });
+
+            GrassBuilt = true;
+            SceneService.NotifyChanged();
+            return bladeCount;
+        }
+
+        static SN.Vector3 SamplePlanetSurfaceNormal(PlanetTerrain planet, SN.Vector3 planetCenter, SN.Vector3 dir)
+        {
+            if (dir.LengthSquared() < 1e-8f)
+                return SN.Vector3.UnitY;
+            dir = SN.Vector3.Normalize(dir);
+
+            var t = SN.Vector3.Cross(MathF.Abs(dir.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, dir);
+            if (t.LengthSquared() < 1e-8f)
+                t = SN.Vector3.UnitX;
+            t = SN.Vector3.Normalize(t);
+            var b = SN.Vector3.Normalize(SN.Vector3.Cross(dir, t));
+
+            // Small angular offset to estimate local slope from neighboring samples.
+            const float eps = 0.0018f;
+            var dirT = SN.Vector3.Normalize(dir + t * eps);
+            var dirB = SN.Vector3.Normalize(dir + b * eps);
+
+            var p0 = planetCenter + dir * planet.SampleSurfaceRadius(dir);
+            var pT = planetCenter + dirT * planet.SampleSurfaceRadius(dirT);
+            var pB = planetCenter + dirB * planet.SampleSurfaceRadius(dirB);
+
+            var n = SN.Vector3.Cross(pT - p0, pB - p0);
+            if (n.LengthSquared() < 1e-8f)
+                return dir;
+            n = SN.Vector3.Normalize(n);
+            if (SN.Vector3.Dot(n, dir) < 0f)
+                n = -n;
+            return n;
+        }
+
+        static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)
+        {
+            float lsq = v.LengthSquared();
+            if (lsq < 1e-8f) return fallback;
+            return v / MathF.Sqrt(lsq);
+        }
+
+        static Material BuildGrassMaterial(Texture2D? grassTex, string relTexPath)
+        {
+            grassTex ??= CreateFallbackGrassCutoutTexture();
+            var grassMat = new Material
+            {
+                Name = "VegetationGrass",
+                BaseColor = ColorUtil.FromRGBA(154f / 255f, 196f / 255f, 122f / 255f, 1f),
+                Roughness = 0.8f,
+                Metallic = 0f,
+                // Always keep grass in alpha-cutout mode to avoid opaque billboard cards.
+                AlphaCutoff = 0.56f,
+            };
+            if (grassTex != null)
+            {
+                grassMat.Textures.Add(new RuntimeTexSlot
+                {
+                    Texture = grassTex,
+                    Usage = "Albedo",
+                    SourcePath = relTexPath
+                });
+            }
+            return grassMat;
+        }
+
+        static Texture2D CreateFallbackGrassCutoutTexture()
+        {
+            const int w = 32;
+            const int h = 128;
+            var rgba = new byte[w * h * 4];
+            float cx = (w - 1) * 0.5f;
+            float halfBlade = w * 0.13f;
+            for (int y = 0; y < h; y++)
+            {
+                float fy = y / (float)(h - 1);
+                // Blade narrows toward the tip.
+                float bladeHalf = halfBlade * (1f - fy * 0.65f);
+                for (int x = 0; x < w; x++)
+                {
+                    int i = (y * w + x) * 4;
+                    float dx = MathF.Abs(x - cx);
+                    float edge = 1f - Math.Clamp((dx - bladeHalf) / Math.Max(0.001f, bladeHalf * 0.55f), 0f, 1f);
+                    float tip = 1f - MathF.Pow(fy, 1.8f);
+                    float a = edge * Math.Clamp(tip + 0.15f, 0f, 1f);
+                    if (a < 0.04f)
+                    {
+                        rgba[i + 0] = 0;
+                        rgba[i + 1] = 0;
+                        rgba[i + 2] = 0;
+                        rgba[i + 3] = 0;
+                        continue;
+                    }
+
+                    float g = 0.45f + fy * 0.35f;
+                    float r = 0.16f + fy * 0.12f;
+                    float b = 0.12f + fy * 0.08f;
+                    rgba[i + 0] = (byte)Math.Clamp((int)(r * 255f), 0, 255);
+                    rgba[i + 1] = (byte)Math.Clamp((int)(g * 255f), 0, 255);
+                    rgba[i + 2] = (byte)Math.Clamp((int)(b * 255f), 0, 255);
+                    rgba[i + 3] = (byte)Math.Clamp((int)(a * 255f), 0, 255);
+                }
+            }
+            return new Texture2D(w, h, rgba);
+        }
+
+        Texture2D? PrepareGrassTextureForCutout(Texture2D? src)
+        {
+            if (src == null) return null;
+            if (ActiveType != VegetationType.Grass) return src;
+            if (src.Rgba == null || src.Rgba.Length < 4) return src;
+
+            int w = src.Width;
+            int h = src.Height;
+            if (w <= 2 || h <= 2) return src;
+
+            // If image already carries useful alpha, keep it as-is.
+            bool hasExistingAlpha = false;
+            for (int i = 3; i < src.Rgba.Length; i += 4)
+            {
+                byte a = src.Rgba[i];
+                if (a > 4 && a < 250) { hasExistingAlpha = true; break; }
+            }
+            if (hasExistingAlpha) return src;
+
+            byte[] rgba = new byte[src.Rgba.Length];
+            Buffer.BlockCopy(src.Rgba, 0, rgba, 0, rgba.Length);
+
+            // Estimate "background" color from image corners.
+            int bandX = Math.Max(2, w / 10);
+            int bandY = Math.Max(2, h / 10);
+            float bgR = 0f, bgG = 0f, bgB = 0f;
+            int bgCount = 0;
+
+            void Acc(int x0, int y0, int x1, int y1)
+            {
+                for (int y = y0; y < y1; y++)
+                {
+                    int row = y * w * 4;
+                    for (int x = x0; x < x1; x++)
+                    {
+                        int i = row + x * 4;
+                        bgR += rgba[i + 0];
+                        bgG += rgba[i + 1];
+                        bgB += rgba[i + 2];
+                        bgCount++;
+                    }
+                }
+            }
+
+            Acc(0, 0, bandX, bandY);
+            Acc(w - bandX, 0, w, bandY);
+            Acc(0, h - bandY, bandX, h);
+            Acc(w - bandX, h - bandY, w, h);
+            if (bgCount > 0)
+            {
+                bgR /= bgCount;
+                bgG /= bgCount;
+                bgB /= bgCount;
+            }
+
+            // Build alpha mask from color-distance to background + green chroma.
+            int kept = 0;
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * w * 4;
+                for (int x = 0; x < w; x++)
+                {
+                    int i = row + x * 4;
+                    float r = rgba[i + 0];
+                    float g = rgba[i + 1];
+                    float b = rgba[i + 2];
+
+                    float dr = r - bgR;
+                    float dg = g - bgG;
+                    float db = b - bgB;
+                    float dist = MathF.Sqrt(dr * dr + dg * dg + db * db) / 441.67294f; // max rgb distance normalize
+
+                    float nr = r / 255f;
+                    float ng = g / 255f;
+                    float nb = b / 255f;
+                    float max = MathF.Max(nr, MathF.Max(ng, nb));
+                    float min = MathF.Min(nr, MathF.Min(ng, nb));
+                    float sat = max > 1e-4f ? (max - min) / max : 0f;
+                    float greenScore = ng - MathF.Max(nr, nb); // >0 means greener than red/blue
+
+                    float aDist = SmoothStep(0.08f, 0.28f, dist);
+                    float aGreen = SmoothStep(0.020f, 0.20f, greenScore);
+                    float aSat = SmoothStep(0.12f, 0.40f, sat);
+                    float alpha = MathF.Max(aGreen, aDist * 0.55f + aSat * 0.28f);
+
+                    // Hard reject obvious background.
+                    if (dist < 0.06f && sat < 0.14f) alpha = 0f;
+                    if (greenScore < 0.012f && dist < 0.16f) alpha = 0f;
+                    if (alpha < 0.20f) alpha = 0f;
+
+                    byte outA = (byte)Math.Clamp((int)(MathF.Pow(alpha, 0.90f) * 255f), 0, 255);
+                    rgba[i + 3] = outA;
+                    if (outA > 20) kept++;
+                }
+            }
+
+            // If too much of the image remains opaque, apply a stricter second pass
+            // to prevent giant background cards from surviving.
+            float keepRatio = kept / (float)(w * h);
+            if (keepRatio > 0.42f)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    int row = y * w * 4;
+                    for (int x = 0; x < w; x++)
+                    {
+                        int i = row + x * 4;
+                        float r = rgba[i + 0];
+                        float g = rgba[i + 1];
+                        float b = rgba[i + 2];
+                        float dr = r - bgR;
+                        float dg = g - bgG;
+                        float db = b - bgB;
+                        float dist = MathF.Sqrt(dr * dr + dg * dg + db * db) / 441.67294f;
+                        float nr = r / 255f;
+                        float ng = g / 255f;
+                        float nb = b / 255f;
+                        float max = MathF.Max(nr, MathF.Max(ng, nb));
+                        float min = MathF.Min(nr, MathF.Min(ng, nb));
+                        float sat = max > 1e-4f ? (max - min) / max : 0f;
+                        float greenScore = ng - MathF.Max(nr, nb);
+                        float alpha = SmoothStep(0.14f, 0.36f, dist) * 0.65f
+                                    + SmoothStep(0.04f, 0.24f, greenScore) * 0.55f
+                                    + SmoothStep(0.16f, 0.48f, sat) * 0.25f;
+                        if (dist < 0.09f && sat < 0.20f) alpha = 0f;
+                        if (greenScore < 0.03f && dist < 0.22f) alpha = 0f;
+                        if (alpha < 0.28f) alpha = 0f;
+                        rgba[i + 3] = (byte)Math.Clamp((int)(MathF.Pow(Math.Clamp(alpha, 0f, 1f), 0.95f) * 255f), 0, 255);
+                    }
+                }
+            }
+
+            // Crop out fully transparent borders to reduce billboard/card feeling.
+            int minX = w, minY = h, maxX = -1, maxY = -1;
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * w * 4;
+                for (int x = 0; x < w; x++)
+                {
+                    int a = rgba[row + x * 4 + 3];
+                    if (a <= 16) continue;
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            if (maxX < minX || maxY < minY)
+                return new Texture2D(w, h, rgba);
+
+            int cw = maxX - minX + 1;
+            int ch = maxY - minY + 1;
+            // Avoid tiny over-crops on already good atlases.
+            if (cw >= w * 0.92f && ch >= h * 0.92f)
+                return new Texture2D(w, h, rgba);
+
+            byte[] cropped = new byte[cw * ch * 4];
+            for (int y = 0; y < ch; y++)
+            {
+                int srcRow = (minY + y) * w * 4;
+                int dstRow = y * cw * 4;
+                Buffer.BlockCopy(rgba, srcRow + minX * 4, cropped, dstRow, cw * 4);
+            }
+            return new Texture2D(cw, ch, cropped);
+        }
+
+        static float SmoothStep(float e0, float e1, float x)
+        {
+            if (e1 <= e0) return x >= e1 ? 1f : 0f;
+            float t = Math.Clamp((x - e0) / (e1 - e0), 0f, 1f);
+            return t * t * (3f - 2f * t);
         }
 
         /// <summary>
@@ -674,8 +1158,9 @@ namespace Game_Engine.Core.Component
             if (cam?.gameObject == null) return;
 
             float camX = (float)cam.Transform.Position.X;
+            float camY = (float)cam.Transform.Position.Y;
             float camZ = (float)cam.Transform.Position.Z;
-            float chunkDiag = ChunkSize * 0.7071f;
+            float chunkDiag = ChunkSize * 0.9f;
             float cullDist = FadeEndDistance + chunkDiag;
             float cullDist2 = cullDist * cullDist;
 
@@ -683,8 +1168,9 @@ namespace Game_Engine.Core.Component
             {
                 var chunk = _chunks[i];
                 float dx = chunk.CenterX - camX;
+                float dy = chunk.CenterY - camY;
                 float dz = chunk.CenterZ - camZ;
-                float dist2 = dx * dx + dz * dz;
+                float dist2 = dx * dx + dy * dy + dz * dz;
                 bool visible = dist2 <= cullDist2;
 
                 // Toggle chunk's own MeshRenderer (one per chunk)
@@ -697,12 +1183,14 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>Create a simple cross-billboard grass mesh as fallback.</summary>
-        private static Mesh CreateGrassBladeMesh()
+        private Mesh CreateGrassBladeMesh()
         {
+            float halfW = Math.Clamp(GrassWidth * 0.5f, 0.02f, 0.35f);
+            float h = Math.Clamp(GrassHeight, 0.2f, 3.5f);
             var vertices = new SN.Vector3[]
             {
-                new(-0.2f, 0f, 0f), new(0.2f, 0f, 0f), new(0.2f, 1f, 0f), new(-0.2f, 1f, 0f),
-                new(0f, 0f, -0.2f), new(0f, 0f, 0.2f), new(0f, 1f, 0.2f), new(0f, 1f, -0.2f),
+                new(-halfW, 0f, 0f), new(halfW, 0f, 0f), new(halfW, h, 0f), new(-halfW, h, 0f),
+                new(0f, 0f, -halfW), new(0f, 0f, halfW), new(0f, h, halfW), new(0f, h, -halfW),
             };
             var normals = new SN.Vector3[]
             {

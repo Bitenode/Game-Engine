@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Planet;
 using SN = System.Numerics;
@@ -28,6 +29,20 @@ public sealed class PlanetWeatherController : Behavior
     [Persist] public float PrecipitationArea { get; set; } = 36f;
     [Persist] public int PrecipitationLayers { get; set; } = 3;
     [Persist] public float PrecipitationLayerSpacing { get; set; } = 22f;
+    [Persist] public bool EnablePrecipitationVisibilityPolling { get; set; } = true;
+    [Persist] public float PrecipitationVisibilityPollIntervalSeconds { get; set; } = 0.2f;
+    [Persist] public float PrecipitationVisibilityMaxDistance { get; set; } = 220f;
+    [Persist] public float PrecipitationVisibilityFovPaddingDegrees { get; set; } = 20f;
+    [Persist] public float PrecipitationHiddenClearDelaySeconds { get; set; } = 0.8f;
+    [Persist] public bool UsePrecipitationPerformanceBudget { get; set; } = true;
+    [Persist] public int MaxActivePrecipitationLayers { get; set; } = 1;
+    [Persist] public int RainMaxParticlesPerLayer { get; set; } = 1800;
+    [Persist] public int SnowMaxParticlesPerLayer { get; set; } = 900;
+    [Persist] public float RainEmissionRatePerLayer { get; set; } = 220f;
+    [Persist] public float SnowEmissionRatePerLayer { get; set; } = 85f;
+    [Persist] public float RainLifetimeSeconds { get; set; } = 4.5f;
+    [Persist] public float SnowLifetimeSeconds { get; set; } = 10f;
+    [Persist] public bool DisableSurfaceHitForWeatherPrecipitation { get; set; } = true;
     [Persist] public bool OverrideEmitterParams { get; set; } = false;
     [Persist] public float MinStateHoldSeconds { get; set; } = 18f;
     [Persist] public float RainStateHoldSeconds { get; set; } = 28f;
@@ -58,9 +73,13 @@ public sealed class PlanetWeatherController : Behavior
     PlanetVegetationSystem? _vegetation;
     readonly List<ParticleEmitter> _precipEmitters = new();
     readonly List<GameObject> _precipObjects = new();
+    Camera? _cachedCamera;
     float _updateAccum;
+    float _precipVisibilityAccum;
+    float _precipHiddenAccum;
     float _seasonT;
     float _stateHoldRemaining;
+    bool _precipitationVisible = true;
     string _lastDominantBiomeName = "";
     float _lastDominantBiomeWeight;
     bool _effectsApplied;
@@ -95,6 +114,9 @@ public sealed class PlanetWeatherController : Behavior
     {
         _effectsApplied = false;
         _updateAccum = 0f;
+        _precipVisibilityAccum = 0f;
+        _precipHiddenAccum = 0f;
+        _precipitationVisible = true;
         CaptureBaselines();
     }
 
@@ -105,17 +127,21 @@ public sealed class PlanetWeatherController : Behavior
 
     public override void Update()
     {
+        float frameDt = Math.Max(0f, (float)Time.deltaTime);
         if (!EnableWeather || _terrain == null || _terrain.Config == null || !_terrain.IsActiveAndEnabled)
         {
             if (_effectsApplied)
                 RestoreBaselines();
+            SetPrecipEmittersActive(false, clearParticles: true);
             return;
         }
 
         if (!_effectsApplied)
             CaptureBaselines();
 
-        _updateAccum += Math.Max(0f, (float)Time.deltaTime);
+        PollPrecipitationVisibility(frameDt);
+
+        _updateAccum += frameDt;
         if (_updateAccum < Math.Max(0.05f, UpdateIntervalSeconds))
             return;
 
@@ -267,15 +293,33 @@ public sealed class PlanetWeatherController : Behavior
 
     void ApplyPrecipitation(SN.Vector3 cameraPos)
     {
-        EnsurePrecipEmitter();
-        if (_precipObjects.Count == 0 || _precipEmitters.Count == 0) return;
-
         bool emitRain = CurrentState is PlanetWeatherState.Rain or PlanetWeatherState.Storm;
         bool emitSnow = CurrentState == PlanetWeatherState.Snow;
         float effectiveRain = emitRain ? Math.Max(RainIntensity, 0.45f) : RainIntensity;
         float effectiveSnow = emitSnow ? Math.Max(SnowIntensity, 0.35f) : SnowIntensity;
+        bool wantsPrecipitation = effectiveRain > 0.02f || effectiveSnow > 0.02f;
+
+        if (!wantsPrecipitation)
+        {
+            _precipHiddenAccum += Math.Max(0.05f, UpdateIntervalSeconds);
+            SetPrecipEmittersActive(false, clearParticles: _precipHiddenAccum >= Math.Max(0.1f, PrecipitationHiddenClearDelaySeconds));
+            return;
+        }
+
+        if (EnablePrecipitationVisibilityPolling && !_precipitationVisible)
+        {
+            _precipHiddenAccum += Math.Max(0.05f, UpdateIntervalSeconds);
+            SetPrecipEmittersActive(false, clearParticles: _precipHiddenAccum >= Math.Max(0.1f, PrecipitationHiddenClearDelaySeconds));
+            return;
+        }
+
+        _precipHiddenAccum = 0f;
+        EnsurePrecipEmitter();
+        if (_precipObjects.Count == 0 || _precipEmitters.Count == 0) return;
+        SetPrecipEmittersActive(true, clearParticles: false);
 
         int layerCount = Math.Min(_precipObjects.Count, _precipEmitters.Count);
+        int activeLayerCap = Math.Max(1, MaxActivePrecipitationLayers);
         for (int i = 0; i < layerCount; i++)
         {
             var go = _precipObjects[i];
@@ -284,11 +328,31 @@ public sealed class PlanetWeatherController : Behavior
             go.Transform.Position = new Vector3(cameraPos.X, cameraPos.Y + layerH, cameraPos.Z);
 
             float layerFactor = 1f - (i / Math.Max(1f, layerCount - 1f)) * 0.28f;
+            bool layerActive = i < activeLayerCap;
+            if (!layerActive)
+            {
+                emitter.Stop();
+                if (emitter.Enabled)
+                    emitter.SetEnabledSilent(false);
+                continue;
+            }
+
+            if (!emitter.Enabled)
+                emitter.SetEnabledSilent(true);
             if (emitSnow)
             {
                 if (emitter.Preset != ParticlePreset.Snow)
                     emitter.ApplyPreset(ParticlePreset.Snow);
-                if (OverrideEmitterParams)
+                if (UsePrecipitationPerformanceBudget)
+                {
+                    emitter.MaxParticles = Math.Max(250, (int)(RainSafeInt(SnowMaxParticlesPerLayer) * layerFactor));
+                    emitter.EmissionRate = Math.Max(5f, SnowEmissionRatePerLayer * (0.35f + effectiveSnow * 0.9f) * layerFactor);
+                    emitter.Lifetime = Math.Max(1.2f, SnowLifetimeSeconds);
+                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 0.95f, 0f, PrecipitationArea * 0.95f);
+                    if (DisableSurfaceHitForWeatherPrecipitation)
+                        emitter.StopOnPlanetSurfaceHit = false;
+                }
+                else if (OverrideEmitterParams)
                 {
                     emitter.MaxParticles = Math.Max(1000, (int)(1400 * layerFactor));
                     emitter.EmissionRate = (35f + effectiveSnow * 140f) * layerFactor;
@@ -301,7 +365,16 @@ public sealed class PlanetWeatherController : Behavior
             {
                 if (emitter.Preset != ParticlePreset.Rain)
                     emitter.ApplyPreset(ParticlePreset.Rain);
-                if (OverrideEmitterParams)
+                if (UsePrecipitationPerformanceBudget)
+                {
+                    emitter.MaxParticles = Math.Max(350, (int)(RainSafeInt(RainMaxParticlesPerLayer) * layerFactor));
+                    emitter.EmissionRate = Math.Max(10f, RainEmissionRatePerLayer * (0.35f + effectiveRain * 0.9f) * layerFactor);
+                    emitter.Lifetime = Math.Max(0.8f, RainLifetimeSeconds);
+                    emitter.BoxSize = new SN.Vector3(PrecipitationArea, Math.Max(24f, PrecipitationHeight * 0.7f), PrecipitationArea);
+                    if (DisableSurfaceHitForWeatherPrecipitation)
+                        emitter.StopOnPlanetSurfaceHit = false;
+                }
+                else if (OverrideEmitterParams)
                 {
                     emitter.MaxParticles = Math.Max(2000, (int)(2800 * layerFactor));
                     emitter.EmissionRate = (90f + effectiveRain * 340f) * layerFactor;
@@ -314,6 +387,96 @@ public sealed class PlanetWeatherController : Behavior
             {
                 // Let already-spawned particles continue to simulate to planet hit.
                 emitter.Stop();
+            }
+        }
+    }
+
+    static int RainSafeInt(int value) => Math.Max(1, value);
+
+    void PollPrecipitationVisibility(float frameDt)
+    {
+        if (!EnablePrecipitationVisibilityPolling)
+        {
+            _precipitationVisible = true;
+            return;
+        }
+
+        _precipVisibilityAccum += frameDt;
+        float pollInterval = Math.Max(0.05f, PrecipitationVisibilityPollIntervalSeconds);
+        if (_precipVisibilityAccum < pollInterval)
+            return;
+        _precipVisibilityAccum = 0f;
+
+        var camera = ResolveActiveCamera();
+        _precipitationVisible = IsPrecipitationVolumeVisible(camera);
+    }
+
+    bool IsPrecipitationVolumeVisible(Camera? camera)
+    {
+        if (camera == null || !camera.IsActiveAndEnabled || camera.gameObject == null)
+            return true;
+
+        var camPos = new SN.Vector3((float)camera.Transform.Position.X, (float)camera.Transform.Position.Y, (float)camera.Transform.Position.Z);
+        var up = camera.WorldUp;
+        if (up.LengthSquared() <= 1e-8f) up = SN.Vector3.UnitY;
+        else up = SN.Vector3.Normalize(up);
+
+        int layerCount = Math.Max(1, PrecipitationLayers);
+        float layerStride = Math.Max(4f, PrecipitationLayerSpacing);
+        float heightSpan = Math.Max(0f, layerStride * Math.Max(0, layerCount - 1));
+        float radius = Math.Max(6f, PrecipitationArea * 0.75f);
+        radius = MathF.Sqrt(radius * radius + heightSpan * heightSpan * 0.25f);
+
+        var center = camPos + up * (Math.Max(0f, PrecipitationHeight) + heightSpan * 0.5f);
+        var toVolume = center - camPos;
+        float distSq = toVolume.LengthSquared();
+        float maxDist = Math.Max(24f, PrecipitationVisibilityMaxDistance) + radius;
+        if (distSq > maxDist * maxDist)
+            return false;
+
+        float dist = MathF.Sqrt(Math.Max(1e-8f, distSq));
+        float near = Math.Max(0.01f, camera.Near);
+        float far = Math.Max(near + 0.1f, camera.Far);
+        if (dist + radius < near || dist - radius > far)
+            return false;
+
+        var forward = TransformUtil.ForwardFrom(camera.Transform);
+        if (forward.LengthSquared() <= 1e-8f)
+            return true;
+        var toNorm = toVolume / dist;
+        float dot = SN.Vector3.Dot(forward, toNorm);
+
+        if (camera.Projection == Projection.Perspective)
+        {
+            float halfFov = Math.Clamp(camera.FieldOfView * 0.5f + PrecipitationVisibilityFovPaddingDegrees, 1f, 179f) * MathF.PI / 180f;
+            float angularRadius = dist > 1e-3f
+                ? MathF.Asin(Math.Clamp(radius / dist, 0f, 1f))
+                : MathF.PI * 0.5f;
+            float minDot = MathF.Cos(Math.Clamp(halfFov + angularRadius, 0f, MathF.PI));
+            return dot >= minDot;
+        }
+
+        // Orthographic: if the volume is behind camera, skip precipitation work.
+        return dot >= -0.25f;
+    }
+
+    void SetPrecipEmittersActive(bool active, bool clearParticles)
+    {
+        for (int i = 0; i < _precipEmitters.Count; i++)
+        {
+            var emitter = _precipEmitters[i];
+            if (!active)
+            {
+                emitter.Stop();
+                if (clearParticles)
+                    emitter.Clear();
+                if (emitter.Enabled)
+                    emitter.SetEnabledSilent(false);
+            }
+            else
+            {
+                if (!emitter.Enabled)
+                    emitter.SetEnabledSilent(true);
             }
         }
     }
@@ -373,11 +536,23 @@ public sealed class PlanetWeatherController : Behavior
     {
         if (_terrain != null && _terrain.LastCameraPosition.LengthSquared() > 1e-6f)
             return _terrain.LastCameraPosition;
-        var cam = SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled && c.IsMain)
-               ?? SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled);
+        var cam = ResolveActiveCamera();
         return cam != null
             ? new SN.Vector3((float)cam.Transform.Position.X, (float)cam.Transform.Position.Y, (float)cam.Transform.Position.Z)
             : SN.Vector3.Zero;
+    }
+
+    Camera? ResolveActiveCamera()
+    {
+        if (_cachedCamera != null && _cachedCamera.IsActiveAndEnabled && _cachedCamera.gameObject != null)
+            return _cachedCamera;
+
+        _cachedCamera = CameraService.MainOrFirst();
+        if (_cachedCamera != null && _cachedCamera.IsActiveAndEnabled && _cachedCamera.gameObject != null)
+            return _cachedCamera;
+
+        _cachedCamera = CameraService.All.FirstOrDefault(c => c.IsActiveAndEnabled && c.gameObject != null);
+        return _cachedCamera;
     }
 
     static float Damp(float current, float target, float speed, float dt)
@@ -486,6 +661,8 @@ public sealed class PlanetWeatherController : Behavior
         {
             _precipEmitters[i].Stop();
             _precipEmitters[i].Clear();
+            if (_precipEmitters[i].Enabled)
+                _precipEmitters[i].SetEnabledSilent(false);
         }
 
         BiomeWeatherRuntime.Wetness = 0f;

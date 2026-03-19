@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
+using ImageMagick;
 using SkiaSharp;
 
 namespace Game_Engine.Core
@@ -42,10 +43,28 @@ namespace Game_Engine.Core
             }
             catch
             {
+                if (ext == ".psd" || ext == ".psb")
+                    return DecodePsdWithMagick(path);
                 if (ext == ".tif" || ext == ".tiff")
                     return DecodeTiff(path);
                 throw;
             }
+        }
+
+        static Texture2D DecodePsdWithMagick(string path)
+        {
+            using var img = new MagickImage(path);
+            img.ColorSpace = ColorSpace.sRGB;
+            if (img.HasAlpha)
+                img.Alpha(AlphaOption.On);
+            else
+                img.Alpha(AlphaOption.Off);
+
+            // Ensure 8-bit RGBA output expected by renderer.
+            img.Depth = 8;
+            var pixels = img.GetPixels();
+            var rgba = pixels.ToByteArray(PixelMapping.RGBA);
+            return new Texture2D((int)img.Width, (int)img.Height, rgba);
         }
 
         static Texture2D DecodeTga(byte[] data, string debugPath)

@@ -914,6 +914,9 @@ namespace Game_Engine.Core
             b *= tint.B / 255f;
             a *= tint.A / 255f;
 
+            bool alphaClip = alphaCutoff > 0.001f;
+            bool useAlphaPipeline = transparent || alphaClip;
+
             // For blended transparency: if the material says transparent but computed
             // alpha is fully opaque (no texture alpha / no base-color alpha), apply a
             // sensible default so the user can actually see through it.
@@ -921,15 +924,15 @@ namespace Game_Engine.Core
                 a = 0.35f;
 
             // For blended transparency, don't aggressively discard fragments.
-            // Alpha-test (high cutoff) is only for opaque-pass cutout materials.
-            if (transparent)
+            // Keep authored clip cutoffs for alpha-cutout materials (foliage/cards).
+            if (transparent && !alphaClip)
                 alphaCutoff = 0.01f;
 
             shader.SetVector4("uBaseColor", r, g2, b, a);
             shader.SetFloat("uRoughness", roughness);
             shader.SetFloat("uMetallic", metallic);
             shader.SetFloat("uAlphaCutoff", alphaCutoff);
-            shader.SetInt("uTransparent", transparent ? 1 : 0);
+            shader.SetInt("uTransparent", useAlphaPipeline ? 1 : 0);
             shader.SetInt("uDoubleSided", doubleSided ? 1 : 0);
 
             // Emissive

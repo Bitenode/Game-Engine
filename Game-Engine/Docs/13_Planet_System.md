@@ -288,8 +288,12 @@ Separation contract:
 - Optional automatic lighting curves:
   - `AutoAdjustSunIntensity` (`DaySunIntensity` / `NightSunIntensity`)
   - `AutoAdjustAmbient` (`DayAmbient` / `NightAmbient`)
+- Optional automatic sky tint transition:
+  - `AutoAdjustSkyTint` toggles day->night sky color blending
+  - `NightZenithTintR/G/B` and `NightHorizonTintR/G/B` define target night sky colors
+  - `NightSkyHueShiftDegrees` and `NightSkyBrightness` add additional nighttime hue/value shaping
 
-Cycle output feeds existing planet terrain/water/atmosphere shaders via `SunDirectionOverride` and `SunIntensity`.
+Cycle output feeds existing planet terrain/water/atmosphere shaders via `SunDirectionOverride`, `SunIntensity`, and dynamic day/night sky tints.
 
 ---
 
@@ -321,12 +325,50 @@ Each profile supports:
 
 Runtime spawning uses weighted selection from the active biome profile.
 
+### PlanetVegetationSystem Manual Spawn Modes
+
+`PlanetVegetationSystem` now supports two explicit manual spawn behaviors via
+`FullBiomePopulate` (shown in the Inspector under **Planet Vegetation**):
+
+- `FullBiomePopulate = true` (default):
+  - `Spawn Vegetation` / `Respawn` performs a full biome population pass across all renderable leaves
+  - ignores near-camera streaming distance filtering for that manual pass
+  - uses an expanded one-shot spawn budget for large initial fills
+  - scales per-leaf target counts by leaf area so coarse leaves are not underpopulated
+- `FullBiomePopulate = false`:
+  - manual spawn follows streaming-style behavior (tracked leaves + distance/budget constraints)
+  - useful when iterating close to the camera without filling the whole planet
+
+Notes:
+- Automatic runtime updates still use normal streaming behavior (`AutoSpawn` update loop).
+- `Spawn Vegetation` and `Respawn` always guarantee minimum visible spawn when a biome profile has valid grass/tree entries.
+
+### Planet Grass Attachment and Rendering Notes
+
+Planet grass spawned through `VegetationPainter.BuildOnPlanetPatch(...)` includes
+planet-specific grounding and rendering protections:
+
+- blade placement blends local slope normal with radial-up for stable terrain contact
+- roots are embedded into the sampled surface to reduce floating on steep relief
+- planet grass chunk culling uses 3D world distance (X/Y/Z), not flat XZ distance
+- grass materials are forced to alpha-cutout behavior to avoid opaque card fallback
+- if external texture decode fails, a generated cutout fallback blade texture is used
+
 ### Planet Precipitation Notes
 
 Planet weather precipitation uses layered particle emitters around the camera:
 
 - supports multiple vertical layers for continuous volume coverage
-- rain/snow emission remains continuous while state is active
-- particles are removed on planet surface hit
+- supports visibility polling so precipitation work is skipped when the volume is not near/in view
+- rain/snow emission remains continuous while state is active and visible
+- by default, weather uses a performance budget profile (layer cap + particle cap + emission cap)
+- optional planet surface-hit termination can be disabled for weather emitters to reduce script cost
 - emitters support planet gravity alignment (nearest active planet center)
+
+Recommended runtime tuning for weak CPUs:
+
+- `UsePrecipitationPerformanceBudget = true`
+- `MaxActivePrecipitationLayers = 1`
+- `DisableSurfaceHitForWeatherPrecipitation = true`
+- lower `RainEmissionRatePerLayer` and `SnowEmissionRatePerLayer` first before adding layers
 

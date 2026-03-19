@@ -1105,12 +1105,27 @@ public partial class BiomeGraphPanel : UserControl
                 Foreground = Brushes.Gray,
                 Margin = new Thickness(0, 2, 0, 0)
             });
+            var modelFileTypes = isGrass
+                ? new[]
+                {
+                    new Avalonia.Platform.Storage.FilePickerFileType("Vegetation Assets")
+                    {
+                        Patterns = new[] { "*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.tif", "*.tiff", "*.psd" }
+                    }
+                }
+                : new[]
+                {
+                    new Avalonia.Platform.Storage.FilePickerFileType("3D Models")
+                    {
+                        Patterns = new[] { "*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds" }
+                    }
+                };
             AddPropFilePicker("Model", it.ModelPath, v =>
             {
                 it.ModelPath = v ?? "";
                 SaveVegetationProfiles();
                 CaptureUndo();
-            });
+            }, pickerTitle: isGrass ? "Select Grass Asset" : "Select Tree Model", fileTypeFilter: modelFileTypes);
             AddPropFloat("Weight", it.Weight, v =>
             {
                 it.Weight = Math.Clamp(v, 0f, 100f);
@@ -1369,7 +1384,12 @@ public partial class BiomeGraphPanel : UserControl
         _propsPanel?.Children.Add(sp);
     }
 
-    void AddPropFilePicker(string label, string value, Action<string> setter)
+    void AddPropFilePicker(
+        string label,
+        string value,
+        Action<string> setter,
+        string? pickerTitle = null,
+        Avalonia.Platform.Storage.FilePickerFileType[]? fileTypeFilter = null)
     {
         var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
         sp.Children.Add(new TextBlock { Text = label, Width = 60, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
@@ -1391,13 +1411,13 @@ public partial class BiomeGraphPanel : UserControl
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(
                 new Avalonia.Platform.Storage.FilePickerOpenOptions
                 {
-                    Title = $"Select {label} Texture",
+                    Title = string.IsNullOrWhiteSpace(pickerTitle) ? $"Select {label} Texture" : pickerTitle,
                     AllowMultiple = false,
-                    FileTypeFilter = new[]
+                    FileTypeFilter = fileTypeFilter ?? new[]
                     {
                         new Avalonia.Platform.Storage.FilePickerFileType("Images")
                         {
-                            Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.tif", "*.tiff" }
+                            Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.tif", "*.tiff", "*.psd" }
                         }
                     }
                 });

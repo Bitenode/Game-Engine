@@ -641,6 +641,7 @@ Billboard particle system with emission shapes, sub-emitters, and preset configu
   - optional planet gravity alignment (`UsePlanetGravity`, `AlignEmissionToGravity`)
   - configurable emission direction (`EmissionDirection`)
   - optional surface termination (`StopOnPlanetSurfaceHit`)
+  - nearest-planet lookup for surface checks is resolved once per emitter update and reused across particles
 
 ### Presets
 | Preset   | Description                                |
@@ -1112,6 +1113,7 @@ Vegetation painter component for GPU-instanced grass, rocks, and debris placemen
 | `FadeStartDistance`   | `float`          | `30`                 | LOD fade start distance              |
 | `FadeEndDistance`     | `float`          | `50`                 | LOD fade end distance (cull beyond)  |
 | `CustomMeshPath`      | `string`         | `""`                 | Custom 3D model or texture path      |
+| `TexturePath`         | `string`         | `""`                 | Explicit override texture path for grass cutout rendering |
 | `ModelExclusionRadius`| `float`          | `2`                  | Exclusion zone around existing models|
 | `IsWaterPlant`        | `bool`           | `false`              | Only spawn in water areas            |
 
@@ -1123,10 +1125,12 @@ Vegetation painter component for GPU-instanced grass, rocks, and debris placemen
 
 **Features:**
 - **Chunked rendering** — merged meshes per spatial chunk (one draw call per chunk)
-- **Distance culling** — chunks beyond `FadeEndDistance` are automatically hidden
+- **Distance culling** — chunks beyond `FadeEndDistance` are automatically hidden (planet patches use 3D world-distance culling)
 - **Model exclusion** — grass avoids spawning near placed 3D models
 - **Custom meshes** — load 3D models or billboard textures as vegetation type
 - **Water-aware** — optionally restrict placement to underwater areas
+- **Planet patch support** — `BuildOnPlanetPatch(...)` aligns blades to planet terrain slope with radial-safe grounding
+- **Cutout safety** — grass materials force alpha-cutout; failed texture decode falls back to a generated cutout blade texture (prevents opaque card planes)
 
 ---
 
@@ -1721,9 +1725,14 @@ Key design rule:
 | `AxisX/Y/Z` | `float` | `(0,1,0)` | Orbit axis |
 | `NoonDirectionX/Y/Z` | `float` | `(0.20,0.82,0.53)` | Sun direction at noon |
 | `AutoAdjustSunIntensity` | `bool` | `true` | Blend `SunIntensity` through day/night |
-| `DaySunIntensity` / `NightSunIntensity` | `float` | `1.0 / 0.08` | Day/night direct light levels |
+| `DaySunIntensity` / `NightSunIntensity` | `float` | `1.0 / 0.5` | Day/night direct light levels |
 | `AutoAdjustAmbient` | `bool` | `true` | Blend `Ambient` through day/night |
-| `DayAmbient` / `NightAmbient` | `float` | `0.18 / 0.04` | Day/night ambient levels |
+| `DayAmbient` / `NightAmbient` | `float` | `0.5 / 0.5` | Day/night ambient levels |
+| `AutoAdjustSkyTint` | `bool` | `true` | Blend sky tint toward night colors as `TimeOfDay` approaches night |
+| `NightZenithTintR/G/B` | `float` | `(0.05,0.10,0.25)` | Night zenith tint target used by planet atmosphere shading |
+| `NightHorizonTintR/G/B` | `float` | `(0.03,0.06,0.16)` | Night horizon tint target used by planet atmosphere shading |
+| `NightSkyHueShiftDegrees` | `float` | `-12` | Additional hue shift applied at night (degrees) |
+| `NightSkyBrightness` | `float` | `0.42` | Night brightness multiplier for sky tint blending |
 
 ---
 
@@ -1734,7 +1743,7 @@ Biome-driven runtime weather controller for planets (`Clear`, `Cloudy`, `Rain`, 
 Primary responsibilities:
 
 - biome-blended weather target selection and transition timing
-- layered precipitation spawning around camera
+- camera-anchored precipitation with visibility polling/culling
 - optional driving of atmosphere, post-process fog, and wind systems
 - weather coupling output for vegetation (`Wetness`, `SnowCoverage`, wind response)
 
@@ -1744,6 +1753,32 @@ Key toggles:
 - `DriveAtmosphereLighting` (separate from cloud controls to avoid overriding atmosphere lighting unintentionally)
 - `DrivePostProcessFog`
 - `DriveWind`
+
+Precipitation performance controls:
+
+| Property | Default | Purpose |
+|----------|---------|---------|
+| `EnablePrecipitationVisibilityPolling` | `true` | Poll camera/frustum proximity and skip precipitation work when volume is not visible |
+| `PrecipitationVisibilityPollIntervalSeconds` | `0.2` | How often visibility is re-evaluated |
+| `PrecipitationVisibilityMaxDistance` | `220` | Distance culling for precipitation volume from active camera |
+| `PrecipitationVisibilityFovPaddingDegrees` | `20` | Extra angular margin to avoid hard pop at frustum edges |
+| `PrecipitationHiddenClearDelaySeconds` | `0.8` | Delay before clearing hidden precipitation particles |
+| `UsePrecipitationPerformanceBudget` | `true` | Enables CPU budget caps for weather precipitation |
+| `MaxActivePrecipitationLayers` | `1` | Maximum simultaneously simulated layers |
+| `RainMaxParticlesPerLayer` | `1800` | Per-layer rain particle cap |
+| `SnowMaxParticlesPerLayer` | `900` | Per-layer snow particle cap |
+| `RainEmissionRatePerLayer` | `220` | Rain spawn rate cap |
+| `SnowEmissionRatePerLayer` | `85` | Snow spawn rate cap |
+| `RainLifetimeSeconds` | `4.5` | Rain particle lifetime cap |
+| `SnowLifetimeSeconds` | `10` | Snow particle lifetime cap |
+| `DisableSurfaceHitForWeatherPrecipitation` | `true` | Skips per-particle planet surface hit checks for weather particles |
+
+Recommended low-lag baseline:
+
+- Keep `UsePrecipitationPerformanceBudget` enabled
+- Keep `MaxActivePrecipitationLayers` at `1`
+- Keep `DisableSurfaceHitForWeatherPrecipitation` enabled
+- Increase `PrecipitationVisibilityPollIntervalSeconds` to `0.25`-`0.4` on low-end CPUs
 
 ---
 
@@ -1757,6 +1792,21 @@ Primary responsibilities:
 - consume vegetation profiles and weighted grass/tree item lists
 - apply weather/ecosystem response (growth/decay, wind response)
 - enforce runtime spawn/update budgets
+
+Key runtime controls:
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `AutoSpawn` | `bool` | `false` | Enables periodic streaming-style vegetation update |
+| `FullBiomePopulate` | `bool` | `true` | Manual spawn mode switch: full-leaf biome pass vs streaming-style pass |
+
+Manual spawn behavior:
+
+- `SpawnNow(false)` / **Spawn Vegetation (Scene View)**:
+  - with `FullBiomePopulate = true`, performs full biome population across renderable leaves
+  - with `FullBiomePopulate = false`, follows near-camera streaming constraints
+- `SpawnNow(true)` / **Respawn (Clear + Spawn)**:
+  - clears tracked generated entries first, then runs the same mode rules above
 
 Profile-backed data source:
 

@@ -51,10 +51,13 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float NoonDirectionZ { get; set; } = 0.53f;
     [Persist] public bool AutoAdjustSunIntensity { get; set; } = true;
     [Persist] public float DaySunIntensity { get; set; } = 1.0f;
-    [Persist] public float NightSunIntensity { get; set; } = 0.08f;
+    [Persist] public float NightSunIntensity { get; set; } = 0.5f;
     [Persist] public bool AutoAdjustAmbient { get; set; } = true;
-    [Persist] public float DayAmbient { get; set; } = 0.18f;
-    [Persist] public float NightAmbient { get; set; } = 0.04f;
+    [Persist] public float DayAmbient { get; set; } = 0.5f;
+    [Persist] public float NightAmbient { get; set; } = 0.5f;
+    [Persist] public bool AutoAdjustSkyTint { get; set; } = true;
+    [Persist] public float NightSkyHueShiftDegrees { get; set; } = -12f;
+    [Persist] public float NightSkyBrightness { get; set; } = 0.42f;
 
     [Persist] public float GroundRadiusOverride { get; set; } = 0f;
     [Persist] public float AtmosphereHeight { get; set; } = 220f;
@@ -72,6 +75,12 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float HorizonTintR { get; set; } = 0.82f;
     [Persist] public float HorizonTintG { get; set; } = 0.86f;
     [Persist] public float HorizonTintB { get; set; } = 0.98f;
+    [Persist] public float NightZenithTintR { get; set; } = 0.05f;
+    [Persist] public float NightZenithTintG { get; set; } = 0.10f;
+    [Persist] public float NightZenithTintB { get; set; } = 0.25f;
+    [Persist] public float NightHorizonTintR { get; set; } = 0.03f;
+    [Persist] public float NightHorizonTintG { get; set; } = 0.06f;
+    [Persist] public float NightHorizonTintB { get; set; } = 0.16f;
 
     [Persist] public bool EnableClouds { get; set; } = true;
     [Persist] public float CloudBaseHeight { get; set; } = 120f;
@@ -85,15 +94,29 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float CloudSilverLining { get; set; } = 0.65f;
     [Persist] public int CloudStepCount { get; set; } = 16;
 
-    public SN.Vector3 ZenithTint => new(
+    public SN.Vector3 ZenithTint => ComputeSkyTint(DayZenithTint, NightZenithTint);
+
+    public SN.Vector3 HorizonTint => ComputeSkyTint(DayHorizonTint, NightHorizonTint);
+
+    SN.Vector3 DayZenithTint => new(
         Math.Clamp(ZenithTintR, 0f, 2f),
         Math.Clamp(ZenithTintG, 0f, 2f),
         Math.Clamp(ZenithTintB, 0f, 2f));
 
-    public SN.Vector3 HorizonTint => new(
+    SN.Vector3 DayHorizonTint => new(
         Math.Clamp(HorizonTintR, 0f, 2f),
         Math.Clamp(HorizonTintG, 0f, 2f),
         Math.Clamp(HorizonTintB, 0f, 2f));
+
+    SN.Vector3 NightZenithTint => new(
+        Math.Clamp(NightZenithTintR, 0f, 2f),
+        Math.Clamp(NightZenithTintG, 0f, 2f),
+        Math.Clamp(NightZenithTintB, 0f, 2f));
+
+    SN.Vector3 NightHorizonTint => new(
+        Math.Clamp(NightHorizonTintR, 0f, 2f),
+        Math.Clamp(NightHorizonTintG, 0f, 2f),
+        Math.Clamp(NightHorizonTintB, 0f, 2f));
 
     public SN.Vector3 SunDirectionOverride
     {
@@ -252,11 +275,84 @@ public sealed class PlanetAtmosphere : Behavior
         SunDirectionZ = sunDir.Z;
 
         // 1 at noon, 0 at midnight. Soften transitions around dawn/dusk.
-        float dayLerp = MathF.Pow(Math.Clamp(0.5f + 0.5f * MathF.Cos(theta), 0f, 1f), 0.75f);
+        float dayLerp = GetDayLerpFromTheta(theta);
         if (AutoAdjustSunIntensity)
             SunIntensity = Lerp(NightSunIntensity, DaySunIntensity, dayLerp);
         if (AutoAdjustAmbient)
             Ambient = Lerp(NightAmbient, DayAmbient, dayLerp);
+    }
+
+    SN.Vector3 ComputeSkyTint(SN.Vector3 dayTint, SN.Vector3 nightTint)
+    {
+        if (!EnableDayNightCycle || !AutoAdjustSkyTint)
+            return dayTint;
+
+        float theta = Wrap01(TimeOfDay) * MathF.Tau;
+        float dayLerp = GetDayLerpFromTheta(theta);
+        float nightLerp = 1f - dayLerp;
+        var mixed = SN.Vector3.Lerp(dayTint, nightTint, nightLerp);
+
+        float hueShift01 = (NightSkyHueShiftDegrees / 360f) * nightLerp;
+        float brightness = Lerp(1f, Math.Clamp(NightSkyBrightness, 0.05f, 1f), nightLerp);
+        return ShiftHueAndBrightness(mixed, hueShift01, brightness);
+    }
+
+    static float GetDayLerpFromTheta(float theta)
+        => MathF.Pow(Math.Clamp(0.5f + 0.5f * MathF.Cos(theta), 0f, 1f), 0.75f);
+
+    static SN.Vector3 ShiftHueAndBrightness(SN.Vector3 rgb, float hueShift01, float brightnessMul)
+    {
+        var hsv = RgbToHsv(rgb);
+        hsv.X = Wrap01(hsv.X + hueShift01);
+        hsv.Z = Math.Clamp(hsv.Z * brightnessMul, 0f, 2f);
+        return HsvToRgb(hsv);
+    }
+
+    static SN.Vector3 RgbToHsv(SN.Vector3 rgb)
+    {
+        float r = Math.Clamp(rgb.X, 0f, 2f);
+        float g = Math.Clamp(rgb.Y, 0f, 2f);
+        float b = Math.Clamp(rgb.Z, 0f, 2f);
+        float max = Math.Max(r, Math.Max(g, b));
+        float min = Math.Min(r, Math.Min(g, b));
+        float delta = max - min;
+
+        float h = 0f;
+        if (delta > 1e-6f)
+        {
+            if (max == r)
+                h = ((g - b) / delta + (g < b ? 6f : 0f)) / 6f;
+            else if (max == g)
+                h = ((b - r) / delta + 2f) / 6f;
+            else
+                h = ((r - g) / delta + 4f) / 6f;
+        }
+
+        float s = max <= 1e-6f ? 0f : delta / max;
+        float v = max;
+        return new SN.Vector3(h, s, v);
+    }
+
+    static SN.Vector3 HsvToRgb(SN.Vector3 hsv)
+    {
+        float h = Wrap01(hsv.X) * 6f;
+        float s = Math.Clamp(hsv.Y, 0f, 1f);
+        float v = Math.Clamp(hsv.Z, 0f, 2f);
+        int i = (int)MathF.Floor(h);
+        float f = h - i;
+        float p = v * (1f - s);
+        float q = v * (1f - f * s);
+        float t = v * (1f - (1f - f) * s);
+
+        return (i % 6) switch
+        {
+            0 => new SN.Vector3(v, t, p),
+            1 => new SN.Vector3(q, v, p),
+            2 => new SN.Vector3(p, v, t),
+            3 => new SN.Vector3(p, q, v),
+            4 => new SN.Vector3(t, p, v),
+            _ => new SN.Vector3(v, p, q),
+        };
     }
 
     static float Wrap01(float t)
