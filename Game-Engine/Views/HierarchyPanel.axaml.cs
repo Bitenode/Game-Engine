@@ -155,9 +155,15 @@ namespace Game_Engine.Views
                     }
 
                     if (selectedGOs.Count == 1)
+                    {
                         SelectionService.Set(selectedGOs[0]);
+                        SelectionService.RequestFrame(selectedGOs[0]);
+                    }
                     else if (selectedGOs.Count > 1)
+                    {
                         SelectionService.SetMultiple(selectedGOs);
+                        SelectionService.RequestFrame(selectedGOs[0]);
+                    }
                     else
                         SelectionService.Clear();
                 }

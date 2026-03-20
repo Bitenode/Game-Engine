@@ -28,23 +28,31 @@ MyGame/
 ### project.json
 ```json
 {
-  "Id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "Name": "MyGame",
-  "RootPath": "C:/Users/Developer/Projects/MyGame",
-  "Version": "1.0.0",
-  "CreatedUtc": "2026-01-15T10:30:00Z",
-  "ModifiedUtc": "2026-02-14T14:20:00Z"
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "MyGame",
+  "rootPath": "C:/Users/Developer/Projects/MyGame",
+  "version": 1,
+  "engineVersion": "0.0.1",
+  "createdUtc": "2026-01-15T10:30:00Z",
+  "modifiedUtc": "2026-02-14T14:20:00Z",
+  "lastOpenedScenePath": "Scenes/Main.scene",
+  "autosaveEnabled": false,
+  "autosaveIntervalMinutes": 5
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `Id` | GUID | Unique project identifier (auto-generated) |
-| `Name` | string | Human-readable project name |
-| `RootPath` | string | Absolute path to the project folder |
-| `Version` | string | Project version string |
-| `CreatedUtc` | DateTime | When the project was created |
-| `ModifiedUtc` | DateTime | Last modification timestamp (updated by `TouchModified()`) |
+| `id` | GUID | Unique project identifier (auto-generated) |
+| `name` | string | Human-readable project name |
+| `rootPath` | string | Absolute path to the project folder |
+| `version` | int | Project schema version |
+| `engineVersion` | string | Engine version used by the project |
+| `createdUtc` | DateTime | When the project was created |
+| `modifiedUtc` | DateTime | Last modification timestamp (updated by `TouchModified()` and other project writes) |
+| `lastOpenedScenePath` | string \| null | Last scene opened in the editor. Stored as project-relative path when possible, and restored on project open if the file still exists |
+| `autosaveEnabled` | bool | Enables/disables periodic autosave for this project |
+| `autosaveIntervalMinutes` | int | Autosave interval in minutes (`1-60`, editor menu offers 1/5/10 presets) |
 
 ### Project Lifecycle
 
@@ -74,6 +82,9 @@ When a project is opened, the following sequence executes:
 | `Open(path)` | Load an existing project from `project.json` |
 | `Close()` | Close the current project |
 | `TouchModified()` | Update the `ModifiedUtc` timestamp |
+| `RememberLastOpenedScene(path)` | Persist the last opened `.scene` path to `project.json` |
+| `GetLastOpenedSceneAbsolutePath()` | Resolve persisted `lastOpenedScenePath` to an existing absolute path |
+| `UpdateAutosaveSettings(enabled, minutes)` | Persist per-project autosave toggle + interval |
 | `SelectAssetForInspector(path)` | Select an asset file for display in the Inspector |
 | `MaterialsLoad(path)` | Load a material from a `.material` file |
 | `RootPath` | Current project root directory |
@@ -95,6 +106,12 @@ A scene is a JSON file (`.scene`) containing the complete hierarchy of GameObjec
 | **Save** | File > Save Scene | Ctrl+S |
 | **Load** | Double-click `.scene` in Project Panel | — |
 | **New** | Right-click in Project Panel > New Scene | — |
+
+### Dirty State + Unsaved Guard
+- Scene changes now track a dirty flag.
+- Project open/new/close and scene load operations prompt if there are unsaved changes.
+- Saving a scene clears dirty state and updates the current scene path.
+- Autosave runs only when dirty and autosave is enabled for the project.
 
 ### Scene Format
 ```json
@@ -270,6 +287,7 @@ Tracks the currently selected GameObjects with **multi-select support**:
 | `Selected` | `List<GameObject>` | All selected objects (for multi-select) |
 | `IsMultiSelect` | `bool` | True when multiple objects are selected |
 | `Changed` | `event` | Fired when selection changes |
+| `FrameRequested` | `event` | Fired when UI requests Scene View camera focus for a specific object |
 
 ### Selection Methods
 | Method | Description |
@@ -281,6 +299,7 @@ Tracks the currently selected GameObjects with **multi-select support**:
 | `SetMultiple(list)` | Replace the selection with a list of objects |
 | `Clear()` | Deselect everything |
 | `Touch()` | Refresh the Inspector without changing selection |
+| `RequestFrame(go)` | Request Scene View to frame/focus an object (used by Hierarchy selection) |
 
 ### Selection Flow
 ```
@@ -302,6 +321,10 @@ SelectionService.Set(hitObject)
 ```
 
 **Multi-select:** Hold Ctrl while clicking to add/remove objects from the selection. The Inspector shows shared properties when multiple objects are selected.
+
+**Hierarchy integration:** Clicking an item in the Hierarchy selects it and requests Scene View framing. For multi-select, Scene View frames the first selected object.
+
+**Scene View quality-of-life:** selection framing uses a short smooth camera interpolation instead of an instant snap.
 
 ---
 

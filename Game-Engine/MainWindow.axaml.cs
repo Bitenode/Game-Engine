@@ -17,7 +17,11 @@ namespace Game_Engine;
 
 public partial class MainWindow : Window
 {
+    private enum UnsavedChoice { Save, DontSave, Cancel }
+
     private DockManager? _dock;
+    private readonly DispatcherTimer _autosaveTimer = new() { Interval = TimeSpan.FromSeconds(5) };
+    private bool _autosaveMissingPathLogged;
 
     // Tracks how many of each tab we’ve created (for numbering)
     private readonly Dictionary<string, int> _counts = new();
@@ -88,8 +92,14 @@ public partial class MainWindow : Window
         MI_NewProject.Click += OnNewProject;
         MI_OpenProject.Click += OnOpenProject;
         MI_BuildSettings.Click += (_, __) => OpenBuildSettings();
-        MI_CloseProject.Click += (_, __) =>
+        MI_ValidateProject.Click += (_, __) => RunProjectValidation();
+        MI_AutosaveEnabled.Click += (_, __) => ToggleAutosave();
+        MI_Autosave1.Click += (_, __) => SetAutosaveInterval(1);
+        MI_Autosave5.Click += (_, __) => SetAutosaveInterval(5);
+        MI_Autosave10.Click += (_, __) => SetAutosaveInterval(10);
+        MI_CloseProject.Click += async (_, __) =>
         {
+            if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
             ProjectService.Close();
             RefreshProjectUI();
 
@@ -125,6 +135,9 @@ public partial class MainWindow : Window
 
         // Final: window title etc.
         RefreshProjectUI();
+        RebuildRecentProjectsMenu();
+        _autosaveTimer.Tick += async (_, __) => await TryAutosaveTickAsync();
+        _autosaveTimer.Start();
     }
 
 
@@ -310,14 +323,28 @@ public partial class MainWindow : Window
         MI_SaveScene.IsEnabled = has;
         MI_LoadScene.IsEnabled = has;
         MI_BuildSettings.IsEnabled = has;
+        MI_ValidateProject.IsEnabled = has;
+        MI_AutosaveRoot.IsEnabled = has;
 
         Title = ProjectService.Current is { } p
             ? $"{p.Name} — Game Engine"
             : "Game Engine";
+
+        if (!has) return;
+
+        var proj = ProjectService.Current!;
+        MI_AutosaveEnabled.Header = proj.AutosaveEnabled ? "_Disable Autosave" : "_Enable Autosave";
+        MI_AutosaveEnabled.IsChecked = proj.AutosaveEnabled;
+        MI_Autosave1.IsChecked = proj.AutosaveIntervalMinutes == 1;
+        MI_Autosave5.IsChecked = proj.AutosaveIntervalMinutes == 5;
+        MI_Autosave10.IsChecked = proj.AutosaveIntervalMinutes == 10;
+        RebuildRecentProjectsMenu();
     }
 
     private async void OnNewProject(object? s, RoutedEventArgs e)
     {
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+
         var parentDlg = new OpenFolderDialog { Title = "Choose parent folder for new project" };
         var parent = await parentDlg.ShowAsync(this);
         if (string.IsNullOrWhiteSpace(parent)) return;
@@ -329,9 +356,14 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.CreateNew(parent, name, openAfterCreate: true);
+            if (ProjectService.Current is { } opened)
+                RecentProjectsStore.AddRecent(opened.ManifestPath);
             RefreshProjectUI();
             ExtensionService.RefreshFromAppDomain();
             RebuildExtensionMenus();
+            SceneService.SetCurrentScenePath(null);
+            SceneService.SetDirty(false);
+            TryAutoLoadLastOpenedScene();
         }
         catch (Exception ex)
         {
@@ -341,6 +373,8 @@ public partial class MainWindow : Window
 
     private async void OnOpenProject(object? s, RoutedEventArgs e)
     {
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+
         var dlg = new OpenFileDialog
         {
             AllowMultiple = false,
@@ -353,9 +387,14 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.Open(files[0]);
+            if (ProjectService.Current is { } opened)
+                RecentProjectsStore.AddRecent(opened.ManifestPath);
             RefreshProjectUI();
             ExtensionService.RefreshFromAppDomain();
             RebuildExtensionMenus();
+            SceneService.SetCurrentScenePath(null);
+            SceneService.SetDirty(false);
+            TryAutoLoadLastOpenedScene();
         }
         catch (Exception ex)
         {
@@ -367,21 +406,7 @@ public partial class MainWindow : Window
     
     private async void OnMenuSaveScene_Click(object? sender, RoutedEventArgs e)
     {
-        var dlg = new SaveFileDialog
-        {
-            Filters = new List<FileDialogFilter>
-        {
-            new FileDialogFilter { Name = "Scene", Extensions = { "scene" } }
-        },
-            DefaultExtension = "scene"
-        };
-
-        var path = await dlg.ShowAsync(this);
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            SceneService.SaveToFile(path);
-            Log.Info($"Scene saved: {path}");
-        }
+        await SaveSceneAsync(forceSaveAsDialog: true);
     }
 
     
@@ -400,7 +425,9 @@ public partial class MainWindow : Window
         var path = result?.FirstOrDefault();
         if (!string.IsNullOrWhiteSpace(path))
         {
+            if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
             SceneService.LoadFromFile(path);
+            ProjectService.RememberLastOpenedScene(path);
             Log.Info($"Scene loaded: {path}");
         }
     }
@@ -420,6 +447,237 @@ public partial class MainWindow : Window
             });
         }
         catch { /* ignore */ }
+    }
+
+    private void TryAutoLoadLastOpenedScene()
+    {
+        var lastScenePath = ProjectService.GetLastOpenedSceneAbsolutePath();
+        if (string.IsNullOrWhiteSpace(lastScenePath)) return;
+
+        try
+        {
+            SceneService.LoadFromFile(lastScenePath);
+            Log.Info($"Auto-loaded last scene: {lastScenePath}");
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"Failed to auto-load last scene '{lastScenePath}': {ex.Message}");
+        }
+    }
+
+    private async Task<bool> SaveSceneAsync(bool forceSaveAsDialog)
+    {
+        string? path = forceSaveAsDialog ? null : SceneService.CurrentScenePath;
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            var dlg = new SaveFileDialog
+            {
+                Filters = new List<FileDialogFilter>
+                {
+                    new FileDialogFilter { Name = "Scene", Extensions = { "scene" } }
+                },
+                DefaultExtension = "scene"
+            };
+
+            path = await dlg.ShowAsync(this);
+            if (string.IsNullOrWhiteSpace(path)) return false;
+        }
+
+        SceneService.SaveToFile(path);
+        ProjectService.RememberLastOpenedScene(path);
+        Log.Info($"Scene saved: {path}");
+        return true;
+    }
+
+    private void ToggleAutosave()
+    {
+        if (ProjectService.Current is not { } proj) return;
+        ProjectService.UpdateAutosaveSettings(!proj.AutosaveEnabled, proj.AutosaveIntervalMinutes);
+        ProjectService.ReloadCurrentFromManifest();
+        RefreshProjectUI();
+    }
+
+    private void SetAutosaveInterval(int minutes)
+    {
+        if (ProjectService.Current is not { } proj) return;
+        ProjectService.UpdateAutosaveSettings(proj.AutosaveEnabled, minutes);
+        ProjectService.ReloadCurrentFromManifest();
+        RefreshProjectUI();
+    }
+
+    private async Task TryAutosaveTickAsync()
+    {
+        var proj = ProjectService.Current;
+        if (proj is null || !proj.AutosaveEnabled || !SceneService.IsDirty) return;
+
+        var interval = TimeSpan.FromMinutes(Math.Clamp(proj.AutosaveIntervalMinutes, 1, 60));
+        var sinceModified = DateTime.UtcNow - proj.ModifiedUtc;
+        if (sinceModified < interval) return;
+
+        if (string.IsNullOrWhiteSpace(SceneService.CurrentScenePath))
+        {
+            if (!_autosaveMissingPathLogged)
+            {
+                Log.Warning("Autosave skipped: scene has no save path yet. Save once manually to enable autosave.");
+                _autosaveMissingPathLogged = true;
+            }
+            return;
+        }
+
+        try
+        {
+            await SaveSceneAsync(forceSaveAsDialog: false);
+            _autosaveMissingPathLogged = false;
+            Log.Info($"Autosaved scene ({proj.AutosaveIntervalMinutes} min interval).");
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"Autosave failed: {ex.Message}");
+        }
+    }
+
+    private async Task<bool> EnsureSafeToLoseUnsavedSceneAsync()
+    {
+        if (!SceneService.IsDirty) return true;
+
+        var choice = await ShowUnsavedChangesPromptAsync();
+        if (choice == UnsavedChoice.Cancel) return false;
+        if (choice == UnsavedChoice.DontSave) return true;
+
+        return await SaveSceneAsync(forceSaveAsDialog: false);
+    }
+
+    private async Task<UnsavedChoice> ShowUnsavedChangesPromptAsync()
+    {
+        var tcs = new TaskCompletionSource<UnsavedChoice>();
+        var msg = "You have unsaved scene changes.\nSave before continuing?";
+
+        var btnSave = new Button { Content = "Save", MinWidth = 90 };
+        var btnDontSave = new Button { Content = "Don't Save", MinWidth = 90 };
+        var btnCancel = new Button { Content = "Cancel", MinWidth = 90 };
+
+        var buttonBar = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Children = { btnSave, btnDontSave, btnCancel }
+        };
+
+        var dlg = new Window
+        {
+            Width = 460,
+            Height = 170,
+            Title = "Unsaved Changes",
+            CanResize = false,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock { Text = msg, TextWrapping = TextWrapping.Wrap },
+                    buttonBar
+                }
+            }
+        };
+
+        btnSave.Click += (_, __) => { tcs.TrySetResult(UnsavedChoice.Save); dlg.Close(); };
+        btnDontSave.Click += (_, __) => { tcs.TrySetResult(UnsavedChoice.DontSave); dlg.Close(); };
+        btnCancel.Click += (_, __) => { tcs.TrySetResult(UnsavedChoice.Cancel); dlg.Close(); };
+        dlg.Closed += (_, __) => tcs.TrySetResult(UnsavedChoice.Cancel);
+
+        await dlg.ShowDialog(this);
+        return await tcs.Task;
+    }
+
+    private void RebuildRecentProjectsMenu()
+    {
+        if (MI_RecentRoot == null) return;
+        MI_RecentRoot.Items.Clear();
+
+        var currentManifest = ProjectService.Current?.ManifestPath;
+        if (!string.IsNullOrWhiteSpace(currentManifest))
+        {
+            var pinCurrent = new MenuItem
+            {
+                Header = RecentProjectsStore.IsPinned(currentManifest)
+                    ? "Unpin Current Project"
+                    : "Pin Current Project"
+            };
+            pinCurrent.Click += (_, __) =>
+            {
+                RecentProjectsStore.TogglePinned(currentManifest);
+                RebuildRecentProjectsMenu();
+            };
+            MI_RecentRoot.Items.Add(pinCurrent);
+            MI_RecentRoot.Items.Add(new Separator());
+        }
+
+        var pinned = RecentProjectsStore.GetPinned();
+        foreach (var manifestPath in pinned)
+            MI_RecentRoot.Items.Add(MakeRecentMenuItem(manifestPath, pinnedItem: true));
+
+        if (pinned.Count > 0) MI_RecentRoot.Items.Add(new Separator());
+
+        var recents = RecentProjectsStore.GetRecents();
+        foreach (var manifestPath in recents)
+        {
+            if (pinned.Any(p => string.Equals(p, manifestPath, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            MI_RecentRoot.Items.Add(MakeRecentMenuItem(manifestPath, pinnedItem: false));
+        }
+
+        if (MI_RecentRoot.Items.Count == 0)
+            MI_RecentRoot.Items.Add(new MenuItem { Header = "(No recent projects)", IsEnabled = false });
+    }
+
+    private MenuItem MakeRecentMenuItem(string manifestPath, bool pinnedItem)
+    {
+        var headerPrefix = pinnedItem ? "★ " : "";
+        var mi = new MenuItem { Header = $"{headerPrefix}{manifestPath}" };
+
+        mi.Click += async (_, __) => await OpenProjectByManifestPathAsync(manifestPath);
+        return mi;
+    }
+
+    private async Task OpenProjectByManifestPathAsync(string manifestPath)
+    {
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+
+        try
+        {
+            ProjectService.Open(manifestPath);
+            if (ProjectService.Current is { } opened)
+                RecentProjectsStore.AddRecent(opened.ManifestPath);
+
+            RefreshProjectUI();
+            ExtensionService.RefreshFromAppDomain();
+            RebuildExtensionMenus();
+            SceneService.SetCurrentScenePath(null);
+            SceneService.SetDirty(false);
+            TryAutoLoadLastOpenedScene();
+            RebuildRecentProjectsMenu();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Failed to open recent project:\n{ex.Message}");
+        }
+    }
+
+    private void RunProjectValidation()
+    {
+        var issues = ProjectValidator.ValidateCurrentProject();
+        if (issues.Count == 0)
+        {
+            Log.Success("Project validation passed. No missing references found.");
+            return;
+        }
+
+        Log.Warning($"Project validation found {issues.Count} issue(s):");
+        foreach (var issue in issues)
+            Log.Warning("  - " + issue);
     }
 
     // super-lightweight error popup

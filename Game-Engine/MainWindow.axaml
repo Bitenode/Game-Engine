@@ -19,9 +19,18 @@
 						  IsEnabled="False"
 						  Click="OnMenuLoadScene_Click" />
 				<Separator/>
+				<MenuItem Header="_Autosave" x:Name="MI_AutosaveRoot" IsEnabled="False">
+					<MenuItem Header="_Enable Autosave" x:Name="MI_AutosaveEnabled"/>
+					<Separator/>
+					<MenuItem Header="_1 minute" x:Name="MI_Autosave1"/>
+					<MenuItem Header="_5 minutes" x:Name="MI_Autosave5"/>
+					<MenuItem Header="_10 minutes" x:Name="MI_Autosave10"/>
+				</MenuItem>
+				<Separator/>
 				<MenuItem Header="_Build Settings..."
 						  x:Name="MI_BuildSettings"
 						  IsEnabled="False" />
+				<MenuItem Header="_Validate Project" x:Name="MI_ValidateProject" IsEnabled="False"/>
 				<Separator/>
 				<MenuItem Header="_Close Project"    x:Name="MI_CloseProject"/>
 				<Separator/>

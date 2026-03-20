@@ -18,6 +18,7 @@ public static class SelectionService
     public static bool IsMultiSelect => _selected.Count > 1;
 
     public static event Action? Changed;
+    public static event Action<GameObject>? FrameRequested;
 
     /// <summary>Set a single selection (replaces any existing selection).</summary>
     public static void Set(GameObject? go)
@@ -75,5 +76,15 @@ public static class SelectionService
     }
 
     public static void Touch() => Changed?.Invoke();
+
+    /// <summary>
+    /// Request SceneView to frame/focus a specific object.
+    /// Used by hierarchy selection so click-to-select also navigates the camera.
+    /// </summary>
+    public static void RequestFrame(GameObject? go)
+    {
+        if (go == null) return;
+        FrameRequested?.Invoke(go);
+    }
 }
 #endif

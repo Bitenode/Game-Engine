@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Layout;
 using Avalonia.OpenGL;
 using Avalonia.OpenGL.Controls;
 using Game_Engine.Core;
@@ -96,6 +97,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     Point _last;
     bool _orbiting, _panning;
+    private readonly CameraBookmark?[] _cameraBookmarks = new CameraBookmark?[5];
+    private readonly DispatcherTimer _frameLerpTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly Stopwatch _frameLerpWatch = new();
+    private SN.Vector3 _frameStartTarget;
+    private SN.Vector3 _frameEndTarget;
+    private float _frameStartDistance;
+    private float _frameEndDistance;
+    private const float FrameLerpDurationSec = 0.2f;
 
     GameObject? _selected;
 
@@ -127,6 +136,22 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     }
 
     private DispatcherTimer? _fpsTimer;
+
+    private readonly struct CameraBookmark
+    {
+        public CameraBookmark(SN.Vector3 target, float yaw, float pitch, float distance)
+        {
+            Target = target;
+            Yaw = yaw;
+            Pitch = pitch;
+            Distance = distance;
+        }
+
+        public SN.Vector3 Target { get; }
+        public float Yaw { get; }
+        public float Pitch { get; }
+        public float Distance { get; }
+    }
 
     Terrain? _hoverTerrain;
     SN.Vector3 _hoverPointW;
@@ -229,6 +254,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         AvaloniaProperty.Register<SceneView, bool>(nameof(ShowCameras), true);
     public bool ShowCameras { get => GetValue(ShowCamerasProperty); set => SetValue(ShowCamerasProperty, value); }
 
+    public static readonly StyledProperty<bool> ShowSelectionOutlineProperty =
+        AvaloniaProperty.Register<SceneView, bool>(nameof(ShowSelectionOutline), true);
+    public bool ShowSelectionOutline { get => GetValue(ShowSelectionOutlineProperty); set => SetValue(ShowSelectionOutlineProperty, value); }
+
+    public static readonly StyledProperty<bool> ShowStatsOverlayProperty =
+        AvaloniaProperty.Register<SceneView, bool>(nameof(ShowStatsOverlay), true);
+    public bool ShowStatsOverlay { get => GetValue(ShowStatsOverlayProperty); set => SetValue(ShowStatsOverlayProperty, value); }
+
     public bool SnapEnabled { get; set; } = false;
     public float SnapStep { get; set; } = 0.5f;
 
@@ -245,6 +278,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         public bool ShowTerrainGizmos { get; set; } = true;
         public bool ShowShadows { get; set; } = true;
         public bool ShowCameras { get; set; } = true;
+        public bool ShowSelectionOutline { get; set; } = true;
+        public bool ShowStatsOverlay { get; set; } = true;
     }
 
     private static readonly JsonSerializerOptions s_viewJson = new()
@@ -283,7 +318,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 GizmoLocal = GizmoLocal,
                 ShowTerrainGizmos = ShowTerrainGizmos,
                 ShowShadows = ShowShadows,
-                ShowCameras = ShowCameras
+                ShowCameras = ShowCameras,
+                ShowSelectionOutline = ShowSelectionOutline,
+                ShowStatsOverlay = ShowStatsOverlay
             };
 
             var json = JsonSerializer.Serialize(dto, s_viewJson);
@@ -318,6 +355,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             ShowTerrainGizmos = dto.ShowTerrainGizmos;
             ShowShadows = dto.ShowShadows;
             ShowCameras = dto.ShowCameras;
+            ShowSelectionOutline = dto.ShowSelectionOutline;
+            ShowStatsOverlay = dto.ShowStatsOverlay;
         }
         catch (Exception ex)
         {
@@ -343,6 +382,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
         ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
         ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowSelectionOutlineProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ShowStatsOverlayProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
     }
     #endregion
 
@@ -353,6 +394,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     Axis _gizmoHot = Axis.None;
     Axis _dragAxis = Axis.None;
+    Axis _axisLock = Axis.None;
     bool _isDragging;
 
     SN.Vector3 _dragAxisW;
@@ -370,11 +412,24 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         var (min, max) = SceneGraphUtil.ComputeWorldAABB(go);
         var center = (min + max) * 0.5f;
         float radius = (max - center).Length();
-        _target = center;
         float fov = 60f * MathF.PI / 180f;
         float fit = radius / MathF.Tan(fov * 0.5f);
-        _distance = MathF.Max(1.5f, fit * 1.15f);
-        InvalidateVisual();
+        float desiredDistance = MathF.Max(1.5f, fit * 1.15f);
+
+        if (SN.Vector3.Distance(_target, center) < 0.01f && MathF.Abs(_distance - desiredDistance) < 0.01f)
+        {
+            _target = center;
+            _distance = desiredDistance;
+            InvalidateVisual();
+            return;
+        }
+
+        _frameStartTarget = _target;
+        _frameEndTarget = center;
+        _frameStartDistance = _distance;
+        _frameEndDistance = desiredDistance;
+        _frameLerpWatch.Restart();
+        _frameLerpTimer.Start();
     }
 
     bool HandleFlyKeyDown(Key k)
@@ -1085,6 +1140,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _multiSelected.AddRange(SelectionService.Selected);
             InvalidateVisual();
         };
+        SelectionService.FrameRequested += go =>
+        {
+            if (go == null) return;
+            _selected = go;
+            FrameSelected(go);
+        };
         SceneService.Changed += () => { _cache?.InvalidateAll(); _sceneQueryDirty = true; InvalidateVisual(); };
 
         // Full scene replacement (e.g. File > Load Scene) needs a heavier reset
@@ -1116,6 +1177,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         AddHandler(PointerWheelChangedEvent, OnWheel, RoutingStrategies.Tunnel);
         _flyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
         _flyTimer.Tick += (_, __) => StepFly();
+        _frameLerpTimer.Tick += (_, __) => StepFrameLerp();
 
         // FPS display timer - updates text outside of render cycle to avoid layout cascades
         _fpsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
@@ -1125,7 +1187,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             double fps = _fpsFrameCount / _fpsWatch.Elapsed.TotalSeconds;
             _fpsFrameCount = 0;
             _fpsWatch.Restart();
-            FpsText = $"{fps:F0} FPS  GL:{_lastFrameMs:F0}ms C:{_lastCompositMs:F0}ms O:{_lastOverlayMs:F0}ms [{_lastSectionTimes}]";
+            if (!ShowStatsOverlay)
+            {
+                FpsText = "";
+                return;
+            }
+
+            var objectCount = CountSceneObjects();
+            var selectedCount = _multiSelected.Count > 0 ? _multiSelected.Count : (_selected != null ? 1 : 0);
+            FpsText = $"{fps:F0} FPS  Obj:{objectCount} Sel:{selectedCount} GL:{_lastFrameMs:F0}ms C:{_lastCompositMs:F0}ms O:{_lastOverlayMs:F0}ms [{_lastSectionTimes}]";
         };
         _fpsTimer.Start();
     }
@@ -1705,6 +1775,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // --- GIZMO PASS (GL lines + cones on top of scene) ---
         g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         RenderGizmoGL(g, view, proj, new Size(W, H));
+        RenderSelectionOutlineGL(g, view, proj);
 
         // --- WIREFRAME PASS (GL lines — always visible on top) ---
         RenderWireframeGL(g, view, proj);
@@ -1796,8 +1867,60 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         base.OnKeyDown(e);
 
+        if (TryGetBookmarkSlot(e.Key, out var slot))
+        {
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            {
+                SaveCameraBookmark(slot);
+                e.Handled = true;
+                return;
+            }
+
+            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Alt))
+            {
+                RecallCameraBookmark(slot);
+                e.Handled = true;
+                return;
+            }
+        }
+
         // F = Focus on selected
         if (e.Key == Key.F && _selected != null) { FrameSelected(_selected); e.Handled = true; }
+
+        // L = Local/World gizmo toggle
+        if (e.Key == Key.L && !e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            GizmoLocal = !GizmoLocal;
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
+        // X/Y/Z axis lock for transform tools
+        if ((e.Key == Key.X || e.Key == Key.Y || e.Key == Key.Z) && Tool != ToolMode.Hand)
+        {
+            var requested = e.Key switch
+            {
+                Key.X => Axis.X,
+                Key.Y => Axis.Y,
+                Key.Z => Axis.Z,
+                _ => Axis.None
+            };
+            _axisLock = _axisLock == requested ? Axis.None : requested;
+            Log.Info($"[SceneView] Axis lock: {_axisLock}");
+            e.Handled = true;
+            return;
+        }
+
+        // Ctrl+Shift+T: precise transform entry
+        if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.KeyModifiers.HasFlag(KeyModifiers.Shift) && _selected != null)
+        {
+            _ = OpenPreciseTransformDialogAsync();
+            e.Handled = true;
+            return;
+        }
 
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
@@ -1965,6 +2088,152 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (HandleFlyKeyUp(e.Key)) e.Handled = true;
     }
 
+    private void SaveCameraBookmark(int slot)
+    {
+        _cameraBookmarks[slot] = new CameraBookmark(_target, _yaw, _pitch, _distance);
+        Log.Info($"[SceneView] Saved camera bookmark {slot + 1}");
+    }
+
+    private void RecallCameraBookmark(int slot)
+    {
+        var bookmark = _cameraBookmarks[slot];
+        if (bookmark is null) return;
+
+        _target = bookmark.Value.Target;
+        _yaw = bookmark.Value.Yaw;
+        _pitch = bookmark.Value.Pitch;
+        _distance = bookmark.Value.Distance;
+        InvalidateVisual();
+        Log.Info($"[SceneView] Recalled camera bookmark {slot + 1}");
+    }
+
+    private static bool TryGetBookmarkSlot(Key key, out int slot)
+    {
+        slot = key switch
+        {
+            Key.D1 or Key.NumPad1 => 0,
+            Key.D2 or Key.NumPad2 => 1,
+            Key.D3 or Key.NumPad3 => 2,
+            Key.D4 or Key.NumPad4 => 3,
+            Key.D5 or Key.NumPad5 => 4,
+            _ => -1
+        };
+        return slot >= 0;
+    }
+
+    private static int CountSceneObjects()
+    {
+        int count = 0;
+        foreach (var root in SceneService.Root)
+            CountRecursive(root, ref count);
+        return count;
+    }
+
+    private static void CountRecursive(GameObject go, ref int count)
+    {
+        count++;
+        foreach (var child in go.Children)
+            CountRecursive(child, ref count);
+    }
+
+    private async Task OpenPreciseTransformDialogAsync()
+    {
+        if (_selected == null) return;
+        var selectedObjects = _multiSelected.Count > 0 ? _multiSelected : new List<GameObject> { _selected };
+        var baseValue = Tool switch
+        {
+            ToolMode.Rotate => _selected.Transform.Rotation,
+            ToolMode.Scale => _selected.Transform.Scale,
+            _ => _selected.Transform.Position
+        };
+
+        var xBox = new TextBox { Text = baseValue.X.ToString("0.###") };
+        var yBox = new TextBox { Text = baseValue.Y.ToString("0.###") };
+        var zBox = new TextBox { Text = baseValue.Z.ToString("0.###") };
+        var apply = new Button { Content = "Apply", MinWidth = 90 };
+        var cancel = new Button { Content = "Cancel", MinWidth = 90 };
+
+        var result = false;
+        var dlg = new Window
+        {
+            Title = $"Precise {(Tool == ToolMode.Rotate ? "Rotation" : Tool == ToolMode.Scale ? "Scale" : "Position")}",
+            Width = 340,
+            Height = 220,
+            CanResize = false
+        };
+
+        apply.Click += (_, __) => { result = true; dlg.Close(); };
+        cancel.Click += (_, __) => dlg.Close();
+
+        dlg.Content = new StackPanel
+        {
+            Margin = new Thickness(14),
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "X" }, xBox,
+                new TextBlock { Text = "Y" }, yBox,
+                new TextBlock { Text = "Z" }, zBox,
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Children = { apply, cancel }
+                }
+            }
+        };
+
+        var host = TopLevel.GetTopLevel(this) as Window;
+        if (host == null) return;
+        await dlg.ShowDialog(host);
+        if (!result) return;
+
+        if (!float.TryParse(xBox.Text, out var x) ||
+            !float.TryParse(yBox.Text, out var y) ||
+            !float.TryParse(zBox.Text, out var z))
+            return;
+
+        foreach (var go in selectedObjects)
+        {
+            switch (Tool)
+            {
+                case ToolMode.Rotate:
+                    go.Transform.Rotation = new CoreVec3(x, y, z);
+                    break;
+                case ToolMode.Scale:
+                    go.Transform.Scale = new CoreVec3(Math.Max(0.001f, x), Math.Max(0.001f, y), Math.Max(0.001f, z));
+                    break;
+                default:
+                    go.Transform.Position = new CoreVec3(x, y, z);
+                    break;
+            }
+        }
+
+        SceneService.NotifyChanged();
+        SelectionService.Touch();
+        InvalidateVisual();
+    }
+
+    private void StepFrameLerp()
+    {
+        var t = (float)(_frameLerpWatch.Elapsed.TotalSeconds / FrameLerpDurationSec);
+        if (t >= 1f)
+        {
+            _target = _frameEndTarget;
+            _distance = _frameEndDistance;
+            _frameLerpTimer.Stop();
+            InvalidateVisual();
+            return;
+        }
+
+        // Smoothstep for soft ease-in/out camera motion.
+        var s = t * t * (3f - 2f * t);
+        _target = SN.Vector3.Lerp(_frameStartTarget, _frameEndTarget, s);
+        _distance = _frameStartDistance + (_frameEndDistance - _frameStartDistance) * s;
+        InvalidateVisual();
+    }
+
     void OnPointerPressed(object? s, PointerPressedEventArgs e)
     {
         Focus(); _last = e.GetPosition(this);
@@ -2004,21 +2273,26 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     SelectionService.Set(picked);
                 _selected = SelectionService.Current;
                 InvalidateVisual();
-                // Don't start orbiting when we picked an object
-                e.Pointer.Capture(this); e.Handled = true;
+                // Don't start camera motion when we picked an object.
+                e.Handled = true;
                 return;
-            }
-            // Nothing picked and no Ctrl held: clear selection
-            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
-            {
-                // Only clear if we didn't hit a gizmo and we're in hand mode or the click is not a gizmo hit
-                // (gizmo hits are already handled above)
             }
         }
 
-        if (p.IsLeftButtonPressed || p.IsRightButtonPressed) _orbiting = true;
-        if (p.IsMiddleButtonPressed) _panning = true;
-        e.Pointer.Capture(this); e.Handled = true;
+        bool altPan = p.IsLeftButtonPressed && e.KeyModifiers.HasFlag(KeyModifiers.Alt);
+        bool leftOrbit = Tool == ToolMode.Hand &&
+                         p.IsLeftButtonPressed &&
+                         !p.IsRightButtonPressed &&
+                         !p.IsMiddleButtonPressed &&
+                         !altPan;
+        _orbiting = p.IsRightButtonPressed || leftOrbit;
+        _panning = p.IsMiddleButtonPressed || altPan;
+
+        if (_orbiting || _panning)
+        {
+            e.Pointer.Capture(this);
+            e.Handled = true;
+        }
     }
 
     /// <summary>
@@ -2121,13 +2395,20 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
         var d = pos - _last; _last = pos;
         if (_orbiting)
-        { _yaw += (float)d.X * 0.01f; _pitch -= (float)d.Y * 0.01f; _pitch = Math.Clamp(_pitch, -1.5f, 1.5f); InvalidateVisual(); }
+        {
+            const float orbitSensitivity = 0.008f;
+            _yaw += (float)d.X * orbitSensitivity;
+            _pitch -= (float)d.Y * orbitSensitivity;
+            _pitch = Math.Clamp(_pitch, -1.5f, 1.5f);
+            InvalidateVisual();
+        }
         else if (_panning)
         {
             var (view2, _) = GetViewProj(Bounds.Size);
             var right = SN.Vector3.Normalize(new SN.Vector3(view2.M11, view2.M21, view2.M31));
             var up = SN.Vector3.Normalize(new SN.Vector3(view2.M12, view2.M22, view2.M32));
-            _target += (-right * (float)d.X + up * (float)d.Y) * 0.01f * _distance;
+            float panSpeed = Math.Clamp(_distance * 0.0035f, 0.005f, 1.25f);
+            _target += (-right * (float)d.X + up * (float)d.Y) * panSpeed;
             InvalidateVisual();
         }
     }
@@ -2166,7 +2447,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     void OnWheel(object? s, PointerWheelEventArgs e)
     {
-        _distance *= (float)Math.Pow(1.1, -e.Delta.Y);
+        float wheelStep = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 1.03f : 1.08f;
+        _distance *= (float)Math.Pow(wheelStep, -e.Delta.Y);
         _distance = Math.Clamp(_distance, 1.5f, 200f);
         UpdateTerrainHover(_last); InvalidateVisual();
     }
@@ -2175,7 +2457,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     #region Gizmo hit/drag
     bool BeginAxisDrag(Point mouse, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz)
     {
-        var axis = HitTestTranslateGizmo(mouse, view, proj, sz);
+        var axis = _axisLock != Axis.None ? _axisLock : HitTestTranslateGizmo(mouse, view, proj, sz);
         if (axis == Axis.None) return false;
         _dragAxis = axis; _isDragging = true;
         var W = SceneGraphUtil.AccumulateWorld(_selected!);
@@ -2222,7 +2504,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             ApplyGizmoDelta(go, delta, axisOnly);
         }
 
-        SceneService.NotifyChanged(); SelectionService.Touch(); InvalidateVisual();
+        // Keep drag interaction lightweight; commit scene-change notification on pointer release.
+        InvalidateVisual();
     }
 
     void ApplyGizmoDelta(GameObject go, float delta, bool axisOnly)
@@ -2293,7 +2576,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     /// </summary>
     unsafe void RenderGizmoGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj, Size dipSize)
     {
-        if (_selected == null || Tool == ToolMode.Hand || _wireShader == null || _gizmoVao == 0) return;
+        if (_selected == null || _wireShader == null || _gizmoVao == 0) return;
 
         var W = SceneGraphUtil.AccumulateWorld(_selected);
         var pos = SN.Vector3.Transform(SN.Vector3.Zero, W);
@@ -2419,6 +2702,57 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         g.BindVertexArray(0);
         g.Disable(EnableCap.Blend);
+    }
+
+    unsafe void RenderSelectionOutlineGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj)
+    {
+        if (!ShowSelectionOutline || _wireShader == null || _colliderVao == 0) return;
+
+        var selectedObjects = _multiSelected.Count > 0 ? _multiSelected : (_selected != null ? new List<GameObject> { _selected } : new List<GameObject>());
+        if (selectedObjects.Count == 0) return;
+
+        var mvp = view * proj;
+        _wireShader.Use();
+        _wireShader.SetMatrix4("uMVP", mvp);
+
+        g.Disable(EnableCap.DepthTest);
+        g.Disable(EnableCap.CullFace);
+        g.BindVertexArray(_colliderVao);
+        g.BindBuffer(BufferTargetARB.ArrayBuffer, _colliderVbo);
+        g.LineWidth(2f);
+        _wireShader.SetVector4("uColor", 1f, 0.85f, 0.2f, 1f);
+
+        foreach (var go in selectedObjects)
+        {
+            var (min, max) = SceneGraphUtil.ComputeWorldAABB(go);
+            DrawAabbLines(g, min, max);
+        }
+
+        g.BindVertexArray(0);
+    }
+
+    unsafe void DrawAabbLines(GL g, SN.Vector3 min, SN.Vector3 max)
+    {
+        float* verts = stackalloc float[72]
+        {
+            min.X,min.Y,min.Z,  max.X,min.Y,min.Z,
+            max.X,min.Y,min.Z,  max.X,max.Y,min.Z,
+            max.X,max.Y,min.Z,  min.X,max.Y,min.Z,
+            min.X,max.Y,min.Z,  min.X,min.Y,min.Z,
+
+            min.X,min.Y,max.Z,  max.X,min.Y,max.Z,
+            max.X,min.Y,max.Z,  max.X,max.Y,max.Z,
+            max.X,max.Y,max.Z,  min.X,max.Y,max.Z,
+            min.X,max.Y,max.Z,  min.X,min.Y,max.Z,
+
+            min.X,min.Y,min.Z,  min.X,min.Y,max.Z,
+            max.X,min.Y,min.Z,  max.X,min.Y,max.Z,
+            max.X,max.Y,min.Z,  max.X,max.Y,max.Z,
+            min.X,max.Y,min.Z,  min.X,max.Y,max.Z
+        };
+
+        g.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(72 * sizeof(float)), verts);
+        g.DrawArrays(PrimitiveType.Lines, 0, 24);
     }
 
     /// <summary>

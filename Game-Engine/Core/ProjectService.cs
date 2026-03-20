@@ -13,6 +13,9 @@ namespace Game_Engine.Core
         public Guid Id { get; init; }
         public string Name { get; init; } = "";
         public string RootPath { get; init; } = "";
+        public string? LastOpenedScenePath { get; init; }
+        public bool AutosaveEnabled { get; init; } = false;
+        public int AutosaveIntervalMinutes { get; init; } = 5;
 
         [JsonIgnore] public string AssetsPath => Path.Combine(RootPath, "Assets");
         [JsonIgnore] public string ScenesPath => Path.Combine(RootPath, "Scenes");
@@ -169,6 +172,63 @@ namespace Game_Engine.Core
             Changed?.Invoke();
         }
 
+        /// <summary>Persist the most recently opened scene path in project.json.</summary>
+        public static void RememberLastOpenedScene(string scenePath)
+        {
+            if (Current is null || string.IsNullOrWhiteSpace(scenePath)) return;
+
+            var storedPath = ToStoredScenePath(Current, scenePath);
+            var updated = Current with
+            {
+                LastOpenedScenePath = storedPath,
+                ModifiedUtc = DateTime.UtcNow
+            };
+
+            Current = updated;
+            WriteManifest(updated);
+            Changed?.Invoke();
+        }
+
+        /// <summary>Resolve the persisted last scene path to an existing absolute file path, if any.</summary>
+        public static string? GetLastOpenedSceneAbsolutePath()
+        {
+            if (Current is null || string.IsNullOrWhiteSpace(Current.LastOpenedScenePath)) return null;
+            return ResolveStoredScenePath(Current, Current.LastOpenedScenePath);
+        }
+
+        public static void UpdateAutosaveSettings(bool enabled, int intervalMinutes)
+        {
+            if (Current is null) return;
+
+            var safeInterval = Math.Clamp(intervalMinutes, 1, 60);
+            var updated = Current with
+            {
+                AutosaveEnabled = enabled,
+                AutosaveIntervalMinutes = safeInterval,
+                ModifiedUtc = DateTime.UtcNow
+            };
+
+            Current = updated;
+            WriteManifest(updated);
+            Changed?.Invoke();
+        }
+
+        /// <summary>Reload only Current from disk manifest without reopening project services.</summary>
+        public static void ReloadCurrentFromManifest()
+        {
+            if (Current is null) return;
+            var manifestPath = Current.ManifestPath;
+            if (!File.Exists(manifestPath)) return;
+
+            var text = File.ReadAllText(manifestPath);
+            var proj = JsonSerializer.Deserialize<Project>(text, _json);
+            if (proj is null) return;
+
+            var root = Path.GetDirectoryName(manifestPath)!;
+            Current = proj with { RootPath = root };
+            Changed?.Invoke();
+        }
+
         static void WriteManifest(Project proj)
         {
             var json = JsonSerializer.Serialize(proj, _json);
@@ -185,6 +245,40 @@ namespace Game_Engine.Core
             Directory.CreateDirectory(proj.PackagesPath);
             Directory.CreateDirectory(proj.TempPath);
 #endif
+        }
+
+        static string ToStoredScenePath(Project proj, string scenePath)
+        {
+            var fullScenePath = Path.GetFullPath(scenePath);
+            var fullRootPath = Path.GetFullPath(proj.RootPath);
+
+            if (IsPathInsideRoot(fullRootPath, fullScenePath))
+                return Path.GetRelativePath(fullRootPath, fullScenePath);
+
+            // Keep absolute path for scenes outside the project root.
+            return fullScenePath;
+        }
+
+        static string? ResolveStoredScenePath(Project proj, string storedPath)
+        {
+            if (Path.IsPathRooted(storedPath))
+                return File.Exists(storedPath) ? storedPath : null;
+
+            var candidate = Path.GetFullPath(Path.Combine(proj.RootPath, storedPath));
+            return File.Exists(candidate) ? candidate : null;
+        }
+
+        static bool IsPathInsideRoot(string rootPath, string candidatePath)
+        {
+            static string Normalize(string path)
+            {
+                var full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return full + Path.DirectorySeparatorChar;
+            }
+
+            var normalizedRoot = Normalize(rootPath);
+            var normalizedCandidate = Normalize(candidatePath);
+            return normalizedCandidate.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
         }
 
         static string ResolveManifestPath(string pathOrProjectJson)

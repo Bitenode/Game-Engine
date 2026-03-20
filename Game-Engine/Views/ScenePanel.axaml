@@ -60,6 +60,12 @@
 								<CheckBox Content="Shadows"
 										  Foreground="#DCE0E6"
 										  IsChecked="{Binding ElementName=Scene, Path=ShowShadows, Mode=TwoWay}" />
+								<CheckBox Content="Selection Outline"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=ShowSelectionOutline, Mode=TwoWay}" />
+								<CheckBox Content="Stats Overlay"
+										  Foreground="#DCE0E6"
+										  IsChecked="{Binding ElementName=Scene, Path=ShowStatsOverlay, Mode=TwoWay}" />
 								<CheckBox Content="2D"
 										  Foreground="#DCE0E6"
 										  IsChecked="{Binding ElementName=Scene, Path=Is2D, Mode=TwoWay}" />

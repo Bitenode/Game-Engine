@@ -36,10 +36,15 @@ The Scene View is the primary 3D editing viewport. It renders the scene using th
 ### Camera Controls
 | Action          | Input                        | Notes |
 |-----------------|------------------------------|-------|
-| **Orbit**       | Left-click + drag            | Orbits around the focus point |
-| **Pan**         | Middle-click + drag          | Moves the camera laterally |
-| **Zoom**        | Scroll wheel                 | Dolly toward/away from focus |
+| **Orbit**       | Left-click + drag (Hand tool) or Right-click + drag | Orbits around the focus point |
+| **Pan**         | Middle-click + drag or Alt + Left-click + drag | Moves the camera laterally |
+| **Zoom**        | Scroll wheel (Shift = fine zoom) | Dolly toward/away from focus |
 | **Fly**         | Right-click + drag           | Free camera rotation (FPS-style) |
+
+### Camera Bookmarks
+- **Save bookmark**: `Ctrl+1..5`
+- **Recall bookmark**: `1..5`
+- Saved bookmark data includes target, orbit yaw/pitch, and camera distance.
 
 ### Toolbar
 | Button     | Function                                         |
@@ -54,12 +59,17 @@ The Scene View is the primary 3D editing viewport. It renders the scene using th
 | **FPS**    | Frames-per-second display                         |
 
 ### Transform Gizmos
-When an object is selected and a tool is active (Move/Rotate/Scale), colored axis gizmos appear:
+When an object is selected, colored axis gizmos appear in Scene View (including Hand mode for quick orientation). Transform editing still requires Move/Rotate/Scale tools.
 - **Red** = X axis
 - **Green** = Y axis
 - **Blue** = Z axis
 
 Click and drag an axis handle to constrain movement/rotation/scale to that axis. Gizmos maintain constant screen size regardless of camera distance.
+
+### Transform Shortcuts
+- **Local/World toggle**: `L` (toggles gizmo local-space mode)
+- **Axis lock**: `X`, `Y`, `Z` (press same key again to clear lock)
+- **Precise numeric transform**: `Ctrl+Shift+T`
 
 ### Collider Gizmos
 Toggle the Gizmo button to show/hide collision shape wireframes in the scene:
@@ -74,6 +84,8 @@ Click on an object in the Scene View to select it:
 3. On hit, ray is tested against individual triangles (Moller-Trumbore)
 4. Closest hit determines the selected object
 5. `SelectionService.Set()` updates the Inspector, Hierarchy, and gizmo state
+
+`F` frames the selected object in Scene View. Framing uses a short smooth camera transition.
 
 ### Terrain Editing
 When a Terrain is selected, the Scene View enters terrain editing mode:
@@ -143,9 +155,18 @@ Shows the scene as a tree of GameObjects with expand/collapse nodes for the pare
 | Action | Input | Description |
 |--------|-------|-------------|
 | **Select** | Click | Select the object (shown in Inspector, highlighted in Scene View) |
+| **Auto-frame in Scene View** | Click in Hierarchy | Focuses Scene View on the selected object |
 | **Context menu** | Right-click | Create objects, import models, delete |
 | **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) |
 | **Expand/Collapse** | Arrow click | Navigate nested GameObjects |
+
+For multi-select from the Hierarchy, Scene View focuses the first selected object.
+
+### Unsaved Scene Prompt
+Opening/creating/closing projects now checks for unsaved scene changes and prompts with:
+- **Save**
+- **Don’t Save**
+- **Cancel**
 
 ### Context Menu
 | Option | Description |
@@ -604,9 +625,13 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 | Item | Description |
 |------|-------------|
 | **New Project** | Create a new project folder with structure |
-| **Open Project** | Load an existing project from `project.json` |
+| **Open Project** | Load an existing project from `project.json` and auto-restore `lastOpenedScenePath` if available |
 | **Close** | Close the current project |
 | **Save Scene** | Save the current scene to `.scene` file |
+| **Load Scene** | Open and load a `.scene` file (also updates `lastOpenedScenePath` in `project.json`) |
+| **Autosave** | Toggle autosave and set 1/5/10 minute intervals (per-project) |
+| **Recent** | Open recent/pinned projects and pin/unpin current project |
+| **Validate Project** | Run missing-reference checks and print results to Console |
 | **Build Settings** | Open the Build Settings window |
 
 ### Window Menu

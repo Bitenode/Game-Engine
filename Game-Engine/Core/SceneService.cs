@@ -6,8 +6,14 @@ namespace Game_Engine.Core
 {
     public static class SceneService
     {
+        private static bool _suppressDirtyTracking;
+        private static string? _currentScenePath;
+        private static bool _isDirty;
+
         // Backing store so we can rewire CollectionChanged when the root changes.
         private static ObservableCollection<GameObject> _root = new();
+        public static string? CurrentScenePath => _currentScenePath;
+        public static bool IsDirty => _isDirty;
 
         /// <summary>Top-level scene objects.</summary>
         public static ObservableCollection<GameObject> Root
@@ -31,9 +37,10 @@ namespace Game_Engine.Core
         public static void AttachRoot(ObservableCollection<GameObject> root) => Root = root;
 
         /// <summary>Signal listeners that something in the scene changed.</summary>
-        public static void NotifyChanged() => Changed?.Invoke();
+        public static void NotifyChanged() => RaiseChanged(markDirty: true);
 
         public static event Action? Changed;
+        public static event Action<bool>? DirtyStateChanged;
 
         /// <summary>
         /// Fired when the entire scene is replaced (e.g. loading a new .scene file).
@@ -46,13 +53,13 @@ namespace Game_Engine.Core
         public static void Add(GameObject go)
         {
             _root.Add(go);
-            Changed?.Invoke();
+            RaiseChanged(markDirty: true);
         }
 
         public static bool Remove(GameObject go)
         {
             var removed = _root.Remove(go);
-            if (removed) Changed?.Invoke();
+            if (removed) RaiseChanged(markDirty: true);
             return removed;
         }
 
@@ -70,7 +77,7 @@ namespace Game_Engine.Core
             _root.Clear();
             foreach (var go in items) _root.Add(go);
             _root.CollectionChanged += OnRootChanged;
-            Changed?.Invoke();
+            RaiseChanged(markDirty: true);
         }
 
         /// <summary>
@@ -91,23 +98,29 @@ namespace Game_Engine.Core
         public static void Clear()
         {
             _root.Clear();
-            Changed?.Invoke();
+            RaiseChanged(markDirty: true);
         }
 
         /// <summary>Save current root to a JSON scene file.</summary>
         public static void SaveToFile(string path)
         {
             SceneSerialization.SaveScene(path, Root);
+            _currentScenePath = path;
+            SetDirty(false);
         }
 
         /// <summary>Load a JSON scene file and replace the current root.</summary>
         public static void LoadFromFile(string path)
         {
+            _suppressDirtyTracking = true;
             var loaded = SceneSerialization.LoadScene(path);
             SceneService.ReplaceAll(loaded);
             MaterialRebind.RepairScene();
             RebuildVegetation();
-            NotifyChanged();
+            _currentScenePath = path;
+            _suppressDirtyTracking = false;
+            SetDirty(false);
+            Changed?.Invoke();
         }
 
         /// <summary>Rebuild grass for any VegetationPainter with GrassBuilt=true (grass is not serialized).</summary>
@@ -138,7 +151,23 @@ namespace Game_Engine.Core
 
 
         private static void OnRootChanged(object? sender, NotifyCollectionChangedEventArgs e)
-            => Changed?.Invoke();
+            => RaiseChanged(markDirty: true);
+
+        private static void RaiseChanged(bool markDirty)
+        {
+            if (markDirty && !_suppressDirtyTracking)
+                SetDirty(true);
+            Changed?.Invoke();
+        }
+
+        public static void SetCurrentScenePath(string? path) => _currentScenePath = path;
+
+        public static void SetDirty(bool dirty)
+        {
+            if (_isDirty == dirty) return;
+            _isDirty = dirty;
+            DirtyStateChanged?.Invoke(_isDirty);
+        }
 
     }
 }
