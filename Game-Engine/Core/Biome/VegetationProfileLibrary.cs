@@ -10,6 +10,7 @@ namespace Game_Engine.Core.Biome;
 public sealed class VegetationProfileItem
 {
     public string ModelPath { get; set; } = "";
+    public string PrefabPath { get; set; } = "";
     public float Weight { get; set; } = 1f;
     public float DensityMultiplier { get; set; } = 1f;
     public float MinScale { get; set; } = 0.9f;
@@ -125,11 +126,19 @@ public static class VegetationProfileLibrary
                 list.Add(new VegetationProfileItem
                 {
                     ModelPath = it.ModelPath?.Trim() ?? "",
+                    PrefabPath = it.PrefabPath?.Trim() ?? "",
                     Weight = Math.Clamp(it.Weight, 0f, 100f),
                     DensityMultiplier = Math.Clamp(it.DensityMultiplier, 0f, 3f),
                     MinScale = Math.Clamp(it.MinScale, 0.05f, 8f),
                     MaxScale = Math.Clamp(it.MaxScale, 0.05f, 8f),
                 });
+                var added = list[^1];
+                if (string.IsNullOrWhiteSpace(added.PrefabPath) &&
+                    added.ModelPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                {
+                    added.PrefabPath = added.ModelPath;
+                    list[^1] = added;
+                }
             }
         }
         return list;

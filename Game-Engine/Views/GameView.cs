@@ -40,6 +40,11 @@ namespace Game_Engine.Views
             set => SetValue(StateProperty, value);
         }
 
+        // Tracks whether any GameView instance is actively running Play mode.
+        private static int s_playingViewCount;
+        public static bool IsAnyViewPlaying => System.Threading.Volatile.Read(ref s_playingViewCount) > 0;
+        public static event Action? AnyPlayingStateChanged;
+
         #region GPU Resources
         private GLContext? _glCtx;
         private ShaderProgram? _standardShader;
@@ -103,6 +108,7 @@ namespace Game_Engine.Views
         }
 
         bool _awakened, _started, _collidersWarm, _needsWarm;
+        bool _registeredAsPlaying;
 
         const double FIXED_DT = 1.0 / 60.0;
         double _fixedAccum = 0.0;
@@ -302,6 +308,7 @@ namespace Game_Engine.Views
 
         protected override void OnOpenGlDeinit(GlInterface gl)
         {
+            UpdatePlayingRegistration(isPlaying: false);
             _canvasRenderer?.Dispose(); _canvasRenderer = null;
             _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
             // Deferred pipeline cleanup
@@ -386,7 +393,15 @@ namespace Game_Engine.Views
             if (_glCtx == null || _standardShader == null || _skyShader == null || _fsQuad == null || _cache == null)
                 return;
 
-            var g = _glCtx.GL;
+            if (!SceneRenderer.TryBeginViewRender())
+            {
+                _renderInFlight = false;
+                Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+                return;
+            }
+            try
+            {
+                var g = _glCtx.GL;
 
             // Flush any GL errors accumulated by the other view's rendering.
             while (g.GetError() != GLEnum.NoError) { }
@@ -543,6 +558,9 @@ namespace Game_Engine.Views
                     break;
                 }
             }
+
+            // Match planet terrain: inside an atmosphere shell, use PlanetAtmosphere ambient for deferred + forward overlays.
+            SceneRenderer.TryApplyPlanetAtmosphereAmbient(camPos, light, ref Ambient);
 
             // --- CLEAR ---
             g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
@@ -940,8 +958,14 @@ namespace Game_Engine.Views
 
             Profiler.EndFrame();
 
-            // Signal the update timer that this render is done — it can request the next one.
-            _renderInFlight = false;
+                // Signal the update timer that this render is done — it can request the next one.
+                _renderInFlight = false;
+            }
+            finally
+            {
+                SceneRenderer.EndViewRender();
+                _renderInFlight = false;
+            }
         }
         #endregion
 
@@ -1076,8 +1100,26 @@ namespace Game_Engine.Views
         #endregion
 
         #region State management
+        void UpdatePlayingRegistration(bool isPlaying)
+        {
+            if (isPlaying)
+            {
+                if (_registeredAsPlaying) return;
+                _registeredAsPlaying = true;
+                System.Threading.Interlocked.Increment(ref s_playingViewCount);
+                AnyPlayingStateChanged?.Invoke();
+                return;
+            }
+
+            if (!_registeredAsPlaying) return;
+            _registeredAsPlaying = false;
+            System.Threading.Interlocked.Decrement(ref s_playingViewCount);
+            AnyPlayingStateChanged?.Invoke();
+        }
+
         void OnStateChanged()
         {
+            UpdatePlayingRegistration(State == GamePanel.GameState.Playing);
             switch (State)
             {
                 case GamePanel.GameState.Playing:

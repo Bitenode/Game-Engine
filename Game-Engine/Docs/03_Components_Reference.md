@@ -255,7 +255,7 @@ Planet-specific collider shell used for broad-phase queries and debug visualizat
 
 **Behavior:**
 - Provides world AABB for broad-phase collision systems
-- Actual surface-conforming collision uses `PlanetTerrain.SampleSurfaceRadius(...)` inside physics components
+- Actual surface-conforming collision uses `PlanetTerrain.SampleSurfaceRadius(...)` inside physics components (same analytical pipeline as placement). **Rendered** transvoxel chunk meshes can sit slightly in/out versus that sample at a given direction (LOD, isosurface), so vegetation aligned to `SampleSurfaceRadius` may look a hair floated or sunk vs the **visible** rock—not a `PlanetCollider` “wrong radius” bug.
 - Gizmo drawing uses base/max radii to show inner/outer collision shell bounds
 
 ---
@@ -1711,6 +1711,7 @@ Attach it to the same `GameObject` as `PlanetTerrain` to drive:
 Key design rule:
 - `PlanetAtmosphere` is independent from `Skybox`.
 - Planet terrain/water/cloud rendering reads `PlanetAtmosphere` values, not `Skybox.Top`, `Skybox.Ambient`, or `Skybox.SunElevation`.
+- When the **camera is inside** that planet’s atmosphere shell (`radius + AtmosphereHeight`), **Scene view and Game (play) view** also apply `PlanetAtmosphere.Ambient` to the **standard forward / deferred** lighting pass so meshes (imported biome trees, props, etc.) match planet terrain; shadows still use the scene directional light as before.
 
 ### Day/Night Cycle
 
@@ -1798,7 +1799,20 @@ Key runtime controls:
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `AutoSpawn` | `bool` | `false` | Enables periodic streaming-style vegetation update |
+| `UsePlanetAssetPlacements` | `bool` | `false` | Use trees/grass positions from the `.planet` file instead of full biome regen (also turned on automatically when `AutoUseSavedPlacementsWhenPresent` and the asset has placement entries) |
+| `AutoUseSavedPlacementsWhenPresent` | `bool` | `true` | After load, if the `.planet` JSON contains placement entries, enable stored-placement mode even if `useStoredPlacements` was omitted in older saves |
+| `AutoSpawnWhenUsingSavedPlacements` | `bool` | `true` | When saved placements are imported, set `AutoSpawn` so instances appear over subsequent updates (budgeted) |
 | `FullBiomePopulate` | `bool` | `true` | Manual spawn mode switch: full-leaf biome pass vs streaming-style pass |
+| `CullVegetationWhenLeafNotActive` | `bool` | `false` | When `true`, despawns groups whose quad-leaf key is outside the active set; keys change on every planet LOD split/merge, so leave `false` or vegetation will constantly reset |
+| `RemoveVegetationWhenVitalityExhausted` | `bool` | `false` | When `true`, removes instances after ecosystem vitality hits zero; default off so weather/decay does not delete placed trees |
+| `TreeSurfaceNormalBlend` | `float` | `0.26` | How much to blend from planet radial toward sampled slope normal for trunk “up” (0 = radial-only, most stable; steep cliffs scale this down automatically) |
+| `TreeMaxTiltFromRadialDegrees` | `float` | `28` | After blending, max angle between trunk up and planet radial (prevents sideways trees when slope normal is almost tangent to the sphere) |
+| `TreeRadialSurfaceBias` | `float` | `0.48` | Extra meters along radial when placing tree anchors so feet clear the rendered shell vs analytical `SampleSurfaceRadius` (plus a small scale-based bump) |
+| `ImportedTreeMeshEulerCorrection` | `Vector3` | `(0,0,0)` | Degrees added after alignment for **imported** biome/asset trees only (e.g. `(180,0,0)` if the FBX trunk grows along `-Y`). Prefabs: bake into the prefab. |
+
+Root sinking uses trunk-up **and** radial passes so tilted trees don’t “pick” the wrong vertex along radial alone. Tree spawn rotation uses the same **row-vector** matrix convention as `TransformUtil` (transpose of an orthonormal column basis) so local **+Y** truly follows planet trunk-up everywhere on the sphere—not world Y.
+
+**Scene / `.scene` load:** `SceneService.LoadFromFile` defers embedding vegetation from the synchronous `.planet` read. `PlanetVegetationSceneLoader` then reads + deserializes each planet asset on a **thread-pool** thread and applies `vegetation` on the **Avalonia UI thread** (spawn still uses existing per-update budgets).
 
 Manual spawn behavior:
 

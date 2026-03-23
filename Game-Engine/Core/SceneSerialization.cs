@@ -7,6 +7,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Game_Engine.Core.Component;
+using Game_Engine.Core.Importers;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core
@@ -27,6 +29,73 @@ namespace Game_Engine.Core
         // Set this once at startup: SceneSerialization.ResolveMeshFromModelPath = path => ...;
         public static Func<string, List<Mesh>>? ResolveMeshesFromModelPath;   // multi-mesh (preferred)
         public static Func<string, Mesh?>? ResolveMeshFromModelPath;     // single-mesh (fallback)
+
+        /// <summary>
+        /// Each <see cref="MeshFilter"/> with a <c>ModelPath</c> triggers mesh resolution during
+        /// <see cref="DeserializeGameObjectFromJson"/>. Without this cache, spawning many trees would call
+        /// <see cref="ModelImporter.ImportModel"/> once per submesh per instance. Entries are shared read-only.
+        /// </summary>
+        static readonly Dictionary<string, List<Mesh>> s_modelMeshPartsByAbsPath = new(StringComparer.OrdinalIgnoreCase);
+        static readonly object s_modelMeshPartsLock = new();
+
+        /// <summary>
+        /// After <see cref="ModelImporter.ImportModel"/>, register meshes so the next JSON deserialize does not import again.
+        /// </summary>
+        public static void PrimeMeshPartsCacheFromImportRoot(string absModelPath, GameObject importRoot)
+        {
+            if (string.IsNullOrWhiteSpace(absModelPath) || importRoot == null) return;
+            string key = Path.GetFullPath(absModelPath);
+            var parts = CollectMeshesDepthFirst(importRoot);
+            lock (s_modelMeshPartsLock)
+                s_modelMeshPartsByAbsPath[key] = parts;
+        }
+
+        /// <summary>
+        /// Resolver implementation: one import per absolute file path, then reuse lists for all instances.
+        /// Wired from <c>Program</c> into <see cref="ResolveMeshesFromModelPath"/>.
+        /// </summary>
+        public static List<Mesh> GetOrImportMeshPartsCached(string absPath)
+        {
+            if (string.IsNullOrWhiteSpace(absPath))
+                return new List<Mesh>();
+            string key = Path.GetFullPath(absPath);
+            lock (s_modelMeshPartsLock)
+            {
+                if (s_modelMeshPartsByAbsPath.TryGetValue(key, out var hit))
+                    return hit;
+
+                List<Mesh> list;
+                try
+                {
+                    var root = ModelImporter.ImportModel(absPath);
+                    list = CollectMeshesDepthFirst(root);
+                }
+                catch
+                {
+                    list = new List<Mesh>();
+                }
+
+                s_modelMeshPartsByAbsPath[key] = list;
+                return list;
+            }
+        }
+
+        static List<Mesh> CollectMeshesDepthFirst(GameObject go)
+        {
+            var result = new List<Mesh>();
+            void Walk(GameObject n)
+            {
+                foreach (var b in n.Behaviors)
+                {
+                    if (b is MeshFilter mf && mf.Mesh != null)
+                        result.Add(mf.Mesh);
+                }
+                foreach (var c in n.Children)
+                    Walk(c);
+            }
+            Walk(go);
+            return result;
+        }
 
         // ---------------- JSON setup ----------------
         /// <summary>Shared JSON options used for scene serialization (read-only access).</summary>
@@ -624,13 +693,59 @@ namespace Game_Engine.Core
             try
             {
                 var t = Nullable.GetUnderlyingType(targetType) ?? targetType;
+
+                // System.Text.Json often surfaces values as JsonElement. Convert.ChangeType(JsonElement, …)
+                // throws InvalidCastException (caught below) — spawning many deserialized trees spammed exceptions
+                // and stalled the UI / debugger.
+                if (jsonValue is JsonElement jeRoot)
+                {
+                    if (t == typeof(bool))
+                    {
+                        if (jeRoot.ValueKind == JsonValueKind.True) return true;
+                        if (jeRoot.ValueKind == JsonValueKind.False) return false;
+                        if (jeRoot.ValueKind == JsonValueKind.String && bool.TryParse(jeRoot.GetString(), out var vb))
+                            return vb;
+                        if (jeRoot.ValueKind == JsonValueKind.Number && jeRoot.TryGetInt32(out var bi))
+                            return bi != 0;
+                    }
+
+                    if (t == typeof(string))
+                    {
+                        return jeRoot.ValueKind switch
+                        {
+                            JsonValueKind.String => jeRoot.GetString(),
+                            JsonValueKind.Number => jeRoot.GetRawText(),
+                            JsonValueKind.True => "true",
+                            JsonValueKind.False => "false",
+                            JsonValueKind.Null => null,
+                            _ => jeRoot.ToString()
+                        };
+                    }
+
+                    if (t.IsArray || (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>)))
+                    {
+                        try
+                        {
+                            return JsonSerializer.Deserialize(jeRoot.GetRawText(), targetType, _json);
+                        }
+                        catch
+                        {
+                            /* fall through */
+                        }
+                    }
+                }
+
                 if (t.IsEnum)
                 {
                     if (jsonValue is string es) return Enum.Parse(t, es, true);
                     if (jsonValue is JsonElement je)
                     {
                         if (je.ValueKind == JsonValueKind.String) return Enum.Parse(t, je.GetString()!, true);
-                        if (je.ValueKind == JsonValueKind.Number) return Enum.ToObject(t, je.GetInt32());
+                        if (je.ValueKind == JsonValueKind.Number)
+                        {
+                            try { return Enum.ToObject(t, je.GetInt64()); }
+                            catch { return Enum.ToObject(t, je.GetInt32()); }
+                        }
                     }
                 }
 
@@ -641,7 +756,22 @@ namespace Game_Engine.Core
                     if (t == typeof(int)) return numJe.GetInt32();
                     if (t == typeof(long)) return numJe.GetInt64();
                     if (t == typeof(decimal)) return numJe.GetDecimal();
+                    if (t == typeof(byte)) return (byte)numJe.GetInt32();
+                    if (t == typeof(short)) return (short)numJe.GetInt32();
                 }
+
+                if (jsonValue is JsonElement)
+                {
+                    try
+                    {
+                        return JsonSerializer.Deserialize(((JsonElement)jsonValue).GetRawText(), targetType, _json);
+                    }
+                    catch
+                    {
+                        /* last resort below */
+                    }
+                }
+
                 return Convert.ChangeType(jsonValue, t);
             }
             catch

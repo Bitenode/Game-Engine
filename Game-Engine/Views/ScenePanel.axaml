@@ -11,7 +11,10 @@
 				Padding="8"
 				CornerRadius="6"
 				Background="#26282B">
-			<StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+			<WrapPanel Orientation="Horizontal"
+					   ItemHeight="28"
+					   HorizontalAlignment="Stretch"
+					   VerticalAlignment="Center">
 
 				<TextBlock Text="Tool" Foreground="#DCE0E6" VerticalAlignment="Center"/>
 
@@ -38,7 +41,7 @@
 							  ToolTip.Tip="Supersample render at 2× and downsample (smoother edges)"
 							  IsChecked="{Binding ElementName=Scene, Path=Supersample2x, Mode=TwoWay}" />
 
-				<Separator Margin="5,0"/>
+				<TextBlock Text="  " />
 
 				<!-- View toggles -> dropdown with actual CheckBoxes -->
 				<Button Content="View ▾" Foreground="#DCE0E6">
@@ -75,14 +78,14 @@
 				</Button>
 
 
-				<Separator Margin="5,0"/>
+				<TextBlock Text="  " />
 
 				<!-- FPS counter -->
 				<TextBlock Text="{Binding ElementName=Scene, Path=FpsText}"
 						   Foreground="#8899AA" FontSize="11"
 						   VerticalAlignment="Center" Opacity="0.85"/>
 
-			</StackPanel>
+			</WrapPanel>
 		</Border>
 
 		<!-- Scene viewport -->

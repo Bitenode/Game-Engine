@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Avalonia;
 using Silk.NET.OpenGL;
 using Game_Engine.Core.Component;
@@ -16,6 +17,14 @@ namespace Game_Engine.Core
     /// </summary>
     public static class SceneRenderer
     {
+        private static int s_viewRenderActive;
+
+        public static bool TryBeginViewRender()
+            => Interlocked.CompareExchange(ref s_viewRenderActive, 1, 0) == 0;
+
+        public static void EndViewRender()
+            => Volatile.Write(ref s_viewRenderActive, 0);
+
         // ---------- Render context for custom shader support ----------
         /// <summary>
         /// Bundles per-frame render state so DrawMeshItem can set uniforms on custom shaders.
@@ -2219,6 +2228,42 @@ namespace Game_Engine.Core
                 CloudSilverLining = cloudSilverLining;
                 CloudStepCount = cloudStepCount;
             }
+        }
+
+        /// <summary>
+        /// When the camera lies inside an active planet's atmosphere shell, replaces
+        /// <paramref name="ambient"/> with the same ambient term used by
+        /// <see cref="RenderPlanetTerrain"/> / <see cref="ResolvePlanetAtmosphere"/> so
+        /// standard forward materials (imported trees, props) match planet terrain lighting.
+        /// </summary>
+        /// <returns><c>true</c> if a matching planet atmosphere was found and applied.</returns>
+        public static bool TryApplyPlanetAtmosphereAmbient(
+            SN.Vector3 camPosWorld,
+            Light? sceneLight,
+            ref float ambient)
+        {
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null || planet.gameObject == null || !planet.IsActiveAndEnabled)
+                    continue;
+                var atmo = planet.Atmosphere;
+                if (atmo == null || !atmo.Enabled)
+                    continue;
+
+                var p = planet.gameObject.Transform.Position;
+                var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+                float groundR = atmo.GroundRadiusOverride > 0.01f ? atmo.GroundRadiusOverride : planet.Config.Radius;
+                float atmoR = groundR + Math.Max(1f, atmo.AtmosphereHeight);
+                if ((camPosWorld - center).LengthSquared() > atmoR * atmoR)
+                    continue;
+
+                // Sun fallback only affects sky-tint fields inside Resolve; ambient comes from atmosphere.
+                var prm = ResolvePlanetAtmosphere(planet, sceneLight, SN.Vector3.UnitY, ambient);
+                ambient = prm.Ambient;
+                return true;
+            }
+
+            return false;
         }
 
         public static PlanetAtmosphereRenderParams ResolvePlanetAtmosphere(

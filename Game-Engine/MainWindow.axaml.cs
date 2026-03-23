@@ -33,7 +33,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        _dock = new DockManager(LeftTabs, CenterTabs, RightTabs, BottomLeftTabs, BottomTabs);
+        _dock = new DockManager(LeftTabs, CenterTabs, CenterGameTabs, RightTabs, BottomLeftTabs, BottomTabs);
 
         // Register panels
         _registry = new()
@@ -43,7 +43,7 @@ public partial class MainWindow : Window
             [typeof(InspectorPanel)] = ("Inspector", DockRegion.Right, () => new InspectorPanel()),
             [typeof(ProjectPanel)] = ("Project", DockRegion.BottomLeft, () => new ProjectPanel()),
             [typeof(ConsolePanel)] = ("Console", DockRegion.Bottom, () => new ConsolePanel()),
-            [typeof(GamePanel)] = ("Game", DockRegion.Center, () => new GamePanel()),
+            [typeof(GamePanel)] = ("Game", DockRegion.CenterSecondary, () => new GamePanel()),
             [typeof(AnimationPanel)] = ("Animation", DockRegion.Bottom, () => new AnimationPanel()),
             [typeof(TimelineSequencerPanel)] = ("Timeline", DockRegion.Bottom, () => new TimelineSequencerPanel()),
             [typeof(ProfilerPanel)] = ("Profiler", DockRegion.Bottom, () => new ProfilerPanel()),
@@ -58,6 +58,7 @@ public partial class MainWindow : Window
         // Context menus for initial tabs
         AddTabMenus(LeftTabs);
         AddTabMenus(CenterTabs);
+        AddTabMenus(CenterGameTabs);
         AddTabMenus(RightTabs);
         AddTabMenus(BottomLeftTabs);
         AddTabMenus(BottomTabs);
@@ -80,7 +81,7 @@ public partial class MainWindow : Window
         BindNew("NewConsoleTab", typeof(ConsolePanel), DockRegion.Bottom);
         BindNew("NewAnimationTab", typeof(AnimationPanel), DockRegion.Bottom);
         BindNew("NewTimelineTab", typeof(TimelineSequencerPanel), DockRegion.Bottom);
-        BindNew("NewGameTab", typeof(GamePanel), DockRegion.Center);
+        BindNew("NewGameTab", typeof(GamePanel), DockRegion.CenterSecondary);
         BindNew("NewProfilerTab", typeof(ProfilerPanel), DockRegion.Bottom);
         BindNew("NewShaderEditorTab", typeof(ShaderEditorPanel), DockRegion.Center);
         BindNew("NewBiomeGraphTab", typeof(BiomeGraphPanel), DockRegion.Center);
@@ -225,6 +226,7 @@ public partial class MainWindow : Window
     {
         DockRegion.Left => LeftTabs,
         DockRegion.Center => CenterTabs,
+        DockRegion.CenterSecondary => CenterGameTabs,
         DockRegion.Right => RightTabs,
         DockRegion.BottomLeft => BottomLeftTabs,
         _ => BottomTabs
@@ -234,6 +236,7 @@ public partial class MainWindow : Window
     {
         if (host == LeftTabs) return DockRegion.Left;
         if (host == CenterTabs) return DockRegion.Center;
+        if (host == CenterGameTabs) return DockRegion.CenterSecondary;
         if (host == RightTabs) return DockRegion.Right;
         if (host == BottomLeftTabs) return DockRegion.BottomLeft;
         return DockRegion.Bottom;
@@ -257,16 +260,18 @@ public partial class MainWindow : Window
 
         LeftTabs.Items.Clear();
         CenterTabs.Items.Clear();
+        CenterGameTabs.Items.Clear();
         RightTabs.Items.Clear();
         BottomLeftTabs.Items.Clear();
         BottomTabs.Items.Clear();
 
-        _dock = new DockManager(LeftTabs, CenterTabs, RightTabs, BottomLeftTabs, BottomTabs);
+        _dock = new DockManager(LeftTabs, CenterTabs, CenterGameTabs, RightTabs, BottomLeftTabs, BottomTabs);
         _counts.Clear();
         AddInitialPanels();
 
         AddTabMenus(LeftTabs);
         AddTabMenus(CenterTabs);
+        AddTabMenus(CenterGameTabs);
         AddTabMenus(RightTabs);
         AddTabMenus(BottomLeftTabs);
         AddTabMenus(BottomTabs);
@@ -296,6 +301,7 @@ public partial class MainWindow : Window
             items.Add(new Separator());
             items.Add(Make("Dock _Left", () => _dock!.DockTo(content, DockRegion.Left)));
             items.Add(Make("Dock _Center", () => _dock!.DockTo(content, DockRegion.Center)));
+            items.Add(Make("Dock Center _Secondary", () => _dock!.DockTo(content, DockRegion.CenterSecondary)));
             items.Add(Make("Dock _Right", () => _dock!.DockTo(content, DockRegion.Right)));
             items.Add(Make("Dock _Bottom Left", () => _dock!.DockTo(content, DockRegion.BottomLeft)));
             items.Add(Make("Dock _Bottom", () => _dock!.DockTo(content, DockRegion.Bottom)));

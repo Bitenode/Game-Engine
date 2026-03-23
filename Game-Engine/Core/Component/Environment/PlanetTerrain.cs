@@ -60,6 +60,28 @@ public sealed class PlanetTerrain : Behavior
     PlanetChunkManager? _chunkManager;
     PlanetVoxelEditStore? _voxelEditStore;
     PlanetWater? _planetWater;
+    PlanetVegetationAssetData? _pendingVegetationAssetData;
+
+    /// <summary>
+    /// When vegetation is read from disk but not yet applied to <see cref="PlanetVegetationSystem"/>
+    /// (deferred scene load), <see cref="SavePlanetAsset"/> must not serialize an empty placement list
+    /// or the .planet file would be overwritten and placements lost.
+    /// </summary>
+    PlanetVegetationAssetData? _deferredDiskVegetation;
+
+    /// <summary>
+    /// While true, <see cref="BuildVegetationAssetData"/> may substitute <see cref="_deferredDiskVegetation"/>
+    /// when live export is empty. Cleared by <see cref="ReleaseVegetationDiskSnapshotAfterImport"/> after
+    /// <see cref="PlanetVegetationSystem.ImportAssetData"/> — not tied to <see cref="AsyncVegetationHydrationPending"/>,
+    /// which is cleared even when async hydrate aborts early.
+    /// </summary>
+    bool _useDiskVegetationSnapshotOnSave;
+
+    /// <summary>
+    /// When true, synchronous <see cref="TryLoadPlanetAsset"/> skips embedding vegetation so
+    /// <c>PlanetVegetationSceneLoader</c> can apply it on the UI thread after a background read.
+    /// </summary>
+    internal bool AsyncVegetationHydrationPending;
 
     // Cached noise instances for runtime height queries (same params as mesh generator)
     Noise.FractalNoise[]? _biomeNoises;
@@ -112,7 +134,7 @@ public sealed class PlanetTerrain : Behavior
     public override void PostDeserialize()
     {
         EnsurePlanetAssetPath();
-        TryLoadPlanetAsset();
+        TryLoadPlanetAsset(importVegetation: !SceneService.DeferPlanetVegetationImport);
         Initialize();
     }
 
@@ -146,7 +168,8 @@ public sealed class PlanetTerrain : Behavior
     void Initialize()
     {
         EnsurePlanetAssetPath();
-        TryLoadPlanetAsset();
+        bool importVeg = !SceneService.DeferPlanetVegetationImport && !AsyncVegetationHydrationPending;
+        TryLoadPlanetAsset(importVegetation: importVeg);
 
         var baseConfig = _config != null ? CloneConfig(_config) : new PlanetConfig();
         _config = baseConfig;
@@ -207,6 +230,8 @@ public sealed class PlanetTerrain : Behavior
 
         if (EnableWater && WaterGO == null)
             SetupWater();
+
+        ApplyPendingVegetationAssetData();
     }
 
     public void SavePlanetAsset()
@@ -535,6 +560,7 @@ public sealed class PlanetTerrain : Behavior
 
     public override void Update()
     {
+        ApplyPendingVegetationAssetData();
         if (_chunkManager == null || gameObject == null) return;
 
         _chunkUpdateAccumSec += Math.Max(0f, (float)Time.deltaTime);
@@ -678,7 +704,7 @@ public sealed class PlanetTerrain : Behavior
         return string.IsNullOrWhiteSpace(s) ? "Planet" : s;
     }
 
-    bool TryLoadPlanetAsset()
+    bool TryLoadPlanetAsset(bool importVegetation = true)
     {
         if (string.IsNullOrWhiteSpace(PlanetAssetPath))
             return false;
@@ -690,7 +716,7 @@ public sealed class PlanetTerrain : Behavior
             return false;
         }
 
-        ApplyPlanetAssetData(data);
+        ApplyPlanetAssetData(data, importVegetation);
         return true;
     }
 
@@ -738,10 +764,11 @@ public sealed class PlanetTerrain : Behavior
             SeaLevelFraction = SeaLevelFraction,
             EnableWater = EnableWater,
             Config = CloneConfig(cfg),
+            Vegetation = BuildVegetationAssetData(),
         };
     }
 
-    void ApplyPlanetAssetData(PlanetAssetData data)
+    void ApplyPlanetAssetData(PlanetAssetData data, bool importVegetation = true)
     {
         if (data.Config == null)
             return;
@@ -783,6 +810,66 @@ public sealed class PlanetTerrain : Behavior
             BiomeGraphPath = PlanetAssetIO.NormalizeProjectRelative(data.BiomeGraphPath);
 
         _config = CloneConfig(c);
+        if (importVegetation)
+        {
+            _pendingVegetationAssetData = data.Vegetation ?? new PlanetVegetationAssetData();
+            _deferredDiskVegetation = null;
+            _useDiskVegetationSnapshotOnSave = false;
+        }
+        else
+        {
+            _pendingVegetationAssetData = null;
+            var diskVeg = data.Vegetation;
+            if (diskVeg?.Placements != null && diskVeg.Placements.Length > 0)
+            {
+                _deferredDiskVegetation = diskVeg.Clone();
+                _useDiskVegetationSnapshotOnSave = true;
+            }
+            else
+            {
+                _deferredDiskVegetation = null;
+                _useDiskVegetationSnapshotOnSave = false;
+            }
+        }
+    }
+
+    PlanetVegetationAssetData BuildVegetationAssetData()
+    {
+        var veg = gameObject?.Behaviors?.OfType<PlanetVegetationSystem>().FirstOrDefault(v => v != null);
+        PlanetVegetationAssetData live = veg == null ? new PlanetVegetationAssetData() : veg.ExportAssetData();
+        int liveN = live.Placements?.Length ?? 0;
+        int diskN = _deferredDiskVegetation?.Placements?.Length ?? 0;
+
+        // Memory has no exportable rows yet but we stashed disk vegetation (deferred import or hydrate not run).
+        // Do NOT require AsyncVegetationHydrationPending — it is cleared when background load aborts, which would
+        // leave saves unprotected and wipe the .planet file.
+        if (_useDiskVegetationSnapshotOnSave && _deferredDiskVegetation != null && diskN > 0 && liveN == 0)
+            return _deferredDiskVegetation.Clone();
+
+        return live;
+    }
+
+    /// <summary>
+    /// Call after <see cref="PlanetVegetationSystem.ImportAssetData"/> has applied authoritative vegetation
+    /// from disk (or an explicit empty block).
+    /// </summary>
+    internal void ReleaseVegetationDiskSnapshotAfterImport()
+    {
+        _useDiskVegetationSnapshotOnSave = false;
+        _deferredDiskVegetation = null;
+    }
+
+    void ApplyPendingVegetationAssetData()
+    {
+        if (_pendingVegetationAssetData == null)
+            return;
+        var veg = gameObject?.Behaviors?.OfType<PlanetVegetationSystem>().FirstOrDefault(v => v != null);
+        if (veg == null)
+            return;
+        veg.ImportAssetData(_pendingVegetationAssetData);
+        _pendingVegetationAssetData = null;
+        // Same warmup as deferred hydrate: small MaxAssetSpawnsPerUpdate can starve grass vs trees.
+        veg.WarmSpawnAfterDeferredImport();
     }
 
     static PlanetConfig CloneConfig(PlanetConfig src)

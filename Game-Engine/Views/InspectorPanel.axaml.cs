@@ -7909,7 +7909,7 @@ public partial class InspectorPanel : UserControl
 
         var info = new TextBlock
         {
-            Text = $"Leaf Groups: {veg.ActiveLeafGroups}   Instances: {veg.ActiveVegetationInstances}",
+            Text = $"Leaf Groups: {veg.ActiveLeafGroups}   Instances: {veg.ActiveVegetationInstances}   Stored placements: {veg.StoredPlacementCount}",
             Opacity = 0.8
         };
         panel.Children.Add(info);
@@ -7930,6 +7930,91 @@ public partial class InspectorPanel : UserControl
             SceneService.NotifyChanged();
         };
         panel.Children.Add(fullPopulateCb);
+
+        var assetPlacementsCb = new CheckBox
+        {
+            Content = "Use .planet Vegetation Placements",
+            IsChecked = veg.UsePlanetAssetPlacements
+        };
+        assetPlacementsCb.Checked += (_, _) =>
+        {
+            veg.UsePlanetAssetPlacements = true;
+            SceneService.NotifyChanged();
+        };
+        assetPlacementsCb.Unchecked += (_, _) =>
+        {
+            veg.UsePlanetAssetPlacements = false;
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(assetPlacementsCb);
+
+        var autoUseSavedCb = new CheckBox
+        {
+            Content = "Auto-use saved placements when .planet has entries",
+            IsChecked = veg.AutoUseSavedPlacementsWhenPresent
+        };
+        autoUseSavedCb.Checked += (_, _) =>
+        {
+            veg.AutoUseSavedPlacementsWhenPresent = true;
+            SceneService.NotifyChanged();
+        };
+        autoUseSavedCb.Unchecked += (_, _) =>
+        {
+            veg.AutoUseSavedPlacementsWhenPresent = false;
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(autoUseSavedCb);
+
+        var autoSpawnSavedCb = new CheckBox
+        {
+            Content = "Auto-enable streaming spawn when saved placements load",
+            IsChecked = veg.AutoSpawnWhenUsingSavedPlacements
+        };
+        autoSpawnSavedCb.Checked += (_, _) =>
+        {
+            veg.AutoSpawnWhenUsingSavedPlacements = true;
+            SceneService.NotifyChanged();
+        };
+        autoSpawnSavedCb.Unchecked += (_, _) =>
+        {
+            veg.AutoSpawnWhenUsingSavedPlacements = false;
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(autoSpawnSavedCb);
+
+        var cullLeafCb = new CheckBox
+        {
+            Content = "Cull when leaf leaves stream (LOD; can reset vegetation)",
+            IsChecked = veg.CullVegetationWhenLeafNotActive
+        };
+        cullLeafCb.Checked += (_, _) =>
+        {
+            veg.CullVegetationWhenLeafNotActive = true;
+            SceneService.NotifyChanged();
+        };
+        cullLeafCb.Unchecked += (_, _) =>
+        {
+            veg.CullVegetationWhenLeafNotActive = false;
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(cullLeafCb);
+
+        var vitalityRemoveCb = new CheckBox
+        {
+            Content = "Remove when ecosystem vitality exhausted",
+            IsChecked = veg.RemoveVegetationWhenVitalityExhausted
+        };
+        vitalityRemoveCb.Checked += (_, _) =>
+        {
+            veg.RemoveVegetationWhenVitalityExhausted = true;
+            SceneService.NotifyChanged();
+        };
+        vitalityRemoveCb.Unchecked += (_, _) =>
+        {
+            veg.RemoveVegetationWhenVitalityExhausted = false;
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(vitalityRemoveCb);
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
 

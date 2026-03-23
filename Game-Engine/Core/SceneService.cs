@@ -1,12 +1,20 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using Game_Engine.Core.Planet;
 
 namespace Game_Engine.Core
 {
     public static class SceneService
     {
         private static bool _suppressDirtyTracking;
+
+        /// <summary>
+        /// While true, <see cref="PlanetTerrain"/> skips applying vegetation from a synchronous .planet read so
+        /// <see cref="PlanetVegetationSceneLoader"/> can deserialize off-thread after <see cref="LoadFromFile"/>.
+        /// </summary>
+        public static bool DeferPlanetVegetationImport { get; private set; }
+
         private static string? _currentScenePath;
         private static bool _isDirty;
 
@@ -113,10 +121,19 @@ namespace Game_Engine.Core
         public static void LoadFromFile(string path)
         {
             _suppressDirtyTracking = true;
-            var loaded = SceneSerialization.LoadScene(path);
-            SceneService.ReplaceAll(loaded);
-            MaterialRebind.RepairScene();
-            RebuildVegetation();
+            DeferPlanetVegetationImport = true;
+            try
+            {
+                var loaded = SceneSerialization.LoadScene(path);
+                SceneService.ReplaceAll(loaded);
+                MaterialRebind.RepairScene();
+                RebuildVegetation();
+                PlanetVegetationSceneLoader.ScheduleHydrateAfterSceneReplace();
+            }
+            finally
+            {
+                DeferPlanetVegetationImport = false;
+            }
             _currentScenePath = path;
             _suppressDirtyTracking = false;
             SetDirty(false);

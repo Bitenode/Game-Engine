@@ -105,6 +105,14 @@ namespace Game_Engine.Core.Component
         /// <summary>3D model extensions.</summary>
         private static readonly HashSet<string> s_modelExts = new(StringComparer.OrdinalIgnoreCase)
             { ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds" };
+        private sealed class ModelCacheEntry
+        {
+            public Mesh? Mesh;
+            public Material? Material;
+        }
+        private static readonly Dictionary<string, ModelCacheEntry> s_modelCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, Texture2D?> s_textureCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly object s_assetCacheLock = new();
 
         /// <summary>
         /// Resolve the CustomMeshPath: if it's a 3D model, load it and cache the mesh + material.
@@ -130,16 +138,9 @@ namespace Game_Engine.Core.Component
                     string? absPath = ResolvePath(CustomMeshPath);
                     if (absPath != null && File.Exists(absPath))
                     {
-                        var rootGO = Importers.ModelImporter.ImportModel(absPath);
-                        // Find first MeshFilter in the imported hierarchy
-                        var mf = FindFirstComponent<MeshFilter>(rootGO);
-                        if (mf?.Mesh != null)
-                            _resolvedMesh = mf.Mesh;
-
-                        // Find first MeshRenderer and grab its material (has textures)
-                        var mr = FindFirstComponent<MeshRenderer>(rootGO);
-                        if (mr?.Material != null)
-                            _resolvedMat = mr.Material;
+                        var cached = GetOrLoadModelCached(absPath);
+                        _resolvedMesh = cached.Mesh;
+                        _resolvedMat = cached.Material;
 
                         Log.Info($"[VegetationPainter] Loaded custom mesh from '{CustomMeshPath}' " +
                                  $"({_resolvedMesh?.Vertices?.Length ?? 0} verts, mat={_resolvedMat != null})");
@@ -159,7 +160,7 @@ namespace Game_Engine.Core.Component
                 {
                     string? absPath = ResolvePath(CustomMeshPath);
                     if (absPath != null && File.Exists(absPath))
-                        _resolvedTex = TryLoadTextureWithFallback(absPath);
+                        _resolvedTex = GetOrLoadTextureCached(absPath);
                 }
                 catch { /* silently ignore bad textures */ }
             }
@@ -189,7 +190,7 @@ namespace Game_Engine.Core.Component
                         {
                             string? absPath = ResolvePath(TexturePath);
                             if (absPath != null && File.Exists(absPath))
-                                _manualTex = TryLoadTextureWithFallback(absPath);
+                                _manualTex = GetOrLoadTextureCached(absPath);
                         }
                         catch { _manualTex = null; }
                     }
@@ -315,6 +316,52 @@ namespace Game_Engine.Core.Component
 
                 return null;
             }
+        }
+
+        static ModelCacheEntry GetOrLoadModelCached(string absPath)
+        {
+            absPath = Path.GetFullPath(absPath);
+            lock (s_assetCacheLock)
+            {
+                if (s_modelCache.TryGetValue(absPath, out var cached))
+                    return cached;
+            }
+
+            var entry = new ModelCacheEntry();
+            try
+            {
+                var rootGO = Importers.ModelImporter.ImportModel(absPath);
+                var mf = FindFirstComponent<MeshFilter>(rootGO);
+                if (mf?.Mesh != null)
+                    entry.Mesh = mf.Mesh;
+                var mr = FindFirstComponent<MeshRenderer>(rootGO);
+                if (mr?.Material != null)
+                    entry.Material = mr.Material;
+            }
+            catch { }
+
+            lock (s_assetCacheLock)
+            {
+                s_modelCache[absPath] = entry;
+            }
+            return entry;
+        }
+
+        static Texture2D? GetOrLoadTextureCached(string absPath)
+        {
+            absPath = Path.GetFullPath(absPath);
+            lock (s_assetCacheLock)
+            {
+                if (s_textureCache.TryGetValue(absPath, out var tex))
+                    return tex;
+            }
+
+            Texture2D? loaded = TryLoadTextureWithFallback(absPath);
+            lock (s_assetCacheLock)
+            {
+                s_textureCache[absPath] = loaded;
+            }
+            return loaded;
         }
 
         /// <summary>Find the first component of type T in a GameObject hierarchy.</summary>
@@ -761,8 +808,9 @@ namespace Game_Engine.Core.Component
             string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) ? ToRelativePath(TexturePath) : "";
             var grassMat = BuildGrassMaterial(grassTex, relTexPath);
 
-            // Create a single chunk for this clump patch.
-            var chunkGO = new GameObject("chunk_planet_0");
+            // Use a non-"chunk_" name so renderer fast-paths meant for flat-terrain grass tiles
+            // don't treat planet patches like axis-aligned terrain chunks.
+            var chunkGO = new GameObject("planet_grass_0");
             gameObject.AddChild(chunkGO);
 
             var rng = new Random(42 + bladeCount);

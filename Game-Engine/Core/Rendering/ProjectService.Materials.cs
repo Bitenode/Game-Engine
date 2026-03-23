@@ -15,6 +15,51 @@ namespace Game_Engine.Core
         private static readonly Dictionary<string, ShaderAsset> s_shaderCache = new Dictionary<string, ShaderAsset>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, MaterialAsset> s_matCache = new Dictionary<string, MaterialAsset>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>One runtime <see cref="Material"/> per .material file; shared by all <see cref="MeshRenderer"/>s (read-only at draw time).</summary>
+        static readonly Dictionary<string, Material> s_runtimeMaterialsByAbsPath = new(StringComparer.OrdinalIgnoreCase);
+        static readonly object s_runtimeMaterialsLock = new();
+
+        /// <summary>Absolute path to an existing material file on disk, or null.</summary>
+        public static string? GetExistingMaterialAbsolutePath(string relOrAbs)
+        {
+            if (string.IsNullOrWhiteSpace(relOrAbs) || Current == null) return null;
+            var root = Path.GetFullPath(Current.RootPath);
+            var abs = Path.IsPathRooted(relOrAbs)
+                ? Path.GetFullPath(relOrAbs)
+                : Path.GetFullPath(Path.Combine(root, relOrAbs));
+            return File.Exists(abs) ? abs : null;
+        }
+
+        /// <summary>Hit-only: material already loaded via <see cref="MaterialsLoad"/> or <see cref="CacheRuntimeMaterial"/>.</summary>
+        public static Material? TryGetCachedRuntimeMaterial(string relOrAbs)
+        {
+            var abs = GetExistingMaterialAbsolutePath(relOrAbs);
+            if (abs == null) return null;
+            var key = Path.GetFullPath(abs);
+            lock (s_runtimeMaterialsLock)
+            {
+                return s_runtimeMaterialsByAbsPath.TryGetValue(key, out var m) ? m : null;
+            }
+        }
+
+        /// <summary>Register a material built from the asset pipeline so later <see cref="MaterialsLoad"/> / renderers reuse it.</summary>
+        public static void CacheRuntimeMaterial(string relOrAbs, Material? material)
+        {
+            if (material == null) return;
+            var abs = GetExistingMaterialAbsolutePath(relOrAbs);
+            if (abs == null) return;
+            var key = Path.GetFullPath(abs);
+            lock (s_runtimeMaterialsLock)
+            {
+                if (!s_runtimeMaterialsByAbsPath.ContainsKey(key))
+                    s_runtimeMaterialsByAbsPath[key] = material;
+            }
+        }
+
+        /// <summary>Define ENABLE_MATERIAL_TRACE in the project to log every MaterialsLoad (very noisy).</summary>
+        [Conditional("ENABLE_MATERIAL_TRACE")]
+        static void MaterialLoadTrace(string message) => Debug.WriteLine(message);
+
 
         public static ShaderAsset LoadShaderAsset(string rel)
         {
@@ -66,7 +111,14 @@ namespace Game_Engine.Core
 
                 if (!File.Exists(abs)) return null;
 
-                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] request='{relOrAbs}' -> abs='{abs}'");
+                string cacheKey = Path.GetFullPath(abs);
+                lock (s_runtimeMaterialsLock)
+                {
+                    if (s_runtimeMaterialsByAbsPath.TryGetValue(cacheKey, out var master) && master != null)
+                        return master;
+                }
+
+                MaterialLoadTrace($"[MatTrace:MatLoad] request='{relOrAbs}' -> abs='{abs}'");
 
                 var json = File.ReadAllText(abs);
                 using var doc = JsonDocument.Parse(json);
@@ -75,7 +127,7 @@ namespace Game_Engine.Core
                 // ---------- construct runtime Material ----------
                 var m = new Material();
                 m.Name = rootEl.TryGetProperty("name", out var nEl) ? (nEl.GetString() ?? "Material") : "Material";
-                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] name='{m.Name}'");
+                MaterialLoadTrace($"[MatTrace:MatLoad] name='{m.Name}'");
 
                 // ---------- parameters ----------
                 if (rootEl.TryGetProperty("parameters", out var p) && p.ValueKind == JsonValueKind.Object)
@@ -88,7 +140,7 @@ namespace Game_Engine.Core
                             if (TryParseHexColor(tintEl.GetString(), out var col))
                             {
                                 m.BaseColor = col;
-                                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] param.Tint(hex) = {tintEl.GetString()}");
+                                MaterialLoadTrace($"[MatTrace:MatLoad] param.Tint(hex) = {tintEl.GetString()}");
                             }
                         }
                         else if (tintEl.ValueKind == JsonValueKind.Array && tintEl.GetArrayLength() >= 4)
@@ -98,7 +150,7 @@ namespace Game_Engine.Core
                             float b = (float)tintEl[2].GetDouble();
                             float a = (float)tintEl[3].GetDouble();
                             m.BaseColor = Color.FromArgb(ToByte(a * 255f), ToByte(r * 255f), ToByte(g * 255f), ToByte(b * 255f));
-                            System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] param.Tint(array) = [{r},{g},{b},{a}]");
+                            MaterialLoadTrace($"[MatTrace:MatLoad] param.Tint(array) = [{r},{g},{b},{a}]");
                         }
                     }
 
@@ -106,14 +158,14 @@ namespace Game_Engine.Core
                     if (p.TryGetProperty("Metallic", out var metEl) && metEl.TryGetDouble(out var md))
                     {
                         m.Metallic = Clamp01((float)md);
-                        System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] param.Metallic = {m.Metallic}");
+                        MaterialLoadTrace($"[MatTrace:MatLoad] param.Metallic = {m.Metallic}");
                     }
 
                     // Roughness -> Smoothness (alias maintained in Material)
                     if (p.TryGetProperty("Roughness", out var rEl) && rEl.TryGetDouble(out var rd))
                     {
                         m.Smoothness = Clamp01(1f - (float)rd);
-                        System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] param.Roughness = {(float)rd} -> Smoothness = {m.Smoothness}");
+                        MaterialLoadTrace($"[MatTrace:MatLoad] param.Roughness = {(float)rd} -> Smoothness = {m.Smoothness}");
                     }
                     if (p.TryGetProperty("Smoothness", out var sEl) && sEl.TryGetDouble(out var sd))
                     {
@@ -124,14 +176,14 @@ namespace Game_Engine.Core
                     if (p.TryGetProperty("Transparent", out var tEl))
                     {
                         m.Transparent = tEl.ValueKind == JsonValueKind.True;
-                        System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] param.Transparent = {m.Transparent}");
+                        MaterialLoadTrace($"[MatTrace:MatLoad] param.Transparent = {m.Transparent}");
                     }
 
                     // AlphaCutoff
                     if (p.TryGetProperty("AlphaCutoff", out var acEl) && acEl.TryGetDouble(out var acd))
                     {
                         m.AlphaCutoff = Clamp01((float)acd);
-                        System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] param.AlphaCutoff = {m.AlphaCutoff}");
+                        MaterialLoadTrace($"[MatTrace:MatLoad] param.AlphaCutoff = {m.AlphaCutoff}");
                     }
                 }
 
@@ -148,7 +200,7 @@ namespace Game_Engine.Core
                         if (string.IsNullOrWhiteSpace(rawPath)) return;
                         string absTex = ResolveToProjectAbs(rawPath);
                         bool exists = File.Exists(absTex);
-                        System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] add '{usage}' raw='{rawPath}' -> abs='{absTex}' exists={exists}");
+                        MaterialLoadTrace($"[MatTrace:MatLoad] add '{usage}' raw='{rawPath}' -> abs='{absTex}' exists={exists}");
                         if (!exists) return;
 
                         try
@@ -163,11 +215,11 @@ namespace Game_Engine.Core
                                 SourcePath = rawPath  // preserve for scene serialization
                             };
                             m.Textures.Add(slot);
-                            System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad]   +slot '{slot.Usage}' ({tex.Width}x{tex.Height})");
+                            MaterialLoadTrace($"[MatTrace:MatLoad]   +slot '{slot.Usage}' ({tex.Width}x{tex.Height})");
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad]   !failed to load '{absTex}': {ex.Message}");
+                            MaterialLoadTrace($"[MatTrace:MatLoad]   !failed to load '{absTex}': {ex.Message}");
                         }
                     }
 
@@ -195,7 +247,7 @@ namespace Game_Engine.Core
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine("[MatTrace:MatLoad] textures: (none)");
+                    MaterialLoadTrace("[MatTrace:MatLoad] textures: (none)");
                 }
 
                 // ---------- sanity defaults ----------
@@ -216,14 +268,20 @@ namespace Game_Engine.Core
 
                 m.Lit = true;
 
-                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] result: BaseColor={m.BaseColor}, Metallic={m.Metallic}, Smoothness={m.Smoothness}, Transparent={m.Transparent}, AlphaCutoff={m.AlphaCutoff}");
-                System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] slots added: {m.Textures.Count}");
+                MaterialLoadTrace($"[MatTrace:MatLoad] result: BaseColor={m.BaseColor}, Metallic={m.Metallic}, Smoothness={m.Smoothness}, Transparent={m.Transparent}, AlphaCutoff={m.AlphaCutoff}");
+                MaterialLoadTrace($"[MatTrace:MatLoad] slots added: {m.Textures.Count}");
+
+                lock (s_runtimeMaterialsLock)
+                {
+                    if (!s_runtimeMaterialsByAbsPath.ContainsKey(cacheKey))
+                        s_runtimeMaterialsByAbsPath[cacheKey] = m;
+                }
 
                 return m;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[MatTrace:MatLoad] ERROR " + ex.GetType().Name + ": " + ex.Message);
+                MaterialLoadTrace("[MatTrace:MatLoad] ERROR " + ex.GetType().Name + ": " + ex.Message);
                 return null;
             }
 

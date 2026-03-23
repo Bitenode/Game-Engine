@@ -343,6 +343,16 @@ Notes:
 - Automatic runtime updates still use normal streaming behavior (`AutoSpawn` update loop).
 - `Spawn Vegetation` and `Respawn` always guarantee minimum visible spawn when a biome profile has valid grass/tree entries.
 
+### Saved vegetation in `.planet` files
+
+`PlanetTerrain` writes a `Vegetation` block into the planet asset JSON (see `PlanetVegetationAssetData` / `PlanetVegetationPlacement`).
+
+- **`DirX` / `DirY` / `DirZ`**: unit direction from the **planet pivot** toward the instance. World position is reconstructed with `SampleSurfaceRadius(dir)` (not raw `PosX/Y/Z` in the file).
+- **`ModelPath` / `PrefabPath` / `TexturePath`**: project-relative asset references. **Imported trees** often store `MeshFilter.ModelPath` only on **child** objects (multi-part FBX); export walks the hierarchy so the `.planet` file still gets the correct model path.
+- **`UseStoredPlacements`**: mirrors `PlanetVegetationSystem.UsePlanetAssetPlacements`. Enable **Use .planet Vegetation Placements** in the inspector if you want spawn logic to prefer saved rows; `AutoUseSavedPlacementsWhenPresent` can still opt in when the flag was off but the file contains placements.
+- **Spawn budget**: `MaxAssetSpawnsPerUpdate` limits how many saved placements materialize per tick. Grass is spawned **before** trees in that tick so grass is not starved when the budget is small. After scene load, a **one-shot warmup** applies a larger budget so grass and trees both appear quickly.
+- **Saving during deferred import**: When synchronous load skips applying vegetation, `PlanetTerrain` keeps a **clone of the vegetation block** and a **snapshot flag** so `SavePlanetAsset` substitutes that clone whenever live export is still empty (including if async hydrate aborts and `AsyncVegetationHydrationPending` is cleared early). The snapshot is dropped only after `PlanetVegetationSystem.ImportAssetData` loads rows into memory or imports an explicit empty `Placements` array.
+
 ### Planet Grass Attachment and Rendering Notes
 
 Planet grass spawned through `VegetationPainter.BuildOnPlanetPatch(...)` includes

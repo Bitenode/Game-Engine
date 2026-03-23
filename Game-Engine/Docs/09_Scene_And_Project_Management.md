@@ -339,10 +339,11 @@ When pressing **Play** in the Game View, the engine creates a snapshot of the en
 2. All material texture data is captured (textures can be modified at runtime)
 3. The game loop starts — all Behaviors receive `Awake()` then `Start()`
 4. `Update()`, `FixedUpdate()`, `LateUpdate()` run each frame
-5. Input is routed to the game, physics simulation runs
+5. Input is routed to the Game View, physics simulation runs
 6. Audio sources begin playback (if `PlayOnAwake` is set)
 7. Particle emitters begin emitting
 8. Animators start their default animation state
+9. Scene View stays live and renders the runtime scene from the editor camera for in-editor inspection
 
 **Press Stop:**
 1. The game loop stops

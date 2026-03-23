@@ -19,6 +19,15 @@ namespace Game_Engine.Core.Component
     [Require(typeof(MeshFilter), typeof(MeshRenderer), typeof(TreeLOD))]
     public sealed class Tree : Behavior
     {
+    sealed class ImportedModelTemplate
+    {
+        public Mesh? Mesh;
+        public Material? Material;
+    }
+
+    static readonly Dictionary<string, ImportedModelTemplate> s_importTemplateCache = new(StringComparer.OrdinalIgnoreCase);
+    static readonly object s_importTemplateLock = new();
+
         // ── Procedural trunk parameters ──
         [Persist] public float TrunkHeight { get; set; } = 3f;
         [Persist] public float TrunkRadiusBottom { get; set; } = 0.25f;
@@ -123,20 +132,7 @@ namespace Game_Engine.Core.Component
             string? abs = ResolveModelPath(modelPath);
             if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
                 return null;
-
-            try
-            {
-                if (SceneSerialization.ResolveMeshesFromModelPath != null)
-                {
-                    var list = SceneSerialization.ResolveMeshesFromModelPath(abs);
-                    if (list != null && list.Count > 0 && list[0] != null)
-                        return list[0];
-                }
-                if (SceneSerialization.ResolveMeshFromModelPath != null)
-                    return SceneSerialization.ResolveMeshFromModelPath(abs);
-            }
-            catch { }
-            return null;
+        return ResolveImportedTemplate(abs).Mesh;
         }
 
         static Material? TryResolveModelRuntimeMaterial(string? modelPath)
@@ -145,31 +141,64 @@ namespace Game_Engine.Core.Component
             string? abs = ResolveModelPath(modelPath);
             if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
                 return null;
-
-            try
-            {
-                var root = SceneSerialization.ResolveMeshesFromModelPath != null
-                    ? Importers.ModelImporter.ImportModel(abs)
-                    : null;
-                if (root == null) return null;
-
-                var impMr = FindFirstComponent<MeshRenderer>(root);
-                Material? src = impMr?.Material;
-                if (src == null && impMr != null && impMr.MaterialPaths.Count > 0)
-                {
-                    try { src = ProjectService.MaterialsLoad(impMr.MaterialPaths[0]); } catch { }
-                }
-                if (src == null) return null;
-
-                // Clone and detach from asset-path driven assignment.
-                var rt = src.Clone(copyTextures: true);
-                rt.Name = string.IsNullOrWhiteSpace(rt.Name) ? "TreeImportedRuntime" : rt.Name;
-                rt.ShaderAssetPath = "";
-                return rt;
-            }
-            catch { }
-            return null;
+        var mat = ResolveImportedTemplate(abs).Material;
+        if (mat == null) return null;
+        var rt = mat.Clone(copyTextures: true);
+        rt.Name = string.IsNullOrWhiteSpace(rt.Name) ? "TreeImportedRuntime" : rt.Name;
+        rt.ShaderAssetPath = "";
+        return rt;
         }
+
+    static ImportedModelTemplate ResolveImportedTemplate(string absModelPath)
+    {
+        lock (s_importTemplateLock)
+        {
+            if (s_importTemplateCache.TryGetValue(absModelPath, out var cached))
+                return cached;
+        }
+
+        var tpl = new ImportedModelTemplate();
+        try
+        {
+            if (SceneSerialization.ResolveMeshesFromModelPath != null)
+            {
+                var list = SceneSerialization.ResolveMeshesFromModelPath(absModelPath);
+                if (list != null && list.Count > 0)
+                    tpl.Mesh = list[0];
+            }
+            if (tpl.Mesh == null && SceneSerialization.ResolveMeshFromModelPath != null)
+                tpl.Mesh = SceneSerialization.ResolveMeshFromModelPath(absModelPath);
+        }
+        catch { }
+
+        // One-time importer pass per model path to capture source material/mesh fallback.
+        try
+        {
+            var root = Importers.ModelImporter.ImportModel(absModelPath);
+            if (tpl.Mesh == null)
+                tpl.Mesh = FindFirstComponent<MeshFilter>(root)?.Mesh;
+
+            var impMr = FindFirstComponent<MeshRenderer>(root);
+            Material? src = impMr?.Material;
+            if (src == null && impMr != null && impMr.MaterialPaths.Count > 0)
+            {
+                try { src = ProjectService.MaterialsLoad(impMr.MaterialPaths[0]); } catch { }
+            }
+            if (src != null)
+            {
+                tpl.Material = src.Clone(copyTextures: true);
+                tpl.Material.ShaderAssetPath = "";
+            }
+        }
+        catch { }
+
+        lock (s_importTemplateLock)
+        {
+            if (!s_importTemplateCache.ContainsKey(absModelPath))
+                s_importTemplateCache[absModelPath] = tpl;
+            return s_importTemplateCache[absModelPath];
+        }
+    }
 
         static T? FindFirstComponent<T>(GameObject go) where T : Behavior
         {

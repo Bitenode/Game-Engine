@@ -1110,14 +1110,14 @@ public partial class BiomeGraphPanel : UserControl
                 {
                     new Avalonia.Platform.Storage.FilePickerFileType("Vegetation Assets")
                     {
-                        Patterns = new[] { "*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.tif", "*.tiff", "*.psd" }
+                        Patterns = new[] { "*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds", "*.prefab", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.tif", "*.tiff", "*.psd" }
                     }
                 }
                 : new[]
                 {
                     new Avalonia.Platform.Storage.FilePickerFileType("3D Models")
                     {
-                        Patterns = new[] { "*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds" }
+                        Patterns = new[] { "*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds", "*.prefab" }
                     }
                 };
             AddPropFilePicker("Model", it.ModelPath, v =>

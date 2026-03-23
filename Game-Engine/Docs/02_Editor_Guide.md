@@ -25,7 +25,8 @@ The editor window contains dockable panels distributed across five dock regions:
 - **Duplicate** panels with right-click > New Tab (tabs are auto-numbered, e.g., "Scene View (2)")
 - **Close** panels via right-click > Close
 - **Reset** to defaults with **Window > Reset Layout**
-- Each dock region supports multiple tabs — Scene View and Game View share the Center region by default
+- Each dock region supports multiple tabs
+- Reset Layout opens Scene View and Game View side-by-side by default (separate center hosts for live editing + play testing)
 
 ---
 
@@ -99,6 +100,8 @@ When a Terrain is selected, the Scene View enters terrain editing mode:
 ## Game View
 
 The Game View shows the game as it would appear to the player, rendered through the first enabled Camera component in the scene.
+
+During Play mode, Scene View remains live and renders the same runtime world from the editor camera. This lets you inspect and interact with runtime objects while the game is running.
 
 ### Play Controls
 | Button    | Function                                           |

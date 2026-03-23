@@ -12,6 +12,55 @@ public sealed class PlanetAssetData
     public float SeaLevelFraction { get; set; } = 0.25f;
     public bool EnableWater { get; set; } = true;
     public PlanetConfig Config { get; set; } = new();
+    public PlanetVegetationAssetData Vegetation { get; set; } = new();
+}
+
+public sealed class PlanetVegetationAssetData
+{
+    public bool UseStoredPlacements { get; set; } = false;
+    public PlanetVegetationPlacement[] Placements { get; set; } = Array.Empty<PlanetVegetationPlacement>();
+
+    /// <summary>Thread-safe copy for passing from a background load task to the UI thread.</summary>
+    public PlanetVegetationAssetData Clone()
+    {
+        var pl = Placements;
+        if (pl == null || pl.Length == 0)
+            return new PlanetVegetationAssetData { UseStoredPlacements = UseStoredPlacements, Placements = Array.Empty<PlanetVegetationPlacement>() };
+        var list = new List<PlanetVegetationPlacement>(pl.Length);
+        for (int i = 0; i < pl.Length; i++)
+        {
+            var p = pl[i];
+            if (p == null) continue;
+            list.Add(new PlanetVegetationPlacement
+            {
+                IsGrass = p.IsGrass,
+                BiomeName = p.BiomeName ?? "",
+                PrefabPath = p.PrefabPath ?? "",
+                ModelPath = p.ModelPath ?? "",
+                TexturePath = p.TexturePath ?? "",
+                DirX = p.DirX,
+                DirY = p.DirY,
+                DirZ = p.DirZ,
+                Scale = p.Scale,
+                YawDeg = p.YawDeg,
+            });
+        }
+        return new PlanetVegetationAssetData { UseStoredPlacements = UseStoredPlacements, Placements = list.ToArray() };
+    }
+}
+
+public sealed class PlanetVegetationPlacement
+{
+    public bool IsGrass { get; set; }
+    public string BiomeName { get; set; } = "";
+    public string PrefabPath { get; set; } = "";
+    public string ModelPath { get; set; } = "";
+    public string TexturePath { get; set; } = "";
+    public float DirX { get; set; }
+    public float DirY { get; set; }
+    public float DirZ { get; set; }
+    public float Scale { get; set; } = 1f;
+    public float YawDeg { get; set; }
 }
 
 public static class PlanetAssetIO
@@ -48,6 +97,18 @@ public static class PlanetAssetIO
                 data.Config = new PlanetConfig();
             data.Config.Biomes ??= BiomeDefinition.AllPresets;
             data.Config.RiverAllowedBiomes ??= Array.Empty<string>();
+            if (data.Vegetation == null)
+                data.Vegetation = new PlanetVegetationAssetData();
+            if (data.Vegetation.Placements == null)
+                data.Vegetation.Placements = Array.Empty<PlanetVegetationPlacement>();
+            for (int i = 0; i < data.Vegetation.Placements.Length; i++)
+            {
+                var p = data.Vegetation.Placements[i];
+                if (p == null) continue;
+                p.PrefabPath = NormalizeAssetReference(p.PrefabPath);
+                p.ModelPath = NormalizeAssetReference(p.ModelPath);
+                p.TexturePath = NormalizeAssetReference(p.TexturePath);
+            }
             return true;
         }
         catch (Exception ex)
@@ -71,6 +132,16 @@ public static class PlanetAssetIO
             data.Config ??= new PlanetConfig();
             data.Config.Biomes ??= BiomeDefinition.AllPresets;
             data.Config.RiverAllowedBiomes ??= Array.Empty<string>();
+            data.Vegetation ??= new PlanetVegetationAssetData();
+            data.Vegetation.Placements ??= Array.Empty<PlanetVegetationPlacement>();
+            for (int i = 0; i < data.Vegetation.Placements.Length; i++)
+            {
+                var p = data.Vegetation.Placements[i];
+                if (p == null) continue;
+                p.PrefabPath = NormalizeAssetReference(p.PrefabPath);
+                p.ModelPath = NormalizeAssetReference(p.ModelPath);
+                p.TexturePath = NormalizeAssetReference(p.TexturePath);
+            }
 
             var json = JsonSerializer.Serialize(data, _json);
             File.WriteAllText(abs, json);
@@ -116,5 +187,28 @@ public static class PlanetAssetIO
         if (proj == null)
             return Path.GetFullPath(path);
         return Path.GetFullPath(Path.Combine(proj.RootPath, path));
+    }
+
+    public static string NormalizeAssetReference(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return "";
+
+        string p = NormalizeProjectRelative(path).Replace('\\', '/');
+        if (p.StartsWith("./", StringComparison.Ordinal))
+            p = p.Substring(2);
+
+        if (p.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+            return p;
+
+        int idx = p.IndexOf("/Assets/", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0 && idx + 1 < p.Length)
+            return p.Substring(idx + 1);
+
+        idx = p.IndexOf("Assets/", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+            return p.Substring(idx);
+
+        return p;
     }
 }

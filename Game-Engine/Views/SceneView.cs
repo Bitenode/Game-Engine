@@ -136,6 +136,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     }
 
     private DispatcherTimer? _fpsTimer;
+    private readonly DispatcherTimer _playModePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(16.666) };
+    private volatile bool _renderInFlight;
 
     private readonly struct CameraBookmark
     {
@@ -1198,6 +1200,26 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             FpsText = $"{fps:F0} FPS  Obj:{objectCount} Sel:{selectedCount} GL:{_lastFrameMs:F0}ms C:{_lastCompositMs:F0}ms O:{_lastOverlayMs:F0}ms [{_lastSectionTimes}]";
         };
         _fpsTimer.Start();
+
+        _playModePreviewTimer.Tick += (_, __) =>
+        {
+            if (!GameView.IsAnyViewPlaying || _renderInFlight) return;
+            _renderInFlight = true;
+            InvalidateVisual();
+        };
+        _playModePreviewTimer.Start();
+
+        GameView.AnyPlayingStateChanged += OnAnyPlayingStateChanged;
+        AttachedToVisualTree += (_, __) => OnAnyPlayingStateChanged();
+        DetachedFromVisualTree += (_, __) => GameView.AnyPlayingStateChanged -= OnAnyPlayingStateChanged;
+    }
+
+    private void OnAnyPlayingStateChanged()
+    {
+        if (!GameView.IsAnyViewPlaying || _renderInFlight) return;
+        _renderInFlight = true;
+        Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+            Avalonia.Threading.DispatcherPriority.Render);
     }
     #endregion
 
@@ -1399,9 +1421,21 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     protected override void OnOpenGlRender(GlInterface gl, int fb)
     {
         if (_glCtx == null || _standardShader == null || _skyShader == null || _gridShader == null || _fsQuad == null || _cache == null)
+        {
+            _renderInFlight = false;
             return;
+        }
 
-        var g = _glCtx.GL;
+        if (!SceneRenderer.TryBeginViewRender())
+        {
+            _renderInFlight = false;
+            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+                Avalonia.Threading.DispatcherPriority.Render);
+            return;
+        }
+        try
+        {
+            var g = _glCtx.GL;
 
         // Flush any GL errors accumulated by the other view's rendering.
         // Both views share the same GL context; stale errors can confuse drivers.
@@ -1551,6 +1585,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 lightRange = Math.Max(0.001f, light.Range);
             }
         }
+
+        // Match planet terrain: inside an atmosphere shell, use PlanetAtmosphere ambient for forward meshes.
+        SceneRenderer.TryApplyPlanetAtmosphereAmbient(camPos, light, ref Ambient);
+
         var fallbackPlanetSunDir = SN.Vector3.Normalize(-L);
         if (fallbackPlanetSunDir.LengthSquared() < 1e-5f)
             fallbackPlanetSunDir = SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
@@ -1815,8 +1853,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         g.Disable(EnableCap.CullFace);
         g.Disable(EnableCap.Blend);
         g.ActiveTexture(TextureUnit.Texture0);
-        g.BindTexture(TextureTarget.Texture2D, 0);
-
+            g.BindTexture(TextureTarget.Texture2D, 0);
+        }
+        finally
+        {
+            SceneRenderer.EndViewRender();
+            _renderInFlight = false;
+        }
     }
     private int _evictCounter;
 

@@ -28,16 +28,16 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.*" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
-    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.10.4" />
+    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.11.0" />
 
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
 
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="4.14.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="5.3.0" />
 
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
 
     <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
-    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="System.Reactive" Version="6.1.0" />
   </ItemGroup>
 
@@ -50,5 +50,7 @@
     <Compile Remove="artifacts\**\*.cs" />
     <EmbeddedResource Remove="artifacts\**\*" />
     <None Remove="artifacts\**\*" />
+    <!-- Local tool/test folders under the project must not be compiled (their obj/*.cs caused CS0579 duplicate assembly attributes). -->
+    <Compile Remove="tools_euler_check\**\*" />
   </ItemGroup>
 </Project>

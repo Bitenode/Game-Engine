@@ -18,9 +18,7 @@
 
   <!-- Link shared Core source files from the editor project -->
   <ItemGroup>
-    <Compile Include="..\Game-Engine\Core\**\*.cs"
-             Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**;..\Game-Engine\Core\Editor\**"
-             Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\Game-Engine\Core\**\*.cs" Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**;..\Game-Engine\Core\Editor\**" Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- NuGet: same as editor minus Roslyn (player loads pre-compiled DLLs) -->
@@ -36,10 +34,10 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
 
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
 
     <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
-    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="System.Reactive" Version="6.1.0" />
   </ItemGroup>
 </Project>

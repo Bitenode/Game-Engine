@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
@@ -19,7 +20,32 @@ namespace Game_Engine.Core
             Width = width; Height = height; Rgba = rgba;
         }
 
+        static readonly Dictionary<string, Texture2D> s_fromFileCache = new(StringComparer.OrdinalIgnoreCase);
+        static readonly object s_fromFileLock = new();
+
+        /// <summary>Decoded RGBA cache keyed by full file path (materials, models, UI share one copy in RAM).</summary>
         public static Texture2D FromFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Path required", nameof(path));
+            string key = Path.GetFullPath(path);
+            lock (s_fromFileLock)
+            {
+                if (s_fromFileCache.TryGetValue(key, out var cached) && cached != null)
+                    return cached;
+            }
+
+            var loaded = LoadFromFileUncached(key);
+
+            lock (s_fromFileLock)
+            {
+                if (!s_fromFileCache.ContainsKey(key))
+                    s_fromFileCache[key] = loaded;
+                return s_fromFileCache[key];
+            }
+        }
+
+        static Texture2D LoadFromFileUncached(string path)
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();
 

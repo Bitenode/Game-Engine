@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using Game_Engine.Core.Component;
+using System.Linq;
 
 namespace Game_Engine.Core;
 
@@ -9,6 +10,7 @@ public class GameObject : INotifyPropertyChanged
     string _name;
     GameObject? _parent;
     bool _enabled = true;
+    bool _hideInHierarchy = false;
 
     public string Name
     {
@@ -48,6 +50,19 @@ public class GameObject : INotifyPropertyChanged
         }
     }
 
+    public bool HideInHierarchy
+    {
+        get => _hideInHierarchy;
+        set
+        {
+            if (_hideInHierarchy == value) return;
+            _hideInHierarchy = value;
+            OnChanged(nameof(HideInHierarchy));
+            Parent?.OnChanged(nameof(HierarchyChildren));
+            SceneService.NotifyChanged();
+        }
+    }
+
     /// Notify this object and all descendants that the effective active state may have changed.
     void PropagateActiveChanged()
     {
@@ -74,6 +89,7 @@ public class GameObject : INotifyPropertyChanged
     }
 
     public ObservableCollection<GameObject> Children { get; } = new();
+    public IEnumerable<GameObject> HierarchyChildren => Children.Where(c => !c.HideInHierarchy);
     public ObservableCollection<Behavior> Behaviors { get; } = new();
 
     // Prefab tracking
@@ -106,13 +122,16 @@ public class GameObject : INotifyPropertyChanged
         if (child == this) return;
         if (child.IsAncestorOf(this)) return;
         child.Parent?.Children.Remove(child);
+        child.Parent?.OnChanged(nameof(HierarchyChildren));
         child.Parent = this;
         Children.Add(child);
+        OnChanged(nameof(HierarchyChildren));
     }
 
     public void RemoveFromParent()
     {
         Parent?.Children.Remove(this);
+        Parent?.OnChanged(nameof(HierarchyChildren));
         Parent = null;
     }
 

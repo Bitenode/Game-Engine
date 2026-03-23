@@ -1,13 +1,13 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Avalonia.Controls;
 
 namespace Game_Engine.Docking;
 
-public enum DockRegion { Left, Center, Right, BottomLeft, Bottom }
+public enum DockRegion { Left, Center, CenterSecondary, Right, BottomLeft, Bottom }
 
 public sealed class DockManager
 {
-    private readonly TabControl _left, _center, _right, _bottomLeft, _bottom;
+    private readonly TabControl _left, _center, _centerSecondary, _right, _bottomLeft, _bottom;
 
     private sealed class Registration
     {
@@ -20,10 +20,10 @@ public sealed class DockManager
 
     private readonly Dictionary<Control, Registration> _map = new();
 
-    public DockManager(TabControl left, TabControl center, TabControl right,
+    public DockManager(TabControl left, TabControl center, TabControl centerSecondary, TabControl right,
                        TabControl bottomLeft, TabControl bottom)
     {
-        _left = left; _center = center; _right = right;
+        _left = left; _center = center; _centerSecondary = centerSecondary; _right = right;
         _bottomLeft = bottomLeft; _bottom = bottom;
     }
 
@@ -101,6 +101,7 @@ public sealed class DockManager
     {
         DockRegion.Left => _left,
         DockRegion.Center => _center,
+        DockRegion.CenterSecondary => _centerSecondary,
         DockRegion.Right => _right,
         DockRegion.BottomLeft => _bottomLeft,
         _ => _bottom

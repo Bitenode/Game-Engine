@@ -1,4 +1,5 @@
 using Avalonia.Media;
+using Game_Engine.Core;
 using Game_Engine.Core.Rendering;
 
 namespace Game_Engine.Core.Component
@@ -21,6 +22,8 @@ namespace Game_Engine.Core.Component
         public List<Material> ResolvedMaterials = new List<Material>();
 
         [Persist] public Material? Material { get; set; } = new Material();
+
+        static Material? s_sharedDefaultUnlit;
 
         public override void OnEnable()
         {
@@ -55,6 +58,9 @@ namespace Game_Engine.Core.Component
         {
             if (string.IsNullOrWhiteSpace(rel)) return null;
 
+            var shared = ProjectService.TryGetCachedRuntimeMaterial(rel);
+            if (shared != null) return shared;
+
             // Path 1: Asset pipeline (new format with ShaderPath + Properties).
             // The ShaderPath presence distinguishes from the simpler old format.
             // Build() handles null shader gracefully (defaults to unlit), and now
@@ -66,7 +72,11 @@ namespace Game_Engine.Core.Component
                 {
                     var shader = ProjectService.LoadShaderAsset(matAsset.ShaderPath);
                     var m = MaterialRuntimeBuilder.Build(matAsset, shader);
-                    if (m != null) return m;
+                    if (m != null)
+                    {
+                        ProjectService.CacheRuntimeMaterial(rel, m);
+                        return m;
+                    }
                 }
             }
             catch { /* fall through to simpler format */ }
@@ -85,11 +95,13 @@ namespace Game_Engine.Core.Component
             return null;
         }
 
-        private Material DefaultMaterial()
+        private static Material DefaultMaterial()
         {
+            if (s_sharedDefaultUnlit != null) return s_sharedDefaultUnlit;
             var m = new Material();
             m.Tint = ColorUtil.FromRGBA(1, 1, 1, 1);
             m.Lit = false;
+            s_sharedDefaultUnlit = m;
             return m;
         }
     }
