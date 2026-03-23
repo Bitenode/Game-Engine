@@ -123,13 +123,23 @@ namespace Game_Engine.Views
 
         // Re-entrancy guard so TreeView ↔ SelectionService don't fight
         private bool _syncingSelection;
+        private bool _filterRebuild;
+        private bool _filterStripExpanded = true;
 
         public HierarchyPanel()
         {
             InitializeComponent();
 
+            ApplyHierarchyFilterToggleAccent();
+            SyncFilterStripToggleUi();
+
             _vm = new HierarchyViewModel();
             DataContext = _vm;
+
+            FilterName.TextChanged += (_, __) => OnHierarchyFilterChanged();
+            FilterComponent.TextChanged += (_, __) => OnHierarchyFilterChanged();
+            MatchList.SelectionChanged += OnMatchListSelectionChanged;
+            SceneService.Changed += OnSceneChangedRefreshHierarchyFilter;
 
             // Selection -> engine selection (supports multi-select)
             Tree.SelectionChanged += (_, __) =>
@@ -228,6 +238,153 @@ namespace Game_Engine.Views
 
             // Context menu target capture
             Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
+
+            OnHierarchyFilterChanged();
+        }
+
+        private void ApplyHierarchyFilterToggleAccent()
+        {
+            var accent = Color.FromRgb(0x2A, 0x9D, 0x8F);
+            var brush = new SolidColorBrush(accent);
+            ToggleFilterRing.Stroke = brush;
+            ToggleFilterDot.Fill = brush;
+            BtnToggleFilters.BorderBrush = new SolidColorBrush(Color.FromArgb(0x99, accent.R, accent.G, accent.B));
+        }
+
+        private void SyncFilterStripToggleUi()
+        {
+            ToggleFilterDot.IsVisible = !_filterStripExpanded;
+            ToolTip.SetTip(BtnToggleFilters,
+                _filterStripExpanded
+                    ? "Hide search filters (more space for the tree)"
+                    : "Show search filters");
+        }
+
+        private void OnToggleFiltersStripClick(object? sender, RoutedEventArgs e)
+        {
+            _filterStripExpanded = !_filterStripExpanded;
+            FilterRoot.IsVisible = _filterStripExpanded;
+            SyncFilterStripToggleUi();
+            OnHierarchyFilterChanged();
+        }
+
+        private void OnSceneChangedRefreshHierarchyFilter()
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (IsHierarchyFilterActive())
+                    RebuildHierarchyMatchList();
+            });
+        }
+
+        private bool IsHierarchyFilterActive()
+        {
+            if (!_filterStripExpanded) return false;
+            var n = FilterName.Text?.Trim() ?? "";
+            var c = FilterComponent.Text?.Trim() ?? "";
+            return n.Length > 0 || c.Length > 0;
+        }
+
+        private void OnHierarchyFilterChanged()
+        {
+            var active = IsHierarchyFilterActive();
+            Tree.IsVisible = !active;
+            MatchList.IsVisible = active;
+            if (active)
+                RebuildHierarchyMatchList();
+            else
+            {
+                _filterRebuild = true;
+                try { MatchList.Items.Clear(); }
+                finally { _filterRebuild = false; }
+            }
+        }
+
+        private static string HierarchyPathOf(GameObject go)
+        {
+            var parts = new List<string>();
+            for (var p = go; p != null; p = p.Parent)
+                parts.Add(p.Name ?? "");
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        private static IEnumerable<GameObject> EnumerateAllGameObjects(IEnumerable<GameObject> roots)
+        {
+            foreach (var root in roots)
+                foreach (var go in EnumerateDepthFirst(root))
+                    yield return go;
+        }
+
+        private static IEnumerable<GameObject> EnumerateDepthFirst(GameObject go)
+        {
+            yield return go;
+            foreach (var c in go.Children)
+                foreach (var x in EnumerateDepthFirst(c))
+                    yield return x;
+        }
+
+        private void RebuildHierarchyMatchList()
+        {
+            var nameQ = FilterName.Text?.Trim() ?? "";
+            var compQ = FilterComponent.Text?.Trim() ?? "";
+
+            _filterRebuild = true;
+            try
+            {
+                MatchList.Items.Clear();
+                foreach (var go in EnumerateAllGameObjects(_vm.Root))
+                {
+                    if (nameQ.Length > 0 &&
+                        (go.Name?.IndexOf(nameQ, StringComparison.OrdinalIgnoreCase) ?? -1) < 0)
+                        continue;
+
+                    if (compQ.Length > 0)
+                    {
+                        var hit = false;
+                        foreach (var b in go.Behaviors)
+                        {
+                            if (b.GetType().Name.IndexOf(compQ, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                hit = true;
+                                break;
+                            }
+                        }
+                        if (!hit) continue;
+                    }
+
+                    var label = HierarchyPathOf(go);
+                    var item = new ListBoxItem
+                    {
+                        Content = label,
+                        Tag = go,
+                        Padding = new Thickness(4, 2)
+                    };
+                    MatchList.Items.Add(item);
+                }
+            }
+            finally
+            {
+                _filterRebuild = false;
+            }
+        }
+
+        private void OnMatchListSelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (_filterRebuild) return;
+            if (MatchList.SelectedItem is not ListBoxItem lbi || lbi.Tag is not GameObject go)
+                return;
+
+            _syncingSelection = true;
+            try
+            {
+                SelectionService.Set(go);
+                SelectionService.RequestFrame(go);
+            }
+            finally
+            {
+                _syncingSelection = false;
+            }
         }
 
         // ---------------- Context menu target capture ----------------
@@ -433,6 +590,12 @@ namespace Game_Engine.Views
 
         private void OnExpandAll(object sender, RoutedEventArgs e) => SetExpandedForScope(true);
         private void OnCollapseAll(object sender, RoutedEventArgs e) => SetExpandedForScope(false);
+
+        private void OnRevealInProject(object? sender, RoutedEventArgs e)
+        {
+            var win = this.GetVisualRoot() as MainWindow;
+            win?.RevealInProjectForSelection();
+        }
 
         private void SetExpandedForScope(bool expand)
         {

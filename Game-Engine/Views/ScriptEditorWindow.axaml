@@ -5,7 +5,7 @@
         Width="1100" Height="700"
         Title="Script Editor">
 
-	<Grid RowDefinitions="Auto,Auto,*,Auto">
+	<Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
 		<!-- Toolbar -->
 		<Border Grid.Row="0" Background="#2D2D2D" BorderThickness="0,0,0,1" BorderBrush="#3F3F3F" Padding="4,3">
 			<StackPanel Orientation="Horizontal" Spacing="2">
@@ -31,12 +31,28 @@
 						<TextBlock Text="Reload" VerticalAlignment="Center"/>
 					</StackPanel>
 				</Button>
+				<Button x:Name="BtnFormat" ToolTip.Tip="Format document"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="Format" VerticalAlignment="Center"/>
+				</Button>
+				<Button x:Name="BtnZoomOut" ToolTip.Tip="Smaller code font (Ctrl+− or Ctrl+wheel)"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="A−" VerticalAlignment="Center" FontSize="11"/>
+				</Button>
+				<Button x:Name="BtnZoomIn" ToolTip.Tip="Larger code font (Ctrl++ or Ctrl+wheel)"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="A+" VerticalAlignment="Center" FontSize="11"/>
+				</Button>
 				<Button x:Name="BtnBuild" ToolTip.Tip="Build All (Ctrl+Shift+B)"
 						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
 					<StackPanel Orientation="Horizontal" Spacing="4">
 						<TextBlock Text="&#x25B6;" FontSize="12" VerticalAlignment="Center" Foreground="#6A9955"/>
 						<TextBlock Text="Build All" VerticalAlignment="Center"/>
 					</StackPanel>
+				</Button>
+				<Button x:Name="BtnDefinitionFiles" ToolTip.Tip="Show definition-indexed files (Ctrl+Shift+O)"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="Definition Files" VerticalAlignment="Center"/>
 				</Button>
 				<Border Width="1" Background="#505050" Margin="4,2"/>
 				<Button x:Name="BtnClose" ToolTip.Tip="Close editor"
@@ -69,8 +85,20 @@
 			</Border>
 		</Grid>
 
+		<!-- Diagnostics strip (click = go to first issue; F8 / Shift+F8 = next / prev) -->
+		<Border x:Name="ProblemsStripHost" Grid.Row="3" Background="#1E1E1E" BorderThickness="0,1,0,0" BorderBrush="#3F3F3F" Padding="6,3"
+				Cursor="Hand" PointerPressed="OnProblemsStripPointerPressed"
+				ToolTip.Tip="Click: jump to first error or warning. F8 / Shift+F8: next / previous diagnostic.">
+			<TextBlock x:Name="StatusProblems"
+					   Foreground="#E8C468"
+					   FontSize="11"
+					   TextTrimming="CharacterEllipsis"
+					   VerticalAlignment="Center"
+					   IsHitTestVisible="False"/>
+		</Border>
+
 		<!-- Status Bar -->
-		<Border Grid.Row="3" Background="#007ACC" Padding="4,2">
+		<Border Grid.Row="4" Background="#007ACC" Padding="4,2">
 			<Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
 				<TextBlock x:Name="Status"
 						   Grid.Column="0"

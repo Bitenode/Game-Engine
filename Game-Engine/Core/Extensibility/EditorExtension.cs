@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Game_Engine.Core.Extensibility
 {
@@ -8,5 +8,6 @@ namespace Game_Engine.Core.Extensibility
         /// Called when the editor is ready to collect contributions.
         /// Use the provided UI builder to declare menus and items.
         public abstract void Contribute(EditorUI ui);
+        
     }
 }

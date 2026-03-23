@@ -25,8 +25,27 @@ The editor window contains dockable panels distributed across five dock regions:
 - **Duplicate** panels with right-click > New Tab (tabs are auto-numbered, e.g., "Scene View (2)")
 - **Close** panels via right-click > Close
 - **Reset** to defaults with **Window > Reset Layout**
+- **Layout presets** — **Window > Layout Presets** saves or restores three named arrangements (**Save Preset 1–3** / **Load Preset 1–3**). Presets are stored on disk so they survive restarts.
 - Each dock region supports multiple tabs
 - Reset Layout opens Scene View and Game View side-by-side by default (separate center hosts for live editing + play testing)
+
+### Settings menu
+- **Clear Console on Play** — when enabled (**Settings** menu), all Console tabs are cleared when you enter play mode (useful for seeing only runtime logs).
+
+### Global shortcuts (main window)
+
+These work when the main editor window has focus (with a project open where noted):
+
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+Shift+P** | **Command palette** — fuzzy filter over every command in `CommandRegistry` (editor built-ins such as new panel tabs, save/load scene, compile scripts, plus any commands registered by `EditorExtension` scripts). **Enter** or double-click runs the selection; **Esc** closes; **↓** moves focus from the search box to the list. |
+| **Ctrl+P** | **Quick open** — fuzzy search project files under the current project root (`.scene`, `.cs`, `.material`, `.prefab`, `.boneanim`, `.shadergraph`; `bin` / `obj` / `.git` are skipped). **Enter** or double-click opens: scripts in the Script Editor, scenes with the usual unsaved-scene prompt, materials/prefabs via `SelectAssetForInspector`, other types with the OS default handler. Requires an open project. |
+
+The **command palette** (**Ctrl+Shift+P**) also includes **Project: Reveal Selection in Project Panel**, which selects the asset for the current Hierarchy selection in the Project tree (if it maps to a file under the project root).
+
+Built-in palette commands are registered from the main window before `CommandRegistry.SealBuiltins()`; hot-loaded extensions register additional commands afterward, and the palette always reflects the current set when opened.
+
+While any Game View is playing, the main window uses a subtle play-mode tint and a **▶** prefix in the title bar so you can tell edit vs play at a glance.
 
 ---
 
@@ -86,7 +105,12 @@ Click on an object in the Scene View to select it:
 4. Closest hit determines the selected object
 5. `SelectionService.Set()` updates the Inspector, Hierarchy, and gizmo state
 
+**Overlapping objects:** clicking again at the **same screen pixel** (within a short time window) **cycles** through other objects hit by that ray, so you can reach items behind the front-most mesh without nudging the camera.
+
 `F` frames the selected object in Scene View. Framing uses a short smooth camera transition.
+
+### Translate snap
+- **Ctrl+G** toggles **snap** for move operations (world grid step; see Scene View log line for the active step).
 
 ### Terrain Editing
 When a Terrain is selected, the Scene View enters terrain editing mode:
@@ -147,6 +171,19 @@ During play mode, the Game View captures input and feeds it to the `Input` syste
 
 Shows the scene as a tree of GameObjects with expand/collapse nodes for the parent-child hierarchy.
 
+### Search & filter strip
+
+Below the title row, optional controls help you find objects in large scenes:
+
+| Control | Purpose |
+|---------|---------|
+| **Filter by object name** | Substring match on `GameObject.Name` (case-insensitive). |
+| **Component type contains** | Optional second filter: any behavior whose **CLR type name** contains the typed substring matches (e.g. `Mesh`, `Camera`). |
+| **Match list** | When either filter has text, the tree is hidden and a flat list shows matching objects as **hierarchy paths** (`Parent/Child/Target`). Selecting a row selects that object and requests a Scene View frame. |
+| **Circular toggle** (right of the **Hierarchy** title) | **Hide or show** the entire filter strip (both text boxes and the match list). When hidden, filters are not applied: the tree stays visible and filter text is ignored until you show the strip again. The icon is a ring; a **filled dot** inside means the strip is **collapsed**. Tooltip: *Hide search filters* / *Show search filters*. |
+
+Clear both filter fields to return to the normal tree view.
+
 ### Visual Indicators
 | Color | Meaning |
 |-------|---------|
@@ -159,7 +196,8 @@ Shows the scene as a tree of GameObjects with expand/collapse nodes for the pare
 |--------|-------|-------------|
 | **Select** | Click | Select the object (shown in Inspector, highlighted in Scene View) |
 | **Auto-frame in Scene View** | Click in Hierarchy | Focuses Scene View on the selected object |
-| **Context menu** | Right-click | Create objects, import models, delete |
+| **Context menu** | Right-click | Create objects, import models, delete, **Reveal in Project** |
+| **Reveal in Project** | Hierarchy context menu or command palette | Selects the corresponding asset in the Project panel when the selection maps to a project file (e.g. model or prefab path) |
 | **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) |
 | **Expand/Collapse** | Arrow click | Navigate nested GameObjects |
 
@@ -186,6 +224,7 @@ Opening/creating/closing projects now checks for unsaved scene changes and promp
 | **Terrain** | Create a heightmap terrain (129x129 default) |
 | **Import Model** | Open file dialog for FBX, OBJ, glTF, GLB, DAE |
 | **Delete** | Remove the selected object from the scene |
+| **Reveal in Project** | Jump to the Project panel entry for the selected object’s asset, when resolvable |
 
 ### Default Scene
 When a new project is opened with no existing scene, a default scene is created with:
@@ -211,8 +250,11 @@ Displays and edits properties of the selected GameObject. Supports single and mu
 Each component (Behavior) on the selected object shows:
 - **Enable checkbox** — toggle the component on/off
 - **Component name** — type label (e.g., "Transform", "MeshRenderer", "PlayerMovement")
+- **Copy** — serializes the component with the same rules as scene save; use **Paste component** (below **Add Component**) to add a duplicate instance on this or another GameObject. Transform is not copyable.
 - **Remove button** — delete the component (Transform cannot be removed)
 - **Properties** — all `[Persist]`-marked properties with type-appropriate editors
+
+**Paste component** appears above **+ Add Component** and applies the last copied component to the current GameObject.
 
 ### Property Editors
 | Type | Editor | Notes |
@@ -285,6 +327,8 @@ Several built-in components have dedicated custom inspectors:
 
 File browser for the project directory with asset management capabilities.
 
+For keyboard-driven access to many of the same file types from anywhere in the editor, use **Quick open** (**Ctrl+P**) on the main window (see **Global shortcuts** under Editor Layout).
+
 ### Folder Structure
 ```
 ProjectRoot/
@@ -314,12 +358,20 @@ ProjectRoot/
 | **Import files** | Right-click > Import | Opens file dialog for external assets |
 | **Reveal in Explorer** | Right-click > Show in Explorer | Opens the folder in the OS file manager |
 | **Refresh** | Right-click > Refresh | Reloads the file tree |
+| **Quick open** | **Ctrl+P** (main window) | Fuzzy-open `.scene` / `.cs` / `.material` / `.prefab` / `.boneanim` / `.shadergraph` anywhere under the project (see **Global shortcuts**) |
 
 ---
 
 ## Console Panel
 
 Displays log messages from the engine, scripts, and extensions.
+
+### Filters and search
+- Toggle **Info / Warning / Error / …** chips to show or hide severities.
+- Use the **search** box to filter visible lines by substring (combined with severity toggles).
+
+### Open log location in Script Editor
+- **Double-click** a line that contains a C# path in compiler style (e.g. `C:\path\File.cs(12,5)` or `in File.cs:12`) to open the **Script Editor** at that line (file must exist on disk).
 
 ### Message Types
 | Icon/Color | Level     | Source                           |
@@ -361,9 +413,14 @@ Log.Error("Global error");
 
 Built-in C# script editor integrated into the editor:
 - **Syntax highlighting** for C# keywords, types, strings, and comments
-- **Compile** button (**Ctrl+B**) — compiles all `.cs` files from `Assets/` and `Packages/`
+- **Format** toolbar button — runs Roslyn **Format Document** on the current buffer
+- **F12** or **Shift+Click** — **Go to definition** for the target symbol across project scripts (`Assets/`, `Packages/`) and local editor engine sources when available (opens the target file in a tab when needed)
+- **Definition Files** toolbar button (or **Ctrl+Shift+O**) — opens a searchable, clickable list of every file currently indexed for go-to-definition
+- **Diagnostics strip** — below the editor, a line shows live Roslyn diagnostic counts and the first error/warning message when present
+- **Compile** — toolbar **Build All** or **Ctrl+Shift+B** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**)
+- **Quick open** (**Ctrl+P**) on the main window — jump to a `.cs` file under the project without browsing the Project panel
 - **Hot-reload** — recompiles and loads the new assembly into a collectible `AssemblyLoadContext` without restarting the editor
-- **Error display** — compilation errors appear in the Console panel with file path, line number, and error message
+- **Error display** — compilation errors appear in the Console panel with file path, line number, and error message (double-click to open here)
 - **Multi-file** — all scripts are compiled together into a single DLL (`Builds/EditorScripts_<timestamp>.dll`)
 
 ### Compilation Process

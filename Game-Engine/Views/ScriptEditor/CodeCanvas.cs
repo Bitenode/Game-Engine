@@ -50,8 +50,13 @@ public sealed class CodeCanvas : Control
 
     // ── Constants ───────────────────────────────────────────────
 
-    public const double FontSize = 14;
+    public const double DefaultFontSize = 14;
     public const double LeftPadding = 4;
+
+    /// <summary>Monospace size in px (affects measure, draw, and scroll math).</summary>
+    public double EditorFontSize { get; set; } = DefaultFontSize;
+
+    double _measureCacheFont = -1;
     private static readonly Typeface s_typeface = new("Consolas,Menlo,Monospace");
 
     // ── Brushes ─────────────────────────────────────────────────
@@ -114,6 +119,12 @@ public sealed class CodeCanvas : Control
 
     public void MeasureCharSize()
     {
+        if (Math.Abs(_measureCacheFont - EditorFontSize) > 0.0001)
+        {
+            CharWidth = 0;
+            LineHeight = 0;
+            _measureCacheFont = EditorFontSize;
+        }
         if (CharWidth > 0 && LineHeight > 0) return;
         try
         {
@@ -121,7 +132,7 @@ public sealed class CodeCanvas : Control
                 new string('M', 80),
                 CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight,
-                s_typeface, FontSize, s_textBrush);
+                s_typeface, EditorFontSize, s_textBrush);
 
             CharWidth = ft.Width / 80.0;
             LineHeight = ft.Height;
@@ -131,8 +142,8 @@ public sealed class CodeCanvas : Control
             // Fallback if measurement fails
         }
 
-        if (CharWidth < 1) CharWidth = FontSize * 0.6;
-        if (LineHeight < 1) LineHeight = FontSize * 1.35;
+        if (CharWidth < 1) CharWidth = EditorFontSize * 0.6;
+        if (LineHeight < 1) LineHeight = EditorFontSize * 1.35;
     }
 
     // ── Render ──────────────────────────────────────────────────
@@ -277,7 +288,7 @@ public sealed class CodeCanvas : Control
 
             var ft = new FormattedText(
                 text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                s_typeface, FontSize, s_textBrush);
+                s_typeface, EditorFontSize, s_textBrush);
 
             ctx.DrawText(ft, new Point(x, y));
         }
@@ -360,7 +371,7 @@ public sealed class CodeCanvas : Control
 
         var ft = new FormattedText(
             text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-            s_typeface, FontSize, brush);
+            s_typeface, EditorFontSize, brush);
         ctx.DrawText(ft, new Point(x, y));
     }
 

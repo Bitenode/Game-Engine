@@ -123,6 +123,9 @@ public partial class InspectorPanel : UserControl
     private bool _isLocked;        // lock state for THIS inspector
     private Window? OwnerWindow => this.GetVisualRoot() as Window;
 
+    /// <summary>Serialized <see cref="SceneSerialization.BehaviorDTO"/> from the last Copy Component.</summary>
+    static string? _behaviorClipboardJson;
+
     private bool _assetInspectorActive;
 
     // Use the custom delegate type
@@ -1642,6 +1645,32 @@ public partial class InspectorPanel : UserControl
 
         var addComponentMenu = BuildAddComponentMenu(go, categoryMap, scriptInfos);
 
+        var pasteBtn = new Button
+        {
+            Content = "Paste component",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Padding = new Thickness(0, 6),
+            Margin = new Thickness(4, 2, 4, 0),
+        };
+        pasteBtn.Click += (_, __) =>
+        {
+            if (string.IsNullOrEmpty(_behaviorClipboardJson))
+            {
+                ShowInfo("No component in clipboard. Use Copy on a component header first.");
+                return;
+            }
+            try
+            {
+                var dto = JsonSerializer.Deserialize<BehaviorDTO>(_behaviorClipboardJson, SceneSerialization.JsonOptions);
+                if (dto == null) { ShowInfo("Clipboard data is invalid."); return; }
+                SceneSerialization.PasteBehaviorFromClipboard(go, dto);
+                SceneService.NotifyChanged();
+                BuildUI(go);
+            }
+            catch (Exception ex) { ShowInfo("Paste failed:\n" + ex.Message); }
+        };
+
         var addBtn = new Button
         {
             Content = "+ Add Component",
@@ -1652,6 +1681,7 @@ public partial class InspectorPanel : UserControl
         };
 
         addBtn.Click += (_, __) => addComponentMenu.Open(addBtn);
+        Host.Children.Add(pasteBtn);
         Host.Children.Add(addBtn);
 
         // ---- Separator before components ------------------------------------
@@ -2075,7 +2105,22 @@ public partial class InspectorPanel : UserControl
 
         var title = new TextBlock { Text = b.GetType().Name, VerticalAlignment = VerticalAlignment.Center };
 
-        var remove = new Button { Content = "Remove", HorizontalAlignment = HorizontalAlignment.Right };
+        Button? copy = null;
+        if (b is not CoreTransform)
+        {
+            copy = new Button { Content = "Copy", Padding = new Thickness(8, 2), Margin = new Thickness(4, 0, 0, 0) };
+            copy.Click += (_, __) =>
+            {
+                try
+                {
+                    var dto = SceneSerialization.ExportBehaviorForClipboard(b);
+                    _behaviorClipboardJson = JsonSerializer.Serialize(dto, SceneSerialization.JsonOptions);
+                }
+                catch (Exception ex) { ShowInfo("Copy failed:\n" + ex.Message); }
+            };
+        }
+
+        var remove = new Button { Content = "Remove", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(8, 2) };
         remove.Click += (_, __) =>
         {
             owner.RemoveBehavior(b);
@@ -2085,6 +2130,7 @@ public partial class InspectorPanel : UserControl
 
         header.Children.Add(enabled);
         header.Children.Add(title);
+        if (copy != null) header.Children.Add(copy);
         header.Children.Add(remove);
         outer.Children.Add(header);
 

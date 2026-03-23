@@ -34,7 +34,8 @@ namespace Game_Engine.Core
                 Id = id,
                 DisplayName = string.IsNullOrWhiteSpace(displayName) ? id : displayName,
                 Execute = exec ?? (() => { }),
-                CanExecute = canExec ?? (() => true)
+                CanExecute = canExec ?? (() => true),
+                IsFromExtension = _sealedBuiltins
             };
 
             // while not sealed, every registration is considered a builtin
@@ -43,6 +44,14 @@ namespace Game_Engine.Core
 
         public static Command TryGet(string id)
             => string.IsNullOrWhiteSpace(id) ? null : (_map.TryGetValue(id, out var c) ? c : null);
+
+        /// <summary>All registered commands (built-in + extensions), sorted by display name.</summary>
+        public static IReadOnlyList<Command> GetAllCommands()
+        {
+            return _map.Values
+                .OrderBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
 
         /// Call once after your app registers its own commands (before loading extensions).
         public static void SealBuiltins() => _sealedBuiltins = true;

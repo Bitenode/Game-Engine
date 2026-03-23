@@ -1,48 +1,124 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Game_Engine.Core;
 
 namespace Game_Engine.Views;
 
 public partial class ConsolePanel : UserControl
 {
-    public ObservableCollection<LogItem> Logs { get; } = new();
+    public ObservableCollection<LogItem> AllLogs { get; } = new();
+    public ObservableCollection<LogItem> VisibleLogs { get; } = new();
+
+    private static readonly object InstancesLock = new();
+    private static readonly System.Collections.Generic.List<ConsolePanel> Instances = new();
 
     public ConsolePanel()
     {
         InitializeComponent();
         DataContext = this;
 
-        // hook UI events here to avoid XAML event parser edge cases
-        Input.KeyUp += Input_OnKeyUp;
-        RunButton.Click += Run_Click;
-
-        // feed global logger to the UI list
-        Log.Logged += OnLogged;
-
-        // autoscroll on append
-        Logs.CollectionChanged += (_, e) =>
+        lock (InstancesLock)
+            Instances.Add(this);
+        DetachedFromVisualTree += (_, __) =>
         {
-            if (e.Action == NotifyCollectionChangedAction.Add && List.ItemCount > 0)
-                List.ScrollIntoView(List.ItemCount - 1);
+            lock (InstancesLock)
+                Instances.Remove(this);
         };
 
-        Log.Info("Console ready. Type 'help' for commands.");
+        Input.KeyUp += Input_OnKeyUp;
+        RunButton.Click += Run_Click;
+        FilterText.TextChanged += (_, __) => RebuildVisibleLogs();
+        ChkInfo.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
+        ChkWarn.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
+        ChkError.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
+        ChkSuccess.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
+        ChkDebug.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
+
+        List.DoubleTapped += OnListDoubleTapped;
+
+        Log.Logged += OnLogged;
+
+        AllLogs.CollectionChanged += (_, e) =>
+        {
+            if (e.Action != NotifyCollectionChangedAction.Add) return;
+            LogItem? added = null;
+            if (e.NewItems?.Count > 0)
+                added = e.NewItems[0] as LogItem;
+            RebuildVisibleLogs();
+            if (added != null && VisibleLogs.Contains(added) && VisibleLogs.Count > 0)
+                List.ScrollIntoView(VisibleLogs[^1]);
+        };
+
+        RebuildVisibleLogs();
+        Log.Info("Console ready. Type 'help' for commands. Double-click a line with a .cs path to open the editor.");
+    }
+
+    /// <summary>Clear all stored lines (e.g. when entering play mode).</summary>
+    public static void ClearAllPanels()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            lock (InstancesLock)
+            {
+                foreach (var p in Instances.ToArray())
+                    p.ClearAllLocal();
+            }
+        });
+    }
+
+    void ClearAllLocal()
+    {
+        AllLogs.Clear();
+        VisibleLogs.Clear();
     }
 
     private void OnLogged(object? sender, LogItem e)
     {
         if (!Dispatcher.UIThread.CheckAccess())
-            Dispatcher.UIThread.Post(() => Logs.Add(e));
+            Dispatcher.UIThread.Post(() => AllLogs.Add(e));
         else
-            Logs.Add(e);
+            AllLogs.Add(e);
     }
 
-    private void Run_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => RunCommand();
+    bool SeverityVisible(LogSeverity s) => s switch
+    {
+        LogSeverity.Info => ChkInfo.IsChecked == true,
+        LogSeverity.Warning => ChkWarn.IsChecked == true,
+        LogSeverity.Error => ChkError.IsChecked == true,
+        LogSeverity.Success => ChkSuccess.IsChecked == true,
+        LogSeverity.Debug => ChkDebug.IsChecked == true,
+        _ => true
+    };
+
+    void RebuildVisibleLogs()
+    {
+        var q = (FilterText.Text ?? "").Trim();
+        VisibleLogs.Clear();
+        foreach (var item in AllLogs)
+        {
+            if (!SeverityVisible(item.Severity)) continue;
+            if (q.Length > 0 && (item.Message?.IndexOf(q, StringComparison.OrdinalIgnoreCase) ?? -1) < 0)
+                continue;
+            VisibleLogs.Add(item);
+        }
+    }
+
+    private void OnListDoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (List.SelectedItem is not LogItem li) return;
+        var win = this.GetVisualRoot() as Window;
+        if (ConsoleLogNavigation.TryOpenFromMessage(li.Message ?? "", win))
+            e.Handled = true;
+    }
+
+    private void Run_Click(object? sender, RoutedEventArgs e) => RunCommand();
 
     private void Input_OnKeyUp(object? sender, KeyEventArgs e)
     {
@@ -80,7 +156,8 @@ public partial class ConsolePanel : UserControl
                 break;
 
             case "clear":
-                Logs.Clear();
+                AllLogs.Clear();
+                RebuildVisibleLogs();
                 break;
 
             case "log":

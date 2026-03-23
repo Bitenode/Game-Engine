@@ -20,6 +20,8 @@ public readonly struct EditorDiagnostic
     public int Column { get; init; }
     public string Message { get; init; }
     public DiagSeverity Severity { get; init; }
+    /// <summary>Roslyn id e.g. CS0246 (empty when unknown).</summary>
+    public string Id { get; init; }
 }
 
 public enum DiagSeverity { Error, Warning, Info }
@@ -99,6 +101,7 @@ public sealed class DiagnosticService : IDisposable
                         Line = span.StartLinePosition.Line,
                         Column = span.StartLinePosition.Character,
                         Message = d.GetMessage(),
+                        Id = d.Id ?? "",
                         Severity = d.Severity switch
                         {
                             DiagnosticSeverity.Error => DiagSeverity.Error,

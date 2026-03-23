@@ -187,7 +187,7 @@ Game-Engine/
 │   ├── SelectionService.cs      # Multi-select object tracking
 │   ├── UndoService.cs           # Command-pattern undo/redo
 │   ├── CameraService.cs         # Active camera tracking
-│   ├── CommandRegistry.cs       # Named command system
+│   ├── CommandRegistry.cs       # Named command system (palette lists all; SealBuiltins + extension commands)
 │   ├── Log.cs                   # Global logging
 │   ├── Time.cs                  # Frame timing
 │   ├── AudioBackend.cs          # NAudio playback backend
@@ -199,7 +199,9 @@ Game-Engine/
 │   ├── SceneView.cs             # 3D scene editing viewport
 │   ├── GameView.cs              # Game runtime viewport
 │   ├── InspectorPanel.axaml.cs  # Property inspector
-│   ├── HierarchyPanel.axaml.cs  # Scene tree view
+│   ├── HierarchyPanel.axaml.cs  # Scene tree view (name/component filters + collapsible filter strip)
+│   ├── EditorCommandPaletteWindow.cs # Ctrl+Shift+P command palette (CommandRegistry)
+│   ├── EditorQuickOpenWindow.cs # Ctrl+P project file quick open
 │   ├── ProjectPanel.axaml.cs    # File browser
 │   ├── ConsolePanel.axaml.cs    # Log console
 │   ├── AnimationPanel.axaml.cs  # Animation editor

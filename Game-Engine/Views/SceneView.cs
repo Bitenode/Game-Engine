@@ -266,6 +266,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     public bool SnapEnabled { get; set; } = false;
     public float SnapStep { get; set; } = 0.5f;
+    Point _pickCyclePixel;
+    List<GameObject> _pickCycleHits = new();
+    int _pickCycleIndex;
+    DateTime _pickCycleUtc = DateTime.MinValue;
 
     #region View Settings Persistence
 
@@ -1996,10 +2000,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             DeleteSelected(); e.Handled = true;
         }
 
-        // G = toggle snap to grid
+        // Ctrl+G = toggle snap (translate uses SnapStep; rotate uses SnapAngleDegrees)
         if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
-            SnapEnabled = !SnapEnabled; InvalidateVisual(); e.Handled = true;
+            SnapEnabled = !SnapEnabled;
+            Log.Info(SnapEnabled ? $"[SceneView] Snap ON (move grid {SnapStep} world units)" : "[SceneView] Snap OFF");
+            InvalidateVisual();
+            e.Handled = true;
         }
 
         if (HandleFlyKeyDown(e.Key)) { e.Handled = true; return; }
@@ -2307,16 +2314,43 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (p.IsLeftButtonPressed && !p.IsRightButtonPressed)
         {
             var (pickView, pickProj) = GetViewProj(Bounds.Size);
-            var picked = PickSceneObject(_last, pickView, pickProj, Bounds.Size);
-            if (picked != null)
+            var hits = PickAllSceneObjectsSorted(_last, pickView, pickProj, Bounds.Size);
+            if (hits.Count > 0)
             {
+                const double pixEps = 5;
+                var now = DateTime.UtcNow;
+                bool nearPixel = Math.Abs(_last.X - _pickCyclePixel.X) < pixEps &&
+                                 Math.Abs(_last.Y - _pickCyclePixel.Y) < pixEps;
+                bool sameOrder = hits.Count == _pickCycleHits.Count;
+                if (sameOrder)
+                {
+                    for (int i = 0; i < hits.Count; i++)
+                    {
+                        if (!ReferenceEquals(hits[i], _pickCycleHits[i])) { sameOrder = false; break; }
+                    }
+                }
+                bool quickRepeat = (now - _pickCycleUtc).TotalMilliseconds < 700;
+                GameObject picked;
+                if (nearPixel && sameOrder && quickRepeat && _pickCycleHits.Count > 1)
+                {
+                    _pickCycleIndex = (_pickCycleIndex + 1) % _pickCycleHits.Count;
+                    picked = _pickCycleHits[_pickCycleIndex];
+                }
+                else
+                {
+                    _pickCycleHits = new List<GameObject>(hits);
+                    _pickCycleIndex = 0;
+                    _pickCyclePixel = _last;
+                    picked = hits[0];
+                }
+                _pickCycleUtc = now;
+
                 if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
                     SelectionService.Toggle(picked);
                 else
                     SelectionService.Set(picked);
                 _selected = SelectionService.Current;
                 InvalidateVisual();
-                // Don't start camera motion when we picked an object.
                 e.Handled = true;
                 return;
             }
@@ -2344,15 +2378,76 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     /// </summary>
     GameObject? PickSceneObject(Point screenPos, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz)
     {
+        var list = PickAllSceneObjectsSorted(screenPos, view, proj, sz);
+        return list.Count > 0 ? list[0] : null;
+    }
+
+    /// <summary>All ray hits sorted by distance (near to far). Used for selection cycling.</summary>
+    List<GameObject> PickAllSceneObjectsSorted(Point screenPos, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz)
+    {
         Picking.BuildPickRay(screenPos, view, proj, sz, out var ro, out var rd);
-
-        GameObject? closest = null;
-        float closestDist = float.MaxValue;
-
+        var hits = new List<(GameObject go, float t)>();
         foreach (var root in SceneService.Root)
-            PickRecursive(root, SN.Matrix4x4.Identity, ro, rd, ref closest, ref closestDist);
+            PickCollectRecursive(root, SN.Matrix4x4.Identity, ro, rd, hits);
+        hits.Sort((a, b) => a.t.CompareTo(b.t));
+        var seen = new HashSet<GameObject>();
+        var ordered = new List<GameObject>();
+        foreach (var (go, _) in hits)
+        {
+            if (seen.Add(go))
+                ordered.Add(go);
+        }
+        return ordered;
+    }
 
-        return closest;
+    void PickCollectRecursive(GameObject go, SN.Matrix4x4 parentWorld, SN.Vector3 ro, SN.Vector3 rd,
+        List<(GameObject go, float t)> hits)
+    {
+        var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
+        bool hasMesh = false;
+        foreach (var b in go.Behaviors)
+        {
+            if (b is MeshFilter mf && mf.Mesh != null)
+            {
+                hasMesh = true;
+                var mesh = mf.Mesh;
+                var verts = mesh.Vertices;
+                if (verts != null && verts.Length > 0)
+                {
+                    SN.Vector3 center = SN.Vector3.Zero;
+                    for (int i = 0; i < verts.Length; i++)
+                        center += verts[i];
+                    center /= verts.Length;
+                    float r2 = 0f;
+                    for (int i = 0; i < verts.Length; i++)
+                    {
+                        var d = verts[i] - center;
+                        float d2 = d.X * d.X + d.Y * d.Y + d.Z * d.Z;
+                        if (d2 > r2) r2 = d2;
+                    }
+                    float radius = MathF.Sqrt(r2);
+                    var worldCenter = SN.Vector3.Transform(center, world);
+                    float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                    float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                    float sz2 = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                    float worldRadius = radius * MathF.Max(sx, MathF.Max(sy, sz2));
+                    float t = Picking.RayIntersectSphere(ro, rd, worldCenter, worldRadius);
+                    if (t < float.MaxValue && t > 1e-4f)
+                        hits.Add((go, t));
+                }
+                break;
+            }
+        }
+        if (!hasMesh)
+        {
+            var worldPos = new SN.Vector3(world.M41, world.M42, world.M43);
+            const float defaultPickRadius = 0.5f;
+            float t = Picking.RayIntersectSphere(ro, rd, worldPos, defaultPickRadius);
+            if (t < float.MaxValue && t > 1e-4f)
+                hits.Add((go, t));
+        }
+        foreach (var child in go.Children)
+            PickCollectRecursive(child, world, ro, rd, hits);
     }
 
     void PickRecursive(GameObject go, SN.Matrix4x4 parentWorld, SN.Vector3 ro, SN.Vector3 rd,

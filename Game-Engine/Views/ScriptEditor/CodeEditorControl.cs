@@ -1,12 +1,21 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Game_Engine.Core.Editor;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Game_Engine.Views;
 
@@ -31,7 +40,14 @@ public class CodeEditorControl : UserControl
     private readonly ScrollBar _hScroll;
     private readonly FindReplaceOverlay _findOverlay;
     private readonly AutoCompletePopup _autoComplete;
+    private readonly ImportUsingPopup _importPopup = new();
     private readonly MinimapControl _minimap;
+    private readonly DispatcherTimer _importHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    private Point _lastHoverCanvasPoint;
+    private IReadOnlyList<EditorDiagnostic>? _liveDiagnostics;
+    private readonly List<EditorDiagnostic> _sortedDiagnosticNav = new();
+    private EditorDiagnostic? _pendingImportDiag;
+    private int _importPopupAnchorDiagStart = -1;
 
     // ── State ───────────────────────────────────────────────────
     private bool _isDirty;
@@ -49,9 +65,16 @@ public class CodeEditorControl : UserControl
     /// <summary>Fired when the caret moves (for status-bar line/col).</summary>
     public event Action? CaretMoved;
 
+    /// <summary>Fired after background diagnostics run (same payload as canvas underlines).</summary>
+    public event Action<IReadOnlyList<EditorDiagnostic>>? DiagnosticsUpdated;
+    public event Action<int>? GoToDefinitionRequestedAtOffset;
+
     public bool IsDirty => _isDirty;
     public TextBuffer Buffer => _buffer;
     public CaretState Caret => _caret;
+
+    /// <summary>Absolute path of the file shown in the host (for multi-file Go to Definition).</summary>
+    public string? DocumentPath { get; set; }
 
     public void SetText(string text)
     {
@@ -72,6 +95,121 @@ public class CodeEditorControl : UserControl
 
     public (int line, int column) GetCaretLineColumn()
         => _buffer.GetLineAndColumn(_caret.Position);
+
+    /// <param name="line1Based">1-based line number (as in compiler output).</param>
+    public void GoToLine1Based(int line1Based)
+    {
+        int line0 = Math.Clamp(line1Based - 1, 0, Math.Max(0, _buffer.LineCount - 1));
+        int start = _buffer.GetLineStartOffset(line0);
+        _caret.MoveTo(start);
+        EnsureCaretVisible();
+        _canvas.ResetCaretBlink();
+        CaretMoved?.Invoke();
+        _canvas.InvalidateVisual();
+    }
+
+    public async System.Threading.Tasks.Task FormatDocumentAsync()
+    {
+        var text = GetText();
+        if (string.IsNullOrEmpty(text)) return;
+        var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
+        var tree = CSharpSyntaxTree.ParseText(text, parseOpts);
+        var root = await tree.GetRootAsync();
+        using var ws = new AdhocWorkspace();
+        var proj = ws.AddProject("FmtScratch", LanguageNames.CSharp);
+        var doc = ws.AddDocument(proj.Id, "scratch.cs", SourceText.From(text));
+        var docRoot = await doc.GetSyntaxRootAsync();
+        if (docRoot == null) return;
+        var formatted = Formatter.Format(docRoot, ws);
+        SetText(formatted.ToFullString());
+    }
+
+    /// <summary>Change code font size (gutter matches). Step typically ±1; clamped 8–40 px.</summary>
+    public void AdjustEditorFontSize(int step)
+    {
+        double next = Math.Clamp(_canvas.EditorFontSize + step, 8, 40);
+        if (Math.Abs(next - _canvas.EditorFontSize) < 0.01) return;
+        _canvas.EditorFontSize = next;
+        _gutter.LineNumberFontSize = next;
+        UpdateScrollBars();
+        _canvas.InvalidateVisual();
+        _gutter.InvalidateVisual();
+    }
+
+    public void ResetEditorFontSize()
+    {
+        _canvas.EditorFontSize = CodeCanvas.DefaultFontSize;
+        _gutter.LineNumberFontSize = CodeCanvas.DefaultFontSize;
+        UpdateScrollBars();
+        _canvas.InvalidateVisual();
+        _gutter.InvalidateVisual();
+    }
+
+    public void GoToFirstDiagnostic()
+    {
+        HideImportUsingPopup();
+        if (_sortedDiagnosticNav.Count == 0) return;
+        JumpToDiagnostic(_sortedDiagnosticNav[0]);
+    }
+
+    /// <summary>Next/previous diagnostic: errors first, then warnings, then by source position. Wraps at ends.</summary>
+    public void GoToNextDiagnostic(bool previous)
+    {
+        HideImportUsingPopup();
+        if (_sortedDiagnosticNav.Count == 0) return;
+        int caret = _caret.Position;
+        if (!previous)
+        {
+            for (int i = 0; i < _sortedDiagnosticNav.Count; i++)
+            {
+                if (_sortedDiagnosticNav[i].StartOffset > caret)
+                {
+                    JumpToDiagnostic(_sortedDiagnosticNav[i]);
+                    return;
+                }
+            }
+            JumpToDiagnostic(_sortedDiagnosticNav[0]);
+        }
+        else
+        {
+            for (int i = _sortedDiagnosticNav.Count - 1; i >= 0; i--)
+            {
+                if (_sortedDiagnosticNav[i].StartOffset < caret)
+                {
+                    JumpToDiagnostic(_sortedDiagnosticNav[i]);
+                    return;
+                }
+            }
+            JumpToDiagnostic(_sortedDiagnosticNav[^1]);
+        }
+    }
+
+    void JumpToDiagnostic(EditorDiagnostic d)
+    {
+        _caret.MoveTo(d.StartOffset);
+        EnsureCaretVisible();
+        _canvas.ResetCaretBlink();
+        CaretMoved?.Invoke();
+        _canvas.InvalidateVisual();
+    }
+
+    static void RebuildSortedDiagnosticsNavList(IReadOnlyList<EditorDiagnostic> src, List<EditorDiagnostic> dest)
+    {
+        dest.Clear();
+        foreach (var d in src) dest.Add(d);
+        dest.Sort(CompareDiagnosticNavOrder);
+    }
+
+    void RebuildSortedDiagnosticsNav(IReadOnlyList<EditorDiagnostic> diags)
+        => RebuildSortedDiagnosticsNavList(diags, _sortedDiagnosticNav);
+
+    static int CompareDiagnosticNavOrder(EditorDiagnostic a, EditorDiagnostic b)
+    {
+        int oa = a.Severity == DiagSeverity.Error ? 0 : a.Severity == DiagSeverity.Warning ? 1 : 2;
+        int ob = b.Severity == DiagSeverity.Error ? 0 : b.Severity == DiagSeverity.Warning ? 1 : 2;
+        int c = oa.CompareTo(ob);
+        return c != 0 ? c : a.StartOffset.CompareTo(b.StartOffset);
+    }
 
     // ── Constructor ─────────────────────────────────────────────
 
@@ -104,6 +242,7 @@ public class CodeEditorControl : UserControl
 
         BuildVisualTree();
         WireEvents();
+        _importHoverTimer.Tick += OnImportHoverTimerTick;
     }
 
     private void BuildVisualTree()
@@ -144,6 +283,11 @@ public class CodeEditorControl : UserControl
         Grid.SetColumn(_autoComplete, 1);
         grid.Children.Add(_autoComplete);
 
+        Grid.SetRow(_importPopup, 0);
+        Grid.SetColumn(_importPopup, 1);
+        _importPopup.ZIndex = 50;
+        grid.Children.Add(_importPopup);
+
         Content = grid;
     }
 
@@ -151,6 +295,7 @@ public class CodeEditorControl : UserControl
     {
         _buffer.TextChanged += () =>
         {
+            HideImportUsingPopup();
             UpdateScrollBars();
             RequestClassification();
             _canvas.InvalidateVisual();
@@ -191,10 +336,15 @@ public class CodeEditorControl : UserControl
         {
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
+                _liveDiagnostics = diags;
+                RebuildSortedDiagnosticsNav(diags);
                 _canvas.Diagnostics = diags;
                 _canvas.InvalidateVisual();
+                DiagnosticsUpdated?.Invoke(diags);
             });
         };
+
+        _importPopup.NamespaceChosen += OnImportNamespaceChosen;
 
         _autoComplete.CompletionCommitted += text =>
         {
@@ -347,6 +497,12 @@ public class CodeEditorControl : UserControl
 
         if (alt) { base.OnKeyDown(e); return; }
 
+        if (_importPopup.IsVisible && _importPopup.HandleKey(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
+
         bool handled = true;
 
         if (e.Key == Key.Left || e.Key == Key.Right ||
@@ -391,6 +547,8 @@ public class CodeEditorControl : UserControl
         }
         else if (e.Key == Key.Escape && _findOverlay.IsVisible)
             _findOverlay.Hide();
+        else if (e.Key == Key.Escape && _importPopup.IsVisible)
+            HideImportUsingPopup();
         else if (e.Key == Key.Escape && _autoComplete.IsVisible)
             _autoComplete.Hide();
         else if (ctrl && e.Key == Key.Space)
@@ -420,6 +578,8 @@ public class CodeEditorControl : UserControl
     {
         base.OnPointerPressed(e);
         Focus();
+        if (!SourceIsInsideImportPopup(e.Source))
+            HideImportUsingPopup();
 
         var point = e.GetPosition(_canvas);
         var props = e.GetCurrentPoint(this).Properties;
@@ -429,6 +589,17 @@ public class CodeEditorControl : UserControl
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
 
         var clickCount = e.ClickCount;
+        if (shift && clickCount == 1)
+        {
+            // Match common IDE behavior: Shift+Click attempts go-to-definition.
+            _caret.MoveTo(pos, extending: false);
+            _caret.DesiredColumn = -1;
+            _canvas.ResetCaretBlink();
+            CaretMoved?.Invoke();
+            GoToDefinitionRequestedAtOffset?.Invoke(pos);
+            e.Handled = true;
+            return;
+        }
 
         if (clickCount == 2)
         {
@@ -463,17 +634,22 @@ public class CodeEditorControl : UserControl
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        if (!_isMouseSelecting) return;
-
         var point = e.GetPosition(_canvas);
-        int pos = HitTestPosition(point);
+        if (_isMouseSelecting)
+        {
+            int pos = HitTestPosition(point);
 
-        _caret.Position = pos;
-        _caret.DesiredColumn = -1;
+            _caret.Position = pos;
+            _caret.DesiredColumn = -1;
 
-        EnsureCaretVisible();
-        _canvas.InvalidateVisual();
-        CaretMoved?.Invoke();
+            EnsureCaretVisible();
+            _canvas.InvalidateVisual();
+            CaretMoved?.Invoke();
+            HideImportUsingPopup();
+            return;
+        }
+
+        UpdateImportHover(e);
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
@@ -488,6 +664,17 @@ public class CodeEditorControl : UserControl
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
+        if (SourceIsInsideImportPopup(e.Source))
+            return;
+
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            AdjustEditorFontSize(e.Delta.Y > 0 ? 1 : -1);
+            e.Handled = true;
+            return;
+        }
+
+        HideImportUsingPopup();
         base.OnPointerWheelChanged(e);
         _canvas.MeasureCharSize();
         double delta = e.Delta.Y * _canvas.LineHeight * 3;
@@ -1140,6 +1327,7 @@ public class CodeEditorControl : UserControl
     {
         _gutter.LineHeight = _canvas.LineHeight;
         _gutter.CharWidth = _canvas.CharWidth;
+        _gutter.LineNumberFontSize = _canvas.EditorFontSize;
         _gutter.VerticalOffset = _canvas.VerticalOffset;
         _gutter.Width = _gutter.ComputeDesiredWidth();
         _gutter.InvalidateVisual();
@@ -1221,6 +1409,139 @@ public class CodeEditorControl : UserControl
         col = Math.Clamp(col, 0, _buffer.GetLineLength(line));
 
         return _buffer.GetLineStartOffset(line) + col;
+    }
+
+    // ── Hover: add missing using ───────────────────────────────
+
+    void HideImportUsingPopup()
+    {
+        _importPopup.Hide();
+        _importHoverTimer.Stop();
+        _pendingImportDiag = null;
+        _importPopupAnchorDiagStart = -1;
+    }
+
+    void OnImportNamespaceChosen(string ns)
+    {
+        var src = _buffer.GetText();
+        if (!UsingImportQuickFix.TryBuildInsertion(src, ns, out var off, out var ins))
+            return;
+
+        _undoStack.BeginCompound();
+        _undoStack.PushInsert(off, ins);
+        _buffer.Insert(off, ins);
+        _undoStack.EndCompound();
+
+        if (_caret.Position >= off)
+            _caret.MoveTo(_caret.Position + ins.Length);
+
+        MarkDirty();
+        RequestClassification();
+        EnsureCaretVisible();
+        _canvas.InvalidateVisual();
+        HideImportUsingPopup();
+    }
+
+    EditorDiagnostic? FindImportDiagnosticAt(int offset)
+    {
+        if (_liveDiagnostics == null) return null;
+        foreach (var d in _liveDiagnostics)
+        {
+            if (offset < d.StartOffset || offset >= d.StartOffset + d.Length) continue;
+            if (!UsingImportQuickFix.IsImportRelatedDiagnostic(in d)) continue;
+            return d;
+        }
+        return null;
+    }
+
+    bool SourceIsInsideImportPopup(object? src)
+    {
+        if (src is not Visual v) return false;
+        if (ReferenceEquals(v, _importPopup)) return true;
+        foreach (var a in v.GetVisualAncestors())
+            if (ReferenceEquals(a, _importPopup)) return true;
+        return false;
+    }
+
+    void UpdateImportHover(PointerEventArgs e)
+    {
+        if (SourceIsInsideImportPopup(e.Source))
+        {
+            _importHoverTimer.Stop();
+            return;
+        }
+
+        var canvasPoint = e.GetPosition(_canvas);
+        _lastHoverCanvasPoint = canvasPoint;
+
+        bool overCanvas = canvasPoint.X >= 0 && canvasPoint.Y >= 0 &&
+                          canvasPoint.X <= _canvas.Bounds.Width && canvasPoint.Y <= _canvas.Bounds.Height;
+        if (!overCanvas)
+        {
+            _importHoverTimer.Stop();
+            _pendingImportDiag = null;
+            if (!_importPopup.IsVisible)
+                Cursor = new Cursor(StandardCursorType.Ibeam);
+            return;
+        }
+
+        int pos = HitTestPosition(canvasPoint);
+        var diag = FindImportDiagnosticAt(pos);
+        if (diag == null)
+        {
+            _importHoverTimer.Stop();
+            _pendingImportDiag = null;
+            if (!_importPopup.IsVisible)
+                Cursor = new Cursor(StandardCursorType.Ibeam);
+            else
+                HideImportUsingPopup();
+            return;
+        }
+
+        Cursor = new Cursor(StandardCursorType.Hand);
+        var d = diag.Value;
+        if (_importPopup.IsVisible && _importPopupAnchorDiagStart == d.StartOffset)
+            return;
+
+        _pendingImportDiag = d;
+        _importHoverTimer.Stop();
+        _importHoverTimer.Start();
+    }
+
+    void OnImportHoverTimerTick(object? sender, EventArgs e)
+    {
+        _importHoverTimer.Stop();
+        var diag = _pendingImportDiag;
+        if (diag == null) return;
+
+        int pos = HitTestPosition(_lastHoverCanvasPoint);
+        var cur = FindImportDiagnosticAt(pos);
+        if (cur == null || cur.Value.StartOffset != diag.Value.StartOffset || cur.Value.Length != diag.Value.Length)
+            return;
+
+        var anchor = diag.Value;
+        var src = _buffer.GetText();
+        _ = Task.Run(() => UsingImportQuickFix.SuggestNamespaces(src, anchor))
+            .ContinueWith(t =>
+            {
+                if (t.IsFaulted) return;
+                var list = t.Result;
+                if (list.Count == 0) return;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    int pos2 = HitTestPosition(_lastHoverCanvasPoint);
+                    var cur2 = FindImportDiagnosticAt(pos2);
+                    if (cur2 == null || cur2.Value.StartOffset != anchor.StartOffset) return;
+
+                    _autoComplete.Hide();
+                    _canvas.MeasureCharSize();
+                    var (line, col) = _buffer.GetLineAndColumn(anchor.StartOffset);
+                    double x = col * _canvas.CharWidth + CodeCanvas.LeftPadding - _canvas.HorizontalOffset;
+                    double y = (line + 1) * _canvas.LineHeight - _canvas.VerticalOffset;
+                    _importPopup.Show(list, new Point(x, y));
+                    _importPopupAnchorDiagStart = anchor.StartOffset;
+                });
+            }, TaskScheduler.Default);
     }
 
     // ── Autocomplete ─────────────────────────────────────────────

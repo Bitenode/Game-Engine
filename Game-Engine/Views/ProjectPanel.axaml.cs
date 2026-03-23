@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.VisualTree;
+using Avalonia.Threading;
 using Game_Engine.Core;
 using System;
 using System.Collections.ObjectModel;
@@ -32,7 +33,7 @@ public sealed partial class ProjectPanel : UserControl
     public ObservableCollection<ProjectNode> Roots { get; } = new();
 
     public string ProjectTitle =>
-        ProjectService.Current is { } p ? $"{p.Name}  ó  {p.RootPath}" : "No project open";
+        ProjectService.Current is { } p ? $"{p.Name}  ù  {p.RootPath}" : "No project open";
 
     private ContextMenu? _addMenu;
 
@@ -74,7 +75,7 @@ public sealed partial class ProjectPanel : UserControl
             }
         };
 
-        // ì+î dropdown
+        // ù+ù dropdown
         _addMenu = new ContextMenu
         {
             ItemsSource = new object[]
@@ -84,7 +85,7 @@ public sealed partial class ProjectPanel : UserControl
                 MakeMenu("New _Scene",     async (_, __) => await NewScene()),
                 MakeMenu("New _Material",  async (_, __) => await NewMaterial()),
                 new Separator(),
-                MakeMenu("_Import FilesÖ", async (_, __) => await ImportFiles()),
+                MakeMenu("_Import Filesù", async (_, __) => await ImportFiles()),
             }
         };
 
@@ -438,6 +439,66 @@ public sealed partial class ProjectPanel : UserControl
         Reveal(sel);
     }
 
+    /// <summary>Project-relative or absolute path ó select and expand the Project tree to it.</summary>
+    public bool TryRevealPath(string relativeOrAbs)
+    {
+        var p = ProjectService.Current;
+        if (p == null) return false;
+        var normalized = relativeOrAbs.Replace('/', Path.DirectorySeparatorChar);
+        string abs = Path.IsPathRooted(normalized)
+            ? Path.GetFullPath(normalized)
+            : Path.GetFullPath(Path.Combine(p.RootPath, normalized));
+
+        foreach (var root in Roots)
+        {
+            if (!TryFindNodeByPath(root, abs, out var node)) continue;
+            Dispatcher.UIThread.Post(() =>
+            {
+                foreach (var tvi in Tree.GetVisualDescendants().OfType<TreeViewItem>())
+                {
+                    if (tvi.DataContext is ProjectNode pn && IsAncestorOf(pn, node))
+                        tvi.IsExpanded = true;
+                }
+                Tree.SelectedItem = node;
+                foreach (var tvi in Tree.GetVisualDescendants().OfType<TreeViewItem>())
+                {
+                    if (tvi.DataContext == node)
+                    {
+                        tvi.BringIntoView();
+                        break;
+                    }
+                }
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private static bool IsAncestorOf(ProjectNode anc, ProjectNode desc)
+    {
+        for (var x = desc.Parent; x != null; x = x.Parent)
+        {
+            if (x == anc) return true;
+        }
+        return false;
+    }
+
+    private static bool TryFindNodeByPath(ProjectNode n, string absFull, out ProjectNode? found)
+    {
+        if (string.Equals(Path.GetFullPath(n.FullPath), absFull, StringComparison.OrdinalIgnoreCase))
+        {
+            found = n;
+            return true;
+        }
+        foreach (var c in n.Children)
+        {
+            if (TryFindNodeByPath(c, absFull, out found))
+                return true;
+        }
+        found = null;
+        return false;
+    }
+
     private static void Reveal(ProjectNode node)
     {
         try
@@ -512,7 +573,7 @@ public sealed partial class ProjectPanel : UserControl
                 // keep your internal key (used for tree-to-tree moves)
                 data.Set("project-node-path", path);
 
-                // ALSO provide standard FileNames when itís a file
+                // ALSO provide standard FileNames when itùs a file
                 if (File.Exists(path))
                     data.Set(DataFormats.FileNames, new[] { path });
 

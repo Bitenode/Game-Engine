@@ -1,0 +1,21 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.ImportUsingPopup"
+             IsVisible="False"
+             Width="420" MaxHeight="220">
+
+    <Border Background="#2D2D30" BorderBrush="#007ACC" BorderThickness="1"
+            CornerRadius="2" Padding="6,4">
+        <StackPanel Spacing="4">
+            <TextBlock Text="Add using"
+                       FontSize="11"
+                       Foreground="#CCCCCC"/>
+            <ListBox x:Name="SuggestionList"
+                     Background="#252526"
+                     FontFamily="Consolas,Menlo,Monospace"
+                     FontSize="12"
+                     MaxHeight="180"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+        </StackPanel>
+    </Border>
+</UserControl>

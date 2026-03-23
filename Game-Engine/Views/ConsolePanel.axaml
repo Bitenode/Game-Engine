@@ -3,7 +3,6 @@
              xmlns:local="clr-namespace:Game_Engine.Views"
              x:Class="Game_Engine.Views.ConsolePanel">
 	<UserControl.Resources>
-		<!-- one converter; pick different palettes by Kind -->
 		<local:SeverityToBrushConverter x:Key="SeverityBg"     Kind="Background"/>
 		<local:SeverityToBrushConverter x:Key="SeverityBorder" Kind="Border"/>
 		<local:SeverityToBrushConverter x:Key="SeverityText"   Kind="Text"/>
@@ -11,22 +10,34 @@
 
 	<DockPanel>
 		<TextBlock DockPanel.Dock="Top" Text="Console" FontSize="14" Margin="8,6" />
-		<Grid Margin="6" RowDefinitions="*,Auto" ColumnDefinitions="*,Auto">
 
-			<!-- Log list -->
+		<!-- Filters -->
+		<Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6" CornerRadius="4" Background="#2A2C30">
+			<StackPanel Spacing="4">
+				<TextBox x:Name="FilterText"
+						 Watermark="Search messages…"
+						 FontSize="11" />
+				<WrapPanel Orientation="Horizontal">
+					<ToggleButton x:Name="ChkInfo" Content="Info" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
+					<ToggleButton x:Name="ChkWarn" Content="Warn" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
+					<ToggleButton x:Name="ChkError" Content="Error" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
+					<ToggleButton x:Name="ChkSuccess" Content="OK" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
+					<ToggleButton x:Name="ChkDebug" Content="Debug" IsChecked="True" Padding="8,2" FontSize="11"/>
+				</WrapPanel>
+			</StackPanel>
+		</Border>
+
+		<Grid Margin="6" RowDefinitions="*,Auto" ColumnDefinitions="*,Auto">
 			<ListBox x:Name="List"
-					 ItemsSource="{Binding Logs}"
-					 Grid.Row="0" Grid.ColumnSpan="2">
+					 Grid.Row="0" Grid.ColumnSpan="2"
+					 ItemsSource="{Binding VisibleLogs}">
 				<ListBox.ItemTemplate>
 					<DataTemplate>
 						<Grid ColumnDefinitions="Auto,Auto,*" Margin="0,2">
-							<!-- timestamp -->
 							<TextBlock Grid.Column="0"
 									   Text="{Binding Timestamp, StringFormat=HH:mm:ss}"
 									   Margin="0,0,8,0"
 									   Opacity="0.7"/>
-
-							<!-- severity chip -->
 							<Border Grid.Column="1" Padding="6,1" CornerRadius="10"
 									Margin="0,0,8,0"
 									Background="{Binding Severity, Converter={StaticResource SeverityBg}}"
@@ -36,8 +47,6 @@
 										   FontWeight="Bold"
 										   Foreground="White"/>
 							</Border>
-
-							<!-- message -->
 							<TextBlock Grid.Column="2"
 									   Text="{Binding Message}"
 									   TextWrapping="Wrap"
@@ -47,7 +56,6 @@
 				</ListBox.ItemTemplate>
 			</ListBox>
 
-			<!-- input -->
 			<TextBox x:Name="Input"
 					 Grid.Row="1" Grid.Column="0"
 					 Watermark="> enter command..." />

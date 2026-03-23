@@ -27,11 +27,61 @@
 			<Separator/>
 			<MenuItem Header="Expand All"         Click="OnExpandAll"/>
 			<MenuItem Header="Collapse All"       Click="OnCollapseAll"/>
+			<Separator/>
+			<MenuItem Header="Reveal in Project"  Click="OnRevealInProject"/>
 		</ContextMenu>
 	</UserControl.Resources>
 
 	<DockPanel>
-		<TextBlock DockPanel.Dock="Top" Text="Hierarchy" FontSize="14" Margin="8,6" />
+		<!-- Title row + compact toggle (circle) to show / hide the filter strip -->
+		<Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="8,6,8,4">
+			<TextBlock Grid.Column="0"
+					   Text="Hierarchy"
+					   FontSize="14"
+					   VerticalAlignment="Center" />
+			<Button x:Name="BtnToggleFilters"
+					Grid.Column="1"
+					Width="28"
+					Height="28"
+					Padding="0"
+					HorizontalContentAlignment="Center"
+					VerticalContentAlignment="Center"
+					ToolTip.Tip="Hide or show hierarchy search filters"
+					Click="OnToggleFiltersStripClick"
+					CornerRadius="14"
+					BorderThickness="1"
+					Background="Transparent">
+				<Grid Width="14" Height="14">
+					<Ellipse x:Name="ToggleFilterRing"
+							 Width="14"
+							 Height="14"
+							 StrokeThickness="1.5"
+							 Fill="Transparent" />
+					<Ellipse x:Name="ToggleFilterDot"
+							 Width="6"
+							 Height="6"
+							 HorizontalAlignment="Center"
+							 VerticalAlignment="Center"
+							 IsVisible="False" />
+				</Grid>
+			</Button>
+		</Grid>
+
+		<StackPanel x:Name="FilterRoot" DockPanel.Dock="Top">
+			<TextBox x:Name="FilterName"
+					 Watermark="Filter by object name…"
+					 Margin="6,0,6,4" />
+			<TextBox x:Name="FilterComponent"
+					 Watermark="Component type contains… (optional)"
+					 Margin="6,0,6,4" />
+
+			<ListBox x:Name="MatchList"
+					 MinHeight="80"
+					 MaxHeight="200"
+					 Margin="6,0,6,4"
+					 IsVisible="False"
+					 SelectionMode="Single" />
+		</StackPanel>
 
 		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
 			<TreeView x:Name="Tree"

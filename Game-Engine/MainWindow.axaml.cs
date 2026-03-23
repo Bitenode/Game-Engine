@@ -1,9 +1,12 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Game_Engine.Core;
+using Game_Engine.Core.Component;
+using Game_Engine.Core.Editor;
 using Game_Engine.Core.Extensibility;
 using Game_Engine.Core.Input;
 using Game_Engine.Docking;
@@ -12,6 +15,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace Game_Engine;
 
@@ -19,6 +24,7 @@ public partial class MainWindow : Window
 {
     private enum UnsavedChoice { Save, DontSave, Cancel }
 
+    private IBrush? _windowBgBeforePlay;
     private DockManager? _dock;
     private readonly DispatcherTimer _autosaveTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private bool _autosaveMissingPathLogged;
@@ -68,6 +74,13 @@ public partial class MainWindow : Window
         if (this.FindControl<MenuItem>("ResetLayoutMenu") is { } reset)
             reset.Click += (_, __) => ResetLayout();
 
+        if (this.FindControl<MenuItem>("LayoutSave1") is { } ls1) ls1.Click += (_, __) => SaveLayoutPreset(1);
+        if (this.FindControl<MenuItem>("LayoutSave2") is { } ls2) ls2.Click += (_, __) => SaveLayoutPreset(2);
+        if (this.FindControl<MenuItem>("LayoutSave3") is { } ls3) ls3.Click += (_, __) => SaveLayoutPreset(3);
+        if (this.FindControl<MenuItem>("LayoutLoad1") is { } ll1) ll1.Click += (_, __) => LoadLayoutPreset(1);
+        if (this.FindControl<MenuItem>("LayoutLoad2") is { } ll2) ll2.Click += (_, __) => LoadLayoutPreset(2);
+        if (this.FindControl<MenuItem>("LayoutLoad3") is { } ll3) ll3.Click += (_, __) => LoadLayoutPreset(3);
+
         // Window ▸ New …
         void BindNew(string name, Type t, DockRegion r)
         {
@@ -89,10 +102,22 @@ public partial class MainWindow : Window
         if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
             settings.Click += (_, __) => InputRemappingAsync();
 
+        if (this.FindControl<MenuItem>("MI_ClearConsoleOnPlay") is { } ccPlay)
+        {
+            ccPlay.IsChecked = EditorSettings.ClearConsoleOnPlay;
+            ccPlay.Click += (_, __) =>
+            {
+                EditorSettings.ClearConsoleOnPlay = ccPlay.IsChecked == true;
+                EditorSettings.Save();
+            };
+        }
+
+        Game_Engine.Views.GameView.AnyPlayingStateChanged += OnGlobalPlayStateChanged;
+
         // ----- Project menu (items are named in XAML) -----
         MI_NewProject.Click += OnNewProject;
         MI_OpenProject.Click += OnOpenProject;
-        MI_BuildSettings.Click += (_, __) => OpenBuildSettings();
+        MI_BuildSettings.Click += (_, __) => _ = OpenBuildSettingsAsync();
         MI_ValidateProject.Click += (_, __) => RunProjectValidation();
         MI_AutosaveEnabled.Click += (_, __) => ToggleAutosave();
         MI_Autosave1.Click += (_, __) => SetAutosaveInterval(1);
@@ -116,6 +141,9 @@ public partial class MainWindow : Window
         ProjectService.Changed += RefreshProjectUI;
 
         // --- Extensions + Menus wiring ---
+
+        RegisterEditorCommands();
+        AddHandler(KeyDownEvent, OnEditorShortcutKeyDown, RoutingStrategies.Tunnel);
 
         // Seal built-in commands once (so extension commands can be cleared safely)
         CommandRegistry.SealBuiltins();
@@ -141,6 +169,302 @@ public partial class MainWindow : Window
         _autosaveTimer.Start();
     }
 
+    private void RegisterEditorCommands()
+    {
+        bool HasProject() => ProjectService.Current is not null;
+
+        CommandRegistry.Register("editor.commandPalette", "Editor: Command Palette", ShowCommandPalette, () => true);
+        CommandRegistry.Register("editor.quickOpen", "Editor: Quick Open", ShowQuickOpen, HasProject);
+
+        CommandRegistry.Register("editor.tab.scene", "Window: New Scene View Tab", () => AddPanel(typeof(ScenePanel)));
+        CommandRegistry.Register("editor.tab.game", "Window: New Game View Tab", () => AddPanel(typeof(GamePanel), DockRegion.CenterSecondary));
+        CommandRegistry.Register("editor.tab.inspector", "Window: New Inspector Tab", () => AddPanel(typeof(InspectorPanel)));
+        CommandRegistry.Register("editor.tab.hierarchy", "Window: New Hierarchy Tab", () => AddPanel(typeof(HierarchyPanel)));
+        CommandRegistry.Register("editor.tab.project", "Window: New Project Tab", () => AddPanel(typeof(ProjectPanel)));
+        CommandRegistry.Register("editor.tab.console", "Window: New Console Tab", () => AddPanel(typeof(ConsolePanel)));
+        CommandRegistry.Register("editor.tab.animation", "Window: New Animation Tab", () => AddPanel(typeof(AnimationPanel)));
+        CommandRegistry.Register("editor.tab.timeline", "Window: New Timeline Tab", () => AddPanel(typeof(TimelineSequencerPanel)));
+        CommandRegistry.Register("editor.tab.profiler", "Window: New Profiler Tab", () => AddPanel(typeof(ProfilerPanel)));
+        CommandRegistry.Register("editor.tab.shader", "Window: New Shader Editor Tab", () => AddPanel(typeof(ShaderEditorPanel)));
+        CommandRegistry.Register("editor.tab.biome", "Window: New Biome Graph Tab", () => AddPanel(typeof(BiomeGraphPanel)));
+
+        CommandRegistry.Register("editor.layout.reset", "Window: Reset Layout", () => ResetLayout());
+
+        CommandRegistry.Register("editor.project.saveScene", "Project: Save Scene", () => _ = SaveSceneAsync(false), HasProject);
+        CommandRegistry.Register("editor.project.loadScene", "Project: Load Scene…", () => _ = PromptLoadSceneAsync(), HasProject);
+        CommandRegistry.Register("editor.project.revealExplorer", "Project: Reveal in Explorer", RevealInExplorer, HasProject);
+        CommandRegistry.Register("editor.project.buildSettings", "Project: Build Settings…", () => _ = OpenBuildSettingsAsync(), HasProject);
+        CommandRegistry.Register("editor.project.validate", "Project: Validate Project", RunProjectValidation, HasProject);
+        CommandRegistry.Register("editor.project.new", "Project: New Project…", () => OnNewProject(this, new RoutedEventArgs()));
+        CommandRegistry.Register("editor.project.open", "Project: Open Project…", () => OnOpenProject(this, new RoutedEventArgs()));
+        CommandRegistry.Register("editor.project.close", "Project: Close Project", () => _ = CloseProjectFromPaletteAsync(), HasProject);
+
+        CommandRegistry.Register("editor.settings.input", "Settings: Input Remapping…", () => _ = InputRemappingAsync());
+
+        CommandRegistry.Register("editor.scripts.compile", "Scripts: Compile and Reload Extensions", () => _ = CompileScriptsFromPaletteAsync(), HasProject);
+        CommandRegistry.Register("editor.revealInProject", "Project: Reveal Selection in Project Panel", RevealInProjectForSelection, HasProject);
+    }
+
+    private void OnGlobalPlayStateChanged()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(OnGlobalPlayStateChanged);
+            return;
+        }
+
+        var playing = Game_Engine.Views.GameView.IsAnyViewPlaying;
+        if (playing)
+        {
+            if (_windowBgBeforePlay == null)
+                _windowBgBeforePlay = Background;
+            Background = new SolidColorBrush(Color.Parse("#3A2828"));
+            if (EditorSettings.ClearConsoleOnPlay)
+                ConsolePanel.ClearAllPanels();
+        }
+        else
+        {
+            Background = _windowBgBeforePlay;
+            _windowBgBeforePlay = null;
+        }
+
+        RefreshProjectUI();
+    }
+
+    public void RevealInProjectForSelection()
+    {
+        var go = SelectionService.Current;
+        if (go == null)
+        {
+            Log.Warning("Reveal in Project: nothing selected.");
+            return;
+        }
+
+        string? rel = null;
+        if (!string.IsNullOrWhiteSpace(go.PrefabPath))
+            rel = go.PrefabPath;
+        else
+        {
+            foreach (var b in go.Behaviors)
+            {
+                if (b is MeshFilter mf && !string.IsNullOrWhiteSpace(mf.ModelPath))
+                {
+                    rel = mf.ModelPath;
+                    break;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(rel))
+        {
+            Log.Warning("Reveal in Project: selection has no prefab path or mesh model path.");
+            return;
+        }
+
+        if (FindProjectPanel()?.TryRevealPath(rel) != true)
+            Log.Warning($"Reveal in Project: could not find '{rel}' in the project tree.");
+        else
+            Log.Info($"Project: revealed '{rel}'");
+    }
+
+    private ProjectPanel? FindProjectPanel()
+    {
+        foreach (var obj in BottomLeftTabs.Items)
+        {
+            if (obj is TabItem { Content: ProjectPanel pp })
+                return pp;
+        }
+        return null;
+    }
+
+    private void SaveLayoutPreset(int slot)
+    {
+        var tabs = CaptureDockLayout();
+        DockLayoutPresetStore.Save(slot, tabs);
+        Log.Success($"Layout preset {slot} saved ({tabs.Count} tab(s)).");
+    }
+
+    private void LoadLayoutPreset(int slot)
+    {
+        var data = DockLayoutPresetStore.Load(slot);
+        if (data == null || data.Count == 0)
+        {
+            Log.Warning($"Layout preset {slot} is empty or missing.");
+            return;
+        }
+        RestoreDockLayout(data);
+        Log.Info($"Layout preset {slot} loaded.");
+    }
+
+    private List<DockLayoutTabDto> CaptureDockLayout()
+    {
+        var list = new List<DockLayoutTabDto>();
+        void Scan(DockRegion region, TabControl tc)
+        {
+            foreach (var obj in tc.Items)
+            {
+                if (obj is not TabItem tab || tab.Content is not Control c) continue;
+                var tn = c.GetType().AssemblyQualifiedName ?? c.GetType().FullName ?? "";
+                list.Add(new DockLayoutTabDto
+                {
+                    Region = region.ToString(),
+                    TypeName = tn,
+                    Header = tab.Header?.ToString() ?? ""
+                });
+            }
+        }
+        Scan(DockRegion.Left, LeftTabs);
+        Scan(DockRegion.Center, CenterTabs);
+        Scan(DockRegion.CenterSecondary, CenterGameTabs);
+        Scan(DockRegion.Right, RightTabs);
+        Scan(DockRegion.BottomLeft, BottomLeftTabs);
+        Scan(DockRegion.Bottom, BottomTabs);
+        return list;
+    }
+
+    private void RestoreDockLayout(List<DockLayoutTabDto> tabs)
+    {
+        ResetLayout(addDefaultPanels: false);
+        foreach (var t in tabs)
+        {
+            if (!Enum.TryParse<DockRegion>(t.Region, out var region)) continue;
+            var type = Type.GetType(t.TypeName);
+            if (type == null && !string.IsNullOrWhiteSpace(t.TypeName))
+            {
+                var comma = t.TypeName.IndexOf(',');
+                var simple = comma > 0 ? t.TypeName[..comma].Trim() : t.TypeName;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        type = asm.GetType(simple, false);
+                        if (type != null) break;
+                    }
+                    catch { }
+                }
+            }
+            if (type == null || !_registry.ContainsKey(type)) continue;
+            AddPanel(type, region);
+        }
+    }
+
+    private void OnEditorShortcutKeyDown(object? sender, KeyEventArgs e)
+    {
+        var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        if (!ctrl) return;
+
+        if (!shift && e.Key == Key.P)
+        {
+            if (ProjectService.Current is null) return;
+            ShowQuickOpen();
+            e.Handled = true;
+            return;
+        }
+
+        if (shift && e.Key == Key.P)
+        {
+            ShowCommandPalette();
+            e.Handled = true;
+        }
+    }
+
+    public void ShowCommandPalette()
+    {
+        var w = new EditorCommandPaletteWindow(EditorCommandPaletteWindow.SourcesFromRegistry());
+        w.Show(this);
+    }
+
+    public void ShowQuickOpen()
+    {
+        if (ProjectService.Current is null) return;
+        new EditorQuickOpenWindow(this).Show(this);
+    }
+
+    public async Task OpenQuickOpenFileAsync(string absPath)
+    {
+        if (string.IsNullOrWhiteSpace(absPath) || !File.Exists(absPath)) return;
+
+        var ext = Path.GetExtension(absPath);
+        if (ext.Equals(".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            ScriptEditorWindow.Open(this, absPath);
+            return;
+        }
+
+        if (ext.Equals(".scene", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+            SceneService.LoadFromFile(absPath);
+            ProjectService.RememberLastOpenedScene(absPath);
+            Log.Info($"Scene loaded: {absPath}");
+            return;
+        }
+
+        if (ext.Equals(".material", StringComparison.OrdinalIgnoreCase) ||
+            ext.Equals(".prefab", StringComparison.OrdinalIgnoreCase))
+        {
+            ProjectService.SelectAssetForInspector(absPath);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = absPath, UseShellExecute = true });
+        }
+        catch { /* ignore */ }
+    }
+
+    private async Task PromptLoadSceneAsync()
+    {
+        var dlg = new OpenFileDialog
+        {
+            AllowMultiple = false,
+            Filters = new List<FileDialogFilter>
+            {
+                new FileDialogFilter { Name = "Scene", Extensions = { "scene" } }
+            }
+        };
+
+        var result = await dlg.ShowAsync(this);
+        var path = result?.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+        SceneService.LoadFromFile(path);
+        ProjectService.RememberLastOpenedScene(path);
+        Log.Info($"Scene loaded: {path}");
+    }
+
+    private async Task OpenBuildSettingsAsync()
+    {
+        var dlg = new BuildSettingsWindow();
+        await dlg.ShowDialog(this);
+    }
+
+    private async Task CloseProjectFromPaletteAsync()
+    {
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+        ProjectService.Close();
+        RefreshProjectUI();
+        ExtensionService.Clear();
+        RebuildExtensionMenus();
+    }
+
+    private async Task CompileScriptsFromPaletteAsync()
+    {
+        try
+        {
+            var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
+            ExtensionService.RefreshFromEditorScriptsFolder();
+            RefreshProjectUI();
+            RebuildExtensionMenus();
+            Log.Success($"Scripts compiled ({files} files, {types} behavior types). Extensions reloaded.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Script compile failed: {ex.Message}");
+        }
+    }
 
 
     // ---------- layout / tabs ----------
@@ -248,13 +572,7 @@ public partial class MainWindow : Window
         await dlg.ShowDialog(this);
     }
 
-    private async void OpenBuildSettings()
-    {
-        var dlg = new BuildSettingsWindow();
-        await dlg.ShowDialog(this);
-    }
-
-    private void ResetLayout()
+    private void ResetLayout(bool addDefaultPanels = true)
     {
         if (_dock is null) return;
 
@@ -267,7 +585,8 @@ public partial class MainWindow : Window
 
         _dock = new DockManager(LeftTabs, CenterTabs, CenterGameTabs, RightTabs, BottomLeftTabs, BottomTabs);
         _counts.Clear();
-        AddInitialPanels();
+        if (addDefaultPanels)
+            AddInitialPanels();
 
         AddTabMenus(LeftTabs);
         AddTabMenus(CenterTabs);
@@ -345,6 +664,9 @@ public partial class MainWindow : Window
         MI_Autosave5.IsChecked = proj.AutosaveIntervalMinutes == 5;
         MI_Autosave10.IsChecked = proj.AutosaveIntervalMinutes == 10;
         RebuildRecentProjectsMenu();
+
+        if (this.FindControl<MenuItem>("MI_ClearConsoleOnPlay") is { } ccPlay)
+            ccPlay.IsChecked = EditorSettings.ClearConsoleOnPlay;
     }
 
     private async void OnNewProject(object? s, RoutedEventArgs e)
@@ -417,26 +739,7 @@ public partial class MainWindow : Window
 
     
     private async void OnMenuLoadScene_Click(object? sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFileDialog
-        {
-            AllowMultiple = false,
-            Filters = new List<FileDialogFilter>
-        {
-            new FileDialogFilter { Name = "Scene", Extensions = { "scene" } }
-        }
-        };
-
-        var result = await dlg.ShowAsync(this);
-        var path = result?.FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
-            SceneService.LoadFromFile(path);
-            ProjectService.RememberLastOpenedScene(path);
-            Log.Info($"Scene loaded: {path}");
-        }
-    }
+        => await PromptLoadSceneAsync();
 
 
     private void RevealInExplorer()

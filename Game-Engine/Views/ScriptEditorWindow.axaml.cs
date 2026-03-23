@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.Loader;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -14,6 +15,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using System.Collections.ObjectModel;
 using Game_Engine.Core.Extensibility;
+using Game_Engine.Core.Editor;
 using Avalonia.Controls.ApplicationLifetimes;
 
 namespace Game_Engine.Views;
@@ -30,7 +32,7 @@ public partial class ScriptEditorWindow : Window
 
     // ── Constructor ─────────────────────────────────────────────
 
-    public ScriptEditorWindow(string path)
+    public ScriptEditorWindow(string path, int? initialLine1Based = null)
     {
         _path = path;
         InitializeComponent();
@@ -75,10 +77,127 @@ public partial class ScriptEditorWindow : Window
         BtnSave.Click += OnSave;
         BtnSaveAs.Click += OnSaveAs;
         BtnReload.Click += OnReload;
+        BtnFormat.Click += OnFormatDocument;
+        BtnZoomIn.Click += (_, __) => CodeEditor.AdjustEditorFontSize(1);
+        BtnZoomOut.Click += (_, __) => CodeEditor.AdjustEditorFontSize(-1);
+        BtnDefinitionFiles.Click += (_, __) => ShowDefinitionFilesWindow();
         BtnClose.Click += (_, __) => Close();
+
+        CodeEditor.DiagnosticsUpdated += OnDiagnosticsUpdated;
+        CodeEditor.GoToDefinitionRequestedAtOffset += OnGoToDefinitionRequestedAtOffset;
+        if (StatusProblems != null)
+            StatusProblems.Text = "";
 
         // Open initial file as a tab
         OpenFileInTab(path);
+        if (initialLine1Based is >= 1)
+            CodeEditor.GoToLine1Based(initialLine1Based.Value);
+    }
+
+    void OnProblemsStripPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        CodeEditor.GoToFirstDiagnostic();
+    }
+
+    void OnDiagnosticsUpdated(IReadOnlyList<EditorDiagnostic> diags)
+    {
+        if (StatusProblems == null) return;
+        int err = 0, warn = 0;
+        foreach (var d in diags)
+        {
+            if (d.Severity == DiagSeverity.Error) err++;
+            else if (d.Severity == DiagSeverity.Warning) warn++;
+        }
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (err == 0 && warn == 0)
+            {
+                StatusProblems.Text = diags.Count == 0 ? "" : "No errors or warnings.";
+                StatusProblems.Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#6A9955"));
+                return;
+            }
+            var parts = new List<string>();
+            if (err > 0) parts.Add($"{err} error(s)");
+            if (warn > 0) parts.Add($"{warn} warning(s)");
+            StatusProblems.Text = string.Join(", ", parts);
+            StatusProblems.Foreground = err > 0
+                ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#F48771"))
+                : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#E8C468"));
+            string? first = null;
+            foreach (var d in diags)
+            {
+                if (d.Severity == DiagSeverity.Error) { first = d.Message; break; }
+            }
+            if (first == null)
+            {
+                foreach (var d in diags)
+                {
+                    if (d.Severity == DiagSeverity.Warning) { first = d.Message; break; }
+                }
+            }
+            if (!string.IsNullOrEmpty(first))
+                StatusProblems.Text += " — " + first;
+        });
+    }
+
+    async void OnFormatDocument(object? s, RoutedEventArgs e)
+    {
+        try
+        {
+            await CodeEditor.FormatDocumentAsync();
+            _dirty = true;
+            if (TabBar.ActiveTab != null) TabBar.ActiveTab.IsDirty = true;
+            TabBar.RefreshTabDirtyState();
+            UpdateTitle();
+        }
+        catch (Exception ex)
+        {
+            ShowError("Format failed:\n" + ex.Message);
+        }
+    }
+
+    static string NormalizePath(string p)
+    {
+        try { return Path.GetFullPath(p); } catch { return p; }
+    }
+
+    /// <summary>Open or focus a script editor and move the caret to <paramref name="line1Based"/> (1-based).</summary>
+    public static void OpenAtLine(Window? owner, string path, int line1Based)
+    {
+        var full = NormalizePath(path);
+        if (!File.Exists(full)) return;
+
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime life)
+        {
+            foreach (var win in life.Windows)
+            {
+                if (win is ScriptEditorWindow sew && sew.TryFocusFileAndLine(full, line1Based))
+                    return;
+            }
+        }
+
+        var editor = new ScriptEditorWindow(full, line1Based > 0 ? line1Based : null)
+        {
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        if (owner != null) editor.Show(owner);
+        else editor.Show();
+    }
+
+    bool TryFocusFileAndLine(string fullPath, int line1Based)
+    {
+        var want = NormalizePath(fullPath);
+        foreach (var t in TabBar.Tabs)
+        {
+            if (!string.Equals(NormalizePath(t.FilePath), want, StringComparison.OrdinalIgnoreCase))
+                continue;
+            TabBar.SetActiveTab(t);
+            if (line1Based >= 1)
+                CodeEditor.GoToLine1Based(line1Based);
+            Activate();
+            return true;
+        }
+        return false;
     }
 
     // ── NodeTag (tree item metadata) ────────────────────────────
@@ -113,6 +232,13 @@ public partial class ScriptEditorWindow : Window
             OnBuildAll(this, new RoutedEventArgs());
             e.Handled = true;
         }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                 e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
+                 e.Key == Key.O)
+        {
+            ShowDefinitionFilesWindow();
+            e.Handled = true;
+        }
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.Tab)
         {
             // Ctrl+Tab / Ctrl+Shift+Tab: cycle through tabs
@@ -133,6 +259,36 @@ public partial class ScriptEditorWindow : Window
             // Ctrl+W: close current tab
             if (TabBar.ActiveTab != null)
                 OnTabCloseRequested(TabBar.ActiveTab);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.F12)
+        {
+            e.Handled = true;
+            var text = CodeEditor.GetText();
+            var docPath = CodeEditor.DocumentPath;
+            var caretPos = CodeEditor.Caret.Position;
+            _ = RunGoToDefinitionAsync(text, docPath, caretPos);
+        }
+        else if (e.Key == Key.F8)
+        {
+            CodeEditor.GoToNextDiagnostic(e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+            e.Handled = true;
+        }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                 (e.Key == Key.OemPlus || e.Key == Key.Add))
+        {
+            CodeEditor.AdjustEditorFontSize(1);
+            e.Handled = true;
+        }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                 (e.Key == Key.OemMinus || e.Key == Key.Subtract))
+        {
+            CodeEditor.AdjustEditorFontSize(-1);
+            e.Handled = true;
+        }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.D0)
+        {
+            CodeEditor.ResetEditorFontSize();
             e.Handled = true;
         }
     }
@@ -156,6 +312,142 @@ public partial class ScriptEditorWindow : Window
         TabBar.SetActiveTab(tab);
     }
 
+    private async Task RunGoToDefinitionAsync(string text, string? docPath, int caretOffset)
+    {
+        var result = await Task.Run(() =>
+            EditorScriptsGoToDefinition.TryResolve(text, docPath, caretOffset)).ConfigureAwait(false);
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (!result.Found)
+            {
+                StatusText("No definition found for the symbol at the caret.");
+                return;
+            }
+            if (!result.IsSameDocument && !string.IsNullOrEmpty(result.TargetFilePath))
+                OpenFileInTab(result.TargetFilePath);
+            CodeEditor.GoToLine1Based(result.Line1Based);
+        });
+    }
+
+    private void OnGoToDefinitionRequestedAtOffset(int offset)
+    {
+        var text = CodeEditor.GetText();
+        var docPath = CodeEditor.DocumentPath;
+        _ = RunGoToDefinitionAsync(text, docPath, offset);
+    }
+
+    private void ShowDefinitionFilesWindow()
+    {
+        var all = EditorScriptsGoToDefinition.GetIndexedFilePaths()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (all.Count == 0)
+        {
+            StatusText("No indexed definition files found.");
+            return;
+        }
+
+        var search = new TextBox
+        {
+            Watermark = "Filter files... (Enter=open, Esc=close)",
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        var list = new ListBox
+        {
+            MinHeight = 320,
+            SelectionMode = SelectionMode.Single
+        };
+
+        void Rebuild()
+        {
+            var q = (search.Text ?? "").Trim();
+            var rows = string.IsNullOrWhiteSpace(q)
+                ? all
+                : all.Where(p => p.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+            list.Items.Clear();
+            foreach (var p in rows)
+            {
+                list.Items.Add(new ListBoxItem
+                {
+                    Content = new TextBlock { Text = p, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    Tag = p,
+                    Padding = new Thickness(6, 3)
+                });
+            }
+            if (list.ItemCount > 0) list.SelectedIndex = 0;
+        }
+
+        var layout = new Avalonia.Controls.Grid
+        {
+            Margin = new Thickness(12),
+            RowDefinitions = new RowDefinitions("Auto,*")
+        };
+        layout.Children.Add(search);
+        var listHost = new Border { Child = list };
+        Avalonia.Controls.Grid.SetRow(listHost, 1);
+        layout.Children.Add(listHost);
+
+        var win = new Window
+        {
+            Title = $"Definition Files ({all.Count})",
+            Width = 900,
+            Height = 560,
+            MinWidth = 640,
+            MinHeight = 420,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = layout
+        };
+
+        void OpenSelection()
+        {
+            if (list.SelectedItem is not ListBoxItem item || item.Tag is not string path) return;
+            OpenFileInTab(path);
+            win.Close();
+        }
+
+        search.TextChanged += (_, __) => Rebuild();
+        list.DoubleTapped += (_, __) => OpenSelection();
+        list.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                OpenSelection();
+                e.Handled = true;
+            }
+        };
+        win.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                win.Close();
+                e.Handled = true;
+            }
+        };
+        search.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Down && list.ItemCount > 0)
+            {
+                list.Focus();
+                list.SelectedIndex = 0;
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Enter)
+            {
+                OpenSelection();
+                e.Handled = true;
+            }
+        };
+        win.Opened += (_, __) =>
+        {
+            Rebuild();
+            search.Focus();
+        };
+        win.Show(this);
+    }
+
     private void OnTabSelected(EditorTab tab)
     {
         // Save the current editor state into the PREVIOUS tab
@@ -168,6 +460,16 @@ public partial class ScriptEditorWindow : Window
         // Load the new tab's state into the editor
         _path = tab.FilePath;
         _dirty = tab.IsDirty;
+        try
+        {
+            CodeEditor.DocumentPath = string.IsNullOrWhiteSpace(tab.FilePath)
+                ? null
+                : Path.GetFullPath(tab.FilePath);
+        }
+        catch
+        {
+            CodeEditor.DocumentPath = tab.FilePath;
+        }
         CodeEditor.SetText(tab.Buffer.GetText());
         CodeEditor.Caret.Position = tab.Caret.Position;
         CodeEditor.Caret.AnchorPosition = tab.Caret.AnchorPosition;
@@ -438,6 +740,13 @@ public partial class ScriptEditorWindow : Window
     }
 
     private Task<(int files, int typesLoaded)> BuildAndLoadProjectScriptsAsync()
+        => RunCompileProjectScriptsAsync(s => StatusText(s));
+
+    /// <summary>Compile and hot-load all project scripts (same as Script Editor Build). Safe to call when no editor is open.</summary>
+    public static Task<(int files, int typesLoaded)> CompileAllProjectScriptsAsync()
+        => RunCompileProjectScriptsAsync(null);
+
+    private static Task<(int files, int typesLoaded)> RunCompileProjectScriptsAsync(Action<string>? statusSink)
     {
         return Task.Run(() =>
         {
@@ -533,7 +842,8 @@ public partial class ScriptEditorWindow : Window
             {
                 var dllPath = Path.Combine(outDir, asmName + ".dll");
                 File.WriteAllBytes(dllPath, ms.ToArray());
-                StatusText($"Build OK — {asmName}.dll saved to {dllPath}");
+                var msg = $"Build OK — {asmName}.dll saved to {dllPath}";
+                statusSink?.Invoke(msg);
             }
             catch { }
 

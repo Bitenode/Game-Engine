@@ -24,6 +24,8 @@ public sealed class GutterControl : Control
     // ── Metrics (shared with CodeCanvas) ────────────────────────
     public double LineHeight { get; set; }
     public double CharWidth { get; set; }
+    /// <summary>Font size for line numbers and fold glyphs (match <see cref="CodeCanvas.EditorFontSize"/>).</summary>
+    public double LineNumberFontSize { get; set; } = CodeCanvas.DefaultFontSize;
 
     // ── Folding ──────────────────────────────────────────────────
     public IReadOnlyList<FoldRegion>? FoldRegions { get; set; }
@@ -39,7 +41,6 @@ public sealed class GutterControl : Control
     private const double RightPad = 16;
     private const double LeftPad = 8;
     private const double FoldMarginWidth = 14;
-    private const double FontSize = CodeCanvas.FontSize;
     private static readonly Typeface s_typeface = new("Consolas,Menlo,Monospace");
 
     // ── Brushes ─────────────────────────────────────────────────
@@ -98,7 +99,7 @@ public sealed class GutterControl : Control
             var brush = isActive ? s_activeNumBrush : s_lineNumBrush;
             var ft = new FormattedText(
                 num, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                s_typeface, FontSize, brush);
+                s_typeface, LineNumberFontSize, brush);
 
             double x = bounds.Width - RightPad - FoldMarginWidth - ft.Width;
             ctx.DrawText(ft, new Point(x, y));
@@ -110,7 +111,7 @@ public sealed class GutterControl : Control
                 string arrow = collapsed ? "\u25B6" : "\u25BC"; // right / down triangle
                 var aft = new FormattedText(
                     arrow, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                    s_typeface, FontSize * 0.65, s_lineNumBrush);
+                    s_typeface, LineNumberFontSize * 0.65, s_lineNumBrush);
                 double ax = bounds.Width - FoldMarginWidth + (FoldMarginWidth - aft.Width) / 2;
                 double ay = y + (LineHeight - aft.Height) / 2;
                 ctx.DrawText(aft, new Point(ax, ay));

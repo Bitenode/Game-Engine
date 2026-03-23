@@ -258,6 +258,14 @@ namespace Game_Engine.Core
             return new BehaviorDTO { Type = type.AssemblyQualifiedName, Properties = bag };
         }
 
+#if !PLAYER
+        /// <summary>Editor: copy one component using the same rules as scene save.</summary>
+        public static BehaviorDTO ExportBehaviorForClipboard(Behavior behavior) => BehaviorToDTO(behavior);
+
+        /// <summary>Editor: paste — adds a new component instance from a clipboard DTO.</summary>
+        public static void PasteBehaviorFromClipboard(GameObject go, BehaviorDTO dto) => RestoreBehavior(go, dto);
+#endif
+
         /// <summary>
         /// Resolve a type by its AssemblyQualifiedName, with a fallback that searches
         /// all loaded assemblies by full name. This handles the case where scene files
