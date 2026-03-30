@@ -56,7 +56,6 @@ internal static class Program
             }
         };
 
-        // Single-mesh fallback
         SceneSerialization.ResolveMeshFromModelPath = absPath =>
         {
             try

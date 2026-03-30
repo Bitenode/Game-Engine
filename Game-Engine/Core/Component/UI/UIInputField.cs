@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using Avalonia.Media;
 
 namespace Game_Engine.Core.Component.UI
@@ -22,6 +23,13 @@ namespace Game_Engine.Core.Component.UI
     [Require(typeof(RectTransform))]
     public sealed class UIInputField : UIElement
     {
+        static readonly List<UIInputField> s_instances = new();
+
+        public UIInputField()
+        {
+            Focusable = true;
+        }
+
         /// <summary>Current text content.</summary>
         [Persist] public string Text
         {
@@ -63,6 +71,12 @@ namespace Game_Engine.Core.Component.UI
         [Persist] public Color PlaceholderColor { get; set; } = Color.FromRgb(0x80, 0x80, 0x80);
         [Persist] public Color CursorColor { get; set; } = Colors.White;
         [Persist] public Color SelectionColor { get; set; } = Color.FromArgb(0x60, 0x40, 0xA0, 0xFF);
+        /// <summary>Border drawn when focused (alpha 0 disables).</summary>
+        [Persist] public Color FocusedBorderColor { get; set; } = Color.FromArgb(0xFF, 0x40, 0xA0, 0xFF);
+        /// <summary>Thickness in canvas pixels for the focus border.</summary>
+        [Persist] public float FocusBorderWidth { get; set; } = 2f;
+        /// <summary>When true, clicking outside the field clears focus.</summary>
+        [Persist] public bool DeselectOnClickOutside { get; set; } = true;
 
         // ── Events ──
         /// <summary>Fired when the text changes.</summary>
@@ -78,6 +92,31 @@ namespace Game_Engine.Core.Component.UI
 
         /// <summary>Whether this input field currently has focus.</summary>
         public bool IsFocused => _isFocused;
+
+        public override void OnEnable()
+        {
+            base.OnEnable();
+            if (!s_instances.Contains(this))
+                s_instances.Add(this);
+        }
+
+        public override void OnDisable()
+        {
+            s_instances.Remove(this);
+            base.OnDisable();
+        }
+
+        /// <summary>Called by <see cref="Game_Engine.Core.Rendering.UI.UIEventSystem"/> before pointer-down routing.</summary>
+        internal static void ApplyDeselectOnPointerDown(UIElement? hitUnderPointer)
+        {
+            for (int i = 0; i < s_instances.Count; i++)
+            {
+                var f = s_instances[i];
+                if (!f._isFocused || !f.DeselectOnClickOutside) continue;
+                if (!ReferenceEquals(hitUnderPointer, f))
+                    f._isFocused = false;
+            }
+        }
 
         // ── Pointer events ──
 
@@ -232,8 +271,8 @@ namespace Game_Engine.Core.Component.UI
 
         public override UIDrawData GetDrawData(in RectTransform.Rect rect)
         {
-            // Background + text display quad + cursor quad = 3 max
-            if (_quadBuffer.Length < 3) _quadBuffer = new UIQuad[3];
+            // Background + optional focus border (4) + cursor quad
+            if (_quadBuffer.Length < 8) _quadBuffer = new UIQuad[8];
 
             int qi = 0;
 
@@ -247,6 +286,29 @@ namespace Game_Engine.Core.Component.UI
                 R = BackgroundColor.R / 255f, G = BackgroundColor.G / 255f, B = BackgroundColor.B / 255f, A = bgA,
                 TextureHandle = 0, IsSDF = false
             };
+
+            if (_isFocused && FocusedBorderColor.A > 0)
+            {
+                float w = Math.Clamp(FocusBorderWidth, 0.5f, 32f);
+                float br = FocusedBorderColor.R / 255f, bgc = FocusedBorderColor.G / 255f, bb = FocusedBorderColor.B / 255f;
+                float ba = FocusedBorderColor.A / 255f * Opacity;
+                void PushQuad(float x0, float y0, float x1, float y1)
+                {
+                    _quadBuffer[qi++] = new UIQuad
+                    {
+                        X0 = x0, Y0 = y0, X1 = x1, Y1 = y1,
+                        U0 = 0, V0 = 0, U1 = 1, V1 = 1,
+                        R = br, G = bgc, B = bb, A = ba,
+                        TextureHandle = 0, IsSDF = false
+                    };
+                }
+
+                // Top, bottom, left, right strips (inside rect edge)
+                PushQuad(rect.X, rect.Y + rect.Height - w, rect.X + rect.Width, rect.Y + rect.Height);
+                PushQuad(rect.X, rect.Y, rect.X + rect.Width, rect.Y + w);
+                PushQuad(rect.X, rect.Y, rect.X + w, rect.Y + rect.Height);
+                PushQuad(rect.X + rect.Width - w, rect.Y, rect.X + rect.Width, rect.Y + rect.Height);
+            }
 
             // Text color indicator (shows text color as a small bar at the bottom to indicate active state)
             if (_isFocused && _cursorVisible)

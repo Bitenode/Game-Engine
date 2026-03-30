@@ -125,6 +125,48 @@ namespace Game_Engine.Core
             return true;
         }
 
+        /// <summary>
+        /// Pairs a <see cref="MeshFilter"/> with the next <see cref="MeshRenderer"/> on the same GameObject.
+        /// Skinned meshes require <see cref="SkinnedMeshRenderer"/> so <c>uBones</c> are set; a plain
+        /// <see cref="MeshRenderer"/> listed earlier (e.g. user-added or paste order) must not win.
+        /// </summary>
+        private static bool TryPairMeshRendererForFilter(
+            IList<Behavior> behaviors,
+            ref int nextMR,
+            Mesh? mesh,
+            out MeshRenderer? mr)
+        {
+            mr = null;
+            int start = nextMR;
+
+            if (mesh?.HasBones == true)
+            {
+                for (int j = start; j < behaviors.Count; j++)
+                {
+                    if (behaviors[j] is SkinnedMeshRenderer smr && smr.Enabled)
+                    {
+                        mr = smr;
+                        nextMR = j + 1;
+                        return true;
+                    }
+                }
+            }
+
+            for (int j = start; j < behaviors.Count; j++)
+            {
+                if (behaviors[j] is not MeshRenderer r || !r.Enabled)
+                    continue;
+                // Do not bind a SkinnedMeshRenderer to a non-skinned mesh — save it for a later MF with bones.
+                if (mesh?.HasBones != true && r is SkinnedMeshRenderer)
+                    continue;
+                mr = r;
+                nextMR = j + 1;
+                return true;
+            }
+
+            return false;
+        }
+
         // ---------- Draw item for sorting ----------
         private struct DrawItem
         {
@@ -783,21 +825,10 @@ namespace Game_Engine.Core
             {
                 if (behaviors[i] is MeshFilter f && f.Enabled)
                 {
-                    // Find the matching MeshRenderer (next enabled one at or after nextMR)
-                    MeshRenderer? mr = null;
-                    for (int j = nextMR; j < behaviors.Count; j++)
-                    {
-                        if (behaviors[j] is MeshRenderer r && r.Enabled)
-                        {
-                            mr = r;
-                            nextMR = j + 1;
-                            break;
-                        }
-                    }
-                    if (mr == null || mr.Wireframe) continue;
-
                     var mesh = f.Mesh;
                     if (mesh == null) continue;
+                    if (!TryPairMeshRendererForFilter(behaviors, ref nextMR, mesh, out var mr) || mr == null || mr.Wireframe)
+                        continue;
 
                     var sph = GetMeshSphere(mesh);
                     if (!SphereInsideFrustum(ref sph, world, planes)) continue;
@@ -923,9 +954,6 @@ namespace Game_Engine.Core
             b *= tint.B / 255f;
             a *= tint.A / 255f;
 
-            bool alphaClip = alphaCutoff > 0.001f;
-            bool useAlphaPipeline = transparent || alphaClip;
-
             // For blended transparency: if the material says transparent but computed
             // alpha is fully opaque (no texture alpha / no base-color alpha), apply a
             // sensible default so the user can actually see through it.
@@ -933,15 +961,15 @@ namespace Game_Engine.Core
                 a = 0.35f;
 
             // For blended transparency, don't aggressively discard fragments.
-            // Keep authored clip cutoffs for alpha-cutout materials (foliage/cards).
-            if (transparent && !alphaClip)
+            // Alpha-test (high cutoff) is only for opaque-pass cutout materials (b09ed5c / pre-df24afd).
+            if (transparent)
                 alphaCutoff = 0.01f;
 
             shader.SetVector4("uBaseColor", r, g2, b, a);
             shader.SetFloat("uRoughness", roughness);
             shader.SetFloat("uMetallic", metallic);
             shader.SetFloat("uAlphaCutoff", alphaCutoff);
-            shader.SetInt("uTransparent", useAlphaPipeline ? 1 : 0);
+            shader.SetInt("uTransparent", transparent ? 1 : 0);
             shader.SetInt("uDoubleSided", doubleSided ? 1 : 0);
 
             // Emissive
@@ -1342,6 +1370,19 @@ namespace Game_Engine.Core
                 gl.Enable(EnableCap.CullFace);
                 gl.CullFace(item.MR.InvertFrontFace ? TriangleFace.Front : TriangleFace.Back);
             }
+
+            // GPU skinning (same convention as standard forward pass; shaders that omit
+            // skinning ignore these uniforms).
+            if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
+            {
+                customShader.SetInt("uHasBones", 1);
+                var bones = item.Skinned.BoneMatrices!;
+                int boneCount = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
+                for (int bi = 0; bi < boneCount; bi++)
+                    customShader.SetMatrix4($"uBones[{bi}]", bones[bi]);
+            }
+            else
+                customShader.SetInt("uHasBones", 0);
 
             gpuMesh.Draw();
         }
@@ -2079,20 +2120,10 @@ namespace Game_Engine.Core
             {
                 if (behaviors[i] is MeshFilter f && f.Enabled)
                 {
-                    MeshRenderer? mr = null;
-                    for (int j = nextMR; j < behaviors.Count; j++)
-                    {
-                        if (behaviors[j] is MeshRenderer r && r.Enabled)
-                        {
-                            mr = r;
-                            nextMR = j + 1;
-                            break;
-                        }
-                    }
-                    if (mr == null || !mr.CastShadows) continue;
-
                     var mesh = f.Mesh;
                     if (mesh == null) continue;
+                    if (!TryPairMeshRendererForFilter(behaviors, ref nextMR, mesh, out var mr) || mr == null || !mr.CastShadows)
+                        continue;
 
                     var sph = GetMeshSphere(mesh);
                     if (!SphereInsideFrustum(ref sph, world, planes)) continue;

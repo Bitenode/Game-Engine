@@ -21,7 +21,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
 | **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
-| **UI** | Canvas, RectTransform, UIElement, UIText, UIImage, UIButton, UIPanel, UISlider, UIToggle, UIInputField | `Core/Component/UI/` |
+| **UI** | Canvas, RectTransform, UIElement, UIText, UIImage, UIButton, UIPanel, UISlider, UIToggle, UIInputField, UIProgressBar | `Core/Component/UI/` |
 | **AI** | BehaviorTreeRunner | `Core/AI/` |
 | **Dialogue** | DialogueRunner | `Core/Dialogue/` |
 | **Timeline** | TimelinePlayer | `Core/Timeline/` |
@@ -1422,10 +1422,13 @@ Canvas (root)
             ├─ UIPanel       — Background panel
             ├─ UISlider      — Value slider
             ├─ UIToggle      — Checkbox toggle
-            └─ UIInputField  — Text input box
+            ├─ UIInputField  — Text input box
+            └─ UIProgressBar — Non-interactive progress fill
 ```
 
-The `UIEventSystem` processes pointer input each frame, raycasting against `RectTransform` rects in screen space and delivering hover/press/click/drag events to UI elements. `UIEventSystem.PointerOverUI` can be checked to prevent game input when the pointer is over a UI element.
+The `UIEventSystem` processes pointer input each frame, raycasting against `RectTransform` rects in screen space and delivering hover/press/click/drag events to UI elements. It keeps `UIElement.IsPointerOver` and `UIElement.IsPointerPressed` in sync for reliable visuals (for example while dragging off a button). `UIEventSystem.PointerOverUI` can be checked to prevent game input when the pointer is over a UI element.
+
+Before each element is drawn, `CanvasRenderer` calls `AdvanceOpacityTransition` so optional opacity easing (`OpacityTargetEnabled`, `OpacityTarget`, `OpacityTransitionSpeed`) runs every frame.
 
 ---
 
@@ -1493,6 +1496,17 @@ Abstract base class for all UI elements. Requires `RectTransform`. Provides comm
 | `Raycastable` | `bool` | `true` | Whether this element receives pointer events |
 | `Color` | `Color` | `White` | Base tint color |
 | `Opacity` | `float` | `1` | Opacity (0 = transparent, 1 = opaque) |
+| `Focusable` | `bool` | `false` | Hint for focus-capable controls (input fields set this in their constructor) |
+| `OpacityTransitionSpeed` | `float` | `0` | Seconds to ease `Opacity` toward `OpacityTarget` when targeting is enabled (`0` = no easing from this path) |
+| `OpacityTargetEnabled` | `bool` | `false` | When true, opacity eases toward `OpacityTarget` each frame |
+| `OpacityTarget` | `float` | `1` | Target opacity (0–1) when `OpacityTargetEnabled` is true |
+
+**Runtime (not serialized):**
+
+| Member | Description |
+|--------|-------------|
+| `IsPointerOver` | True while the pointer is over this element |
+| `IsPointerPressed` | True while the primary button is held after a press began on this element |
 
 **Pointer Events (virtual):**
 | Method | When Called |
@@ -1544,7 +1558,7 @@ Renders a sprite or texture inside a `RectTransform`. Supports simple stretch, 9
 
 ### UIButton
 
-Interactive button that responds to pointer events. Drives a sibling `UIImage` color based on hover/press/disabled state with smooth color transitions.
+Interactive button that responds to pointer events. Drives a sibling `UIImage` color based on hover/press/disabled state with smooth color transitions. Visual state follows `IsPointerOver` / `IsPointerPressed` each frame so the pressed style stays correct if the pointer leaves the button while held.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -1588,11 +1602,13 @@ A draggable slider for selecting a value within a range. Renders a background tr
 | `MaxValue` | `float` | `1` | Maximum slider value |
 | `Value` | `float` | `0` | Current value |
 | `WholeNumbers` | `bool` | `false` | Restrict to integers |
+| `Interactable` | `bool` | `true` | When false, pointer drags/clicks do not change the value |
+| `StepSize` | `float` | `0` | If greater than zero, snaps the value to multiples of this step after pointer input (`WholeNumbers` still rounds to integers) |
 | `Direction` | `SliderDirection` | `LeftToRight` | Slider direction |
 | `BackgroundColor` | `Color` | `#404040` | Track background color |
 | `FillColor` | `Color` | `#40A0FF` | Fill bar color |
 | `HandleColor` | `Color` | `White` | Handle knob color |
-| `HandleSize` | `float` | `0.8` | Handle size as fraction of height |
+| `HandleSize` | `float` | `0.8` | Handle size as fraction of thickness (clamped roughly 0.05–1) |
 
 **Directions:** `LeftToRight`, `RightToLeft`, `BottomToTop`, `TopToBottom`
 
@@ -1619,6 +1635,7 @@ A checkbox/toggle switch that alternates between on and off states. Renders a ba
 | `ActiveColor` | `Color` | `#40A0FF` | Background when on |
 | `CheckmarkColor` | `Color` | `White` | Checkmark indicator color |
 | `CheckmarkInset` | `float` | `0.15` | Checkmark inset (0–0.5) |
+| `HoverBackgroundColor` | `Color` | transparent | When alpha &gt; 0 and the toggle is interactable, blended onto the background while hovered |
 
 **Events:**
 - `OnValueChanged` — `Action<bool>` fired when the toggle state changes
@@ -1643,6 +1660,9 @@ A text input box with cursor, selection, placeholder text, and keyboard input ha
 | `PlaceholderColor` | `Color` | `#808080` | Placeholder text color |
 | `CursorColor` | `Color` | `White` | Cursor color |
 | `SelectionColor` | `Color` | `#6040A0FF` | Selection highlight color |
+| `FocusedBorderColor` | `Color` | `#FF40A0FF` | Focus outline color (alpha 0 disables the outline) |
+| `FocusBorderWidth` | `float` | `2` | Outline thickness in canvas pixels (clamped when drawing) |
+| `DeselectOnClickOutside` | `bool` | `true` | When true, a primary click that does not hit this field clears focus |
 
 **Content Types:** `Standard`, `IntegerNumber`, `DecimalNumber`, `Alphanumeric`, `Password`
 
@@ -1651,6 +1671,23 @@ A text input box with cursor, selection, placeholder text, and keyboard input ha
 - `OnEndEdit` — `Action<string>` fired when the user presses Enter
 
 **Keyboard Support:** Arrow keys, Home, End, Backspace, Delete, Escape (unfocus), Enter (submit)
+
+---
+
+### UIProgressBar
+
+Read-only progress indicator: draws a track and fill like `UISlider` but does not handle pointer input. Use for loading bars, cooldown strips, etc.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MinValue` | `float` | `0` | Range start |
+| `MaxValue` | `float` | `1` | Range end |
+| `Value` | `float` | `0.5` | Current value (clamped between min and max) |
+| `Direction` | `SliderDirection` | `LeftToRight` | Fill direction |
+| `BackgroundColor` | `Color` | `#404040` | Track color |
+| `FillColor` | `Color` | `#40A0FF` | Fill color |
+
+**Members:** `NormalizedValue` — fill amount in 0–1 after clamping.
 
 ---
 

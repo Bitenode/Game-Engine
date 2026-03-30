@@ -139,6 +139,8 @@ public partial class MainWindow : Window
         ProjectService.ProjectOpened += RefreshProjectUI;
         ProjectService.ProjectClosed += RefreshProjectUI;
         ProjectService.Changed += RefreshProjectUI;
+        ProjectService.ProjectOpened += TryRestoreProjectDockLayout;
+        Closing += (_, __) => SaveProjectDockLayout();
 
         // --- Extensions + Menus wiring ---
 
@@ -309,7 +311,8 @@ public partial class MainWindow : Window
                 {
                     Region = region.ToString(),
                     TypeName = tn,
-                    Header = tab.Header?.ToString() ?? ""
+                    Header = tab.Header?.ToString() ?? "",
+                    IsActive = ReferenceEquals(tc.SelectedItem, obj)
                 });
             }
         }
@@ -345,7 +348,54 @@ public partial class MainWindow : Window
             }
             if (type == null || !_registry.ContainsKey(type)) continue;
             AddPanel(type, region);
+            TrySelectRestoredTab(t);
         }
+    }
+
+    private void TrySelectRestoredTab(DockLayoutTabDto dto)
+    {
+        if (!dto.IsActive) return;
+        if (!Enum.TryParse<DockRegion>(dto.Region, out var region)) return;
+        var tc = TabControlForRegion(region);
+        if (tc == null) return;
+        foreach (var obj in tc.Items)
+        {
+            if (obj is not TabItem tab || tab.Content is not Control c) continue;
+            var tn = c.GetType().AssemblyQualifiedName ?? c.GetType().FullName ?? "";
+            if (string.Equals(tn, dto.TypeName, StringComparison.Ordinal) &&
+                string.Equals(tab.Header?.ToString() ?? "", dto.Header ?? "", StringComparison.Ordinal))
+            {
+                tc.SelectedItem = obj;
+                return;
+            }
+        }
+    }
+
+    private TabControl? TabControlForRegion(DockRegion region) => region switch
+    {
+        DockRegion.Left => LeftTabs,
+        DockRegion.Center => CenterTabs,
+        DockRegion.CenterSecondary => CenterGameTabs,
+        DockRegion.Right => RightTabs,
+        DockRegion.BottomLeft => BottomLeftTabs,
+        DockRegion.Bottom => BottomTabs,
+        _ => null
+    };
+
+    private void SaveProjectDockLayout()
+    {
+        var p = ProjectService.Current;
+        if (p == null) return;
+        DockLayoutPresetStore.SaveForProject(p.RootPath, CaptureDockLayout());
+    }
+
+    private void TryRestoreProjectDockLayout()
+    {
+        var p = ProjectService.Current;
+        if (p == null) return;
+        var data = DockLayoutPresetStore.LoadForProject(p.RootPath);
+        if (data == null || data.Count == 0) return;
+        RestoreDockLayout(data);
     }
 
     private void OnEditorShortcutKeyDown(object? sender, KeyEventArgs e)

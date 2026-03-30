@@ -80,6 +80,48 @@ namespace Game_Engine.Core
             }
         }
 
+        /// <summary>
+        /// Collects <see cref="MeshFilter.Mesh"/> from an import root ordered by <see cref="MeshFilter.ModelPartIndex"/>,
+        /// producing a dense list where index <c>i</c> is the mesh for importer part <c>i</c>.
+        /// A naive depth-first walk can disagree with <see cref="ModelImporter"/> part order because skinned
+        /// submeshes are attached as extra root children after the armature subtree, while part indices follow
+        /// Assimp node visit order — wrong <c>list[partIdx]</c> breaks skinning and looks like a shredded mesh.
+        /// </summary>
+        public static List<Mesh> CollectMeshesOrderedByModelPartIndex(GameObject go)
+        {
+            var byIndex = new Dictionary<int, Mesh>();
+            void Walk(GameObject n)
+            {
+                foreach (var b in n.Behaviors)
+                {
+                    if (b is MeshFilter mf && mf.Mesh != null)
+                    {
+                        int idx = 0;
+                        if (!string.IsNullOrWhiteSpace(mf.ModelPartIndex) && !int.TryParse(mf.ModelPartIndex, out idx))
+                            idx = 0;
+                        byIndex[idx] = mf.Mesh;
+                    }
+                }
+                foreach (var c in n.Children)
+                    Walk(c);
+            }
+            Walk(go);
+            if (byIndex.Count == 0)
+                return new List<Mesh>();
+
+            int max = byIndex.Keys.Max();
+            var list = new List<Mesh>(max + 1);
+            for (int i = 0; i <= max; i++)
+                list.Add(byIndex.TryGetValue(i, out var m) ? m : null!);
+            return list;
+        }
+
+        /// <summary>
+        /// Depth-first collection of every <see cref="MeshFilter.Mesh"/> (behavior order, then children).
+        /// This matches <see cref="ModelImporter"/> scene load used by <c>Program</c> at b09ed5c and
+        /// keeps <c>list[ModelPartIndex]</c> aligned with existing saved scenes. (Part-index sorting
+        /// is available as <see cref="CollectMeshesOrderedByModelPartIndex"/> when needed.)
+        /// </summary>
         static List<Mesh> CollectMeshesDepthFirst(GameObject go)
         {
             var result = new List<Mesh>();
@@ -227,7 +269,33 @@ namespace Game_Engine.Core
             if (dto.Children != null)
                 for (int i = 0; i < dto.Children.Count; i++) go.AddChild(FromDTO(dto.Children[i]));
 
+            // SkinnedMeshRenderer.Skeleton is not persisted; it is recovered from MeshFilter.Mesh.
+            // Mesh may be rebuilt from ModelPath in a different [Persist] order than SkinnedMeshRenderer,
+            // so the first EnsureBoneMatrices can run before Mesh.Skeleton exists. Re-bind after the full subtree exists.
+            FinalizeSkinnedMeshRenderersInSubtree(go);
+
             return go;
+        }
+
+        /// <summary>
+        /// After deserialization, ensure every skinned mesh has pulled Skeleton from its MeshFilter mesh
+        /// and computed bone matrices (Animator is resolved walking up the hierarchy).
+        /// </summary>
+        static void FinalizeSkinnedMeshRenderersInSubtree(GameObject go)
+        {
+            if (go == null) return;
+
+            foreach (var b in go.Behaviors)
+            {
+                if (b is SkinnedMeshRenderer smr && smr.Enabled)
+                {
+                    try { smr.EnsureBoneMatrices(); }
+                    catch { /* keep scene load resilient */ }
+                }
+            }
+
+            for (int i = 0; i < go.Children.Count; i++)
+                FinalizeSkinnedMeshRenderersInSubtree(go.Children[i]);
         }
 
         static BehaviorDTO BehaviorToDTO(Behavior behavior)

@@ -23,6 +23,8 @@
 			<MenuItem Header="Unpack Prefab"       Click="OnUnpackPrefab"/>
 			<Separator/>
 			<MenuItem Header="Unparent"           Click="OnUnparent"/>
+			<MenuItem Header="Duplicate"          Click="OnDuplicate"/>
+			<MenuItem Header="Rename"             Click="OnRename"/>
 			<MenuItem Header="Delete"             Click="OnDelete"/>
 			<Separator/>
 			<MenuItem Header="Expand All"         Click="OnExpandAll"/>

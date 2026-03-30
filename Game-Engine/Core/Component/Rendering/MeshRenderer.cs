@@ -49,9 +49,11 @@ namespace Game_Engine.Core.Component
             if (ResolvedMaterials.Count == 0)
                 ResolvedMaterials.Add(DefaultMaterial());
 
-            // Do not auto-promote MaterialPaths into Material.
-            // Material assignment is explicit (inspector/user code) to avoid
-            // unintended "first material" binding across different systems.
+            // Match pre-df24afd / b09ed5c: SceneRenderer reads mr.Material only, not ResolvedMaterials.
+            // Promoting the first path-loaded material keeps imported skinned meshes (and other assets)
+            // on the standard forward path with correct textures and bone uniforms.
+            if (count > 0 && ResolvedMaterials.Count > 0)
+                Material = ResolvedMaterials[0];
         }
 
         private Material TryLoadRuntimeMaterial(string rel)

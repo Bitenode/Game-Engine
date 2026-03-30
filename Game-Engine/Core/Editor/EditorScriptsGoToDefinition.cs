@@ -5,6 +5,7 @@ using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Game_Engine.Core.Editor;
 
@@ -17,6 +18,14 @@ public readonly struct GoToDefinitionResult
     /// <summary>Set when the definition is in another file on disk.</summary>
     public string? TargetFilePath { get; init; }
     public bool IsSameDocument { get; init; }
+}
+
+public readonly struct SymbolReferenceResult
+{
+    public string FilePath { get; init; }
+    public int Line1Based { get; init; }
+    public int Column1Based { get; init; }
+    public string LineText { get; init; }
 }
 
 /// <summary>
@@ -102,6 +111,116 @@ public static class EditorScriptsGoToDefinition
     public static IReadOnlyList<string> GetIndexedFilePaths()
         => EnumerateScriptFilePaths();
 
+    public static IReadOnlyList<SymbolReferenceResult> FindReferences(string currentSource, string? currentDocumentPath, int caretOffset)
+    {
+        if (!TryBuildCompilation(currentSource, currentDocumentPath, out var comp, out var docTree))
+            return Array.Empty<SymbolReferenceResult>();
+
+        var docModel = comp.GetSemanticModel(docTree);
+        var root = docTree.GetRoot();
+        var tok = root.FindToken(caretOffset);
+        ISymbol? symbol = null;
+        for (var n = tok.Parent; n != null; n = n.Parent)
+        {
+            if (n is not SimpleNameSyntax sn) continue;
+            var info = docModel.GetSymbolInfo(sn);
+            symbol = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
+            if (symbol != null) break;
+        }
+        if (symbol == null) return Array.Empty<SymbolReferenceResult>();
+
+        var refs = new List<SymbolReferenceResult>();
+        foreach (var tree in comp.SyntaxTrees)
+        {
+            if (tree.FilePath.EndsWith("ScriptPrelude.g.cs", StringComparison.OrdinalIgnoreCase)) continue;
+            var model = comp.GetSemanticModel(tree);
+            var tr = tree.GetRoot();
+            foreach (var sn in tr.DescendantNodes().OfType<SimpleNameSyntax>())
+            {
+                var info = model.GetSymbolInfo(sn);
+                var s = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
+                if (s == null) continue;
+                if (!SymbolEqualityComparer.Default.Equals(s.OriginalDefinition, symbol.OriginalDefinition) &&
+                    !SymbolEqualityComparer.Default.Equals(s, symbol))
+                    continue;
+                var span = tree.GetLineSpan(sn.Span);
+                var line = span.StartLinePosition.Line + 1;
+                var col = span.StartLinePosition.Character + 1;
+                var lineText = "";
+                try { lineText = tr.GetText().Lines[line - 1].ToString().Trim(); } catch { }
+                refs.Add(new SymbolReferenceResult
+                {
+                    FilePath = NormalizePath(tree.FilePath),
+                    Line1Based = line,
+                    Column1Based = col,
+                    LineText = lineText
+                });
+            }
+        }
+        return refs
+            .OrderBy(r => r.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Line1Based)
+            .ThenBy(r => r.Column1Based)
+            .ToList();
+    }
+
+    public static bool RenameSymbol(string currentSource, string? currentDocumentPath, int caretOffset, string newName, out int changedFiles)
+    {
+        changedFiles = 0;
+        if (string.IsNullOrWhiteSpace(newName)) return false;
+        if (!TryBuildCompilation(currentSource, currentDocumentPath, out var comp, out var docTree))
+            return false;
+
+        var docModel = comp.GetSemanticModel(docTree);
+        var root = docTree.GetRoot();
+        var tok = root.FindToken(caretOffset);
+        ISymbol? symbol = null;
+        for (var n = tok.Parent; n != null; n = n.Parent)
+        {
+            if (n is not SimpleNameSyntax sn) continue;
+            var info = docModel.GetSymbolInfo(sn);
+            symbol = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
+            if (symbol != null) break;
+        }
+        if (symbol == null) return false;
+
+        var changesByPath = new Dictionary<string, List<TextChange>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tree in comp.SyntaxTrees)
+        {
+            if (tree.FilePath.EndsWith("ScriptPrelude.g.cs", StringComparison.OrdinalIgnoreCase)) continue;
+            var model = comp.GetSemanticModel(tree);
+            foreach (var sn in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>())
+            {
+                var info = model.GetSymbolInfo(sn);
+                var s = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
+                if (s == null) continue;
+                if (!SymbolEqualityComparer.Default.Equals(s.OriginalDefinition, symbol.OriginalDefinition) &&
+                    !SymbolEqualityComparer.Default.Equals(s, symbol))
+                    continue;
+                if (sn.Identifier.ValueText == newName) continue;
+                var path = NormalizePath(tree.FilePath);
+                if (!changesByPath.TryGetValue(path, out var list))
+                {
+                    list = new List<TextChange>();
+                    changesByPath[path] = list;
+                }
+                list.Add(new TextChange(sn.Identifier.Span, newName));
+            }
+        }
+
+        foreach (var kvp in changesByPath)
+        {
+            var path = kvp.Key;
+            if (!File.Exists(path)) continue;
+            var txt = SourceText.From(File.ReadAllText(path));
+            var updated = txt.WithChanges(kvp.Value.OrderByDescending(c => c.Span.Start));
+            if (updated.ToString() == txt.ToString()) continue;
+            File.WriteAllText(path, updated.ToString());
+            changedFiles++;
+        }
+        return changedFiles > 0;
+    }
+
     static GoToDefinitionResult ResolveFromModel(
         SemanticModel model,
         SyntaxTree docTree,
@@ -138,6 +257,67 @@ public static class EditorScriptsGoToDefinition
         }
 
         return default;
+    }
+
+    static bool TryBuildCompilation(string currentSource, string? currentDocumentPath, out CSharpCompilation compilation, out SyntaxTree docTree)
+    {
+        compilation = null!;
+        docTree = null!;
+        if (string.IsNullOrEmpty(currentSource)) return false;
+        var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
+        var refs = CollectMetadataReferences();
+        var preludeTree = CSharpSyntaxTree.ParseText(Prelude, parseOpts, "ScriptPrelude.g.cs");
+        var trees = new List<SyntaxTree> { preludeTree };
+        var scriptPaths = EnumerateScriptFilePaths();
+        var curNorm = string.IsNullOrEmpty(currentDocumentPath) ? null : NormalizePath(currentDocumentPath);
+
+        SyntaxTree? doc = null;
+        if (scriptPaths.Count == 0)
+        {
+            var path = currentDocumentPath ?? "OpenDocument.cs";
+            doc = CSharpSyntaxTree.ParseText(currentSource, parseOpts, path);
+            trees.Add(doc);
+        }
+        else
+        {
+            bool matched = false;
+            foreach (var f in scriptPaths)
+            {
+                var full = NormalizePath(f);
+                string txt;
+                if (curNorm != null && string.Equals(full, curNorm, StringComparison.OrdinalIgnoreCase))
+                {
+                    txt = currentSource;
+                    matched = true;
+                }
+                else
+                {
+                    try { txt = File.ReadAllText(f); } catch { continue; }
+                }
+                var t = CSharpSyntaxTree.ParseText(txt, parseOpts, f);
+                trees.Add(t);
+                if (curNorm != null && string.Equals(full, curNorm, StringComparison.OrdinalIgnoreCase))
+                    doc = t;
+            }
+            if (!matched && curNorm != null)
+            {
+                doc = CSharpSyntaxTree.ParseText(currentSource, parseOpts, currentDocumentPath!);
+                trees.Add(doc);
+            }
+            else if (doc == null)
+            {
+                doc = CSharpSyntaxTree.ParseText(currentSource, parseOpts, currentDocumentPath ?? "Untitled.cs");
+                trees.Add(doc);
+            }
+        }
+
+        compilation = CSharpCompilation.Create(
+            "EditorScriptsSymbolOps",
+            trees,
+            refs,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary).WithAllowUnsafe(true));
+        docTree = doc!;
+        return true;
     }
 
     static bool TryPickDefinitionLocation(ISymbol sym, HashSet<string> scriptFileSet, out string path, out int line1Based)

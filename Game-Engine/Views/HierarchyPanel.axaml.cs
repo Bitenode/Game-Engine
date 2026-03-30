@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -235,6 +236,7 @@ namespace Game_Engine.Views
             // DnD target handling
             Tree.AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Bubble);
             Tree.AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Bubble);
+            Tree.AddHandler(KeyDownEvent, OnTreeKeyDown, RoutingStrategies.Tunnel);
 
             // Context menu target capture
             Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
@@ -463,6 +465,101 @@ namespace Game_Engine.Views
             if (_contextTarget == null) return;
             _vm.Delete(_contextTarget);
             SceneService.NotifyChanged();
+        }
+
+        private void OnDuplicate(object? sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null) return;
+            try
+            {
+                var json = SceneSerialization.SerializeGameObjectToJson(_contextTarget, includeAll: true);
+                var copy = SceneSerialization.DeserializeGameObjectFromJson(json);
+                if (copy == null) return;
+                copy.Name = UniqueSiblingName(_contextTarget.Name, _contextTarget.Parent);
+                if (_contextTarget.Parent == null) _vm.Root.Add(copy);
+                else _contextTarget.Parent.AddChild(copy);
+                SelectionService.Set(copy);
+                SceneService.NotifyChanged();
+            }
+            catch { }
+        }
+
+        private async void OnRename(object? sender, RoutedEventArgs e)
+        {
+            if (_contextTarget == null) return;
+            var current = _contextTarget.Name ?? "GameObject";
+            var name = await AskTextAsync("Rename GameObject", "Name:", current);
+            if (string.IsNullOrWhiteSpace(name)) return;
+            _contextTarget.Name = name.Trim();
+            SceneService.NotifyChanged();
+        }
+
+        private void OnTreeKeyDown(object? sender, KeyEventArgs e)
+        {
+            var active = SelectionService.Current;
+            if (active == null) return;
+            _contextTarget = active;
+            if (e.Key == Key.Delete)
+            {
+                OnDelete(this, new RoutedEventArgs());
+                e.Handled = true;
+            }
+            else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.D)
+            {
+                OnDuplicate(this, new RoutedEventArgs());
+                e.Handled = true;
+            }
+            else if (e.Key == Key.F2)
+            {
+                OnRename(this, new RoutedEventArgs());
+                e.Handled = true;
+            }
+        }
+
+        private static string UniqueSiblingName(string baseName, GameObject? parent)
+        {
+            var peers = parent == null ? SceneService.Root : parent.Children;
+            var used = new HashSet<string>(peers.Select(x => x.Name ?? ""), StringComparer.OrdinalIgnoreCase);
+            var name = string.IsNullOrWhiteSpace(baseName) ? "GameObject" : baseName;
+            if (!used.Contains(name)) return name;
+            int i = 1;
+            while (used.Contains($"{name} ({i})")) i++;
+            return $"{name} ({i})";
+        }
+
+        private async Task<string?> AskTextAsync(string title, string prompt, string initial)
+        {
+            var owner = this.GetVisualRoot() as Window;
+            var tcs = new TaskCompletionSource<string?>();
+            var tb = new TextBox { Text = initial, Margin = new Thickness(0, 8, 0, 10) };
+            var ok = new Button { Content = "OK", MinWidth = 80, IsDefault = true };
+            var cancel = new Button { Content = "Cancel", MinWidth = 80, IsCancel = true };
+            var row = new StackPanel
+            {
+                Orientation = Avalonia.Layout.Orientation.Horizontal,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                Spacing = 8,
+                Children = { cancel, ok }
+            };
+            var host = new StackPanel
+            {
+                Margin = new Thickness(12),
+                Spacing = 6,
+                Children = { new TextBlock { Text = prompt }, tb, row }
+            };
+            var win = new Window
+            {
+                Title = title,
+                Width = 360,
+                Height = 170,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Content = host
+            };
+            ok.Click += (_, __) => { tcs.TrySetResult(tb.Text); win.Close(); };
+            cancel.Click += (_, __) => { tcs.TrySetResult(null); win.Close(); };
+            win.Closing += (_, __) => { if (!tcs.Task.IsCompleted) tcs.TrySetResult(null); };
+            await win.ShowDialog(owner);
+            return await tcs.Task;
         }
 
         // ---------------- Prefab handlers ----------------

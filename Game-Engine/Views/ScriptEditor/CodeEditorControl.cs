@@ -75,6 +75,11 @@ public class CodeEditorControl : UserControl
 
     /// <summary>Absolute path of the file shown in the host (for multi-file Go to Definition).</summary>
     public string? DocumentPath { get; set; }
+    public bool MinimapVisible
+    {
+        get => _minimap.IsVisible;
+        set => _minimap.IsVisible = value;
+    }
 
     public void SetText(string text)
     {
@@ -1583,7 +1588,7 @@ public class CodeEditorControl : UserControl
         _classifyVersion++;
         var text = _buffer.GetText();
         _classifier.UpdateText(text, _classifyVersion);
-        _diagnosticService.UpdateSource(text);
+        _diagnosticService.UpdateSource(text, DocumentPath);
 
         // Update fold regions (runs on bg thread via Task.Run for large files)
         System.Threading.Tasks.Task.Run(() =>

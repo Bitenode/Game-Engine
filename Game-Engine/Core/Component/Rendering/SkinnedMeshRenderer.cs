@@ -87,22 +87,37 @@ public class SkinnedMeshRenderer : MeshRenderer
     }
 
     /// <summary>
-    /// If our Skeleton is null (e.g. after scene reload where it wasn't persisted),
-    /// try to recover it from the sibling MeshFilter's Mesh.
+    /// Bind <see cref="Skeleton"/> from the sibling <see cref="MeshFilter"/>'s mesh.
+    /// Skeleton is not persisted; the mesh rebuilt from <c>ModelPath</c> is the source of truth.
+    /// Always sync when the mesh instance or its skeleton reference changes (avoids stale binding after load order or re-import).
     /// </summary>
     private void TryRecoverSkeleton()
     {
-        if (Skeleton != null) return;
-
         var mf = gameObject?.Behaviors?.OfType<MeshFilter>().FirstOrDefault();
-        if (mf?.Mesh?.Skeleton != null)
-            Skeleton = mf.Mesh.Skeleton;
+        var mesh = mf?.Mesh;
+        if (mesh == null) return;
+
+        var meshSkel = mesh.Skeleton;
+        if (meshSkel == null)
+            return;
+
+        if (!ReferenceEquals(Skeleton, meshSkel))
+        {
+            Skeleton = meshSkel;
+            _animator = null;
+            _animatorSearched = false;
+            BoneMatrices = null;
+        }
     }
 
     /// <summary>Compute final bone matrices from the Animator's current bone pose.</summary>
     public void ComputeBoneMatrices()
     {
-        if (Skeleton == null || Skeleton.BoneCount == 0) return;
+        if (Skeleton == null || Skeleton.BoneCount == 0)
+        {
+            BoneMatrices = null;
+            return;
+        }
 
         // Find the Animator if not yet searched
         if (!_animatorSearched)
@@ -131,13 +146,14 @@ public class SkinnedMeshRenderer : MeshRenderer
             else
                 local = bone.LocalBindTransform;
 
-            // Global = parent's global * local
+            // Hierarchy order matches the scene graph: childWorld = local * parentWorld
+            // (see SceneRenderer / TransformUtil — same convention as row-vector-style accumulation).
             if (bone.ParentIndex >= 0 && bone.ParentIndex < boneCount)
                 globalTransforms[i] = local * globalTransforms[bone.ParentIndex];
             else
                 globalTransforms[i] = local;
 
-            // Final = global * offsetMatrix (inverse bind-pose)
+            // Combined matrix is uploaded so GLSL (mat4 * vec4) matches SN (vec * mat); keep offset on the left.
             BoneMatrices[i] = bone.OffsetMatrix * globalTransforms[i];
         }
     }

@@ -33,7 +33,7 @@ public sealed partial class ProjectPanel : UserControl
     public ObservableCollection<ProjectNode> Roots { get; } = new();
 
     public string ProjectTitle =>
-        ProjectService.Current is { } p ? $"{p.Name}  ù  {p.RootPath}" : "No project open";
+        ProjectService.Current is { } p ? $"{p.Name}  ÔøΩ  {p.RootPath}" : "No project open";
 
     private ContextMenu? _addMenu;
 
@@ -70,12 +70,15 @@ public sealed partial class ProjectPanel : UserControl
             ItemsSource = new object[]
             {
                 MakeMenu("_Reveal in Explorer", (_, __) => RevealSelected()),
+                MakeMenu("_Rename", async (_, __) => await RenameSelected()),
+                MakeMenu("_Duplicate", async (_, __) => await DuplicateSelected()),
+                MakeMenu("_Delete", async (_, __) => await DeleteSelected()),
                 new Separator(),
                 MakeMenu("_Refresh", (_, __) => Refresh()),
             }
         };
 
-        // ù+ù dropdown
+        // ÔøΩ+ÔøΩ dropdown
         _addMenu = new ContextMenu
         {
             ItemsSource = new object[]
@@ -85,7 +88,7 @@ public sealed partial class ProjectPanel : UserControl
                 MakeMenu("New _Scene",     async (_, __) => await NewScene()),
                 MakeMenu("New _Material",  async (_, __) => await NewMaterial()),
                 new Separator(),
-                MakeMenu("_Import Filesù", async (_, __) => await ImportFiles()),
+                MakeMenu("_Import FilesÔøΩ", async (_, __) => await ImportFiles()),
             }
         };
 
@@ -439,7 +442,86 @@ public sealed partial class ProjectPanel : UserControl
         Reveal(sel);
     }
 
-    /// <summary>Project-relative or absolute path ó select and expand the Project tree to it.</summary>
+    private async Task RenameSelected()
+    {
+        var sel = SelectedNode;
+        if (sel is null || string.IsNullOrWhiteSpace(sel.FullPath)) return;
+        var oldPath = sel.FullPath;
+        var baseName = sel.IsFolder ? Path.GetFileName(oldPath) : Path.GetFileNameWithoutExtension(oldPath);
+        var prompt = await AskText("Rename", "New name:", baseName);
+        if (string.IsNullOrWhiteSpace(prompt)) return;
+
+        string targetName = MakeSafeName(prompt.Trim());
+        if (!sel.IsFolder)
+        {
+            var ext = Path.GetExtension(oldPath);
+            if (!targetName.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                targetName += ext;
+        }
+
+        var dir = Path.GetDirectoryName(oldPath) ?? "";
+        var desired = Path.Combine(dir, targetName);
+        var dst = sel.IsFolder ? UniquePath(desired, true) : UniquePath(desired, false);
+        try
+        {
+            if (sel.IsFolder) Directory.Move(oldPath, dst);
+            else File.Move(oldPath, dst);
+            ProjectService.TouchModified();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Rename failed:\n{ex.Message}");
+        }
+        Refresh();
+    }
+
+    private async Task DuplicateSelected()
+    {
+        var sel = SelectedNode;
+        if (sel is null || string.IsNullOrWhiteSpace(sel.FullPath)) return;
+        try
+        {
+            if (sel.IsFolder)
+            {
+                var dst = UniquePath(sel.FullPath, true);
+                CopyDirectory(sel.FullPath, dst);
+            }
+            else
+            {
+                var dst = UniquePath(sel.FullPath, false);
+                File.Copy(sel.FullPath, dst, overwrite: false);
+            }
+            ProjectService.TouchModified();
+            Refresh();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Duplicate failed:\n{ex.Message}");
+        }
+    }
+
+    private async Task DeleteSelected()
+    {
+        var sel = SelectedNode;
+        if (sel is null || string.IsNullOrWhiteSpace(sel.FullPath)) return;
+        var confirm = await AskText("Delete", $"Type DELETE to remove '{sel.Name}'.", "");
+        if (!string.Equals(confirm?.Trim(), "DELETE", StringComparison.Ordinal)) return;
+        try
+        {
+            if (sel.IsFolder)
+                Directory.Delete(sel.FullPath, recursive: true);
+            else
+                File.Delete(sel.FullPath);
+            ProjectService.TouchModified();
+            Refresh();
+        }
+        catch (Exception ex)
+        {
+            await ShowError($"Delete failed:\n{ex.Message}");
+        }
+    }
+
+    /// <summary>Project-relative or absolute path ‚Äî select and expand the Project tree to it.</summary>
     public bool TryRevealPath(string relativeOrAbs)
     {
         var p = ProjectService.Current;
@@ -573,7 +655,7 @@ public sealed partial class ProjectPanel : UserControl
                 // keep your internal key (used for tree-to-tree moves)
                 data.Set("project-node-path", path);
 
-                // ALSO provide standard FileNames when itùs a file
+                // ALSO provide standard FileNames when itÔøΩs a file
                 if (File.Exists(path))
                     data.Set(DataFormats.FileNames, new[] { path });
 

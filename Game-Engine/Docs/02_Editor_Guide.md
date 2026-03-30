@@ -200,6 +200,8 @@ Clear both filter fields to return to the normal tree view.
 | **Reveal in Project** | Hierarchy context menu or command palette | Selects the corresponding asset in the Project panel when the selection maps to a project file (e.g. model or prefab path) |
 | **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) |
 | **Expand/Collapse** | Arrow click | Navigate nested GameObjects |
+| **Expand all / Collapse all** | Buttons in Hierarchy header | Expand or collapse the full hierarchy tree in one action |
+| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2` | Delete selected object, duplicate selected object, rename selected object |
 
 For multi-select from the Hierarchy, Scene View focuses the first selected object.
 
@@ -288,12 +290,16 @@ Click the **"+ Add Component"** button at the bottom of the Inspector to open a 
 | **Physics** | BoxCollider, CapsuleCollider, CharacterController, MeshCollider, PlayerMovement, Rigidbody, RigidbodyPlayer |
 | **Rendering** | Camera, Light, MeshFilter, MeshRenderer, SkinnedMeshRenderer |
 | **Timeline** | TimelinePlayer |
-| **UI** | Canvas, RectTransform, UIButton, UIElement, UIImage, UIInputField, UIPanel, UISlider, UIText, UIToggle |
+| **UI** | Canvas, RectTransform, UIButton, UIElement, UIImage, UIInputField, UIPanel, UIProgressBar, UISlider, UIText, UIToggle |
 | **Scripts** | Any custom Behavior scripts compiled from `Assets/` or `Packages/` |
 
 Each category expands into a submenu listing its components alphabetically. The **Scripts** submenu appears below a separator at the bottom. Scripts that are present in source but not yet compiled show a "(source only)" label.
 
 Components are assigned to categories using the `[ComponentCategory("Name")]` attribute on their class declaration.
+For faster keyboard-first insertion, use **Quick Add...** above **+ Add Component** and type to filter component names across categories and scripts.
+
+### Runtime UI components
+`UIElement` and derived UI behaviors show grouped Inspector sections: **UI (common)** (raycast, color, opacity sliders, focusable flag, optional opacity target easing), plus type-specific blocks for **Button**, **Slider**, **Toggle**, **Input field**, and **Progress bar** (with a **Value** slider tied to min/max). Runtime-only pointer flags are hidden from the default property list.
 
 ### Terrain Inspector
 When a Terrain is selected, the Inspector shows specialized sections:
@@ -369,6 +375,7 @@ Displays log messages from the engine, scripts, and extensions.
 ### Filters and search
 - Toggle **Info / Warning / Error / …** chips to show or hide severities.
 - Use the **search** box to filter visible lines by substring (combined with severity toggles).
+- Use **Clear**, **Copy Selected**, and **Auto-scroll** controls above the filter row for faster log triage.
 
 ### Open log location in Script Editor
 - **Double-click** a line that contains a C# path in compiler style (e.g. `C:\path\File.cs(12,5)` or `in File.cs:12`) to open the **Script Editor** at that line (file must exist on disk).
@@ -416,7 +423,12 @@ Built-in C# script editor integrated into the editor:
 - **Format** toolbar button — runs Roslyn **Format Document** on the current buffer
 - **F12** or **Shift+Click** — **Go to definition** for the target symbol across project scripts (`Assets/`, `Packages/`) and local editor engine sources when available (opens the target file in a tab when needed)
 - **Definition Files** toolbar button (or **Ctrl+Shift+O**) — opens a searchable, clickable list of every file currently indexed for go-to-definition
+- **Find references** — **Shift+F12** (or **References** button) shows clickable symbol usages across indexed files
+- **Rename symbol** — **Ctrl+Shift+R** renames the symbol at caret across indexed files
 - **Diagnostics strip** — below the editor, a line shows live Roslyn diagnostic counts and the first error/warning message when present
+- **Find / Replace** — **Ctrl+F** opens find, **Ctrl+H** opens replace in the current document
+- **Code folding** — fold/unfold supported blocks from gutter fold controls
+- **Minimap toggle** — toolbar **Minimap** button (state is persisted in editor settings)
 - **Compile** — toolbar **Build All** or **Ctrl+Shift+B** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**)
 - **Quick open** (**Ctrl+P**) on the main window — jump to a `.cs` file under the project without browsing the Project panel
 - **Hot-reload** — recompiles and loads the new assembly into a collectible `AssemblyLoadContext` without restarting the editor

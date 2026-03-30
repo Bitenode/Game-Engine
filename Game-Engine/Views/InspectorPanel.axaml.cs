@@ -13,6 +13,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Component.UI;
 using Game_Engine.Core.AI;
 using Game_Engine.Core.Dialogue;
 using Game_Engine.Core.Rendering;
@@ -133,12 +134,101 @@ public partial class InspectorPanel : UserControl
 
     private Action _onSelChanged, _onProjOpened, _onProjClosed, _onProjChanged;
 
+    static readonly HashSet<string> UIElemInspectorBaseDeferred = new(StringComparer.Ordinal)
+    {
+        nameof(UIElement.Raycastable),
+        nameof(UIElement.Color),
+        nameof(UIElement.Opacity),
+        nameof(UIElement.Focusable),
+        nameof(UIElement.OpacityTransitionSpeed),
+        nameof(UIElement.OpacityTargetEnabled),
+        nameof(UIElement.OpacityTarget),
+    };
+
+    static readonly HashSet<string> UIButtonInspectorDeferred = new(StringComparer.Ordinal)
+    {
+        nameof(UIButton.Interactable),
+        nameof(UIButton.NormalColor),
+        nameof(UIButton.HighlightedColor),
+        nameof(UIButton.PressedColor),
+        nameof(UIButton.DisabledColor),
+        nameof(UIButton.FadeDuration),
+    };
+
+    static readonly HashSet<string> UISliderInspectorDeferred = new(StringComparer.Ordinal)
+    {
+        nameof(UISlider.MinValue),
+        nameof(UISlider.MaxValue),
+        nameof(UISlider.Value),
+        nameof(UISlider.WholeNumbers),
+        nameof(UISlider.Interactable),
+        nameof(UISlider.StepSize),
+        nameof(UISlider.Direction),
+        nameof(UISlider.BackgroundColor),
+        nameof(UISlider.FillColor),
+        nameof(UISlider.HandleColor),
+        nameof(UISlider.HandleSize),
+    };
+
+    static readonly HashSet<string> UIToggleInspectorDeferred = new(StringComparer.Ordinal)
+    {
+        nameof(UIToggle.IsOn),
+        nameof(UIToggle.Interactable),
+        nameof(UIToggle.BackgroundColor),
+        nameof(UIToggle.ActiveColor),
+        nameof(UIToggle.CheckmarkColor),
+        nameof(UIToggle.CheckmarkInset),
+        nameof(UIToggle.HoverBackgroundColor),
+    };
+
+    static readonly HashSet<string> UIInputFieldInspectorDeferred = new(StringComparer.Ordinal)
+    {
+        nameof(UIInputField.Text),
+        nameof(UIInputField.Placeholder),
+        nameof(UIInputField.CharacterLimit),
+        nameof(UIInputField.ContentType),
+        nameof(UIInputField.FontSize),
+        nameof(UIInputField.FontPath),
+        nameof(UIInputField.ReadOnly),
+        nameof(UIInputField.BackgroundColor),
+        nameof(UIInputField.TextColor),
+        nameof(UIInputField.PlaceholderColor),
+        nameof(UIInputField.CursorColor),
+        nameof(UIInputField.SelectionColor),
+        nameof(UIInputField.FocusedBorderColor),
+        nameof(UIInputField.FocusBorderWidth),
+        nameof(UIInputField.DeselectOnClickOutside),
+    };
+
+    static readonly HashSet<string> UIProgressBarInspectorDeferred = new(StringComparer.Ordinal)
+    {
+        nameof(UIProgressBar.MinValue),
+        nameof(UIProgressBar.MaxValue),
+        nameof(UIProgressBar.Direction),
+        nameof(UIProgressBar.BackgroundColor),
+        nameof(UIProgressBar.FillColor),
+    };
+
+    static bool IsDeferredUIInspectorProperty(Behavior b, string name)
+    {
+        if (b is not UIElement) return false;
+        if (name is nameof(UIElement.IsPointerOver) or nameof(UIElement.IsPointerPressed)) return true;
+        if (UIElemInspectorBaseDeferred.Contains(name)) return true;
+        if (b is UIButton && UIButtonInspectorDeferred.Contains(name)) return true;
+        if (b is UISlider && UISliderInspectorDeferred.Contains(name)) return true;
+        if (b is UIToggle && UIToggleInspectorDeferred.Contains(name)) return true;
+        if (b is UIInputField && UIInputFieldInspectorDeferred.Contains(name)) return true;
+        if (b is UIProgressBar && UIProgressBarInspectorDeferred.Contains(name)) return true;
+        return false;
+    }
+
     // Build the list of default/inspectable properties for a Behavior
     IEnumerable<PropertyInfo> InspectableProps(Behavior b)
     {
         return b.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
             .Where(p => p.Name is not nameof(Behavior.Enabled) && p.Name is not nameof(Behavior.gameObject))
+            .Where(p => !IsDeferredUIInspectorProperty(b, p.Name))
             // hide MeshCollider internals; they are drawn in MeshColliderTargetRow(...)
             .Where(p => !(b is MeshCollider) ||
                         (p.Name != nameof(MeshCollider.TargetFilters) &&
@@ -172,6 +262,7 @@ public partial class InspectorPanel : UserControl
     Control DefaultPropsPanel(Behavior b)
     {
         var panel = new StackPanel { Spacing = 8 };
+        TryAppendUICustomInspector(panel, b);
         foreach (var p in InspectableProps(b))
         {
             // ── AudioSource.ClipPath: custom row with Import + drag-and-drop ──
@@ -1679,9 +1770,19 @@ public partial class InspectorPanel : UserControl
             Padding = new Thickness(0, 6),
             Margin = new Thickness(4, 2),
         };
+        var quickAddBtn = new Button
+        {
+            Content = "Quick Add...",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Padding = new Thickness(0, 6),
+            Margin = new Thickness(4, 2, 4, 0),
+        };
 
         addBtn.Click += (_, __) => addComponentMenu.Open(addBtn);
+        quickAddBtn.Click += (_, __) => ShowQuickAddComponentPicker(go, categoryMap, scriptInfos);
         Host.Children.Add(pasteBtn);
+        Host.Children.Add(quickAddBtn);
         Host.Children.Add(addBtn);
 
         // ---- Separator before components ------------------------------------
@@ -1762,6 +1863,104 @@ public partial class InspectorPanel : UserControl
         }
 
         return menu;
+    }
+
+    void ShowQuickAddComponentPicker(GameObject go,
+        SortedDictionary<string, List<ComboItem>> categoryMap,
+        List<ScriptInfo> scriptInfos)
+    {
+        var rows = new List<(string Label, Action Add)>();
+        foreach (var kvp in categoryMap)
+        {
+            foreach (var item in kvp.Value)
+            {
+                if (item.Type == null) continue;
+                var t = item.Type;
+                rows.Add(($"{kvp.Key} / {item.Display}", () =>
+                {
+                    go.AddBehavior((Behavior)Activator.CreateInstance(t)!);
+                    SceneService.NotifyChanged();
+                    BuildUI(go);
+                }));
+            }
+        }
+        foreach (var s in scriptInfos)
+        {
+            var loaded = TryResolveLoadedType(s.FullName);
+            if (loaded == null)
+            {
+                rows.Add(($"Scripts / {s.Name} (source only)", () =>
+                {
+                    ShowInfo("Script not compiled yet:\n\n" + s.FullName + "\n\nBuild to make it available.");
+                    try { ScriptEditorWindow.Open(OwnerWindow, s.FilePath); } catch { }
+                }));
+            }
+            else
+            {
+                var t = loaded;
+                rows.Add(($"Scripts / {s.Name}", () =>
+                {
+                    go.AddBehavior((Behavior)Activator.CreateInstance(t)!);
+                    SceneService.NotifyChanged();
+                    BuildUI(go);
+                }));
+            }
+        }
+
+        var search = new TextBox { Watermark = "Type to filter components...", Margin = new Thickness(0, 0, 0, 8) };
+        var list = new ListBox { SelectionMode = SelectionMode.Single };
+
+        void Rebuild()
+        {
+            var q = (search.Text ?? "").Trim();
+            list.Items.Clear();
+            foreach (var r in rows)
+            {
+                if (q.Length > 0 && r.Label.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                list.Items.Add(new ListBoxItem { Content = r.Label, Tag = r.Add, Padding = new Thickness(6, 3) });
+            }
+            if (list.ItemCount > 0) list.SelectedIndex = 0;
+        }
+
+        var layout = new Avalonia.Controls.Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,*"),
+            Margin = new Thickness(12)
+        };
+        layout.Children.Add(search);
+        var host = new Border { Child = list };
+        Avalonia.Controls.Grid.SetRow(host, 1);
+        layout.Children.Add(host);
+
+        var win = new Window
+        {
+            Title = "Quick Add Component",
+            Width = 520,
+            Height = 540,
+            MinWidth = 460,
+            MinHeight = 380,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = layout
+        };
+
+        void Commit()
+        {
+            if (list.SelectedItem is not ListBoxItem lbi || lbi.Tag is not Action act) return;
+            try { act(); } catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
+            win.Close();
+        }
+
+        search.TextChanged += (_, __) => Rebuild();
+        search.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Down && list.ItemCount > 0) { list.Focus(); list.SelectedIndex = 0; e.Handled = true; }
+            else if (e.Key == Key.Enter) { Commit(); e.Handled = true; }
+        };
+        list.DoubleTapped += (_, __) => Commit();
+        list.KeyDown += (_, e) => { if (e.Key == Key.Enter) { Commit(); e.Handled = true; } };
+        win.KeyDown += (_, e) => { if (e.Key == Key.Escape) { win.Close(); e.Handled = true; } };
+        win.Opened += (_, __) => { Rebuild(); search.Focus(); };
+        win.Show(OwnerWindow);
     }
 
     /// <summary>Build the inspector for multiple selected GameObjects, each with a separator between them.</summary>
@@ -1953,6 +2152,174 @@ public partial class InspectorPanel : UserControl
         FontWeight = FontWeight.Bold,
         Margin = new Thickness(0, 6, 0, 2)
     };
+
+    void TryAppendUICustomInspector(StackPanel panel, Behavior b)
+    {
+        if (b is not UIElement el) return;
+        AppendUIElementBaseInspector(panel, el);
+        switch (el)
+        {
+            case UIButton ub: AppendUIButtonInspector(panel, ub); break;
+            case UISlider sl: AppendUISliderInspector(panel, sl); break;
+            case UIToggle tg: AppendUIToggleInspector(panel, tg); break;
+            case UIInputField inf: AppendUIInputFieldInspector(panel, inf); break;
+            case UIProgressBar pb: AppendUIProgressBarInspector(panel, pb); break;
+        }
+    }
+
+    static Control InspectorLabeledRow(string label, Control editor)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        row.Children.Add(new TextBlock { Text = label, Width = 140, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(editor);
+        return row;
+    }
+
+    void AppendUIElementBaseInspector(StackPanel panel, UIElement el)
+    {
+        var t = typeof(UIElement);
+        panel.Children.Add(SectionHeader("UI (common)"));
+
+        var pRay = t.GetProperty(nameof(UIElement.Raycastable))!;
+        panel.Children.Add(InspectorLabeledRow("Raycastable", PropertyEditor(el, pRay)));
+
+        var pCol = t.GetProperty(nameof(UIElement.Color))!;
+        panel.Children.Add(InspectorLabeledRow("Color", PropertyEditor(el, pCol)));
+
+        var pOp = t.GetProperty(nameof(UIElement.Opacity))!;
+        var slOp = new Slider { Minimum = 0, Maximum = 1, Width = 168 };
+        try { slOp.Value = Convert.ToDouble(pOp.GetValue(el)); } catch { slOp.Value = 1; }
+        slOp.ValueChanged += (_, __) =>
+        {
+            pOp.SetValue(el, (float)slOp.Value);
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(InspectorLabeledRow("Opacity", slOp));
+
+        var pFoc = t.GetProperty(nameof(UIElement.Focusable))!;
+        panel.Children.Add(InspectorLabeledRow("Focusable", PropertyEditor(el, pFoc)));
+
+        var pSpd = t.GetProperty(nameof(UIElement.OpacityTransitionSpeed))!;
+        var slSpd = new Slider { Minimum = 0, Maximum = 2, Width = 168 };
+        try { slSpd.Value = Convert.ToDouble(pSpd.GetValue(el)); } catch { slSpd.Value = 0; }
+        slSpd.ValueChanged += (_, __) =>
+        {
+            pSpd.SetValue(el, (float)slSpd.Value);
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(InspectorLabeledRow("Opacity transition (s)", slSpd));
+
+        var pEn = t.GetProperty(nameof(UIElement.OpacityTargetEnabled))!;
+        panel.Children.Add(InspectorLabeledRow("Opacity target on", PropertyEditor(el, pEn)));
+
+        var pTgt = t.GetProperty(nameof(UIElement.OpacityTarget))!;
+        var slTgt = new Slider { Minimum = 0, Maximum = 1, Width = 168 };
+        try { slTgt.Value = Convert.ToDouble(pTgt.GetValue(el)); } catch { slTgt.Value = 1; }
+        slTgt.ValueChanged += (_, __) =>
+        {
+            pTgt.SetValue(el, (float)slTgt.Value);
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(InspectorLabeledRow("Opacity target", slTgt));
+    }
+
+    void AppendUIButtonInspector(StackPanel panel, UIButton b)
+    {
+        panel.Children.Add(SectionHeader("Button"));
+        var t = typeof(UIButton);
+        foreach (var name in UIButtonInspectorDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            var p = t.GetProperty(name);
+            if (p == null) continue;
+            panel.Children.Add(InspectorLabeledRow(name, PropertyEditor(b, p)));
+        }
+    }
+
+    void AppendUISliderInspector(StackPanel panel, UISlider s)
+    {
+        panel.Children.Add(SectionHeader("Slider"));
+        var t = typeof(UISlider);
+        foreach (var name in UISliderInspectorDeferred)
+        {
+            var p = t.GetProperty(name);
+            if (p == null) continue;
+            panel.Children.Add(InspectorLabeledRow(name, PropertyEditor(s, p)));
+        }
+    }
+
+    void AppendUIToggleInspector(StackPanel panel, UIToggle tg)
+    {
+        panel.Children.Add(SectionHeader("Toggle"));
+        var t = typeof(UIToggle);
+        foreach (var name in UIToggleInspectorDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            var p = t.GetProperty(name);
+            if (p == null) continue;
+            panel.Children.Add(InspectorLabeledRow(name, PropertyEditor(tg, p)));
+        }
+    }
+
+    void AppendUIInputFieldInspector(StackPanel panel, UIInputField f)
+    {
+        panel.Children.Add(SectionHeader("Input field"));
+        var t = typeof(UIInputField);
+        foreach (var name in UIInputFieldInspectorDeferred)
+        {
+            var p = t.GetProperty(name);
+            if (p == null) continue;
+            panel.Children.Add(InspectorLabeledRow(name, PropertyEditor(f, p)));
+        }
+
+        var pW = t.GetProperty(nameof(UIInputField.FocusBorderWidth))!;
+        var slW = new Slider { Minimum = 0, Maximum = 16, Width = 168 };
+        try { slW.Value = Convert.ToDouble(pW.GetValue(f)); } catch { slW.Value = 2; }
+        slW.ValueChanged += (_, __) =>
+        {
+            pW.SetValue(f, (float)slW.Value);
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(InspectorLabeledRow("Focus border width (slider)", slW));
+    }
+
+    void AppendUIProgressBarInspector(StackPanel panel, UIProgressBar pb)
+    {
+        panel.Children.Add(SectionHeader("Progress bar"));
+        var t = typeof(UIProgressBar);
+        foreach (var name in UIProgressBarInspectorDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            var p = t.GetProperty(name);
+            if (p == null) continue;
+            panel.Children.Add(InspectorLabeledRow(name, PropertyEditor(pb, p)));
+        }
+
+        var pVal = t.GetProperty(nameof(UIProgressBar.Value))!;
+        var pMin = t.GetProperty(nameof(UIProgressBar.MinValue))!;
+        var pMax = t.GetProperty(nameof(UIProgressBar.MaxValue))!;
+        var sl = new Slider { Width = 168 };
+        try
+        {
+            double min = Convert.ToDouble(pMin.GetValue(pb));
+            double max = Convert.ToDouble(pMax.GetValue(pb));
+            if (Math.Abs(max - min) < 1e-6) { min = 0; max = 1; }
+            if (max < min) (min, max) = (max, min);
+            sl.Minimum = min;
+            sl.Maximum = max;
+            sl.Value = Convert.ToDouble(pVal.GetValue(pb));
+        }
+        catch
+        {
+            sl.Minimum = 0;
+            sl.Maximum = 1;
+            sl.Value = 0.5;
+        }
+
+        sl.ValueChanged += (_, __) =>
+        {
+            pVal.SetValue(pb, (float)sl.Value);
+            SceneService.NotifyChanged();
+        };
+        panel.Children.Add(InspectorLabeledRow("Value", sl));
+    }
 
     Control EditorForTransform(CoreTransform t)
     {

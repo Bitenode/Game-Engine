@@ -71,8 +71,10 @@ namespace Game_Engine.Core.Rendering.UI
             // ── Hover events ──
             if (hit != _hoveredElement)
             {
+                _hoveredElement?.SyncPointerHover(false);
                 _hoveredElement?.OnPointerExit();
                 _hoveredElement = hit;
+                _hoveredElement?.SyncPointerHover(true);
                 _hoveredElement?.OnPointerEnter();
             }
 
@@ -85,18 +87,25 @@ namespace Game_Engine.Core.Rendering.UI
             bool mouseUp = !mouseIsDown && _wasMouseDown;
             _wasMouseDown = mouseIsDown;
 
-            if (mouseDown && hit != null)
+            if (mouseDown)
             {
-                _pressedElement = hit;
-                _pressPosition = canvasMousePos;
-                _isDragging = false;
-                hit.OnPointerDown();
+                UIInputField.ApplyDeselectOnPointerDown(hit);
+
+                if (hit != null)
+                {
+                    _pressedElement = hit;
+                    _pressPosition = canvasMousePos;
+                    _isDragging = false;
+                    hit.SyncPointerPressed(true);
+                    hit.OnPointerDown();
+                }
             }
 
             if (mouseUp)
             {
                 if (_pressedElement != null)
                 {
+                    _pressedElement.SyncPointerPressed(false);
                     _pressedElement.OnPointerUp();
 
                     // Click: release on the same element that was pressed
@@ -161,6 +170,8 @@ namespace Game_Engine.Core.Rendering.UI
         /// <summary>Reset event system state (e.g., when switching scenes or stopping play mode).</summary>
         public static void Reset()
         {
+            _hoveredElement?.SyncPointerHover(false);
+            _pressedElement?.SyncPointerPressed(false);
             _hoveredElement = null;
             _pressedElement = null;
             _isDragging = false;

@@ -44,15 +44,26 @@ namespace Game_Engine.Core.Component.UI
 
         public override void Update()
         {
-            if (!Interactable && _state != ButtonState.Disabled)
+            if (!Interactable)
             {
-                _state = ButtonState.Disabled;
-                UpdateTargetColor(instant: false);
+                if (_state != ButtonState.Disabled)
+                {
+                    _state = ButtonState.Disabled;
+                    UpdateTargetColor(instant: false);
+                }
             }
-            else if (Interactable && _state == ButtonState.Disabled)
+            else
             {
-                _state = ButtonState.Normal;
-                UpdateTargetColor(instant: false);
+                if (_state == ButtonState.Disabled)
+                {
+                    _state = ButtonState.Normal;
+                    UpdateTargetColor(instant: false);
+                }
+
+                // Pointer flags are synced by UIEventSystem (works when dragging off the button).
+                if (IsPointerPressed) _state = ButtonState.Pressed;
+                else if (IsPointerOver) _state = ButtonState.Highlighted;
+                else _state = ButtonState.Normal;
             }
 
             // Smooth color transition
@@ -89,34 +100,7 @@ namespace Game_Engine.Core.Component.UI
         }
 
         // ── Pointer event overrides ──
-
-        public override void OnPointerEnter()
-        {
-            if (!Interactable) return;
-            _state = ButtonState.Highlighted;
-            UpdateTargetColor(instant: false);
-        }
-
-        public override void OnPointerExit()
-        {
-            if (!Interactable) return;
-            _state = ButtonState.Normal;
-            UpdateTargetColor(instant: false);
-        }
-
-        public override void OnPointerDown()
-        {
-            if (!Interactable) return;
-            _state = ButtonState.Pressed;
-            UpdateTargetColor(instant: false);
-        }
-
-        public override void OnPointerUp()
-        {
-            if (!Interactable) return;
-            _state = ButtonState.Highlighted;
-            UpdateTargetColor(instant: false);
-        }
+        // Visual state is driven from <see cref="UIElement.IsPointerOver"/> / <see cref="UIElement.IsPointerPressed"/> in Update.
 
         public override void OnPointerClick()
         {

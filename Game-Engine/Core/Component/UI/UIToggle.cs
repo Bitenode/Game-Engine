@@ -39,6 +39,9 @@ namespace Game_Engine.Core.Component.UI
         /// <summary>Checkmark/indicator color.</summary>
         [Persist] public Color CheckmarkColor { get; set; } = Colors.White;
 
+        /// <summary>When alpha &gt; 0 and the toggle is interactable, blended over the background while hovered.</summary>
+        [Persist] public Color HoverBackgroundColor { get; set; } = Color.FromArgb(0, 255, 255, 255);
+
         /// <summary>Inset of the checkmark relative to the toggle box (0-0.5).</summary>
         [Persist] public float CheckmarkInset { get; set; } = 0.15f;
 
@@ -61,6 +64,12 @@ namespace Game_Engine.Core.Component.UI
 
             // Background box
             var bgColor = _isOn ? ActiveColor : BackgroundColor;
+            if (Interactable && IsPointerOver && HoverBackgroundColor.A > 0)
+            {
+                float t = HoverBackgroundColor.A / 255f;
+                bgColor = LerpRgb(bgColor, HoverBackgroundColor, Math.Clamp(t, 0f, 1f));
+            }
+
             float bgA = bgColor.A / 255f * Opacity;
             _quadBuffer[qi++] = new UIQuad
             {
@@ -90,6 +99,16 @@ namespace Game_Engine.Core.Component.UI
             }
 
             return new UIDrawData { QuadCount = qi, Quads = _quadBuffer };
+        }
+
+        static Color LerpRgb(Color a, Color b, float t)
+        {
+            t = Math.Clamp(t, 0f, 1f);
+            byte R = (byte)Math.Clamp(a.R + (b.R - a.R) * t, 0f, 255f);
+            byte G = (byte)Math.Clamp(a.G + (b.G - a.G) * t, 0f, 255f);
+            byte Bc = (byte)Math.Clamp(a.B + (b.B - a.B) * t, 0f, 255f);
+            byte A = (byte)Math.Clamp(a.A + (b.A - a.A) * t, 0f, 255f);
+            return Color.FromArgb(A, R, G, Bc);
         }
     }
 }

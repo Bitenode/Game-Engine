@@ -27,6 +27,7 @@ public partial class ScriptEditorWindow : Window
     private EditorTab? _displayedTab;   // tracks which tab the editor is currently showing
     private static AssemblyLoadContext? s_scriptsAlc;
     private readonly ObservableCollection<TreeViewItem> _treeItems = new();
+    private bool _isHandlingClosePrompt;
 
     private const string EditorVersion = "v2.5";
 
@@ -71,6 +72,7 @@ public partial class ScriptEditorWindow : Window
 
         // Global keyboard shortcuts (Save, Build, Tab cycling)
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
+        Closing += OnWindowClosing;
 
         // Wire toolbar buttons
         BtnBuild.Click += OnBuildAll;
@@ -81,12 +83,22 @@ public partial class ScriptEditorWindow : Window
         BtnZoomIn.Click += (_, __) => CodeEditor.AdjustEditorFontSize(1);
         BtnZoomOut.Click += (_, __) => CodeEditor.AdjustEditorFontSize(-1);
         BtnDefinitionFiles.Click += (_, __) => ShowDefinitionFilesWindow();
+        BtnFindReferences.Click += (_, __) => ShowReferencesAtCaret();
+        BtnRenameSymbol.Click += (_, __) => RenameSymbolAtCaret();
+        BtnToggleMinimap.IsChecked = EditorSettings.ScriptEditorShowMinimap;
+        BtnToggleMinimap.IsCheckedChanged += (_, __) =>
+        {
+            CodeEditor.MinimapVisible = BtnToggleMinimap.IsChecked == true;
+            EditorSettings.ScriptEditorShowMinimap = CodeEditor.MinimapVisible;
+            EditorSettings.Save();
+        };
         BtnClose.Click += (_, __) => Close();
 
         CodeEditor.DiagnosticsUpdated += OnDiagnosticsUpdated;
         CodeEditor.GoToDefinitionRequestedAtOffset += OnGoToDefinitionRequestedAtOffset;
         if (StatusProblems != null)
             StatusProblems.Text = "";
+        CodeEditor.MinimapVisible = EditorSettings.ScriptEditorShowMinimap;
 
         // Open initial file as a tab
         OpenFileInTab(path);
@@ -261,6 +273,11 @@ public partial class ScriptEditorWindow : Window
                 OnTabCloseRequested(TabBar.ActiveTab);
             e.Handled = true;
         }
+        else if (e.Key == Key.F12 && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+        {
+            ShowReferencesAtCaret();
+            e.Handled = true;
+        }
         else if (e.Key == Key.F12)
         {
             e.Handled = true;
@@ -268,6 +285,13 @@ public partial class ScriptEditorWindow : Window
             var docPath = CodeEditor.DocumentPath;
             var caretPos = CodeEditor.Caret.Position;
             _ = RunGoToDefinitionAsync(text, docPath, caretPos);
+        }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                 e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
+                 e.Key == Key.R)
+        {
+            RenameSymbolAtCaret();
+            e.Handled = true;
         }
         else if (e.Key == Key.F8)
         {
@@ -335,6 +359,75 @@ public partial class ScriptEditorWindow : Window
         var text = CodeEditor.GetText();
         var docPath = CodeEditor.DocumentPath;
         _ = RunGoToDefinitionAsync(text, docPath, offset);
+    }
+
+    private void ShowReferencesAtCaret()
+    {
+        var text = CodeEditor.GetText();
+        var path = CodeEditor.DocumentPath;
+        var caret = CodeEditor.Caret.Position;
+        var refs = EditorScriptsGoToDefinition.FindReferences(text, path, caret);
+        if (refs.Count == 0)
+        {
+            StatusText("No references found.");
+            return;
+        }
+
+        var list = new ListBox { SelectionMode = SelectionMode.Single };
+        foreach (var r in refs)
+        {
+            var label = $"{r.FilePath}:{r.Line1Based}:{r.Column1Based}  {r.LineText}";
+            list.Items.Add(new ListBoxItem { Content = label, Tag = r, Padding = new Thickness(6, 3) });
+        }
+        if (list.ItemCount > 0) list.SelectedIndex = 0;
+
+        var win = new Window
+        {
+            Title = $"References ({refs.Count})",
+            Width = 980,
+            Height = 560,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = list
+        };
+        void OpenSelection()
+        {
+            if (list.SelectedItem is not ListBoxItem lbi || lbi.Tag is not SymbolReferenceResult r) return;
+            OpenFileInTab(r.FilePath);
+            CodeEditor.GoToLine1Based(r.Line1Based);
+            win.Close();
+        }
+        list.DoubleTapped += (_, __) => OpenSelection();
+        list.KeyDown += (_, e) => { if (e.Key == Key.Enter) { OpenSelection(); e.Handled = true; } };
+        win.KeyDown += (_, e) => { if (e.Key == Key.Escape) { win.Close(); e.Handled = true; } };
+        win.Show(this);
+    }
+
+    private async void RenameSymbolAtCaret()
+    {
+        var newName = await AskTextAsync("Rename Symbol", "New symbol name:", "");
+        if (string.IsNullOrWhiteSpace(newName)) return;
+        var text = CodeEditor.GetText();
+        var path = CodeEditor.DocumentPath;
+        var caret = CodeEditor.Caret.Position;
+        bool ok;
+        int changedFiles;
+        try
+        {
+            ok = EditorScriptsGoToDefinition.RenameSymbol(text, path, caret, newName.Trim(), out changedFiles);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Rename failed:\n" + ex.Message);
+            return;
+        }
+        if (!ok)
+        {
+            StatusText("Rename found no symbol usages.");
+            return;
+        }
+        StatusText($"Renamed symbol in {changedFiles} file(s). Reloading tab...");
+        if (!string.IsNullOrWhiteSpace(_path) && File.Exists(_path))
+            TryLoad();
     }
 
     private void ShowDefinitionFilesWindow()
@@ -582,11 +675,145 @@ public partial class ScriptEditorWindow : Window
         }
     }
 
-    private void OnReload(object? s, RoutedEventArgs e)
+    private async void OnReload(object? s, RoutedEventArgs e)
     {
+        if (_dirty)
+        {
+            var decision = await AskSaveDiscardCancelAsync(
+                "Reload from disk?",
+                "You have unsaved changes in this tab. Save before reloading?");
+            if (decision == PendingAction.Cancel) return;
+            if (decision == PendingAction.Save)
+                OnSave(this, new RoutedEventArgs());
+        }
         TryLoad();
         _dirty = false;
         UpdateTitle();
+    }
+
+    enum PendingAction { Save, Discard, Cancel }
+
+    private async void OnWindowClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_isHandlingClosePrompt) return;
+        if (!HasAnyDirtyTabs()) return;
+        e.Cancel = true;
+
+        var choice = await AskSaveDiscardCancelAsync(
+            "Close script editor?",
+            "There are unsaved script tabs. Save changes before closing?");
+        if (choice == PendingAction.Cancel) return;
+        if (choice == PendingAction.Save)
+            SaveAllDirtyTabs();
+
+        _isHandlingClosePrompt = true;
+        Close();
+    }
+
+    private bool HasAnyDirtyTabs()
+    {
+        if (_dirty) return true;
+        foreach (var t in TabBar.Tabs)
+            if (t.IsDirty) return true;
+        return false;
+    }
+
+    private void SaveAllDirtyTabs()
+    {
+        if (_displayedTab != null)
+            SaveEditorStateToTab(_displayedTab);
+        foreach (var t in TabBar.Tabs)
+        {
+            if (!t.IsDirty) continue;
+            try
+            {
+                File.WriteAllText(t.FilePath, t.Buffer.GetText());
+                t.IsDirty = false;
+            }
+            catch { }
+        }
+        _dirty = false;
+        CodeEditor.ClearDirty();
+        TabBar.RefreshTabDirtyState();
+        UpdateTitle();
+        ProjectService.TouchModified();
+    }
+
+    private async Task<PendingAction> AskSaveDiscardCancelAsync(string title, string message)
+    {
+        var tcs = new TaskCompletionSource<PendingAction>();
+        var txt = new TextBlock
+        {
+            Text = message,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        };
+        var btnSave = new Button { Content = "Save", MinWidth = 90, IsDefault = true };
+        var btnDiscard = new Button { Content = "Don't Save", MinWidth = 90 };
+        var btnCancel = new Button { Content = "Cancel", MinWidth = 90, IsCancel = true };
+        var row = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Children = { btnCancel, btnDiscard, btnSave }
+        };
+        var host = new StackPanel
+        {
+            Margin = new Thickness(12),
+            Spacing = 10,
+            Children = { txt, row }
+        };
+        var win = new Window
+        {
+            Title = title,
+            Width = 430,
+            Height = 170,
+            MinWidth = 400,
+            MinHeight = 150,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = host
+        };
+
+        btnSave.Click += (_, __) => { tcs.TrySetResult(PendingAction.Save); win.Close(); };
+        btnDiscard.Click += (_, __) => { tcs.TrySetResult(PendingAction.Discard); win.Close(); };
+        btnCancel.Click += (_, __) => { tcs.TrySetResult(PendingAction.Cancel); win.Close(); };
+        win.Closing += (_, __) => { if (!tcs.Task.IsCompleted) tcs.TrySetResult(PendingAction.Cancel); };
+        await win.ShowDialog(this);
+        return await tcs.Task;
+    }
+
+    private async Task<string?> AskTextAsync(string title, string prompt, string initial)
+    {
+        var tcs = new TaskCompletionSource<string?>();
+        var tb = new TextBox { Text = initial, Margin = new Thickness(0, 8, 0, 10) };
+        var ok = new Button { Content = "OK", MinWidth = 80, IsDefault = true };
+        var cancel = new Button { Content = "Cancel", MinWidth = 80, IsCancel = true };
+        var row = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Children = { cancel, ok }
+        };
+        var host = new StackPanel
+        {
+            Margin = new Thickness(12),
+            Spacing = 6,
+            Children = { new TextBlock { Text = prompt }, tb, row }
+        };
+        var win = new Window
+        {
+            Title = title,
+            Width = 420,
+            Height = 180,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = host
+        };
+        ok.Click += (_, __) => { tcs.TrySetResult(tb.Text); win.Close(); };
+        cancel.Click += (_, __) => { tcs.TrySetResult(null); win.Close(); };
+        win.Closing += (_, __) => { if (!tcs.Task.IsCompleted) tcs.TrySetResult(null); };
+        await win.ShowDialog(this);
+        return await tcs.Task;
     }
 
     // ── File tree ───────────────────────────────────────────────

@@ -14,6 +14,11 @@
 		<!-- Filters -->
 		<Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6" CornerRadius="4" Background="#2A2C30">
 			<StackPanel Spacing="4">
+				<WrapPanel Orientation="Horizontal">
+					<Button x:Name="BtnClear" Content="Clear" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
+					<Button x:Name="BtnCopy" Content="Copy Selected" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
+					<ToggleButton x:Name="ChkAutoScroll" Content="Auto-scroll" IsChecked="True" Padding="8,2" FontSize="11"/>
+				</WrapPanel>
 				<TextBox x:Name="FilterText"
 						 Watermark="Search messages…"
 						 FontSize="11" />

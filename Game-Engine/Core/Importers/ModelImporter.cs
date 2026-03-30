@@ -78,24 +78,21 @@ namespace Game_Engine.Core.Importers
             {
                 skeleton = BuildSkeleton(scene, boneNameSet);
 
-                // When vertices are uniformly scaled by s, the translation
-                // components of bone matrices must also be scaled by s so
-                // that the skinned output is in the same scaled space.
-                // (Rotation/scale parts are unaffected by uniform scaling.)
+                // Vertices are uniformly scaled by s = scaleFactor. Keep bind-pose / inverse-bind in the same space
+                // by scaling translation columns (legacy approach — stable for import + material generation).
+                // Full-matrix offset fixes need a single convention test rig; this path must not break ImportModel.
                 if (skeleton != null && Math.Abs(scaleFactor - 1f) > 0.0001f)
                 {
                     for (int bi = 0; bi < skeleton.BoneCount; bi++)
                     {
                         var bone = skeleton.Bones[bi];
 
-                        // Scale OffsetMatrix translation
                         var om = bone.OffsetMatrix;
                         om.M41 *= scaleFactor;
                         om.M42 *= scaleFactor;
                         om.M43 *= scaleFactor;
                         bone.OffsetMatrix = om;
 
-                        // Scale LocalBindTransform translation
                         var lb = bone.LocalBindTransform;
                         lb.M41 *= scaleFactor;
                         lb.M42 *= scaleFactor;
@@ -617,7 +614,7 @@ namespace Game_Engine.Core.Importers
             var go = new GameObject(node.Name);
             ApplyTransform(node.Transform, go.Transform);
 
-            // Compute this node's global transform (accumulated from root)
+            // Accumulate Assimp node globals using the same multiply order as scene hierarchy (local * parent).
             var nodeGlobal = AiToSN(node.Transform) * parentGlobal;
 
             // Mesh instances on this node
@@ -927,6 +924,8 @@ namespace Game_Engine.Core.Importers
             // Step 1: Compute full model-space global transform for every node in the Assimp tree.
             // This is needed because there may be intermediate non-bone nodes (like "Armature")
             // between bone nodes whose transforms must be included.
+            // MUST match <see cref="ConvertNode"/> and SceneRenderer: world = local * parentWorld
+            // (System.Numerics row-vector style — same order as TransformUtil.WorldFromTransform * parentWorld).
             var nodeGlobals = new Dictionary<string, SN.Matrix4x4>(StringComparer.OrdinalIgnoreCase);
             void ComputeGlobals(Node node, SN.Matrix4x4 parentGlobal)
             {
@@ -977,11 +976,8 @@ namespace Game_Engine.Core.Importers
             }
             ResolveParents(sc.RootNode, -1);
 
-            // Step 4: Compute correct LocalBindTransform for each bone.
-            // For root bones (ParentIndex == -1): LocalBindTransform = full global transform
-            //   (includes all intermediate non-bone nodes like Armature rotations)
-            // For child bones: LocalBindTransform = Inverse(parentBoneGlobal) * thisBoneGlobal
-            //   (collapses any intermediate non-bone nodes between parent and child)
+            // Step 4: Local bind pose relative to parent bone (paired with SkinnedMeshRenderer accumulation).
+            // Root: full global. Child: thisBoneGlobal * Inverse(parentBoneGlobal) so local * parentGlobal == childGlobal.
             for (int i = 0; i < boneList.Count; i++)
             {
                 var bone = boneList[i];
@@ -999,6 +995,7 @@ namespace Game_Engine.Core.Importers
                     if (nodeGlobals.TryGetValue(parentBone.Name, out var parentGlobal)
                         && SN.Matrix4x4.Invert(parentGlobal, out var invParent))
                     {
+                        // Paired with SkinnedMeshRenderer: globalChild = local * globalParent
                         bone.LocalBindTransform = myGlobal * invParent;
                     }
                     else
@@ -1251,7 +1248,7 @@ namespace Game_Engine.Core.Importers
                         var rot = SampleRotation(channel, tTicks);
                         var scl = SampleScale(channel, tTicks);
 
-                        // Scale position keyframes to match vertex scaling
+                        // Match LocalBindTransform translation scaling above.
                         if (Math.Abs(vertexScale - 1f) > 0.0001f)
                             pos *= vertexScale;
 

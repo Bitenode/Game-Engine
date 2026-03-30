@@ -42,6 +42,12 @@ namespace Game_Engine.Core.Component.UI
         /// <summary>Whether to restrict value to whole numbers.</summary>
         [Persist] public bool WholeNumbers { get; set; } = false;
 
+        /// <summary>When false, pointer interaction is ignored.</summary>
+        [Persist] public bool Interactable { get; set; } = true;
+
+        /// <summary>Step between values (0 = continuous). Applied after pointer updates.</summary>
+        [Persist] public float StepSize { get; set; }
+
         /// <summary>Slider direction.</summary>
         [Persist] public SliderDirection Direction { get; set; } = SliderDirection.LeftToRight;
 
@@ -69,16 +75,19 @@ namespace Game_Engine.Core.Component.UI
 
         public override void OnPointerDown()
         {
+            if (!Interactable) return;
             UpdateValueFromPointer();
         }
 
         public override void OnDrag(Vector2 delta)
         {
+            if (!Interactable) return;
             UpdateValueFromPointer();
         }
 
         private void UpdateValueFromPointer()
         {
+            if (!Interactable) return;
             var rt = GetRectTransform();
             var canvas = GetCanvas();
             if (rt == null || canvas == null) return;
@@ -112,6 +121,16 @@ namespace Game_Engine.Core.Component.UI
 
             NormalizedValue = normalised;
             if (WholeNumbers) Value = MathF.Round(Value);
+            else ApplyStep();
+        }
+
+        private void ApplyStep()
+        {
+            float step = StepSize;
+            if (step <= 0f) return;
+            float baseV = MinValue;
+            float k = MathF.Round((Value - baseV) / step);
+            Value = baseV + k * step;
         }
 
         public override UIDrawData GetDrawData(in RectTransform.Rect rect)
@@ -165,7 +184,8 @@ namespace Game_Engine.Core.Component.UI
 
             // Handle (square knob at the current value position)
             float handleA = HandleColor.A / 255f * Opacity;
-            float hs = horizontal ? rect.Height * HandleSize : rect.Width * HandleSize;
+            float hsFrac = Math.Clamp(HandleSize, 0.05f, 1f);
+            float hs = horizontal ? rect.Height * hsFrac : rect.Width * hsFrac;
 
             if (horizontal)
             {

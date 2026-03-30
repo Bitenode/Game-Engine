@@ -54,6 +54,18 @@
 						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
 					<TextBlock Text="Definition Files" VerticalAlignment="Center"/>
 				</Button>
+				<Button x:Name="BtnFindReferences" ToolTip.Tip="Find references (Shift+F12)"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="References" VerticalAlignment="Center"/>
+				</Button>
+				<Button x:Name="BtnRenameSymbol" ToolTip.Tip="Rename symbol (Ctrl+Shift+R)"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="Rename Symbol" VerticalAlignment="Center"/>
+				</Button>
+				<ToggleButton x:Name="BtnToggleMinimap" IsChecked="True" ToolTip.Tip="Toggle minimap"
+							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="Minimap" VerticalAlignment="Center"/>
+				</ToggleButton>
 				<Border Width="1" Background="#505050" Margin="4,2"/>
 				<Button x:Name="BtnClose" ToolTip.Tip="Close editor"
 						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">

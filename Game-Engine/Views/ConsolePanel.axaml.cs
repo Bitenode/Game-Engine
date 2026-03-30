@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Avalonia;
 using Game_Engine.Core;
 
 namespace Game_Engine.Views;
@@ -34,6 +35,8 @@ public partial class ConsolePanel : UserControl
 
         Input.KeyUp += Input_OnKeyUp;
         RunButton.Click += Run_Click;
+        BtnClear.Click += (_, __) => { AllLogs.Clear(); RebuildVisibleLogs(); };
+        BtnCopy.Click += (_, __) => CopySelectedLine();
         FilterText.TextChanged += (_, __) => RebuildVisibleLogs();
         ChkInfo.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
         ChkWarn.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
@@ -52,7 +55,7 @@ public partial class ConsolePanel : UserControl
             if (e.NewItems?.Count > 0)
                 added = e.NewItems[0] as LogItem;
             RebuildVisibleLogs();
-            if (added != null && VisibleLogs.Contains(added) && VisibleLogs.Count > 0)
+            if (ChkAutoScroll.IsChecked == true && added != null && VisibleLogs.Contains(added) && VisibleLogs.Count > 0)
                 List.ScrollIntoView(VisibleLogs[^1]);
         };
 
@@ -184,5 +187,13 @@ public partial class ConsolePanel : UserControl
                 Log.Warning($"Unknown command '{parts[0]}'. Type 'help'.");
                 break;
         }
+    }
+
+    private async void CopySelectedLine()
+    {
+        if (List.SelectedItem is not LogItem li) return;
+        var txt = $"[{li.Timestamp:HH:mm:ss}] [{li.Severity}] {li.Message}";
+        if (TopLevel.GetTopLevel(this)?.Clipboard is { } cb)
+            await cb.SetTextAsync(txt);
     }
 }

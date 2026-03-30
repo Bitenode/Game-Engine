@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
@@ -34,15 +35,17 @@ public sealed class DiagnosticService : IDisposable
     private CancellationTokenSource? _cts;
     private Timer? _debounce;
     private string _pendingSource = "";
+    private string? _pendingDocumentPath;
     private const int DebounceMs = 500;
 
     /// <summary>Raised (on background thread) when diagnostics are ready.</summary>
     public event Action<IReadOnlyList<EditorDiagnostic>>? DiagnosticsReady;
 
     /// <summary>Queue a source update. Compilation will run after a debounce period.</summary>
-    public void UpdateSource(string sourceText)
+    public void UpdateSource(string sourceText, string? documentPath = null)
     {
         _pendingSource = sourceText;
+        _pendingDocumentPath = documentPath;
         _debounce?.Dispose();
         _debounce = new Timer(_ => RunDiagnostics(), null, DebounceMs, Timeout.Infinite);
     }
@@ -53,11 +56,21 @@ public sealed class DiagnosticService : IDisposable
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         var source = _pendingSource;
+        var documentPath = _pendingDocumentPath;
 
         Task.Run(() =>
         {
             try
             {
+                // Script editor diagnostics are for project scripts. When browsing engine/editor source
+                // via definition navigation, suppress local scratch diagnostics to avoid false positives.
+                if (!ShouldAnalyzeDocument(documentPath))
+                {
+                    if (!ct.IsCancellationRequested)
+                        DiagnosticsReady?.Invoke(Array.Empty<EditorDiagnostic>());
+                    return;
+                }
+
                 var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
                 var tree = CSharpSyntaxTree.ParseText(source, parseOpts);
 
@@ -117,6 +130,27 @@ public sealed class DiagnosticService : IDisposable
             catch (OperationCanceledException) { }
             catch { }
         }, ct);
+    }
+
+    private static bool ShouldAnalyzeDocument(string? documentPath)
+    {
+        var p = ProjectService.Current;
+        if (p == null) return true;
+        if (string.IsNullOrWhiteSpace(documentPath)) return true;
+        string full;
+        try { full = Path.GetFullPath(documentPath); } catch { return true; }
+
+        bool Under(string root)
+        {
+            if (string.IsNullOrWhiteSpace(root)) return false;
+            string r;
+            try { r = Path.GetFullPath(root); } catch { return false; }
+            if (!r.EndsWith(Path.DirectorySeparatorChar))
+                r += Path.DirectorySeparatorChar;
+            return full.StartsWith(r, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return Under(p.AssetsPath) || Under(p.PackagesPath);
     }
 
     public void Dispose()

@@ -50,6 +50,39 @@ namespace Game_Engine.Core.Component.UI
         /// <summary>Opacity (0 = fully transparent, 1 = fully opaque).</summary>
         [Persist] public float Opacity { get; set; } = 1f;
 
+        /// <summary>When true, this element may participate in focus routing (e.g. input fields).</summary>
+        [Persist] public bool Focusable { get; set; }
+
+        /// <summary>Seconds to ease opacity toward target when <see cref="TargetOpacity"/> differs (0 = instant).</summary>
+        [Persist] public float OpacityTransitionSpeed { get; set; }
+
+        /// <summary>When true, <see cref="Opacity"/> eases toward <see cref="OpacityTarget"/> each frame.</summary>
+        [Persist] public bool OpacityTargetEnabled { get; set; }
+
+        /// <summary>Opacity to ease toward when <see cref="OpacityTargetEnabled"/> is true (clamped 0–1).</summary>
+        [Persist] public float OpacityTarget { get; set; } = 1f;
+
+        /// <summary>True while the pointer is over this element (updated by <see cref="Game_Engine.Core.Rendering.UI.UIEventSystem"/>).</summary>
+        public bool IsPointerOver { get; private set; }
+
+        /// <summary>True while the primary button is held down after a press started on this element.</summary>
+        public bool IsPointerPressed { get; private set; }
+
+        /// <summary>Called by the UI event system before <see cref="OnPointerEnter"/> / <see cref="OnPointerExit"/>.</summary>
+        internal void SyncPointerHover(bool over) => IsPointerOver = over;
+
+        /// <summary>Called by the UI event system around press/release.</summary>
+        internal void SyncPointerPressed(bool pressed) => IsPointerPressed = pressed;
+
+        /// <summary>Advance optional opacity transition (invoked by <see cref="Game_Engine.Core.Rendering.UI.CanvasRenderer"/> before draw).</summary>
+        internal void AdvanceOpacityTransition(float deltaTime)
+        {
+            if (!OpacityTargetEnabled || OpacityTransitionSpeed <= 0f) return;
+            float tgt = Math.Clamp(OpacityTarget, 0f, 1f);
+            float t = Math.Min(1f, deltaTime / Math.Max(0.0001f, OpacityTransitionSpeed));
+            Opacity = Math.Clamp(Opacity + (tgt - Opacity) * t, 0f, 1f);
+        }
+
         // ── Pointer event callbacks (virtual so concrete elements can react) ──
 
         /// <summary>Called when the pointer enters this element's rect.</summary>

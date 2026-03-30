@@ -235,6 +235,8 @@ namespace Game_Engine.Core.Rendering.UI
 
             var rect = rt.GetWorldRect(in canvasRect);
 
+            element.AdvanceOpacityTransition(Core.Time.deltaTime);
+
             // Ask the element for its draw data
             var drawData = element.GetDrawData(in rect);
             if (drawData.QuadCount == 0) return;

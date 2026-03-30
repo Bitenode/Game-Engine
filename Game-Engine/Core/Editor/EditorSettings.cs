@@ -15,6 +15,7 @@ public static class EditorSettings
             "GameEngine", "editor_settings.json");
 
     public static bool ClearConsoleOnPlay { get; set; }
+    public static bool ScriptEditorShowMinimap { get; set; } = true;
 
     static EditorSettings()
     {
@@ -25,6 +26,7 @@ public static class EditorSettings
         catch
         {
             ClearConsoleOnPlay = false;
+            ScriptEditorShowMinimap = true;
         }
     }
 
@@ -34,11 +36,13 @@ public static class EditorSettings
         if (!File.Exists(path))
         {
             ClearConsoleOnPlay = false;
+            ScriptEditorShowMinimap = true;
             return;
         }
         var json = File.ReadAllText(path);
         var dto = JsonSerializer.Deserialize<Dto>(json);
         ClearConsoleOnPlay = dto?.ClearConsoleOnPlay ?? false;
+        ScriptEditorShowMinimap = dto?.ScriptEditorShowMinimap ?? true;
     }
 
     public static void Save()
@@ -48,7 +52,11 @@ public static class EditorSettings
             var dir = Path.GetDirectoryName(StorePath);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
-            File.WriteAllText(StorePath, JsonSerializer.Serialize(new Dto { ClearConsoleOnPlay = ClearConsoleOnPlay }, JsonOpts));
+            File.WriteAllText(StorePath, JsonSerializer.Serialize(new Dto
+            {
+                ClearConsoleOnPlay = ClearConsoleOnPlay,
+                ScriptEditorShowMinimap = ScriptEditorShowMinimap
+            }, JsonOpts));
         }
         catch { /* ignore */ }
     }
@@ -56,6 +64,7 @@ public static class EditorSettings
     private sealed class Dto
     {
         public bool ClearConsoleOnPlay { get; set; }
+        public bool ScriptEditorShowMinimap { get; set; } = true;
     }
 }
 #endif
