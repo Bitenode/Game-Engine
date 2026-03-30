@@ -1,4 +1,4 @@
-/*using System;
+using System;
 using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls;
@@ -158,4 +158,4 @@ public sealed class ListAndPropsDemo : EditorExtension
         for (int i = 0; i < _things.Count; i++) arr.Add(_things[i].Name);
         return arr;
     }
-}*/
+}

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -14,6 +15,8 @@ namespace Game_Engine.Core
         public string Name { get; init; } = "";
         public string RootPath { get; init; } = "";
         public string? LastOpenedScenePath { get; init; }
+        /// <summary>Stored scene paths (relative under project root or absolute), most recent first. Capped when updated.</summary>
+        public List<string> RecentScenes { get; init; } = new();
         public bool AutosaveEnabled { get; init; } = false;
         public int AutosaveIntervalMinutes { get; init; } = 5;
 
@@ -44,6 +47,9 @@ namespace Game_Engine.Core
         public static event Action? ProjectOpened;
         public static event Action? ProjectClosed;
         public static event Action? Changed; // generic "something about the project changed"
+
+        /// <summary>Raises <see cref="Changed"/> when project files on disk change without a manifest update (e.g. Standard Assets copy).</summary>
+        public static void NotifyProjectFilesystemChanged() => Changed?.Invoke();
 
         public static event AssetSelectedHandler AssetSelected; // fired with absolute path
 
@@ -108,7 +114,8 @@ namespace Game_Engine.Core
                 Version = 1,
                 EngineVersion = EngineVersion,
                 CreatedUtc = now,
-                ModifiedUtc = now
+                ModifiedUtc = now,
+                RecentScenes = new List<string>()
             };
 
             // Write manifest
@@ -135,7 +142,11 @@ namespace Game_Engine.Core
 
             // Ensure absolute root (allow moving projects)
             var root = Path.GetDirectoryName(projectJsonPath)!;
-            proj = proj with { RootPath = root };
+            proj = proj with
+            {
+                RootPath = root,
+                RecentScenes = proj.RecentScenes ?? new List<string>()
+            };
 
             Current = proj;
             EnsureFolders(proj);
@@ -178,15 +189,40 @@ namespace Game_Engine.Core
             if (Current is null || string.IsNullOrWhiteSpace(scenePath)) return;
 
             var storedPath = ToStoredScenePath(Current, scenePath);
+            var recent = new List<string>(Current.RecentScenes ?? new List<string>());
+            recent.RemoveAll(x => string.Equals(x, storedPath, StringComparison.OrdinalIgnoreCase));
+            recent.Insert(0, storedPath);
+            const int recentCap = 15;
+            while (recent.Count > recentCap) recent.RemoveAt(recent.Count - 1);
+
             var updated = Current with
             {
                 LastOpenedScenePath = storedPath,
+                RecentScenes = recent,
                 ModifiedUtc = DateTime.UtcNow
             };
 
             Current = updated;
             WriteManifest(updated);
             Changed?.Invoke();
+        }
+
+        /// <summary>Recent scene file paths that still exist, in MRU order (from <see cref="Project.RecentScenes"/>).</summary>
+        public static IReadOnlyList<string> GetRecentSceneAbsolutePaths()
+        {
+            if (Current?.RecentScenes == null || Current.RecentScenes.Count == 0)
+                return Array.Empty<string>();
+
+            var list = new List<string>();
+            foreach (var stored in Current.RecentScenes)
+            {
+                var abs = ResolveStoredScenePath(Current, stored);
+                if (abs == null || !File.Exists(abs)) continue;
+                if (list.Any(x => string.Equals(x, abs, StringComparison.OrdinalIgnoreCase))) continue;
+                list.Add(abs);
+            }
+
+            return list;
         }
 
         /// <summary>Resolve the persisted last scene path to an existing absolute file path, if any.</summary>
@@ -225,7 +261,11 @@ namespace Game_Engine.Core
             if (proj is null) return;
 
             var root = Path.GetDirectoryName(manifestPath)!;
-            Current = proj with { RootPath = root };
+            Current = proj with
+            {
+                RootPath = root,
+                RecentScenes = proj.RecentScenes ?? new List<string>()
+            };
             Changed?.Invoke();
         }
 

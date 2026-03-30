@@ -210,6 +210,7 @@ public sealed class EditorCommandPaletteWindow : Window
         ["editor.quickOpen"] = "Ctrl+P",
         ["editor.project.saveScene"] = "Ctrl+S",
         ["editor.game.togglePlay"] = "F5",
+        ["editor.revealInProject"] = "Ctrl+Shift+R",
     };
 
     public static IReadOnlyList<CommandPaletteSource> SourcesFromRegistry()

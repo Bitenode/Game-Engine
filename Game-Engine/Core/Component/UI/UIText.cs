@@ -54,7 +54,9 @@ namespace Game_Engine.Core.Component.UI
                 var proj = ProjectService.Current;
                 if (proj != null)
                 {
-                    string defaultPath = Path.Combine(proj.RootPath, "Standard Assets", "Fonts", "Default.fnt");
+                    string defaultPath = Path.Combine(proj.AssetsPath, "Standard Assets", "Fonts", "Default.fnt");
+                    if (!File.Exists(defaultPath))
+                        defaultPath = Path.Combine(proj.RootPath, "Standard Assets", "Fonts", "Default.fnt");
                     if (!File.Exists(defaultPath))
                     {
                         // Auto-generate the default font

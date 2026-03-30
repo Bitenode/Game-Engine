@@ -47,6 +47,31 @@
     <Folder Include="Standard Assets\Code Examples\Inspector\" />
   </ItemGroup>
 
+  <!--
+    Mirror Standard Assets to output after build. Content/None + CopyToOutputDirectory is unreliable for paths
+    that are also Compile items (.cs templates): the SDK treats them as code first, so loose files may never copy.
+    This target always mirrors the full tree next to the executable for StandardAssetsInstaller.
+  -->
+  <Target Name="CopyStandardAssetsToOutput" AfterTargets="Build">
+    <ItemGroup>
+      <_StdAssetFile Include="Standard Assets\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_StdAssetFile)"
+          DestinationFiles="@(_StdAssetFile->'$(TargetDir)%(Identity)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- Publish does not always pick up files added only via a post-Build Copy; mirror into the publish folder too. -->
+  <Target Name="CopyStandardAssetsToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_StdAssetFilePub Include="Standard Assets\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_StdAssetFilePub)"
+          DestinationFiles="@(_StdAssetFilePub->'$(PublishDir)%(Identity)')"
+          SkipUnchangedFiles="true"
+          Condition="'$(PublishDir)' != ''" />
+  </Target>
+
   <ItemGroup>
     <Compile Remove="artifacts\**\*.cs" />
     <EmbeddedResource Remove="artifacts\**\*" />

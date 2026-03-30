@@ -140,6 +140,27 @@ public class CodeEditorControl : UserControl
         _canvas.InvalidateVisual();
     }
 
+    /// <summary>Focuses the editor for menu / toolbar commands.</summary>
+    public void FocusEditor() => Focus();
+
+    public void PerformUndo() => HandleUndo();
+
+    public void PerformRedo() => HandleRedo();
+
+    public void PerformSelectAll() => HandleSelectAll();
+
+    public void PerformCut() => HandleCut();
+
+    public void PerformCopy() => HandleCopy();
+
+    public void PerformPaste() => HandlePaste();
+
+    public void ShowFindDialog() => _findOverlay.ShowFind();
+
+    public void ShowReplaceDialog() => _findOverlay.ShowReplace();
+
+    public void ShowGoToLineDialog() => HandleGotoLine();
+
     public async System.Threading.Tasks.Task FormatDocumentAsync()
     {
         var text = GetText();

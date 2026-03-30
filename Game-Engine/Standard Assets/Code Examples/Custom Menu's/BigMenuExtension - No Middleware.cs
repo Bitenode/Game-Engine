@@ -1,4 +1,4 @@
-/*using System;
+using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -91,4 +91,4 @@ public sealed class BigMenuExtension : EditorExtension
             Child = stack
         };
     }
-}*/
+}

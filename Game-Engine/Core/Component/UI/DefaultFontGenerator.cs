@@ -121,7 +121,8 @@ namespace Game_Engine.Core.Component.UI
         }
 
         /// <summary>
-        /// Ensure the default font exists in the project's Standard Assets/Fonts/ directory.
+        /// Ensure the default font exists in the project's Assets/Standard Assets/Fonts/ directory
+        /// (or legacy root Standard Assets/Fonts/).
         /// Returns the path to the .fnt file, or null if generation failed.
         /// </summary>
         public static string? EnsureDefaultFont()
@@ -131,7 +132,11 @@ namespace Game_Engine.Core.Component.UI
                 var proj = ProjectService.Current;
                 if (proj == null) return null;
 
-                string fontsDir = Path.Combine(proj.RootPath, "Standard Assets", "Fonts");
+                var underAssets = Path.Combine(proj.AssetsPath, "Standard Assets", "Fonts");
+                var legacyRoot = Path.Combine(proj.RootPath, "Standard Assets", "Fonts");
+                string fontsDir = Directory.Exists(underAssets) || !Directory.Exists(legacyRoot)
+                    ? underAssets
+                    : legacyRoot;
                 return Generate(fontsDir);
             }
             catch (Exception ex)

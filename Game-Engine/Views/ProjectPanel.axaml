@@ -6,6 +6,8 @@
 		<StackPanel DockPanel.Dock="Top" Margin="8,6" Spacing="6">
 			<!-- was: Text="{Binding ProjectTitle}" -->
 			<TextBlock x:Name="TitleText" FontSize="14" />
+			<TextBox x:Name="FilterText" Watermark="Filter by file or folder name… (Ctrl+F)"
+					 FontSize="12" />
 			<StackPanel Orientation="Horizontal" Spacing="6">
 				<Button x:Name="BtnRefresh" Content="Refresh"/>
 				<Button x:Name="BtnAdd"     Content="+" Width="28" MinHeight="28"

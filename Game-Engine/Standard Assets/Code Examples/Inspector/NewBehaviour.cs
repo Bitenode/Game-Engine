@@ -1,4 +1,6 @@
-/*using Game_Engine.Core;
+using Avalonia.Controls;
+using Game_Engine.Core;
+using Game_Engine.Views;
 
 public class NewBehaviour : Behavior, ICustomInspector
 {
@@ -15,4 +17,16 @@ public class NewBehaviour : Behavior, ICustomInspector
         // root.Children.Add(ctx.DefaultInspector());
         return root;
     }
-}*/
+
+    Control? ICustomInspector.BuildInspectorUI(InspectorContext ctx)
+    {
+        var root = new StackPanel { Spacing = 8 };
+        root.Children.Add(ctx.Header("My Custom Block"));
+        // reuse built-in editor for the 'Test' property:
+        var p = typeof(NewBehaviour).GetProperty(nameof(Test));
+        root.Children.Add(ctx.Row("Cool Float", ctx.EditorForProperty(p)));
+        // Or include the default panel as well:
+        // root.Children.Add(ctx.DefaultInspector());
+        return root;
+    }
+}

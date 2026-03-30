@@ -9,6 +9,7 @@
 			<MenuItem Header="_Project" x:Name="MI_ProjectRoot">
 				<MenuItem Header="_New Project..."   x:Name="MI_NewProject"/>
 				<MenuItem Header="_Open Project..."  x:Name="MI_OpenProject"/>
+				<MenuItem Header="Project _hub…"     x:Name="MI_WelcomeHub"/>
 				<Separator/>
 				<MenuItem Header="_Save Scene"
 						  x:Name="MI_SaveScene"
@@ -18,6 +19,7 @@
 						  x:Name="MI_LoadScene"
 						  IsEnabled="False"
 						  Click="OnMenuLoadScene_Click" />
+				<MenuItem Header="Recent _Scenes" x:Name="MI_RecentScenesRoot" IsEnabled="False"/>
 				<Separator/>
 				<MenuItem Header="_Autosave" x:Name="MI_AutosaveRoot" IsEnabled="False">
 					<MenuItem Header="_Enable Autosave" x:Name="MI_AutosaveEnabled"/>

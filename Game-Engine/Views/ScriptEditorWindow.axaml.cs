@@ -1,6 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.Loader;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -67,14 +70,19 @@ public partial class ScriptEditorWindow : Window
         FileTree.ItemsSource = _treeItems;
         FileTree.DoubleTapped += OnTreeDoubleTapped;
         FileTree.SelectionChanged += OnTreeSelectionChanged;
+        SetupFileTreeContextMenu();
 
         RebuildScriptTree();
 
         // Global keyboard shortcuts (Save, Build, Tab cycling)
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
         Closing += OnWindowClosing;
+        Opened += OnScriptEditorOpened;
+        Closed += OnScriptEditorClosed;
+        ProjectService.Changed += OnProjectChanged;
 
         // Wire toolbar buttons
+        BtnNewScript.Click += async (_, __) => await PromptNewScriptAsync(null);
         BtnBuild.Click += OnBuildAll;
         BtnSave.Click += OnSave;
         BtnSaveAs.Click += OnSaveAs;
@@ -91,6 +99,7 @@ public partial class ScriptEditorWindow : Window
             CodeEditor.MinimapVisible = BtnToggleMinimap.IsChecked == true;
             EditorSettings.ScriptEditorShowMinimap = CodeEditor.MinimapVisible;
             EditorSettings.Save();
+            RefreshViewMenuLabels();
         };
         BtnToggleLineNumbers.IsChecked = EditorSettings.ScriptEditorShowLineNumbers;
         BtnToggleLineNumbers.IsCheckedChanged += (_, __) =>
@@ -98,6 +107,7 @@ public partial class ScriptEditorWindow : Window
             CodeEditor.ShowLineNumbers = BtnToggleLineNumbers.IsChecked == true;
             EditorSettings.ScriptEditorShowLineNumbers = CodeEditor.ShowLineNumbers;
             EditorSettings.Save();
+            RefreshViewMenuLabels();
         };
         BtnToggleWordWrap.IsChecked = EditorSettings.ScriptEditorWordWrap;
         BtnToggleWordWrap.IsCheckedChanged += (_, __) =>
@@ -105,6 +115,7 @@ public partial class ScriptEditorWindow : Window
             CodeEditor.WordWrap = BtnToggleWordWrap.IsChecked == true;
             EditorSettings.ScriptEditorWordWrap = CodeEditor.WordWrap;
             EditorSettings.Save();
+            RefreshViewMenuLabels();
         };
         BtnClose.Click += (_, __) => Close();
 
@@ -120,6 +131,8 @@ public partial class ScriptEditorWindow : Window
         OpenFileInTab(path);
         if (initialLine1Based is >= 1)
             CodeEditor.GoToLine1Based(initialLine1Based.Value);
+
+        RefreshViewMenuLabels();
     }
 
     void OnProblemsStripPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -331,6 +344,11 @@ public partial class ScriptEditorWindow : Window
             CodeEditor.ResetEditorFontSize();
             e.Handled = true;
         }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.N)
+        {
+            e.Handled = true;
+            _ = PromptNewScriptAsync(null);
+        }
     }
 
     // ── Tab management ──────────────────────────────────────────
@@ -350,6 +368,9 @@ public partial class ScriptEditorWindow : Window
             catch { }
         }
         TabBar.SetActiveTab(tab);
+        EditorSettings.AddScriptEditorRecent(filePath);
+        EditorSettings.Save();
+        RebuildScriptRecentsMenu();
     }
 
     private async Task RunGoToDefinitionAsync(string text, string? docPath, int caretOffset)
@@ -1165,6 +1186,295 @@ public partial class ScriptEditorWindow : Window
             catch { }
         }
         return list;
+    }
+
+    // ── Menu, layout, new script ────────────────────────────────
+
+    private void OnScriptEditorOpened(object? o, EventArgs e)
+    {
+        if (EditorSettings.ScriptEditorWindowMaximized)
+            WindowState = WindowState.Maximized;
+        else
+        {
+            if (EditorSettings.ScriptEditorWindowWidth is >= 480)
+                Width = EditorSettings.ScriptEditorWindowWidth.Value;
+            if (EditorSettings.ScriptEditorWindowHeight is >= 320)
+                Height = EditorSettings.ScriptEditorWindowHeight.Value;
+            if (EditorSettings.ScriptEditorWindowX is { } px && EditorSettings.ScriptEditorWindowY is { } py)
+                Position = new PixelPoint((int)px, (int)py);
+        }
+
+        if (MainSplitGrid != null && EditorSettings.ScriptEditorTreeColumnWidth >= 120)
+            MainSplitGrid.ColumnDefinitions[0].Width = new GridLength(EditorSettings.ScriptEditorTreeColumnWidth);
+
+        RefreshViewMenuLabels();
+        RebuildScriptRecentsMenu();
+    }
+
+    private void OnScriptEditorClosed(object? o, EventArgs e)
+    {
+        ProjectService.Changed -= OnProjectChanged;
+        try
+        {
+            if (WindowState == WindowState.Maximized)
+                EditorSettings.ScriptEditorWindowMaximized = true;
+            else
+            {
+                EditorSettings.ScriptEditorWindowMaximized = false;
+                EditorSettings.ScriptEditorWindowWidth = Width;
+                EditorSettings.ScriptEditorWindowHeight = Height;
+                EditorSettings.ScriptEditorWindowX = Position.X;
+                EditorSettings.ScriptEditorWindowY = Position.Y;
+            }
+
+            if (MainSplitGrid != null)
+            {
+                var cw = MainSplitGrid.ColumnDefinitions[0].ActualWidth;
+                if (cw >= 120 && cw < 2000)
+                    EditorSettings.ScriptEditorTreeColumnWidth = cw;
+            }
+
+            EditorSettings.Save();
+        }
+        catch { /* ignore */ }
+    }
+
+    private void RefreshViewMenuLabels()
+    {
+        if (MenuViewMinimap != null)
+            MenuViewMinimap.Header = (CodeEditor.MinimapVisible ? "✓ " : "") + "Minimap";
+        if (MenuViewLineNumbers != null)
+            MenuViewLineNumbers.Header = (CodeEditor.ShowLineNumbers ? "✓ " : "") + "Line Numbers";
+        if (MenuViewWordWrap != null)
+            MenuViewWordWrap.Header = (CodeEditor.WordWrap ? "✓ " : "") + "Word Wrap";
+    }
+
+    private void RebuildScriptRecentsMenu()
+    {
+        if (MenuFileRecentRoot == null) return;
+        MenuFileRecentRoot.Items.Clear();
+        var recents = EditorSettings.GetScriptEditorRecents();
+        if (recents.Count == 0)
+        {
+            MenuFileRecentRoot.Items.Add(new MenuItem { Header = "(No recent scripts)", IsEnabled = false });
+            return;
+        }
+
+        foreach (var p in recents)
+        {
+            var pathCopy = p;
+            var mi = new MenuItem { Header = p };
+            mi.Click += (_, __) => TryOpenScriptPath(pathCopy);
+            MenuFileRecentRoot.Items.Add(mi);
+        }
+    }
+
+    private async void OnMenuNewScript(object? s, RoutedEventArgs e) => await PromptNewScriptAsync(null);
+
+    private void OnMenuSaveClick(object? s, RoutedEventArgs e) => OnSave(this, e);
+
+    private void OnMenuSaveAsClick(object? s, RoutedEventArgs e) => OnSaveAs(this, e);
+
+    private void OnMenuReloadClick(object? s, RoutedEventArgs e) => OnReload(this, e);
+
+    private void OnMenuCloseTabClick(object? s, RoutedEventArgs e)
+    {
+        if (TabBar.ActiveTab != null)
+            OnTabCloseRequested(TabBar.ActiveTab);
+    }
+
+    private void OnMenuExitClick(object? s, RoutedEventArgs e) => Close();
+
+    private void OnMenuUndoClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.PerformUndo();
+    }
+
+    private void OnMenuRedoClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.PerformRedo();
+    }
+
+    private void OnMenuCutClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.PerformCut();
+    }
+
+    private void OnMenuCopyClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.PerformCopy();
+    }
+
+    private void OnMenuPasteClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.PerformPaste();
+    }
+
+    private void OnMenuSelectAllClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.PerformSelectAll();
+    }
+
+    private void OnMenuFindClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.ShowFindDialog();
+    }
+
+    private void OnMenuReplaceClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.ShowReplaceDialog();
+    }
+
+    private void OnMenuGoToLineClick(object? s, RoutedEventArgs e)
+    {
+        CodeEditor.FocusEditor();
+        CodeEditor.ShowGoToLineDialog();
+    }
+
+    private void OnMenuFormatClick(object? s, RoutedEventArgs e) => OnFormatDocument(this, e);
+
+    private void OnMenuViewMinimapClick(object? s, RoutedEventArgs e)
+    {
+        BtnToggleMinimap.IsChecked = BtnToggleMinimap.IsChecked != true;
+    }
+
+    private void OnMenuViewLineNumbersClick(object? s, RoutedEventArgs e)
+    {
+        BtnToggleLineNumbers.IsChecked = BtnToggleLineNumbers.IsChecked != true;
+    }
+
+    private void OnMenuViewWordWrapClick(object? s, RoutedEventArgs e)
+    {
+        BtnToggleWordWrap.IsChecked = BtnToggleWordWrap.IsChecked != true;
+    }
+
+    private void OnMenuBuildAllClick(object? s, RoutedEventArgs e) => OnBuildAll(this, e);
+
+    private void SetupFileTreeContextMenu()
+    {
+        var cm = new ContextMenu();
+        var miNew = new MenuItem { Header = "New C# Script…" };
+        miNew.Click += async (_, __) => await PromptNewScriptAsync(GetTreeContextTargetFolder());
+        var miOpen = new MenuItem { Header = "Open containing folder" };
+        miOpen.Click += (_, __) => RevealTreeSelectionInExplorer();
+        cm.Items.Add(miNew);
+        cm.Items.Add(miOpen);
+        FileTree.ContextMenu = cm;
+    }
+
+    private string? GetTreeContextTargetFolder()
+    {
+        if (FileTree.SelectedItem is not TreeViewItem tvi || tvi.Tag is not NodeTag tag)
+            return null;
+        if (tag.IsFolder) return tag.FullPath;
+        try { return Path.GetDirectoryName(tag.FullPath); } catch { return null; }
+    }
+
+    private string? GetDefaultScriptsFolderForNewFile()
+    {
+        var roots = CandidateScriptFolders().Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (roots.Count > 0) return roots[0];
+        var p = ProjectService.Current;
+        if (p == null) return null;
+        var fb = Path.Combine(p.AssetsPath, "Scripts");
+        try { Directory.CreateDirectory(fb); } catch { /* ignore */ }
+        return Directory.Exists(fb) ? fb : null;
+    }
+
+    private void RevealTreeSelectionInExplorer()
+    {
+        var path = GetTreeContextTargetFolder();
+        if (string.IsNullOrEmpty(path)) return;
+        var dir = Directory.Exists(path) ? path : Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Could not open folder:\n{ex.Message}");
+        }
+    }
+
+    private static bool IsValidScriptClassName(string name) =>
+        !string.IsNullOrWhiteSpace(name) &&
+        Regex.IsMatch(name.Trim(), @"^[A-Za-z_][A-Za-z0-9_]*$");
+
+    private static string BuildNewScriptTemplate(string className)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("using Game_Engine.Core;");
+        sb.AppendLine();
+        sb.AppendLine($"public sealed class {className.Trim()} : Behavior");
+        sb.AppendLine("{");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
+    private async Task PromptNewScriptAsync(string? preferredFolder)
+    {
+        var folder = preferredFolder;
+        if (string.IsNullOrEmpty(folder))
+            folder = GetTreeContextTargetFolder();
+        if (string.IsNullOrEmpty(folder))
+            folder = GetDefaultScriptsFolderForNewFile();
+        if (string.IsNullOrEmpty(folder))
+        {
+            ShowError("No Scripts folder found. Open a project that has Assets/Scripts (or a package Scripts folder).");
+            return;
+        }
+
+        var rawName = await AskTextAsync("New C# Script", "Class name (valid C# identifier):", "NewBehaviour");
+        if (string.IsNullOrWhiteSpace(rawName)) return;
+        var className = rawName.Trim();
+        if (!IsValidScriptClassName(className))
+        {
+            ShowError("Invalid class name. Use letters, digits, and underscores; the first character cannot be a digit.");
+            return;
+        }
+
+        string filePath;
+        try
+        {
+            filePath = Path.Combine(folder, className + ".cs");
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+            return;
+        }
+
+        if (File.Exists(filePath))
+        {
+            ShowError($"A file already exists:\n{filePath}");
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            await File.WriteAllTextAsync(filePath, BuildNewScriptTemplate(className));
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Failed to create script:\n{ex.Message}");
+            return;
+        }
+
+        ProjectService.TouchModified();
+        RebuildScriptTree();
+        TryOpenScriptPath(filePath);
+        StatusText($"Created {filePath}");
     }
 
     // ── Error dialog ────────────────────────────────────────────

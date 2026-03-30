@@ -2,13 +2,60 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:Game_Engine.Views"
         x:Class="Game_Engine.Views.ScriptEditorWindow"
-        Width="1100" Height="700"
+        Width="1280" Height="800"
         Title="Script Editor">
 
-	<Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+	<Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+		<!-- Menu -->
+		<Menu Grid.Row="0" Background="#1E1E1E">
+			<MenuItem Header="_File" Foreground="#CCCCCC">
+				<MenuItem x:Name="MenuFileNew" Header="_New C# Script…" Click="OnMenuNewScript" />
+				<Separator/>
+				<MenuItem Header="_Save" Click="OnMenuSaveClick" />
+				<MenuItem Header="Save _As…" Click="OnMenuSaveAsClick" />
+				<MenuItem Header="_Reload" Click="OnMenuReloadClick" />
+				<Separator/>
+				<MenuItem Header="Close _Tab" Click="OnMenuCloseTabClick" />
+				<MenuItem Header="Recent _Scripts" x:Name="MenuFileRecentRoot" />
+				<Separator/>
+				<MenuItem Header="E_xit" Click="OnMenuExitClick" />
+			</MenuItem>
+			<MenuItem Header="_Edit" Foreground="#CCCCCC">
+				<MenuItem Header="_Undo" Click="OnMenuUndoClick" />
+				<MenuItem Header="_Redo" Click="OnMenuRedoClick" />
+				<Separator/>
+				<MenuItem Header="Cu_t" Click="OnMenuCutClick" />
+				<MenuItem Header="_Copy" Click="OnMenuCopyClick" />
+				<MenuItem Header="_Paste" Click="OnMenuPasteClick" />
+				<MenuItem Header="Select _All" Click="OnMenuSelectAllClick" />
+				<Separator/>
+				<MenuItem Header="_Find…" Click="OnMenuFindClick" />
+				<MenuItem Header="_Replace…" Click="OnMenuReplaceClick" />
+				<MenuItem Header="_Go to Line…" Click="OnMenuGoToLineClick" />
+				<Separator/>
+				<MenuItem Header="_Format Document" Click="OnMenuFormatClick" />
+			</MenuItem>
+			<MenuItem Header="_View" Foreground="#CCCCCC">
+				<MenuItem Header="_Minimap" x:Name="MenuViewMinimap" Click="OnMenuViewMinimapClick" />
+				<MenuItem Header="_Line Numbers" x:Name="MenuViewLineNumbers" Click="OnMenuViewLineNumbersClick" />
+				<MenuItem Header="_Word Wrap" x:Name="MenuViewWordWrap" Click="OnMenuViewWordWrapClick" />
+			</MenuItem>
+			<MenuItem Header="_Build" Foreground="#CCCCCC">
+				<MenuItem Header="Build _All" Click="OnMenuBuildAllClick" />
+			</MenuItem>
+		</Menu>
+
 		<!-- Toolbar -->
-		<Border Grid.Row="0" Background="#2D2D2D" BorderThickness="0,0,0,1" BorderBrush="#3F3F3F" Padding="4,3">
+		<Border Grid.Row="1" Background="#2D2D2D" BorderThickness="0,0,0,1" BorderBrush="#3F3F3F" Padding="4,3">
 			<StackPanel Orientation="Horizontal" Spacing="2">
+				<Button x:Name="BtnNewScript" ToolTip.Tip="New C# Script (Ctrl+N)"
+						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<StackPanel Orientation="Horizontal" Spacing="4">
+						<TextBlock Text="&#x2795;" FontSize="13" VerticalAlignment="Center"/>
+						<TextBlock Text="New" VerticalAlignment="Center"/>
+					</StackPanel>
+				</Button>
+				<Border Width="1" Background="#505050" Margin="4,2"/>
 				<Button x:Name="BtnSave" ToolTip.Tip="Save (Ctrl+S)"
 						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
 					<StackPanel Orientation="Horizontal" Spacing="4">
@@ -83,17 +130,17 @@
 		</Border>
 
 		<!-- Tab Bar -->
-		<local:EditorTabBar x:Name="TabBar" Grid.Row="1"/>
+		<local:EditorTabBar x:Name="TabBar" Grid.Row="2"/>
 
 		<!-- Main split: File tree (left) + editor (right) -->
-		<Grid Grid.Row="2" ColumnDefinitions="280,6,*">
+		<Grid x:Name="MainSplitGrid" Grid.Row="3" ColumnDefinitions="280,6,*">
 			<!-- Project Scripts Tree -->
 			<Border Grid.Column="0" Margin="8" Padding="6" BorderThickness="1" BorderBrush="#303030">
 				<TreeView x:Name="FileTree"/>
 			</Border>
 
 			<!-- Splitter -->
-			<GridSplitter Grid.Column="1"
+			<GridSplitter x:Name="MainSplitter" Grid.Column="1"
 						  HorizontalAlignment="Stretch"
 						  VerticalAlignment="Stretch"
 						  Background="#303030"
@@ -106,7 +153,7 @@
 		</Grid>
 
 		<!-- Diagnostics strip (click = go to first issue; F8 / Shift+F8 = next / prev) -->
-		<Border x:Name="ProblemsStripHost" Grid.Row="3" Background="#1E1E1E" BorderThickness="0,1,0,0" BorderBrush="#3F3F3F" Padding="6,3"
+		<Border x:Name="ProblemsStripHost" Grid.Row="4" Background="#1E1E1E" BorderThickness="0,1,0,0" BorderBrush="#3F3F3F" Padding="6,3"
 				Cursor="Hand" PointerPressed="OnProblemsStripPointerPressed"
 				ToolTip.Tip="Click: jump to first error or warning. F8 / Shift+F8: next / previous diagnostic.">
 			<TextBlock x:Name="StatusProblems"
@@ -118,7 +165,7 @@
 		</Border>
 
 		<!-- Status Bar -->
-		<Border Grid.Row="4" Background="#007ACC" Padding="4,2">
+		<Border Grid.Row="5" Background="#007ACC" Padding="4,2">
 			<Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
 				<TextBlock x:Name="Status"
 						   Grid.Column="0"

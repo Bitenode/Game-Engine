@@ -49,6 +49,9 @@ public sealed partial class ProjectPanel : UserControl
         // Toolbar
         BtnRefresh.Click += (_, __) => Refresh();
         BtnAdd.Click += OnAddClicked;
+        FilterText.TextChanged += (_, __) => Refresh();
+
+        AddHandler(KeyDownEvent, OnProjectPanelKeyDown, RoutingStrategies.Tunnel);
 
         // Tree interactions
         Tree.DoubleTapped += OnTreeDoubleTapped;
@@ -134,10 +137,42 @@ public sealed partial class ProjectPanel : UserControl
         EnsureFolder(p.PackagesPath);
         EnsureFolder(p.BuildsPath);
 
-        Roots.Add(LoadDirAsRoot(p.AssetsPath, "Assets"));
-        Roots.Add(LoadDirAsRoot(p.ScenesPath, "Scenes"));
-        Roots.Add(LoadDirAsRoot(p.PackagesPath, "Packages"));
-        Roots.Add(LoadDirAsRoot(p.BuildsPath, "Builds"));
+        var q = (FilterText?.Text ?? "").Trim();
+        if (q.Length == 0)
+        {
+            Roots.Add(LoadDirAsRoot(p.AssetsPath, "Assets"));
+            Roots.Add(LoadDirAsRoot(p.ScenesPath, "Scenes"));
+            Roots.Add(LoadDirAsRoot(p.PackagesPath, "Packages"));
+            Roots.Add(LoadDirAsRoot(p.BuildsPath, "Builds"));
+        }
+        else
+        {
+            var ql = q.ToLowerInvariant();
+            void AddIfAny(string dir, string label)
+            {
+                var n = LoadDirRecursiveFiltered(dir, label, parent: null, ql);
+                if (n != null) Roots.Add(n);
+            }
+
+            AddIfAny(p.AssetsPath, "Assets");
+            AddIfAny(p.ScenesPath, "Scenes");
+            AddIfAny(p.PackagesPath, "Packages");
+            AddIfAny(p.BuildsPath, "Builds");
+        }
+    }
+
+    /// <summary>Focus the project filter field and select all text (e.g. Ctrl+F).</summary>
+    public void FocusFilterBox()
+    {
+        FilterText.Focus();
+        FilterText.SelectAll();
+    }
+
+    private void OnProjectPanelKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.Key != Key.F) return;
+        FocusFilterBox();
+        e.Handled = true;
     }
 
     private static void EnsureFolder(string dir)
@@ -146,6 +181,48 @@ public sealed partial class ProjectPanel : UserControl
     }
 
     private ProjectNode LoadDirAsRoot(string dir, string display) => LoadDirRecursive(dir, display, parent: null);
+
+    private static bool NameMatches(string name, string filterLower)
+        => name.Contains(filterLower, StringComparison.OrdinalIgnoreCase);
+
+    private static ProjectNode? LoadDirRecursiveFiltered(string dir, string? overrideName, ProjectNode? parent, string filterLower)
+    {
+        var node = new ProjectNode
+        {
+            Name = overrideName ?? Path.GetFileName(dir),
+            FullPath = dir,
+            IsFolder = true,
+            Parent = parent
+        };
+
+        if (!Directory.Exists(dir)) return node;
+
+        foreach (var d in Directory.GetDirectories(dir).OrderBy(Path.GetFileName))
+        {
+            var child = LoadDirRecursiveFiltered(d, null, node, filterLower);
+            if (child != null)
+                node.Children.Add(child);
+        }
+
+        foreach (var f in Directory.GetFiles(dir).OrderBy(Path.GetFileName))
+        {
+            var name = Path.GetFileName(f);
+            if (!NameMatches(name, filterLower)) continue;
+            node.Children.Add(new ProjectNode
+            {
+                Name = name,
+                FullPath = f,
+                IsFolder = false,
+                Parent = node
+            });
+        }
+
+        if (node.Children.Count > 0)
+            return node;
+
+        var displayName = overrideName ?? Path.GetFileName(dir);
+        return NameMatches(displayName, filterLower) ? node : null;
+    }
 
     private ProjectNode LoadDirRecursive(string dir, string? overrideName = null, ProjectNode? parent = null)
     {

@@ -42,8 +42,9 @@ These work when the main editor window has focus (with a project open where note
 |----------|--------|
 | **Ctrl+Shift+P** | **Command palette** — fuzzy filter over every command in `CommandRegistry` (editor built-ins such as new panel tabs, save/load scene, compile scripts, plus any commands registered by `EditorExtension` scripts). **Enter** or double-click runs the selection; **Esc** closes; **↓** moves focus from the search box to the list. Matching built-in commands show their global shortcut on the right when one exists. |
 | **Ctrl+P** | **Quick open** — fuzzy search project files under the current project root (`.scene`, `.cs`, `.material`, `.prefab`, `.boneanim`, `.shadergraph`; `bin` / `obj` / `.git` are skipped). **Enter** or double-click opens: scripts in the Script Editor, scenes with the usual unsaved-scene prompt, materials/prefabs via `SelectAssetForInspector`, other types with the OS default handler. Requires an open project. |
-| **Ctrl+S** | **Save scene** — same as **Project > Save Scene** (silent save when the scene already has a path). Skipped while keyboard focus is in a **TextBox** on the main editor window so filters and inspector fields keep normal typing. Requires an open project. |
-| **F5** | **Toggle Play / Stop** — if any Game View is playing, stops every Game panel; otherwise starts **Play** on the first Game panel in dock order (left → center → center secondary → right → bottom). Skipped while focus is in a **TextBox** on the main window. Same behavior as the palette command **Game: Toggle Play / Stop**. Requires an open project. |
+| **Ctrl+S** | **Save scene** — same as **Project > Save Scene** (silent save when the scene already has a path). Skipped while keyboard focus is in a **TextBox** or **NumericUpDown** on the main editor window so filters and inspector fields keep normal typing. Requires an open project. |
+| **F5** | **Toggle Play / Stop** — if any Game View is playing, stops every Game panel; otherwise starts **Play** on the first Game panel in dock order (left → center → center secondary → right → bottom). Skipped while focus is in a **TextBox** or **NumericUpDown** on the main window. Same behavior as the palette command **Game: Toggle Play / Stop**. Requires an open project. |
+| **Ctrl+Shift+R** | **Reveal selection in Project** — same as the command palette entry **Project: Reveal Selection in Project Panel**. Skipped while focus is in a **TextBox** or **NumericUpDown** on the main window (so inspector numeric fields keep normal typing). Requires an open project. |
 
 The **command palette** (**Ctrl+Shift+P**) also includes **Project: Reveal Selection in Project Panel**, which selects the asset for the current Hierarchy selection in the Project tree (if it maps to a file under the project root).
 
@@ -52,6 +53,20 @@ Built-in palette commands are registered from the main window before `CommandReg
 While any Game View is playing, the main window uses a subtle play-mode tint and a **▶** prefix in the title bar so you can tell edit vs play at a glance. With an open project, a `*` prefix appears before the project name when the scene has unsaved changes (`SceneService` dirty flag).
 
 Closing the main editor window while the scene is dirty (with a project open) shows the same **Save / Don’t Save / Cancel** prompt used elsewhere so you do not lose edits accidentally.
+
+**Project > Recent Scenes** lists scenes you opened recently for the current project (stored in `project.json`, capped at 15). Choosing one loads it with the same unsaved-scene check as **Load Scene**.
+
+### Project hub (startup)
+
+When **Show this hub when the editor starts** is enabled (default), a **Project hub** modal opens the first time the main window is shown. From it you can:
+
+- **Create project** — pick a parent folder and project name (same as **Project > New Project**). Optionally **Include standard assets in new projects**: the editor copies the shipped `Standard Assets` tree from next to `Game_Engine.exe` into your project’s **`Assets/Standard Assets/`** (same layout under the project’s `Assets` folder as in the editor build output). Older projects may still use `Standard Assets/` at the project root; the UI font path checks `Assets/Standard Assets` first, then that legacy location.
+- **Open project** — choose a `project.json` manifest.
+- **Recent projects** — lists pinned (★) and recent manifests; select a row and click **Open selected**, or double-click a row.
+
+The same dialog is available anytime via **Project > Project hub…** or the command palette entry **Project: Project hub…**.
+
+Checkboxes at the bottom persist to AppData (`editor_settings.json`): whether to show the hub on startup, and the default for including standard assets (that default also applies when you use **Project > New Project…** from the menu bar).
 
 ---
 
@@ -341,6 +356,10 @@ File browser for the project directory with asset management capabilities.
 
 For keyboard-driven access to many of the same file types from anywhere in the editor, use **Quick open** (**Ctrl+P**) on the main window (see **Global shortcuts** under Editor Layout).
 
+### Search filter
+- The **Filter** field above the tree narrows entries by **file or folder name** (case-insensitive substring). Empty filter shows the full **Assets**, **Scenes**, **Packages**, and **Builds** roots.
+- **Ctrl+F** while the Project panel (or its children) has focus focuses the filter and selects its text.
+
 ### Folder Structure
 ```
 ProjectRoot/
@@ -371,6 +390,7 @@ ProjectRoot/
 | **Reveal in Explorer** | Right-click > Show in Explorer | Opens the folder in the OS file manager |
 | **Refresh** | Right-click > Refresh | Reloads the file tree |
 | **Quick open** | **Ctrl+P** (main window) | Fuzzy-open `.scene` / `.cs` / `.material` / `.prefab` / `.boneanim` / `.shadergraph` anywhere under the project (see **Global shortcuts**) |
+| **Focus filter** | **Ctrl+F** (panel focus) | Focuses the project filter field |
 
 ---
 
@@ -425,19 +445,47 @@ Log.Error("Global error");
 
 ## Script Editor
 
-Built-in C# script editor integrated into the editor:
+Built-in C# script editor integrated into the editor (default window about **1280×800**; size, position, maximized state, and **script tree** column width are restored from `%AppData%/GameEngine/editor_settings.json` when you reopen the Script Editor).
+
+### Menu bar
+- **File** — **New C# Script…** (toolbar **New** or **Ctrl+N**), Save, Save As, Reload, Close Tab, **Recent Scripts**, Exit
+- **Edit** — Undo, Redo, Cut, Copy, Paste, Select All, Find, Replace, Go to Line…, Format Document (same behavior as keyboard shortcuts below)
+- **View** — toggles for minimap, line numbers, and word wrap (same as toolbar; ✓ in the menu shows the current state)
+- **Build** — Build All (**Ctrl+Shift+B**)
+
+### New scripts
+- **File → New C# Script…** or **Ctrl+N** creates a `.cs` file with a minimal `Behavior` subclass template under the **selected folder** in the left script tree if that selection is a folder (or the folder containing a selected file); otherwise under the first indexed **Scripts** root (usually `Assets/Scripts`), creating that folder if needed.
+- Right-click the script **tree** — **New C# Script…** or **Open containing folder** (OS file explorer).
+
+### Editing shortcuts (when the code editor has focus)
+
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+Z** / **Ctrl+Y** | Undo / Redo |
+| **Ctrl+X** / **Ctrl+C** / **Ctrl+V** | Cut / Copy / Paste |
+| **Ctrl+A** | Select all |
+| **Ctrl+F** / **Ctrl+H** | Find / Replace |
+| **Ctrl+G** | Go to line |
+| **Ctrl+D** | Duplicate line |
+| **Ctrl+/** | Toggle line comment |
+| **Ctrl+L** | Select line |
+| **Ctrl+Shift+K** | Delete line |
+| **F12** / **Shift+Click** | Go to definition |
+| **Shift+F12** | Find references |
+| **Ctrl+Shift+R** | Rename symbol |
+| **Ctrl+Shift+O** | Definition Files list |
+| **F8** / **Shift+F8** | Next / previous diagnostic |
+| **Ctrl+Tab** / **Ctrl+Shift+Tab** | Next / previous tab |
+| **Ctrl+W** | Close current tab |
+| **Ctrl++** / **Ctrl+−** / **Ctrl+0** | Font size up / down / reset |
+
+### Other features
 - **Syntax highlighting** for C# keywords, types, strings, and comments
-- **Format** toolbar button — runs Roslyn **Format Document** on the current buffer
-- **F12** or **Shift+Click** — **Go to definition** for the target symbol across project scripts (`Assets/`, `Packages/`) and local editor engine sources when available (opens the target file in a tab when needed)
-- **Definition Files** toolbar button (or **Ctrl+Shift+O**) — opens a searchable, clickable list of every file currently indexed for go-to-definition
-- **Find references** — **Shift+F12** (or **References** button) shows clickable symbol usages across indexed files
-- **Rename symbol** — **Ctrl+Shift+R** renames the symbol at caret across indexed files
-- **Diagnostics strip** — below the editor, a line shows live Roslyn diagnostic counts and the first error/warning message when present
-- **Find / Replace** — **Ctrl+F** opens find, **Ctrl+H** opens replace in the current document
+- **Format** (toolbar or **Edit → Format Document**) — Roslyn **Format Document** on the current buffer
+- **Diagnostics strip** — below the editor, live Roslyn diagnostic counts and the first error/warning message when present
 - **Code folding** — fold/unfold supported blocks from gutter fold controls
-- **Minimap toggle** — toolbar **Minimap** button (state is persisted in editor settings)
-- **Line numbers** / **Wrap** — toolbar toggles; same preferences as **Settings > Script editor: line numbers** and **Script editor: word wrap** (persisted under `%AppData%/GameEngine/editor_settings.json`)
-- **Compile** — toolbar **Build All** or **Ctrl+Shift+B** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**)
+- **Minimap** / **Line numbers** / **Wrap** — toolbar or **View** menu; same persisted flags as **Settings** → script editor toggles (`editor_settings.json`)
+- **Compile** — **Build All** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**)
 - **Quick open** (**Ctrl+P**) on the main window — jump to a `.cs` file under the project without browsing the Project panel
 - **Hot-reload** — recompiles and loads the new assembly into a collectible `AssemblyLoadContext` without restarting the editor
 - **Error display** — compilation errors appear in the Console panel with file path, line number, and error message (double-click to open here)

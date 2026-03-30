@@ -139,6 +139,7 @@ public partial class MainWindow : Window
         // ----- Project menu (items are named in XAML) -----
         MI_NewProject.Click += OnNewProject;
         MI_OpenProject.Click += OnOpenProject;
+        MI_WelcomeHub.Click += (_, __) => _ = ShowWelcomeHubAsync();
         MI_BuildSettings.Click += (_, __) => _ = OpenBuildSettingsAsync();
         MI_ValidateProject.Click += (_, __) => RunProjectValidation();
         MI_AutosaveEnabled.Click += (_, __) => ToggleAutosave();
@@ -194,6 +195,23 @@ public partial class MainWindow : Window
         RebuildRecentProjectsMenu();
         _autosaveTimer.Tick += async (_, __) => await TryAutosaveTickAsync();
         _autosaveTimer.Start();
+
+        Opened += OnFirstOpenedForWelcomeHub;
+    }
+
+    private async void OnFirstOpenedForWelcomeHub(object? sender, EventArgs e)
+    {
+        Opened -= OnFirstOpenedForWelcomeHub;
+        if (!EditorSettings.ShowWelcomeDialogOnStartup) return;
+        var w = new WelcomeWindow(this);
+        await w.ShowDialog(this);
+    }
+
+    /// <summary>Opens the project hub modal (Project menu). Does not change the auto-show setting.</summary>
+    public async Task ShowWelcomeHubAsync()
+    {
+        var w = new WelcomeWindow(this);
+        await w.ShowDialog(this);
     }
 
     private void RegisterEditorCommands()
@@ -224,6 +242,7 @@ public partial class MainWindow : Window
         CommandRegistry.Register("editor.project.validate", "Project: Validate Project", RunProjectValidation, HasProject);
         CommandRegistry.Register("editor.project.new", "Project: New Project…", () => OnNewProject(this, new RoutedEventArgs()));
         CommandRegistry.Register("editor.project.open", "Project: Open Project…", () => OnOpenProject(this, new RoutedEventArgs()));
+        CommandRegistry.Register("editor.project.welcomeHub", "Project: Project hub…", () => _ = ShowWelcomeHubAsync(), () => true);
         CommandRegistry.Register("editor.project.close", "Project: Close Project", () => _ = CloseProjectFromPaletteAsync(), HasProject);
 
         CommandRegistry.Register("editor.settings.input", "Settings: Input Remapping…", () => _ = InputRemappingAsync());
@@ -325,7 +344,7 @@ public partial class MainWindow : Window
             return false;
         for (var c = el; c != null; c = c.Parent as Control)
         {
-            if (c is TextBox)
+            if (c is TextBox or NumericUpDown)
                 return true;
         }
         return false;
@@ -537,6 +556,14 @@ public partial class MainWindow : Window
         {
             if (ProjectService.Current is null || FocusInMainWindowTextEntry()) return;
             _ = SaveSceneAsync(forceSaveAsDialog: false);
+            e.Handled = true;
+            return;
+        }
+
+        if (shift && e.Key == Key.R)
+        {
+            if (ProjectService.Current is null || FocusInMainWindowTextEntry()) return;
+            RevealInProjectForSelection();
             e.Handled = true;
             return;
         }
@@ -838,9 +865,17 @@ public partial class MainWindow : Window
         MI_ValidateProject.IsEnabled = has;
         MI_AutosaveRoot.IsEnabled = has;
 
+        if (MI_RecentScenesRoot != null)
+            MI_RecentScenesRoot.IsEnabled = has;
+
         UpdateEditorWindowTitle();
 
-        if (!has) return;
+        if (!has)
+        {
+            RebuildRecentProjectsMenu();
+            RebuildRecentScenesMenu();
+            return;
+        }
 
         var proj = ProjectService.Current!;
         MI_AutosaveEnabled.Header = proj.AutosaveEnabled ? "_Disable Autosave" : "_Enable Autosave";
@@ -849,6 +884,7 @@ public partial class MainWindow : Window
         MI_Autosave5.IsChecked = proj.AutosaveIntervalMinutes == 5;
         MI_Autosave10.IsChecked = proj.AutosaveIntervalMinutes == 10;
         RebuildRecentProjectsMenu();
+        RebuildRecentScenesMenu();
 
         if (this.FindControl<MenuItem>("MI_ClearConsoleOnPlay") is { } ccPlay)
             ccPlay.IsChecked = EditorSettings.ClearConsoleOnPlay;
@@ -873,14 +909,13 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.CreateNew(parent, name, openAfterCreate: true);
-            if (ProjectService.Current is { } opened)
-                RecentProjectsStore.AddRecent(opened.ManifestPath);
-            RefreshProjectUI();
-            ExtensionService.RefreshFromAppDomain();
-            RebuildExtensionMenus();
-            SceneService.SetCurrentScenePath(null);
-            SceneService.SetDirty(false);
-            TryAutoLoadLastOpenedScene();
+            if (EditorSettings.IncludeStandardAssetsWhenCreatingProject && ProjectService.Current is { } proj)
+            {
+                if (!StandardAssetsInstaller.TryCopyToProject(proj.RootPath, out var stdErr) && stdErr is not null)
+                    await ShowError($"Project was created, but standard assets were not copied:\n{stdErr}");
+            }
+
+            ApplyProjectOpenedAfterCreateOrOpen();
         }
         catch (Exception ex)
         {
@@ -904,14 +939,7 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.Open(files[0]);
-            if (ProjectService.Current is { } opened)
-                RecentProjectsStore.AddRecent(opened.ManifestPath);
-            RefreshProjectUI();
-            ExtensionService.RefreshFromAppDomain();
-            RebuildExtensionMenus();
-            SceneService.SetCurrentScenePath(null);
-            SceneService.SetDirty(false);
-            TryAutoLoadLastOpenedScene();
+            ApplyProjectOpenedAfterCreateOrOpen();
         }
         catch (Exception ex)
         {
@@ -919,6 +947,17 @@ public partial class MainWindow : Window
         }
     }
 
+    internal void ApplyProjectOpenedAfterCreateOrOpen()
+    {
+        if (ProjectService.Current is { } opened)
+            RecentProjectsStore.AddRecent(opened.ManifestPath);
+        RefreshProjectUI();
+        ExtensionService.RefreshFromAppDomain();
+        RebuildExtensionMenus();
+        SceneService.SetCurrentScenePath(null);
+        SceneService.SetDirty(false);
+        TryAutoLoadLastOpenedScene();
+    }
 
     
     private async void OnMenuSaveScene_Click(object? sender, RoutedEventArgs e)
@@ -1035,7 +1074,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<bool> EnsureSafeToLoseUnsavedSceneAsync()
+    internal async Task<bool> EnsureSafeToLoseUnsavedSceneAsync()
     {
         if (!SceneService.IsDirty) return true;
 
@@ -1088,6 +1127,50 @@ public partial class MainWindow : Window
 
         await dlg.ShowDialog(this);
         return await tcs.Task;
+    }
+
+    private void RebuildRecentScenesMenu()
+    {
+        if (MI_RecentScenesRoot == null) return;
+        MI_RecentScenesRoot.Items.Clear();
+
+        if (ProjectService.Current is null)
+        {
+            MI_RecentScenesRoot.Items.Add(new MenuItem { Header = "(Open a project)", IsEnabled = false });
+            return;
+        }
+
+        var paths = ProjectService.GetRecentSceneAbsolutePaths();
+        if (paths.Count == 0)
+        {
+            MI_RecentScenesRoot.Items.Add(new MenuItem { Header = "(No recent scenes)", IsEnabled = false });
+            return;
+        }
+
+        foreach (var abs in paths)
+        {
+            var mi = new MenuItem { Header = Path.GetFileName(abs) };
+            ToolTip.SetTip(mi, abs);
+            var pathCopy = abs;
+            mi.Click += async (_, __) => await LoadRecentSceneFromPathAsync(pathCopy);
+            MI_RecentScenesRoot.Items.Add(mi);
+        }
+    }
+
+    private async Task LoadRecentSceneFromPathAsync(string absPath)
+    {
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+        if (string.IsNullOrWhiteSpace(absPath) || !File.Exists(absPath))
+        {
+            Log.Warning("Recent scene file is missing or path is invalid.");
+            RebuildRecentScenesMenu();
+            return;
+        }
+
+        SceneService.LoadFromFile(absPath);
+        ProjectService.RememberLastOpenedScene(absPath);
+        Log.Info($"Scene loaded: {absPath}");
+        RebuildRecentScenesMenu();
     }
 
     private void RebuildRecentProjectsMenu()
@@ -1147,16 +1230,7 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.Open(manifestPath);
-            if (ProjectService.Current is { } opened)
-                RecentProjectsStore.AddRecent(opened.ManifestPath);
-
-            RefreshProjectUI();
-            ExtensionService.RefreshFromAppDomain();
-            RebuildExtensionMenus();
-            SceneService.SetCurrentScenePath(null);
-            SceneService.SetDirty(false);
-            TryAutoLoadLastOpenedScene();
-            RebuildRecentProjectsMenu();
+            ApplyProjectOpenedAfterCreateOrOpen();
         }
         catch (Exception ex)
         {
