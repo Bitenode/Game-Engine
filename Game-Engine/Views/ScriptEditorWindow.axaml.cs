@@ -92,6 +92,20 @@ public partial class ScriptEditorWindow : Window
             EditorSettings.ScriptEditorShowMinimap = CodeEditor.MinimapVisible;
             EditorSettings.Save();
         };
+        BtnToggleLineNumbers.IsChecked = EditorSettings.ScriptEditorShowLineNumbers;
+        BtnToggleLineNumbers.IsCheckedChanged += (_, __) =>
+        {
+            CodeEditor.ShowLineNumbers = BtnToggleLineNumbers.IsChecked == true;
+            EditorSettings.ScriptEditorShowLineNumbers = CodeEditor.ShowLineNumbers;
+            EditorSettings.Save();
+        };
+        BtnToggleWordWrap.IsChecked = EditorSettings.ScriptEditorWordWrap;
+        BtnToggleWordWrap.IsCheckedChanged += (_, __) =>
+        {
+            CodeEditor.WordWrap = BtnToggleWordWrap.IsChecked == true;
+            EditorSettings.ScriptEditorWordWrap = CodeEditor.WordWrap;
+            EditorSettings.Save();
+        };
         BtnClose.Click += (_, __) => Close();
 
         CodeEditor.DiagnosticsUpdated += OnDiagnosticsUpdated;
@@ -99,6 +113,8 @@ public partial class ScriptEditorWindow : Window
         if (StatusProblems != null)
             StatusProblems.Text = "";
         CodeEditor.MinimapVisible = EditorSettings.ScriptEditorShowMinimap;
+        CodeEditor.ShowLineNumbers = EditorSettings.ScriptEditorShowLineNumbers;
+        CodeEditor.WordWrap = EditorSettings.ScriptEditorWordWrap;
 
         // Open initial file as a tab
         OpenFileInTab(path);

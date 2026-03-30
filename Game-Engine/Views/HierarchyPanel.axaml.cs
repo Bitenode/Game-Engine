@@ -237,6 +237,7 @@ namespace Game_Engine.Views
             Tree.AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Bubble);
             Tree.AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Bubble);
             Tree.AddHandler(KeyDownEvent, OnTreeKeyDown, RoutingStrategies.Tunnel);
+            AddHandler(KeyDownEvent, OnHierarchyPanelKeyDown, RoutingStrategies.Tunnel);
 
             // Context menu target capture
             Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
@@ -492,6 +493,20 @@ namespace Game_Engine.Views
             if (string.IsNullOrWhiteSpace(name)) return;
             _contextTarget.Name = name.Trim();
             SceneService.NotifyChanged();
+        }
+
+        private void OnHierarchyPanelKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.Key != Key.F) return;
+            if (!_filterStripExpanded)
+            {
+                _filterStripExpanded = true;
+                FilterRoot.IsVisible = true;
+                SyncFilterStripToggleUi();
+            }
+            FilterName.Focus();
+            FilterName.SelectAll();
+            e.Handled = true;
         }
 
         private void OnTreeKeyDown(object? sender, KeyEventArgs e)

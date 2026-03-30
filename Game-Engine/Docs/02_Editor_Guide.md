@@ -31,6 +31,8 @@ The editor window contains dockable panels distributed across five dock regions:
 
 ### Settings menu
 - **Clear Console on Play** — when enabled (**Settings** menu), all Console tabs are cleared when you enter play mode (useful for seeing only runtime logs).
+- **Script editor: line numbers** — toggles the script editor gutter (persisted).
+- **Script editor: word wrap** — toggles fixed-column soft wrap in the script editor (horizontal scrollbar hidden; find-match highlights, squiggles, bracket highlights, and indent guides are not drawn while wrap is on). Persisted.
 
 ### Global shortcuts (main window)
 
@@ -38,14 +40,18 @@ These work when the main editor window has focus (with a project open where note
 
 | Shortcut | Action |
 |----------|--------|
-| **Ctrl+Shift+P** | **Command palette** — fuzzy filter over every command in `CommandRegistry` (editor built-ins such as new panel tabs, save/load scene, compile scripts, plus any commands registered by `EditorExtension` scripts). **Enter** or double-click runs the selection; **Esc** closes; **↓** moves focus from the search box to the list. |
+| **Ctrl+Shift+P** | **Command palette** — fuzzy filter over every command in `CommandRegistry` (editor built-ins such as new panel tabs, save/load scene, compile scripts, plus any commands registered by `EditorExtension` scripts). **Enter** or double-click runs the selection; **Esc** closes; **↓** moves focus from the search box to the list. Matching built-in commands show their global shortcut on the right when one exists. |
 | **Ctrl+P** | **Quick open** — fuzzy search project files under the current project root (`.scene`, `.cs`, `.material`, `.prefab`, `.boneanim`, `.shadergraph`; `bin` / `obj` / `.git` are skipped). **Enter** or double-click opens: scripts in the Script Editor, scenes with the usual unsaved-scene prompt, materials/prefabs via `SelectAssetForInspector`, other types with the OS default handler. Requires an open project. |
+| **Ctrl+S** | **Save scene** — same as **Project > Save Scene** (silent save when the scene already has a path). Skipped while keyboard focus is in a **TextBox** on the main editor window so filters and inspector fields keep normal typing. Requires an open project. |
+| **F5** | **Toggle Play / Stop** — if any Game View is playing, stops every Game panel; otherwise starts **Play** on the first Game panel in dock order (left → center → center secondary → right → bottom). Skipped while focus is in a **TextBox** on the main window. Same behavior as the palette command **Game: Toggle Play / Stop**. Requires an open project. |
 
 The **command palette** (**Ctrl+Shift+P**) also includes **Project: Reveal Selection in Project Panel**, which selects the asset for the current Hierarchy selection in the Project tree (if it maps to a file under the project root).
 
 Built-in palette commands are registered from the main window before `CommandRegistry.SealBuiltins()`; hot-loaded extensions register additional commands afterward, and the palette always reflects the current set when opened.
 
-While any Game View is playing, the main window uses a subtle play-mode tint and a **▶** prefix in the title bar so you can tell edit vs play at a glance.
+While any Game View is playing, the main window uses a subtle play-mode tint and a **▶** prefix in the title bar so you can tell edit vs play at a glance. With an open project, a `*` prefix appears before the project name when the scene has unsaved changes (`SceneService` dirty flag).
+
+Closing the main editor window while the scene is dirty (with a project open) shows the same **Save / Don’t Save / Cancel** prompt used elsewhere so you do not lose edits accidentally.
 
 ---
 
@@ -201,7 +207,7 @@ Clear both filter fields to return to the normal tree view.
 | **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) |
 | **Expand/Collapse** | Arrow click | Navigate nested GameObjects |
 | **Expand all / Collapse all** | Buttons in Hierarchy header | Expand or collapse the full hierarchy tree in one action |
-| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2` | Delete selected object, duplicate selected object, rename selected object |
+| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2`, `Ctrl+F` | Delete selected object, duplicate selected object, rename selected object; **Ctrl+F** expands the filter strip (if hidden) and focuses the **name** filter |
 
 For multi-select from the Hierarchy, Scene View focuses the first selected object.
 
@@ -376,6 +382,7 @@ Displays log messages from the engine, scripts, and extensions.
 - Toggle **Info / Warning / Error / …** chips to show or hide severities.
 - Use the **search** box to filter visible lines by substring (combined with severity toggles).
 - Use **Clear**, **Copy Selected**, and **Auto-scroll** controls above the filter row for faster log triage.
+- **Ctrl+L** (while the Console panel or its children have focus) clears the log output, same as **Clear**.
 
 ### Open log location in Script Editor
 - **Double-click** a line that contains a C# path in compiler style (e.g. `C:\path\File.cs(12,5)` or `in File.cs:12`) to open the **Script Editor** at that line (file must exist on disk).
@@ -429,6 +436,7 @@ Built-in C# script editor integrated into the editor:
 - **Find / Replace** — **Ctrl+F** opens find, **Ctrl+H** opens replace in the current document
 - **Code folding** — fold/unfold supported blocks from gutter fold controls
 - **Minimap toggle** — toolbar **Minimap** button (state is persisted in editor settings)
+- **Line numbers** / **Wrap** — toolbar toggles; same preferences as **Settings > Script editor: line numbers** and **Script editor: word wrap** (persisted under `%AppData%/GameEngine/editor_settings.json`)
 - **Compile** — toolbar **Build All** or **Ctrl+Shift+B** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**)
 - **Quick open** (**Ctrl+P**) on the main window — jump to a `.cs` file under the project without browsing the Project panel
 - **Hot-reload** — recompiles and loads the new assembly into a collectible `AssemblyLoadContext` without restarting the editor

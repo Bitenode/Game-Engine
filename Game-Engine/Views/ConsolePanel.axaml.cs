@@ -35,7 +35,8 @@ public partial class ConsolePanel : UserControl
 
         Input.KeyUp += Input_OnKeyUp;
         RunButton.Click += Run_Click;
-        BtnClear.Click += (_, __) => { AllLogs.Clear(); RebuildVisibleLogs(); };
+        BtnClear.Click += (_, __) => ClearConsoleContent();
+        AddHandler(KeyDownEvent, OnConsolePanelKeyDown, RoutingStrategies.Tunnel);
         BtnCopy.Click += (_, __) => CopySelectedLine();
         FilterText.TextChanged += (_, __) => RebuildVisibleLogs();
         ChkInfo.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
@@ -80,6 +81,19 @@ public partial class ConsolePanel : UserControl
     {
         AllLogs.Clear();
         VisibleLogs.Clear();
+    }
+
+    void ClearConsoleContent()
+    {
+        AllLogs.Clear();
+        RebuildVisibleLogs();
+    }
+
+    private void OnConsolePanelKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.Key != Key.L) return;
+        ClearConsoleContent();
+        e.Handled = true;
     }
 
     private void OnLogged(object? sender, LogItem e)

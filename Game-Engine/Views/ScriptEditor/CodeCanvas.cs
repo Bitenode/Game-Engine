@@ -43,6 +43,9 @@ public sealed class CodeCanvas : Control
     public double VerticalOffset { get; set; }
     public double HorizontalOffset { get; set; }
 
+    /// <summary>When true, lines split at viewport width (fixed column wrap). Search, squiggles, brackets, and indent guides are not drawn in this mode.</summary>
+    public bool WordWrap { get; set; }
+
     // ── Measured metrics (read by CodeEditorControl) ────────────
 
     public double LineHeight { get; private set; }
@@ -146,12 +149,110 @@ public sealed class CodeCanvas : Control
         if (LineHeight < 1) LineHeight = EditorFontSize * 1.35;
     }
 
+    public int WrapColumns(double viewWidth)
+    {
+        MeasureCharSize();
+        if (CharWidth <= 0) return 80;
+        int n = (int)((viewWidth - LeftPadding - 2) / CharWidth);
+        return Math.Max(8, n);
+    }
+
+    public int VisualRowsForBufferLine(int lineIdx)
+    {
+        if (!WordWrap || Buffer == null) return 1;
+        int len = Buffer.GetLineLength(lineIdx);
+        if (len == 0) return 1;
+        int w = WrapColumns(Bounds.Width);
+        return (len + w - 1) / w;
+    }
+
+    public int CumulativeVisualRowsBefore(int bufferLine)
+    {
+        if (Buffer == null) return 0;
+        if (!WordWrap)
+            return Math.Clamp(bufferLine, 0, Buffer.LineCount);
+        int sum = 0;
+        for (int i = 0; i < bufferLine && i < Buffer.LineCount; i++)
+            sum += VisualRowsForBufferLine(i);
+        return sum;
+    }
+
+    public int GetTotalVisualRows()
+    {
+        if (Buffer == null) return 1;
+        if (!WordWrap) return Math.Max(1, Buffer.LineCount);
+        int s = 0;
+        for (int i = 0; i < Buffer.LineCount; i++)
+            s += VisualRowsForBufferLine(i);
+        return Math.Max(1, s);
+    }
+
+    public void DecomposeGlobalVisualRow(int vRow, out int bufferLine, out int subRow)
+    {
+        bufferLine = 0;
+        subRow = 0;
+        if (Buffer == null) return;
+        if (!WordWrap)
+        {
+            bufferLine = Math.Clamp(vRow, 0, Math.Max(0, Buffer.LineCount - 1));
+            subRow = 0;
+            return;
+        }
+
+        int remaining = vRow;
+        for (int i = 0; i < Buffer.LineCount; i++)
+        {
+            int rows = VisualRowsForBufferLine(i);
+            if (remaining < rows)
+            {
+                bufferLine = i;
+                subRow = remaining;
+                return;
+            }
+            remaining -= rows;
+        }
+
+        bufferLine = Math.Max(0, Buffer.LineCount - 1);
+        subRow = Math.Max(0, VisualRowsForBufferLine(bufferLine) - 1);
+    }
+
+    public (int bufferLine, int subRow) DecomposeGlobalVisualRowTuple(int vRow)
+    {
+        DecomposeGlobalVisualRow(vRow, out var bl, out var sr);
+        return (bl, sr);
+    }
+
+    public void GetCaretVisualCoords(int wCols, out int globalVisualRow, out int colInChunk)
+    {
+        globalVisualRow = 0;
+        colInChunk = 0;
+        if (Buffer == null || Caret == null) return;
+        int bufLine = Buffer.GetLineFromPosition(Caret.Position);
+        int col = Caret.Position - Buffer.GetLineStartOffset(bufLine);
+        if (!WordWrap || wCols <= 0)
+        {
+            globalVisualRow = bufLine;
+            colInChunk = col;
+            return;
+        }
+
+        int subRow = col / wCols;
+        colInChunk = col % wCols;
+        globalVisualRow = CumulativeVisualRowsBefore(bufLine) + subRow;
+    }
+
     // ── Render ──────────────────────────────────────────────────
 
     public override void Render(DrawingContext ctx)
     {
         MeasureCharSize();
         if (Buffer == null) return;
+
+        if (WordWrap)
+        {
+            RenderWordWrapped(ctx);
+            return;
+        }
 
         var bounds = Bounds;
 
@@ -202,6 +303,158 @@ public sealed class CodeCanvas : Control
         // Caret
         if (Caret != null && _caretVisible)
             DrawCaret(ctx);
+    }
+
+    private void RenderWordWrapped(DrawingContext ctx)
+    {
+        var bounds = Bounds;
+        ctx.DrawRectangle(s_bgBrush, null, new Rect(bounds.Size));
+
+        int wCols = WrapColumns(bounds.Width);
+        int firstVis = Math.Max(0, (int)(VerticalOffset / LineHeight));
+        int visibleCount = (int)(bounds.Height / LineHeight) + 2;
+        int lastVis = firstVis + visibleCount;
+
+        if (Caret != null)
+        {
+            int caretBufLine = Buffer!.GetLineFromPosition(Caret.Position);
+            int vStart = CumulativeVisualRowsBefore(caretBufLine);
+            int rows = VisualRowsForBufferLine(caretBufLine);
+            for (int j = 0; j < rows; j++)
+            {
+                double y = (vStart + j) * LineHeight - VerticalOffset;
+                if (y + LineHeight < 0 || y > bounds.Height) continue;
+                ctx.DrawRectangle(s_currentLineBrush, null, new Rect(0, y, bounds.Width, LineHeight));
+            }
+        }
+
+        if (Caret is { HasSelection: true })
+            DrawSelectionWrapped(ctx, firstVis, lastVis, wCols);
+
+        for (int v = firstVis; v < lastVis; v++)
+        {
+            DecomposeGlobalVisualRow(v, out int bl, out int sr);
+            if (bl >= Buffer!.LineCount) continue;
+            int lineStart = Buffer.GetLineStartOffset(bl);
+            int lineLen = Buffer.GetLineLength(bl);
+            int col0 = sr * wCols;
+            if (col0 >= lineLen) continue;
+            int chunkLen = Math.Min(wCols, lineLen - col0);
+            double y = v * LineHeight - VerticalOffset;
+
+            if (ClassifiedSpans != null && ClassifiedSpans.Count > 0)
+                DrawClassifiedWrapChunk(ctx, lineStart + col0, chunkLen, y);
+            else
+            {
+                string text = Buffer.GetText(lineStart + col0, chunkLen);
+                if (text.Length == 0) continue;
+                var ft = new FormattedText(
+                    text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    s_typeface, EditorFontSize, s_textBrush);
+                ctx.DrawText(ft, new Point(LeftPadding, y));
+            }
+        }
+
+        if (Caret != null && _caretVisible)
+            DrawCaretWrapped(ctx, wCols);
+    }
+
+    private void DrawClassifiedWrapChunk(DrawingContext ctx, int absStart, int length, double y)
+    {
+        if (Buffer == null || ClassifiedSpans == null || length <= 0) return;
+        int absEnd = absStart + length;
+        var spans = ClassifiedSpans;
+        int si = 0;
+        while (si < spans.Count && spans[si].Start + spans[si].Length <= absStart) si++;
+
+        int pos = absStart;
+        int relCol = 0;
+        while (pos < absEnd)
+        {
+            while (si < spans.Count && spans[si].Start + spans[si].Length <= pos) si++;
+
+            if (si < spans.Count && spans[si].Start < absEnd)
+            {
+                var span = spans[si];
+                int spanStart = span.Start;
+                int spanEnd = span.Start + span.Length;
+
+                if (pos < spanStart && spanStart < absEnd)
+                {
+                    int gapLen = Math.Min(spanStart, absEnd) - pos;
+                    DrawTextRun(ctx, Buffer.GetText(pos, gapLen), relCol, y, SyntaxTheme.DefaultBrush);
+                    relCol += gapLen;
+                    pos += gapLen;
+                }
+
+                int drawStart = Math.Max(pos, spanStart);
+                int drawEnd = Math.Min(spanEnd, absEnd);
+                if (drawEnd > drawStart)
+                {
+                    int runLen = drawEnd - drawStart;
+                    DrawTextRun(ctx, Buffer.GetText(drawStart, runLen), relCol, y,
+                        SyntaxTheme.GetBrush(span.Classification));
+                    relCol += runLen;
+                    pos = drawEnd;
+                }
+
+                if (spanEnd <= pos) si++;
+            }
+            else
+            {
+                int rem = absEnd - pos;
+                DrawTextRun(ctx, Buffer.GetText(pos, rem), relCol, y, SyntaxTheme.DefaultBrush);
+                break;
+            }
+        }
+    }
+
+    private void DrawSelectionWrapped(DrawingContext ctx, int firstVis, int lastVis, int wCols)
+    {
+        if (Caret == null || Buffer == null) return;
+        int selStart = Math.Min(Caret.SelectionStart, Caret.SelectionEnd);
+        int selEnd = Math.Max(Caret.SelectionStart, Caret.SelectionEnd);
+        int startLine = Buffer.GetLineFromPosition(selStart);
+        int endLine = Buffer.GetLineFromPosition(selEnd);
+
+        for (int line = startLine; line <= endLine; line++)
+        {
+            int lineStart = Buffer.GetLineStartOffset(line);
+            int lineLen = Buffer.GetLineLength(line);
+            int ls = (line == startLine) ? selStart - lineStart : 0;
+            int le = (line == endLine) ? selEnd - lineStart : lineLen;
+            if (le <= ls) continue;
+
+            int vBase = CumulativeVisualRowsBefore(line);
+            int firstSub = ls / wCols;
+            int lastSub = (le - 1) / wCols;
+            for (int sr = firstSub; sr <= lastSub; sr++)
+            {
+                int vRow = vBase + sr;
+                if (vRow < firstVis || vRow >= lastVis) continue;
+                int chunkCol = sr * wCols;
+                int chunkEnd = Math.Min(chunkCol + wCols, lineLen);
+                int segStart = Math.Max(ls, chunkCol);
+                int segEnd = Math.Min(le, chunkEnd);
+                if (segEnd <= segStart) continue;
+                double x1 = (segStart - chunkCol) * CharWidth + LeftPadding;
+                double x2 = (segEnd - chunkCol) * CharWidth + LeftPadding;
+                double rowY = vRow * LineHeight - VerticalOffset;
+                ctx.DrawRectangle(s_selectionBrush, null,
+                    new Rect(x1, rowY, Math.Max(1, x2 - x1), LineHeight));
+            }
+        }
+    }
+
+    private void DrawCaretWrapped(DrawingContext ctx, int wCols)
+    {
+        GetCaretVisualCoords(wCols, out int vRow, out int colInChunk);
+        double x = colInChunk * CharWidth + LeftPadding;
+        double y = vRow * LineHeight - VerticalOffset;
+        ctx.DrawLine(
+            new Pen(s_caretBrush, 2),
+            new Point(x, y),
+            new Point(x, y + LineHeight));
     }
 
     // ── Search matches ─────────────────────────────────────────

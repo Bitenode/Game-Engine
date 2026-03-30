@@ -69,6 +69,8 @@
 			<MenuItem Header="_Settings" x:Name="MI_SettingsRoot">
 				<MenuItem Header="Input Remapping" x:Name="InputRemappingMenu"/>
 				<MenuItem Header="Clear Console on Play" x:Name="MI_ClearConsoleOnPlay" ToggleType="CheckBox"/>
+				<MenuItem Header="Script editor: line numbers" x:Name="MI_ScriptLineNumbers" ToggleType="CheckBox"/>
+				<MenuItem Header="Script editor: word wrap" x:Name="MI_ScriptWordWrap" ToggleType="CheckBox"/>
 			</MenuItem>
 		</Menu>
 

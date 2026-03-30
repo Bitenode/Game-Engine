@@ -42,6 +42,7 @@ public class CodeEditorControl : UserControl
     private readonly AutoCompletePopup _autoComplete;
     private readonly ImportUsingPopup _importPopup = new();
     private readonly MinimapControl _minimap;
+    private Grid? _layoutGrid;
     private readonly DispatcherTimer _importHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private Point _lastHoverCanvasPoint;
     private IReadOnlyList<EditorDiagnostic>? _liveDiagnostics;
@@ -79,6 +80,32 @@ public class CodeEditorControl : UserControl
     {
         get => _minimap.IsVisible;
         set => _minimap.IsVisible = value;
+    }
+
+    public bool ShowLineNumbers
+    {
+        get => _gutter.IsVisible;
+        set
+        {
+            _gutter.IsVisible = value;
+            if (_layoutGrid != null)
+                _layoutGrid.ColumnDefinitions[0].Width = value ? GridLength.Auto : new GridLength(0);
+        }
+    }
+
+    public bool WordWrap
+    {
+        get => _canvas.WordWrap;
+        set
+        {
+            _canvas.WordWrap = value;
+            _canvas.HorizontalOffset = 0;
+            _hScroll.IsVisible = !value;
+            _gutter.ResolveVisualRow = value ? (v => _canvas.DecomposeGlobalVisualRowTuple(v)) : null;
+            UpdateScrollBars();
+            _canvas.InvalidateVisual();
+            _gutter.InvalidateVisual();
+        }
     }
 
     public void SetText(string text)
@@ -293,6 +320,7 @@ public class CodeEditorControl : UserControl
         _importPopup.ZIndex = 50;
         grid.Children.Add(_importPopup);
 
+        _layoutGrid = grid;
         Content = grid;
     }
 
@@ -1342,7 +1370,7 @@ public class CodeEditorControl : UserControl
     {
         _minimap.VerticalOffset = _canvas.VerticalOffset;
         _minimap.ViewportHeight = _canvas.Bounds.Height;
-        _minimap.FullDocumentHeight = _buffer.LineCount * _canvas.LineHeight;
+        _minimap.FullDocumentHeight = (_canvas.WordWrap ? _canvas.GetTotalVisualRows() : _buffer.LineCount) * _canvas.LineHeight;
         _minimap.ClassifiedSpans = _canvas.ClassifiedSpans;
         _minimap.InvalidateVisual();
     }
@@ -1357,20 +1385,32 @@ public class CodeEditorControl : UserControl
         SyncGutter();
         SyncMinimap();
 
-        double totalH = _buffer.LineCount * lh;
         double viewH = _canvas.Bounds.Height;
-        _vScroll.Maximum = Math.Max(0, totalH - viewH);
-        _vScroll.ViewportSize = viewH;
-
-        double maxW = 0;
-        for (int i = 0; i < _buffer.LineCount; i++)
+        if (_canvas.WordWrap)
         {
-            double w = _buffer.GetLineLength(i) * cw + CodeCanvas.LeftPadding * 2;
-            if (w > maxW) maxW = w;
+            double totalH = _canvas.GetTotalVisualRows() * lh;
+            _vScroll.Maximum = Math.Max(0, totalH - viewH);
+            _vScroll.ViewportSize = viewH;
+            _hScroll.Maximum = 0;
+            _hScroll.Value = 0;
+            _canvas.HorizontalOffset = 0;
         }
-        double viewW = _canvas.Bounds.Width;
-        _hScroll.Maximum = Math.Max(0, maxW - viewW);
-        _hScroll.ViewportSize = viewW;
+        else
+        {
+            double totalH = _buffer.LineCount * lh;
+            _vScroll.Maximum = Math.Max(0, totalH - viewH);
+            _vScroll.ViewportSize = viewH;
+
+            double maxW = 0;
+            for (int i = 0; i < _buffer.LineCount; i++)
+            {
+                double w = _buffer.GetLineLength(i) * cw + CodeCanvas.LeftPadding * 2;
+                if (w > maxW) maxW = w;
+            }
+            double viewW = _canvas.Bounds.Width;
+            _hScroll.Maximum = Math.Max(0, maxW - viewW);
+            _hScroll.ViewportSize = viewW;
+        }
     }
 
     private void EnsureCaretVisible()
@@ -1380,22 +1420,36 @@ public class CodeEditorControl : UserControl
         double cw = _canvas.CharWidth;
         if (lh <= 0 || cw <= 0) return;
 
-        var (line, col) = _buffer.GetLineAndColumn(_caret.Position);
-        double caretY = line * lh;
-        double caretX = col * cw + CodeCanvas.LeftPadding;
+        if (_canvas.WordWrap)
+        {
+            int wCols = _canvas.WrapColumns(_canvas.Bounds.Width);
+            _canvas.GetCaretVisualCoords(wCols, out int vRow, out _);
+            double caretY = vRow * lh;
+            if (caretY < _canvas.VerticalOffset)
+                _canvas.VerticalOffset = caretY;
+            else if (caretY + lh > _canvas.VerticalOffset + _canvas.Bounds.Height)
+                _canvas.VerticalOffset = caretY + lh - _canvas.Bounds.Height;
+            _canvas.VerticalOffset = Math.Max(0, _canvas.VerticalOffset);
+        }
+        else
+        {
+            var (line, col) = _buffer.GetLineAndColumn(_caret.Position);
+            double caretY = line * lh;
+            double caretX = col * cw + CodeCanvas.LeftPadding;
 
-        if (caretY < _canvas.VerticalOffset)
-            _canvas.VerticalOffset = caretY;
-        else if (caretY + lh > _canvas.VerticalOffset + _canvas.Bounds.Height)
-            _canvas.VerticalOffset = caretY + lh - _canvas.Bounds.Height;
+            if (caretY < _canvas.VerticalOffset)
+                _canvas.VerticalOffset = caretY;
+            else if (caretY + lh > _canvas.VerticalOffset + _canvas.Bounds.Height)
+                _canvas.VerticalOffset = caretY + lh - _canvas.Bounds.Height;
 
-        if (caretX < _canvas.HorizontalOffset + CodeCanvas.LeftPadding)
-            _canvas.HorizontalOffset = Math.Max(0, caretX - 20);
-        else if (caretX > _canvas.HorizontalOffset + _canvas.Bounds.Width - 20)
-            _canvas.HorizontalOffset = caretX - _canvas.Bounds.Width + 40;
+            if (caretX < _canvas.HorizontalOffset + CodeCanvas.LeftPadding)
+                _canvas.HorizontalOffset = Math.Max(0, caretX - 20);
+            else if (caretX > _canvas.HorizontalOffset + _canvas.Bounds.Width - 20)
+                _canvas.HorizontalOffset = caretX - _canvas.Bounds.Width + 40;
 
-        _canvas.VerticalOffset = Math.Max(0, _canvas.VerticalOffset);
-        _canvas.HorizontalOffset = Math.Max(0, _canvas.HorizontalOffset);
+            _canvas.VerticalOffset = Math.Max(0, _canvas.VerticalOffset);
+            _canvas.HorizontalOffset = Math.Max(0, _canvas.HorizontalOffset);
+        }
         UpdateScrollBars();
         _canvas.InvalidateVisual();
     }
@@ -1406,6 +1460,19 @@ public class CodeEditorControl : UserControl
         double lh = _canvas.LineHeight;
         double cw = _canvas.CharWidth;
         if (lh <= 0 || cw <= 0) return 0;
+
+        if (_canvas.WordWrap)
+        {
+            int wCols = _canvas.WrapColumns(_canvas.Bounds.Width);
+            int vRow = (int)((point.Y + _canvas.VerticalOffset) / lh);
+            _canvas.DecomposeGlobalVisualRow(vRow, out int bufLine, out int subRow);
+            bufLine = Math.Clamp(bufLine, 0, _buffer.LineCount - 1);
+            int lineLen = _buffer.GetLineLength(bufLine);
+            int colBase = subRow * wCols;
+            int colInChunk = (int)Math.Round((point.X - CodeCanvas.LeftPadding) / cw);
+            colInChunk = Math.Clamp(colInChunk, 0, Math.Max(0, Math.Min(wCols, lineLen - colBase)));
+            return _buffer.GetLineStartOffset(bufLine) + Math.Min(lineLen, colBase + colInChunk);
+        }
 
         int line = (int)((point.Y + _canvas.VerticalOffset) / lh);
         line = Math.Clamp(line, 0, _buffer.LineCount - 1);

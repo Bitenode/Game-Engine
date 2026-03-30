@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Game_Engine.Core;
 
@@ -14,6 +15,8 @@ public sealed class CommandPaletteSource
 {
     public string Title = "";
     public string Subtitle = "";
+    /// <summary>Optional right-aligned shortcut label (e.g. Ctrl+S).</summary>
+    public string? ShortcutHint;
     public Action Execute = () => { };
     public Func<bool>? CanRun;
 }
@@ -148,10 +151,31 @@ public sealed class EditorCommandPaletteWindow : Window
                 TextWrapping = TextWrapping.Wrap,
                 IsVisible = !string.IsNullOrWhiteSpace(s.Subtitle)
             };
-            var panel = new StackPanel { Spacing = 2, Children = { title, sub } };
+            var textCol = new StackPanel { Spacing = 2, Children = { title, sub } };
+            Control row = textCol;
+            if (!string.IsNullOrWhiteSpace(s.ShortcutHint))
+            {
+                var grid = new Avalonia.Controls.Grid();
+                grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+                grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+                var hint = new TextBlock
+                {
+                    Text = s.ShortcutHint,
+                    Opacity = 0.5,
+                    FontSize = 11,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(12, 0, 0, 0)
+                };
+                Avalonia.Controls.Grid.SetColumn(textCol, 0);
+                Avalonia.Controls.Grid.SetColumn(hint, 1);
+                grid.Children.Add(textCol);
+                grid.Children.Add(hint);
+                row = grid;
+            }
+
             var item = new ListBoxItem
             {
-                Content = panel,
+                Content = row,
                 Tag = (Action)(() =>
                 {
                     try { s.Execute(); }
@@ -168,7 +192,7 @@ public sealed class EditorCommandPaletteWindow : Window
 
     private static int MatchScore(CommandPaletteSource s, string[] tokens)
     {
-        var hay = ($"{s.Title} {s.Subtitle}").ToLowerInvariant();
+        var hay = ($"{s.Title} {s.Subtitle} {s.ShortcutHint}").ToLowerInvariant();
         int score = 0;
         foreach (var t in tokens)
         {
@@ -180,16 +204,26 @@ public sealed class EditorCommandPaletteWindow : Window
         return score;
     }
 
+    private static readonly Dictionary<string, string> BuiltinShortcutHints = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["editor.commandPalette"] = "Ctrl+Shift+P",
+        ["editor.quickOpen"] = "Ctrl+P",
+        ["editor.project.saveScene"] = "Ctrl+S",
+        ["editor.game.togglePlay"] = "F5",
+    };
+
     public static IReadOnlyList<CommandPaletteSource> SourcesFromRegistry()
     {
         var list = new List<CommandPaletteSource>();
         foreach (var cmd in CommandRegistry.GetAllCommands())
         {
             var c = cmd;
+            BuiltinShortcutHints.TryGetValue(c.Id, out var shortcut);
             list.Add(new CommandPaletteSource
             {
                 Title = c.DisplayName,
                 Subtitle = c.IsFromExtension ? c.Id + " · extension" : c.Id,
+                ShortcutHint = shortcut,
                 CanRun = c.CanExecute,
                 Execute = () =>
                 {

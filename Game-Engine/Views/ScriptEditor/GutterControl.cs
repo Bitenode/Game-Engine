@@ -21,6 +21,9 @@ public sealed class GutterControl : Control
     public CaretState? Caret { get; set; }
     public double VerticalOffset { get; set; }
 
+    /// <summary>When set, <see cref="ResolveVisualRow"/> maps a global visual row index to buffer line + sub-row (word wrap).</summary>
+    public Func<int, (int bufferLine, int subRow)>? ResolveVisualRow { get; set; }
+
     // ── Metrics (shared with CodeCanvas) ────────────────────────
     public double LineHeight { get; set; }
     public double CharWidth { get; set; }
@@ -80,9 +83,9 @@ public sealed class GutterControl : Control
             new Point(bounds.Width - 0.5, 0),
             new Point(bounds.Width - 0.5, bounds.Height));
 
-        int firstLine = Math.Max(0, (int)(VerticalOffset / LineHeight));
+        int firstVis = Math.Max(0, (int)(VerticalOffset / LineHeight));
         int visibleCount = (int)(bounds.Height / LineHeight) + 2;
-        int lastLine = Math.Min(firstLine + visibleCount, Buffer.LineCount - 1);
+        int lastVis = firstVis + visibleCount;
 
         int caretLine = Caret != null ? Buffer.GetLineFromPosition(Caret.Position) : -1;
 
@@ -90,31 +93,67 @@ public sealed class GutterControl : Control
         if (FoldRegions != null)
             foreach (var r in FoldRegions) foldStarts.Add(r.StartLine);
 
-        for (int i = firstLine; i <= lastLine; i++)
+        var resolver = ResolveVisualRow;
+        if (resolver != null)
         {
-            double y = i * LineHeight - VerticalOffset;
-            string num = (i + 1).ToString();
-            bool isActive = (i == caretLine);
-
-            var brush = isActive ? s_activeNumBrush : s_lineNumBrush;
-            var ft = new FormattedText(
-                num, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                s_typeface, LineNumberFontSize, brush);
-
-            double x = bounds.Width - RightPad - FoldMarginWidth - ft.Width;
-            ctx.DrawText(ft, new Point(x, y));
-
-            // Fold toggle arrow
-            if (foldStarts.Contains(i))
+            for (int v = firstVis; v < lastVis; v++)
             {
-                bool collapsed = CollapsedLines?.Contains(i) == true;
-                string arrow = collapsed ? "\u25B6" : "\u25BC"; // right / down triangle
-                var aft = new FormattedText(
-                    arrow, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                    s_typeface, LineNumberFontSize * 0.65, s_lineNumBrush);
-                double ax = bounds.Width - FoldMarginWidth + (FoldMarginWidth - aft.Width) / 2;
-                double ay = y + (LineHeight - aft.Height) / 2;
-                ctx.DrawText(aft, new Point(ax, ay));
+                var (bl, sr) = resolver(v);
+                if (bl < 0 || bl >= Buffer.LineCount) continue;
+                double y = v * LineHeight - VerticalOffset;
+                if (sr != 0) continue;
+
+                string num = (bl + 1).ToString();
+                bool isActive = (bl == caretLine);
+                var brush = isActive ? s_activeNumBrush : s_lineNumBrush;
+                var ft = new FormattedText(
+                    num, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    s_typeface, LineNumberFontSize, brush);
+
+                double x = bounds.Width - RightPad - FoldMarginWidth - ft.Width;
+                ctx.DrawText(ft, new Point(x, y));
+
+                if (foldStarts.Contains(bl))
+                {
+                    bool collapsed = CollapsedLines?.Contains(bl) == true;
+                    string arrow = collapsed ? "\u25B6" : "\u25BC";
+                    var aft = new FormattedText(
+                        arrow, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                        s_typeface, LineNumberFontSize * 0.65, s_lineNumBrush);
+                    double ax = bounds.Width - FoldMarginWidth + (FoldMarginWidth - aft.Width) / 2;
+                    double ay = y + (LineHeight - aft.Height) / 2;
+                    ctx.DrawText(aft, new Point(ax, ay));
+                }
+            }
+        }
+        else
+        {
+            int lastLine = Math.Min(firstVis + visibleCount, Buffer.LineCount - 1);
+            for (int i = firstVis; i <= lastLine; i++)
+            {
+                double y = i * LineHeight - VerticalOffset;
+                string num = (i + 1).ToString();
+                bool isActive = (i == caretLine);
+
+                var brush = isActive ? s_activeNumBrush : s_lineNumBrush;
+                var ft = new FormattedText(
+                    num, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    s_typeface, LineNumberFontSize, brush);
+
+                double x = bounds.Width - RightPad - FoldMarginWidth - ft.Width;
+                ctx.DrawText(ft, new Point(x, y));
+
+                if (foldStarts.Contains(i))
+                {
+                    bool collapsed = CollapsedLines?.Contains(i) == true;
+                    string arrow = collapsed ? "\u25B6" : "\u25BC";
+                    var aft = new FormattedText(
+                        arrow, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                        s_typeface, LineNumberFontSize * 0.65, s_lineNumBrush);
+                    double ax = bounds.Width - FoldMarginWidth + (FoldMarginWidth - aft.Width) / 2;
+                    double ay = y + (LineHeight - aft.Height) / 2;
+                    ctx.DrawText(aft, new Point(ax, ay));
+                }
             }
         }
     }
@@ -127,8 +166,15 @@ public sealed class GutterControl : Control
         if (Buffer == null || LineHeight <= 0) return;
 
         var point = e.GetPosition(this);
-        int line = (int)((point.Y + VerticalOffset) / LineHeight);
-        line = Math.Clamp(line, 0, Buffer.LineCount - 1);
+        int vRow = (int)((point.Y + VerticalOffset) / LineHeight);
+        int line;
+        if (ResolveVisualRow != null)
+        {
+            var (bl, _) = ResolveVisualRow(vRow);
+            line = Math.Clamp(bl, 0, Buffer.LineCount - 1);
+        }
+        else
+            line = Math.Clamp(vRow, 0, Buffer.LineCount - 1);
 
         // If click is in the fold margin area
         if (point.X >= Bounds.Width - FoldMarginWidth)

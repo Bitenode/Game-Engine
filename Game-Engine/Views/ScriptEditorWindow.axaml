@@ -66,6 +66,14 @@
 							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
 					<TextBlock Text="Minimap" VerticalAlignment="Center"/>
 				</ToggleButton>
+				<ToggleButton x:Name="BtnToggleLineNumbers" IsChecked="True" ToolTip.Tip="Line numbers"
+							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="Line numbers" VerticalAlignment="Center"/>
+				</ToggleButton>
+				<ToggleButton x:Name="BtnToggleWordWrap" IsChecked="False" ToolTip.Tip="Word wrap"
+							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+					<TextBlock Text="Wrap" VerticalAlignment="Center"/>
+				</ToggleButton>
 				<Border Width="1" Background="#505050" Margin="4,2"/>
 				<Button x:Name="BtnClose" ToolTip.Tip="Close editor"
 						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">

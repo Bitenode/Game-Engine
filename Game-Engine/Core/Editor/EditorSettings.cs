@@ -16,6 +16,8 @@ public static class EditorSettings
 
     public static bool ClearConsoleOnPlay { get; set; }
     public static bool ScriptEditorShowMinimap { get; set; } = true;
+    public static bool ScriptEditorShowLineNumbers { get; set; } = true;
+    public static bool ScriptEditorWordWrap { get; set; }
 
     static EditorSettings()
     {
@@ -27,6 +29,8 @@ public static class EditorSettings
         {
             ClearConsoleOnPlay = false;
             ScriptEditorShowMinimap = true;
+            ScriptEditorShowLineNumbers = true;
+            ScriptEditorWordWrap = false;
         }
     }
 
@@ -37,12 +41,16 @@ public static class EditorSettings
         {
             ClearConsoleOnPlay = false;
             ScriptEditorShowMinimap = true;
+            ScriptEditorShowLineNumbers = true;
+            ScriptEditorWordWrap = false;
             return;
         }
         var json = File.ReadAllText(path);
         var dto = JsonSerializer.Deserialize<Dto>(json);
         ClearConsoleOnPlay = dto?.ClearConsoleOnPlay ?? false;
         ScriptEditorShowMinimap = dto?.ScriptEditorShowMinimap ?? true;
+        ScriptEditorShowLineNumbers = dto?.ScriptEditorShowLineNumbers ?? true;
+        ScriptEditorWordWrap = dto?.ScriptEditorWordWrap ?? false;
     }
 
     public static void Save()
@@ -55,7 +63,9 @@ public static class EditorSettings
             File.WriteAllText(StorePath, JsonSerializer.Serialize(new Dto
             {
                 ClearConsoleOnPlay = ClearConsoleOnPlay,
-                ScriptEditorShowMinimap = ScriptEditorShowMinimap
+                ScriptEditorShowMinimap = ScriptEditorShowMinimap,
+                ScriptEditorShowLineNumbers = ScriptEditorShowLineNumbers,
+                ScriptEditorWordWrap = ScriptEditorWordWrap
             }, JsonOpts));
         }
         catch { /* ignore */ }
@@ -65,6 +75,8 @@ public static class EditorSettings
     {
         public bool ClearConsoleOnPlay { get; set; }
         public bool ScriptEditorShowMinimap { get; set; } = true;
+        public bool ScriptEditorShowLineNumbers { get; set; } = true;
+        public bool ScriptEditorWordWrap { get; set; }
     }
 }
 #endif

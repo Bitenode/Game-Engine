@@ -4,6 +4,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Editor;
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
 {
     private enum UnsavedChoice { Save, DontSave, Cancel }
 
+    private bool _closingAfterUnsavedOk;
     private IBrush? _windowBgBeforePlay;
     private DockManager? _dock;
     private readonly DispatcherTimer _autosaveTimer = new() { Interval = TimeSpan.FromSeconds(5) };
@@ -112,6 +114,26 @@ public partial class MainWindow : Window
             };
         }
 
+        if (this.FindControl<MenuItem>("MI_ScriptLineNumbers") is { } ln)
+        {
+            ln.IsChecked = EditorSettings.ScriptEditorShowLineNumbers;
+            ln.Click += (_, __) =>
+            {
+                EditorSettings.ScriptEditorShowLineNumbers = ln.IsChecked == true;
+                EditorSettings.Save();
+            };
+        }
+
+        if (this.FindControl<MenuItem>("MI_ScriptWordWrap") is { } ww)
+        {
+            ww.IsChecked = EditorSettings.ScriptEditorWordWrap;
+            ww.Click += (_, __) =>
+            {
+                EditorSettings.ScriptEditorWordWrap = ww.IsChecked == true;
+                EditorSettings.Save();
+            };
+        }
+
         Game_Engine.Views.GameView.AnyPlayingStateChanged += OnGlobalPlayStateChanged;
 
         // ----- Project menu (items are named in XAML) -----
@@ -140,7 +162,10 @@ public partial class MainWindow : Window
         ProjectService.ProjectClosed += RefreshProjectUI;
         ProjectService.Changed += RefreshProjectUI;
         ProjectService.ProjectOpened += TryRestoreProjectDockLayout;
+        Closing += OnMainWindowClosing;
         Closing += (_, __) => SaveProjectDockLayout();
+        Closed += (_, __) => _closingAfterUnsavedOk = false;
+        SceneService.DirtyStateChanged += _ => UpdateEditorWindowTitle();
 
         // --- Extensions + Menus wiring ---
 
@@ -205,6 +230,7 @@ public partial class MainWindow : Window
 
         CommandRegistry.Register("editor.scripts.compile", "Scripts: Compile and Reload Extensions", () => _ = CompileScriptsFromPaletteAsync(), HasProject);
         CommandRegistry.Register("editor.revealInProject", "Project: Reveal Selection in Project Panel", RevealInProjectForSelection, HasProject);
+        CommandRegistry.Register("editor.game.togglePlay", "Game: Toggle Play / Stop", TogglePlayStopShortcut, HasProject);
     }
 
     private void OnGlobalPlayStateChanged()
@@ -231,6 +257,100 @@ public partial class MainWindow : Window
         }
 
         RefreshProjectUI();
+    }
+
+    private void UpdateEditorWindowTitle()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(UpdateEditorWindowTitle);
+            return;
+        }
+
+        var playing = Game_Engine.Views.GameView.IsAnyViewPlaying;
+        var dirty = SceneService.IsDirty && ProjectService.Current is not null;
+        var core = ProjectService.Current is { } p
+            ? $"{p.Name} — Game Engine"
+            : "Game Engine";
+        var prefix = playing ? "▶ " : "";
+        var dirtyMark = dirty ? "* " : "";
+        Title = $"{prefix}{dirtyMark}{core}";
+    }
+
+    private void TogglePlayStopShortcut() => TryToggleFirstGamePanelPlay();
+
+    /// <summary>Stops all playing Game panels, or starts play on the first Game panel in dock order.</summary>
+    private void TryToggleFirstGamePanelPlay()
+    {
+        if (ProjectService.Current is null) return;
+        var panels = EnumerateGamePanels().ToList();
+        if (panels.Count == 0) return;
+
+        if (Game_Engine.Views.GameView.IsAnyViewPlaying)
+        {
+            foreach (var p in panels)
+            {
+                if (p.State != GamePanel.GameState.Stopped)
+                    p.State = GamePanel.GameState.Stopped;
+            }
+            return;
+        }
+
+        panels[0].State = GamePanel.GameState.Playing;
+    }
+
+    private IEnumerable<GamePanel> EnumerateGamePanels()
+    {
+        foreach (var gp in GamePanelsIn(LeftTabs)) yield return gp;
+        foreach (var gp in GamePanelsIn(CenterTabs)) yield return gp;
+        foreach (var gp in GamePanelsIn(CenterGameTabs)) yield return gp;
+        foreach (var gp in GamePanelsIn(RightTabs)) yield return gp;
+        foreach (var gp in GamePanelsIn(BottomLeftTabs)) yield return gp;
+        foreach (var gp in GamePanelsIn(BottomTabs)) yield return gp;
+    }
+
+    private static IEnumerable<GamePanel> GamePanelsIn(TabControl tc)
+    {
+        foreach (var obj in tc.Items)
+        {
+            if (obj is TabItem { Content: GamePanel gp })
+                yield return gp;
+        }
+    }
+
+    private bool FocusInMainWindowTextEntry()
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.FocusManager?.GetFocusedElement() is not Control el)
+            return false;
+        for (var c = el; c != null; c = c.Parent as Control)
+        {
+            if (c is TextBox)
+                return true;
+        }
+        return false;
+    }
+
+    private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_closingAfterUnsavedOk) return;
+        if (!SceneService.IsDirty || ProjectService.Current is null) return;
+        e.Cancel = true;
+        _ = PromptCloseWithOptionalSaveAsync();
+    }
+
+    private async Task PromptCloseWithOptionalSaveAsync()
+    {
+        if (!await EnsureSafeToLoseUnsavedSceneAsync()) return;
+        _closingAfterUnsavedOk = true;
+        try
+        {
+            Close();
+        }
+        catch
+        {
+            _closingAfterUnsavedOk = false;
+        }
     }
 
     public void RevealInProjectForSelection()
@@ -402,7 +522,24 @@ public partial class MainWindow : Window
     {
         var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+        if (e.Key == Key.F5 && !ctrl && !shift && !e.KeyModifiers.HasFlag(KeyModifiers.Alt))
+        {
+            if (FocusInMainWindowTextEntry()) return;
+            TogglePlayStopShortcut();
+            e.Handled = true;
+            return;
+        }
+
         if (!ctrl) return;
+
+        if (!shift && e.Key == Key.S)
+        {
+            if (ProjectService.Current is null || FocusInMainWindowTextEntry()) return;
+            _ = SaveSceneAsync(forceSaveAsDialog: false);
+            e.Handled = true;
+            return;
+        }
 
         if (!shift && e.Key == Key.P)
         {
@@ -701,9 +838,7 @@ public partial class MainWindow : Window
         MI_ValidateProject.IsEnabled = has;
         MI_AutosaveRoot.IsEnabled = has;
 
-        Title = ProjectService.Current is { } p
-            ? $"{p.Name} — Game Engine"
-            : "Game Engine";
+        UpdateEditorWindowTitle();
 
         if (!has) return;
 
@@ -717,6 +852,10 @@ public partial class MainWindow : Window
 
         if (this.FindControl<MenuItem>("MI_ClearConsoleOnPlay") is { } ccPlay)
             ccPlay.IsChecked = EditorSettings.ClearConsoleOnPlay;
+        if (this.FindControl<MenuItem>("MI_ScriptLineNumbers") is { } ln)
+            ln.IsChecked = EditorSettings.ScriptEditorShowLineNumbers;
+        if (this.FindControl<MenuItem>("MI_ScriptWordWrap") is { } ww)
+            ww.IsChecked = EditorSettings.ScriptEditorWordWrap;
     }
 
     private async void OnNewProject(object? s, RoutedEventArgs e)
