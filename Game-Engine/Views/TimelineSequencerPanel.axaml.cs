@@ -10,7 +10,9 @@ using Game_Engine.Core.Timeline;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
+using Avalonia.Platform.Storage;
 using AvGrid = Avalonia.Controls.Grid;
 
 namespace Game_Engine.Views;
@@ -18,7 +20,7 @@ namespace Game_Engine.Views;
 public partial class TimelineSequencerPanel : UserControl
 {
     internal TimelinePlayer? _player;
-    private TimelineAsset? _timeline;
+    internal TimelineAsset? _timeline;
     internal int _selectedTrackIdx = -1;
     private readonly DispatcherTimer _refreshTimer;
 
@@ -76,12 +78,16 @@ public partial class TimelineSequencerPanel : UserControl
 
     private void TickUI()
     {
-        if (_player == null || _timeline == null) return;
-        if (_player.IsPlaying)
+        if (_player == null || _timeline == null)
         {
-            SeqCanvas.Playhead = _player.CurrentTime;
-            SeqCanvas.InvalidateVisual();
+            TxtTime.Text = "—";
+            return;
         }
+
+        // Keep ruler/playhead aligned whenever the player time changes (play, pause, scrub, seek).
+        SeqCanvas.Playhead = _player.CurrentTime;
+        SeqCanvas.InvalidateVisual();
+
         int min = (int)(_player.CurrentTime / 60f);
         float sec = _player.CurrentTime - min * 60;
         TxtTime.Text = $"{min}:{sec:00.000}";
@@ -292,6 +298,39 @@ public partial class TimelineSequencerPanel : UserControl
         }
     }
 
+    /// <summary>Flattened scene names for timeline pickers (depth-first, same as hierarchy listing).</summary>
+    internal static List<string> AllSceneObjectNames()
+    {
+        var list = new List<string>();
+        foreach (var root in SceneService.Root)
+            CollectNames(root, list);
+        return list;
+    }
+
+    private static void CollectNames(GameObject go, List<string> names)
+    {
+        if (!string.IsNullOrEmpty(go.Name))
+            names.Add(go.Name);
+        foreach (var child in go.Children)
+            CollectNames(child, names);
+    }
+
+    internal static string ClipAssetAbsToRel(string abs)
+    {
+        var root = ProjectService.Current?.RootPath;
+        if (string.IsNullOrWhiteSpace(root)) return abs.Replace('\\', '/');
+        try
+        {
+            var full = Path.GetFullPath(abs);
+            var projFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                           + Path.DirectorySeparatorChar;
+            if (full.StartsWith(projFull, StringComparison.OrdinalIgnoreCase))
+                return full.Substring(projFull.Length).Replace('\\', '/');
+            return full.Replace('\\', '/');
+        }
+        catch { return abs.Replace('\\', '/'); }
+    }
+
     internal static IBrush TrackTypeBrush(TrackType t) => t switch
     {
         TrackType.Animation => new SolidColorBrush(Color.FromRgb(0x4A, 0x8C, 0xFF)),
@@ -348,6 +387,97 @@ public sealed class TimelineSequencerCanvas : Control
     {
         Focusable = true;
         ClipToBounds = true;
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, OnCanvasDragOver, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+        AddHandler(DragDrop.DropEvent, OnCanvasDrop, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+    }
+
+    void OnCanvasDragOver(object? s, DragEventArgs e)
+    {
+        if (Panel?._timeline == null)
+        {
+            e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            e.DragEffects = DragDropEffects.Copy;
+        else
+            e.DragEffects = DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    void OnCanvasDrop(object? s, DragEventArgs e)
+    {
+        var panel = Panel;
+        if (panel?._timeline == null)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        string? picked = null;
+        if (e.Data.Contains(DataFormats.FileNames))
+            picked = e.Data.GetFileNames()?.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(picked) && e.Data.Contains(DataFormats.Files))
+        {
+            if (e.Data.Get(DataFormats.Files) is IEnumerable<IStorageItem> items)
+            {
+                var file = items.FirstOrDefault() as IStorageFile;
+                var local = file?.TryGetLocalPath();
+                if (!string.IsNullOrWhiteSpace(local)) picked = local;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(picked) || !File.Exists(picked))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        int ti = panel._selectedTrackIdx;
+        if (ti < 0 || ti >= panel._timeline.Tracks.Count)
+        {
+            var ext0 = (Path.GetExtension(picked) ?? "").ToLowerInvariant();
+            bool isAudio = ext0 is ".wav" or ".ogg" or ".mp3" or ".flac" or ".aiff";
+            for (int i = 0; i < panel._timeline.Tracks.Count; i++)
+            {
+                var t = panel._timeline.Tracks[i];
+                if (isAudio && t.Type == TrackType.Audio) { ti = i; break; }
+                if (!isAudio && t.Type == TrackType.Animation) { ti = i; break; }
+            }
+        }
+
+        if (ti < 0 || ti >= panel._timeline.Tracks.Count)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var track = panel._timeline.Tracks[ti];
+        if (track.Type != TrackType.Audio && track.Type != TrackType.Animation)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var ext = (Path.GetExtension(picked) ?? "").ToLowerInvariant();
+        if (track.Type == TrackType.Audio && ext is not (".wav" or ".ogg" or ".mp3" or ".flac" or ".aiff"))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var rel = TimelineSequencerPanel.ClipAssetAbsToRel(picked);
+        track.Clips.Add(new TimelineClip
+        {
+            StartTime = Math.Max(0f, Playhead),
+            Duration = 2f,
+            AssetPath = rel
+        });
+        InvalidateVisual();
+        SceneService.NotifyChanged();
+        e.Handled = true;
     }
 
     private float TimeToX(float t) => (t * _pixelsPerSecond) - _scrollX;
@@ -746,7 +876,7 @@ public sealed class TimelineSequencerCanvas : Control
         var win = new Window
         {
             Title = "Edit Clip",
-            Width = 340, Height = 400,
+            Width = 360, Height = 480,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = new SolidColorBrush(Color.FromRgb(0x22, 0x24, 0x28)),
             CanResize = false
@@ -781,10 +911,102 @@ public sealed class TimelineSequencerCanvas : Control
         var tbSpeed = MakeRow("Speed", clip.Speed.ToString("F2", CultureInfo.InvariantCulture));
 
         TextBox? tbAsset = null, tbTarget = null, tbEvtName = null, tbEvtData = null;
+
         if (track.Type == TrackType.Animation || track.Type == TrackType.Audio)
-            tbAsset = MakeRow("Asset Path / State", clip.AssetPath);
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text = "Asset path / animator state id",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)),
+                FontSize = 11
+            });
+            var assetRow = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+            tbAsset = new TextBox
+            {
+                Text = clip.AssetPath ?? "",
+                Width = 210,
+                Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1C, 0x20)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48)),
+                FontSize = 11,
+                Height = 24
+            };
+            assetRow.Children.Add(tbAsset);
+            var btnBrowse = new Button { Content = "Browse…", Height = 24, Padding = new Thickness(8, 0), FontSize = 11 };
+            assetRow.Children.Add(btnBrowse);
+            sp.Children.Add(assetRow);
+            sp.Children.Add(new TextBlock
+            {
+                Text = "Tip: drop files onto the timeline canvas to create clips at the playhead.",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x77, 0x88, 0x99)),
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 320
+            });
+
+            btnBrowse.Click += async (_, _) =>
+            {
+                if (TopLevel.GetTopLevel(this) is not Window owner) return;
+                var assetsDir = ProjectService.Current?.AssetsPath;
+                var dlg = new OpenFileDialog
+                {
+                    Title = track.Type == TrackType.Audio ? "Pick audio clip" : "Pick asset",
+                    Directory = assetsDir,
+                    AllowMultiple = false,
+                    Filters = track.Type == TrackType.Audio
+                        ? new List<FileDialogFilter>
+                        {
+                            new() { Name = "Audio", Extensions = { "wav", "ogg", "mp3", "flac", "aiff" } },
+                            new() { Name = "All", Extensions = { "*" } }
+                        }
+                        : new List<FileDialogFilter> { new() { Name = "All", Extensions = { "*" } } }
+                };
+                var files = await dlg.ShowAsync(owner);
+                var p = files?.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(p))
+                    tbAsset!.Text = TimelineSequencerPanel.ClipAssetAbsToRel(p);
+            };
+        }
+
         if (track.Type == TrackType.Animation || track.Type == TrackType.Camera || track.Type == TrackType.Activation)
-            tbTarget = MakeRow("Target Name", clip.TargetName);
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text = "Target GameObject",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)),
+                FontSize = 11
+            });
+            var goNames = TimelineSequencerPanel.AllSceneObjectNames().Distinct().OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+            var cbPick = new ComboBox
+            {
+                ItemsSource = goNames,
+                Width = 300,
+                FontSize = 11,
+                Height = 28
+            };
+            if (!string.IsNullOrEmpty(clip.TargetName) && goNames.Contains(clip.TargetName))
+                cbPick.SelectedItem = clip.TargetName;
+
+            tbTarget = new TextBox
+            {
+                Text = clip.TargetName ?? "",
+                Width = 300,
+                Watermark = "Name must match object in Hierarchy",
+                Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1C, 0x20)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE4, 0xEA)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3E, 0x48)),
+                FontSize = 11,
+                Height = 24
+            };
+            cbPick.SelectionChanged += (_, _) =>
+            {
+                if (cbPick.SelectedItem is string s)
+                    tbTarget.Text = s;
+            };
+            sp.Children.Add(cbPick);
+            sp.Children.Add(tbTarget);
+        }
+
         if (track.Type == TrackType.Event)
         {
             tbEvtName = MakeRow("Event Name", clip.EventName);

@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Importers;
+using Game_Engine.Core.Timeline;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core
@@ -677,6 +678,10 @@ namespace Game_Engine.Core
                 return ToDto((Mesh)value);
             }
 
+            // Timeline asset (nested tracks/clips; clip paths normalized like other asset paths)
+            if (t == typeof(TimelineAsset))
+                return PersistTimelineAssetForScene((TimelineAsset)value);
+
             // Arrays / Lists of simple types or Vector3
             if (t.IsArray)
             {
@@ -698,6 +703,63 @@ namespace Game_Engine.Core
             }
 
             return Skip.Value;
+        }
+
+        static JsonElement PersistTimelineAssetForScene(TimelineAsset src)
+        {
+            var copy = CloneTimelineAssetWithRelativePaths(src);
+            return JsonSerializer.SerializeToElement(copy, _json);
+        }
+
+        static TimelineAsset CloneTimelineAssetWithRelativePaths(TimelineAsset src)
+        {
+            var dst = new TimelineAsset
+            {
+                Name = src.Name,
+                Duration = src.Duration,
+                Loop = src.Loop,
+                Tracks = new List<TimelineTrack>()
+            };
+            foreach (var tr in src.Tracks)
+            {
+                var ntr = new TimelineTrack
+                {
+                    Name = tr.Name,
+                    Type = tr.Type,
+                    Muted = tr.Muted,
+                    Clips = new List<TimelineClip>()
+                };
+                foreach (var c in tr.Clips)
+                {
+                    ntr.Clips.Add(new TimelineClip
+                    {
+                        StartTime = c.StartTime,
+                        Duration = c.Duration,
+                        BlendIn = c.BlendIn,
+                        BlendOut = c.BlendOut,
+                        Speed = c.Speed,
+                        AssetPath = NormalizeTimelineClipAssetPath(c.AssetPath),
+                        TargetName = c.TargetName,
+                        EventName = c.EventName,
+                        EventData = c.EventData
+                    });
+                }
+                dst.Tracks.Add(ntr);
+            }
+            return dst;
+        }
+
+        static string NormalizeTimelineClipAssetPath(string? p)
+        {
+            if (string.IsNullOrWhiteSpace(p)) return "";
+            try
+            {
+                var resolved = ResolveAssetPath(p);
+                if (!string.IsNullOrWhiteSpace(resolved) && File.Exists(resolved))
+                    return MakeAssetRelative(resolved) ?? p.Replace('\\', '/');
+                return MakeAssetRelative(p) ?? p.Replace('\\', '/');
+            }
+            catch { return p; }
         }
 
 
@@ -764,6 +826,19 @@ namespace Game_Engine.Core
                 if (jsonValue is Vector3 v3) return v3;
                 if (jsonValue is JsonElement je && je.ValueKind == JsonValueKind.Array)
                     return JsonSerializer.Deserialize<Vector3>(je.GetRawText(), _json);
+            }
+
+            if (targetType == typeof(TimelineAsset))
+            {
+                try
+                {
+                    if (jsonValue is TimelineAsset ta) return ta;
+                    if (jsonValue is JsonElement je)
+                        return JsonSerializer.Deserialize<TimelineAsset>(je.GetRawText(), _json);
+                    var json = JsonSerializer.Serialize(jsonValue, _json);
+                    return JsonSerializer.Deserialize<TimelineAsset>(json, _json);
+                }
+                catch { return null; }
             }
 
             try

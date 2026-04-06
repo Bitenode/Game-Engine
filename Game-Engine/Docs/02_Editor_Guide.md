@@ -613,6 +613,21 @@ The Timeline Sequencer panel provides a visual editor for creating and editing c
 
 ---
 
+## Blueprint panel
+
+The **Blueprint** panel edits **visual behavior graphs** saved as `.blueprint` JSON (typically under `Assets/Blueprints/`). Open it via **Window → New Blueprint Tab** or the command palette entry **Window: New Blueprint Tab**.
+
+### Workflow
+- **File** — New / Open / Save / Save As; works on `.blueprint` documents relative to the current project.
+- **Nodes** — List of graph nodes; shows a short **behavior preview** summary (linear outline per event).
+- **Add node** — Combo box of node kinds + **Add node** button; **Insert** menu has the same palette.
+- **Canvas** — Pan (middle drag), zoom (Ctrl + wheel). **Exec flow:** drag from an **out** pin on the right to an **in** pin on the left. Branch nodes expose **Then** and **Else** pins (top/bottom).
+- **Inspector column** — Selected node **Title**, **Kind**, description, wire counts, and **Parameters**. For **Get/Set Property (Reflect)** nodes, **mode** and **scope** use **dropdowns**; **type name**, **component type**, and **member path** use **searchable autocomplete** lists (you can still type values manually).
+
+Graphs are assigned to GameObjects with the **Visual Blueprint** component (**Scripting → Visual Blueprint**) via **Blueprint Asset Path**. See [14 — Visual Blueprints](14_Visual_Blueprints.md) for the full node reference, reflect rules, and EventBus details.
+
+---
+
 ## Shader Editor
 
 The Shader Editor panel provides a visual node-based interface for creating custom shaders:
@@ -770,6 +785,7 @@ Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON 
 | **Biome Graph** | Open the biome graph editor for `PlanetTerrain` |
 | **New Animation Tab** | Open a new Animation panel tab |
 | **New Timeline Tab** | Open a new Timeline Sequencer panel tab |
+| **New Blueprint Tab** | Open a new Visual Blueprint graph editor tab (`.blueprint` assets) |
 | **Profiler** | Open the performance profiler panel |
 | Panel list | Open/focus specific panels |
 

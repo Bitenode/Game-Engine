@@ -387,6 +387,7 @@ SceneRenderer.RenderGPU()
 | Animations      | Custom      | `*.boneanim`                                 | Bone animation data |
 | Shaders         | Custom      | `*.shader`                                   | Custom GLSL shaders |
 | Shader Graphs   | JSON        | `*.shadergraph`                              | Visual shader node graphs |
+| Blueprints      | JSON        | `Assets/Blueprints/*.blueprint`              | Visual behavior graphs (Visual Blueprint component) |
 
 Properties marked with `[Persist]` on Behaviors are automatically serialized/deserialized by `SceneSerialization`. Supported types include `string`, `int`, `float`, `bool`, `Vector3`, `Color`, enums, `List<T>`, and `float[]`.
 
@@ -410,7 +411,7 @@ The `GameObject.Enabled` state is also serialized in `.scene` files. To keep fil
    - **Center** — Scene View and Game View (tabbed)
    - **Right** — Inspector panel
    - **Bottom Left** — Project panel
-   - **Bottom** — Console panel, Animation panel, and Timeline Sequencer panel
+   - **Bottom** — Console panel, Animation panel, Timeline Sequencer panel, and Blueprint graph tabs (when opened)
 
 The main window also builds the menu bar (Project, Window, Settings menus) and dynamically appends extension menus when scripts are compiled.
 

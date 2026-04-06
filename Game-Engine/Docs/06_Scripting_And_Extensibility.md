@@ -1,5 +1,17 @@
 # Game Engine — Scripting and Extensibility
 
+## Visual Blueprints
+
+**Visual Blueprints** are JSON **`.blueprint`** graphs edited in **Window → New Blueprint Tab**. Add the **Visual Blueprint** component (**Scripting** category) to a GameObject and set **Blueprint Asset Path** (e.g. `Assets/Blueprints/MyGraph.blueprint`). Graphs run **Begin Play** once and optionally **Tick** every frame; they support variables, branching, delays, scene actions, **reflection** (get/set public members on components or static engine types), and **EventBus** messages (`BlueprintMessageEvent`).
+
+- **Authoring:** node canvas, exec wiring (right pin → left pin), Insert / Add node palette.  
+- **Docs:** [14 — Visual Blueprints](14_Visual_Blueprints.md) (node list, reflect rules, tips).  
+- **Editor panel:** [Editor Guide — Blueprint panel](02_Editor_Guide.md#blueprint-panel).
+
+C# scripts can subscribe to `BlueprintMessageEvent` and continue to own heavy logic; blueprints are ideal for level scripting and designer-facing tweaking without recompilation.
+
+---
+
 ## C# Scripting
 
 ### Writing a Script
@@ -136,8 +148,9 @@ bool rightDown = Input.GetMouseButtonDown(MouseButton.Right);
 
 #### Time
 ```csharp
-float dt = Time.DeltaTime;       // Seconds since last frame
-float elapsed = Time.ElapsedTime; // Total elapsed seconds since play started
+float dt = Time.deltaTime; // Seconds since last frame (Update clock)
+float t = Time.time;       // Seconds since play started (Update accumulation)
+float ft = Time.fixedTime; // Fixed timestep clock
 ```
 
 #### Logging

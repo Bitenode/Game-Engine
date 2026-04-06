@@ -15,6 +15,7 @@ using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Component.UI;
 using Game_Engine.Core.AI;
+using Game_Engine.Core.Blueprint;
 using Game_Engine.Core.Dialogue;
 using Game_Engine.Core.Rendering;
 using Game_Engine.Core.Timeline;
@@ -240,6 +241,11 @@ public partial class InspectorPanel : UserControl
                         (p.Name != nameof(BehaviorTreeRunner.Tree) &&
                          p.Name != nameof(BehaviorTreeRunner.Blackboard) &&
                          p.Name != nameof(BehaviorTreeRunner.LastStatus)))
+            .Where(p => !(b is VisualBlueprintBehavior) ||
+                        (p.Name != nameof(VisualBlueprintBehavior.BlueprintAssetPath) &&
+                         p.Name != nameof(VisualBlueprintBehavior.LogSteps) &&
+                         p.Name != nameof(VisualBlueprintBehavior.RunTickGraph) &&
+                         p.Name != nameof(VisualBlueprintBehavior.Variables)))
             // hide DialogueRunner properties handled by the custom Dialogue Tree editor
             .Where(p => !(b is DialogueRunner) ||
                         (p.Name != nameof(DialogueRunner.Tree) &&
@@ -255,7 +261,16 @@ public partial class InspectorPanel : UserControl
                         (p.Name != nameof(TimelinePlayer.Timeline) &&
                          p.Name != nameof(TimelinePlayer.CurrentTime) &&
                          p.Name != nameof(TimelinePlayer.IsPlaying) &&
-                         p.Name != nameof(TimelinePlayer.IsFinished)));
+                         p.Name != nameof(TimelinePlayer.IsFinished)))
+            .Where(p => !(b is MeshLodGroup) ||
+                        (p.Name != nameof(MeshLodGroup.Lod0) &&
+                         p.Name != nameof(MeshLodGroup.Lod1) &&
+                         p.Name != nameof(MeshLodGroup.Lod2) &&
+                         p.Name != nameof(MeshLodGroup.Lod3) &&
+                         p.Name != nameof(MeshLodGroup.Lod1Distance) &&
+                         p.Name != nameof(MeshLodGroup.Lod2Distance) &&
+                         p.Name != nameof(MeshLodGroup.Lod3Distance) &&
+                         p.Name != nameof(MeshLodGroup.CurrentLodLevel)));
     }
 
     // Default property panel (what we previously inlined)
@@ -2537,10 +2552,22 @@ public partial class InspectorPanel : UserControl
             outer.Children.Add(BehaviorTreeRunnerInspectorUI(btRunner));
         }
 
+        // VisualBlueprint: assign .blueprint asset to run on this GameObject
+        if (b is VisualBlueprintBehavior vpb)
+        {
+            outer.Children.Add(VisualBlueprintBehaviorInspectorUI(vpb));
+        }
+
         // TimelinePlayer: inline timeline asset editor
         if (b is TimelinePlayer tlPlayer)
         {
             outer.Children.Add(TimelinePlayerInspectorUI(tlPlayer));
+        }
+
+        // MeshLodGroup: LOD slots + distances (meshes use full Material/Mesh pickers)
+        if (b is MeshLodGroup mlg)
+        {
+            outer.Children.Add(MeshLodGroupInspectorUI(mlg));
         }
 
         // --------- BODY: custom inspector first, else default ----------
@@ -6787,6 +6814,171 @@ public partial class InspectorPanel : UserControl
         _ => node.GetType().Name.Replace("Node", "")
     };
 
+    Control VisualBlueprintBehaviorInspectorUI(VisualBlueprintBehavior vb)
+    {
+        var root = new StackPanel { Spacing = 6 };
+        root.Children.Add(SectionTitle("Visual Blueprint"));
+        root.Children.Add(new TextBlock
+        {
+            Text = "Runs the graph from a .blueprint file: Begin Play once, then Tick every frame (optional).",
+            FontSize = 10,
+            Opacity = 0.75,
+            TextWrapping = TextWrapping.Wrap
+        });
+
+        var pathRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        pathRow.Children.Add(new TextBlock
+        {
+            Text = "Asset",
+            Width = 72,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 11
+        });
+        var tb = new TextBox
+        {
+            MinWidth = 200,
+            Text = vb.BlueprintAssetPath ?? "",
+            Watermark = "Assets/Blueprints/My.blueprint"
+        };
+        var resolved = new TextBlock { FontSize = 10, Opacity = 0.6, TextWrapping = TextWrapping.Wrap };
+
+        void RefreshResolved()
+        {
+            resolved.Text = string.IsNullOrWhiteSpace(vb.BlueprintAssetPath)
+                ? ""
+                : ($"Resolved: {vb.ResolvedBlueprintPath ?? "(invalid path)"}");
+        }
+
+        tb.LostFocus += (_, __) =>
+        {
+            vb.BlueprintAssetPath = string.IsNullOrWhiteSpace(tb.Text) ? null : tb.Text.Trim();
+            vb.Reload();
+            RefreshResolved();
+            SceneService.NotifyChanged();
+        };
+
+        var browse = new Button { Content = "Browse…", Padding = new Thickness(8, 3) };
+        browse.Click += async (_, __) =>
+        {
+            var win = TopLevel.GetTopLevel(this) as Window;
+            if (win == null || ProjectService.Current == null) return;
+            var dir = BlueprintPersistence.EnsureBlueprintsFolder(ProjectService.Current.RootPath);
+            var dlg = new OpenFileDialog
+            {
+                Title = "Blueprint asset",
+                Directory = dir,
+                AllowMultiple = false,
+                Filters = new List<FileDialogFilter>
+                {
+                    new() { Name = "Blueprint", Extensions = { "blueprint" } },
+                    new() { Name = "All", Extensions = { "*" } }
+                }
+            };
+            var files = await dlg.ShowAsync(win);
+            var pick = files?.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(pick)) return;
+            try
+            {
+                var rootPath = ProjectService.Current.RootPath;
+                var rel = Path.GetRelativePath(rootPath, Path.GetFullPath(pick)).Replace('\\', '/');
+                vb.BlueprintAssetPath = rel;
+                tb.Text = rel;
+            }
+            catch
+            {
+                vb.BlueprintAssetPath = pick;
+                tb.Text = pick;
+            }
+            vb.Reload();
+            RefreshResolved();
+            SceneService.NotifyChanged();
+        };
+
+        pathRow.Children.Add(tb);
+        pathRow.Children.Add(browse);
+        root.Children.Add(pathRow);
+
+        var reload = new Button
+        {
+            Content = "Reload from disk",
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(8, 3)
+        };
+        reload.Click += (_, __) =>
+        {
+            vb.Reload();
+            RefreshResolved();
+            SceneService.NotifyChanged();
+        };
+        root.Children.Add(reload);
+
+        var logBox = new CheckBox { Content = "Log blueprint steps to console", IsChecked = vb.LogSteps };
+        logBox.IsCheckedChanged += (_, __) =>
+        {
+            vb.LogSteps = logBox.IsChecked == true;
+            SceneService.NotifyChanged();
+        };
+        root.Children.Add(logBox);
+
+        var tickBox = new CheckBox { Content = "Run Tick graphs (uncheck if too noisy)", IsChecked = vb.RunTickGraph };
+        tickBox.IsCheckedChanged += (_, __) =>
+        {
+            vb.RunTickGraph = tickBox.IsChecked == true;
+            SceneService.NotifyChanged();
+        };
+        root.Children.Add(tickBox);
+
+        root.Children.Add(new TextBlock
+        {
+            Text = "Variables (key=value per line; used by Branch and graph nodes)",
+            FontSize = 10,
+            Opacity = 0.75,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0)
+        });
+        var varBox = new TextBox
+        {
+            MinHeight = 72,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("Consolas,Courier New,monospace"),
+            FontSize = 11,
+            Text = VisualBlueprintVariablesToLines(vb)
+        };
+        varBox.LostFocus += (_, __) =>
+        {
+            ApplyVisualBlueprintVariablesFromLines(vb, varBox.Text ?? "");
+            SceneService.NotifyChanged();
+        };
+        root.Children.Add(varBox);
+
+        RefreshResolved();
+        root.Children.Add(resolved);
+        return root;
+    }
+
+    static string VisualBlueprintVariablesToLines(VisualBlueprintBehavior vb)
+    {
+        if (vb.Variables.Count == 0) return "";
+        return string.Join(Environment.NewLine,
+            vb.Variables.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => $"{kv.Key}={kv.Value}"));
+    }
+
+    static void ApplyVisualBlueprintVariablesFromLines(VisualBlueprintBehavior vb, string text)
+    {
+        vb.Variables.Clear();
+        foreach (var line in text.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None))
+        {
+            var t = line.Trim();
+            if (t.Length == 0 || t.StartsWith('#')) continue;
+            var eq = t.IndexOf('=');
+            if (eq <= 0) continue;
+            var k = t[..eq].Trim();
+            var v = t[(eq + 1)..].Trim();
+            if (k.Length > 0) vb.Variables[k] = v;
+        }
+    }
+
     Control BehaviorTreeRunnerInspectorUI(BehaviorTreeRunner runner)
     {
         var root = new StackPanel { Spacing = 6 };
@@ -7292,6 +7484,88 @@ public partial class InspectorPanel : UserControl
         panel.Children.Add(addRow);
 
         return panel;
+    }
+
+    // ═══════════════════════ Mesh LOD Group ═══════════════════════
+
+    Control MeshLodGroupInspectorUI(MeshLodGroup g)
+    {
+        var t = typeof(MeshLodGroup);
+        var root = new StackPanel { Spacing = 8, Margin = new Thickness(0, 4, 0, 0) };
+
+        root.Children.Add(new TextBlock
+        {
+            Text = "Mesh LOD (distance from camera)",
+            FontWeight = FontWeight.SemiBold,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x8C, 0xFF))
+        });
+        root.Children.Add(new TextBlock
+        {
+            Text = "Assign lower-detail meshes and distance thresholds. Leave Lod0 empty to keep the MeshFilter’s current mesh as near LOD.",
+            FontSize = 10,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0xAA, 0xBB)),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 320
+        });
+
+        void AddMeshRow(string label, string propName)
+        {
+            var p = t.GetProperty(propName)!;
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                Width = 120,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11
+            });
+            row.Children.Add(PropertyEditor(g, p));
+            root.Children.Add(row);
+        }
+
+        void AddFloatRow(string label, string propName)
+        {
+            var p = t.GetProperty(propName)!;
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                Width = 120,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11
+            });
+            row.Children.Add(PropertyEditor(g, p));
+            root.Children.Add(row);
+        }
+
+        AddMeshRow("Lod0 (near)", nameof(MeshLodGroup.Lod0));
+        AddMeshRow("Lod1", nameof(MeshLodGroup.Lod1));
+        AddFloatRow("Lod1 from (m)", nameof(MeshLodGroup.Lod1Distance));
+        AddMeshRow("Lod2", nameof(MeshLodGroup.Lod2));
+        AddFloatRow("Lod2 from (m)", nameof(MeshLodGroup.Lod2Distance));
+        AddMeshRow("Lod3 (far)", nameof(MeshLodGroup.Lod3));
+        AddFloatRow("Lod3 from (m)", nameof(MeshLodGroup.Lod3Distance));
+
+        var status = new TextBlock
+        {
+            FontSize = 10,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x77, 0x88, 0x99)),
+            TextWrapping = TextWrapping.Wrap
+        };
+        void RefreshStatus() =>
+            status.Text = $"Last active LOD index: {g.CurrentLodLevel} (updates while Scene or Game view renders).";
+        RefreshStatus();
+        root.Children.Add(status);
+
+        void OnSceneChanged()
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(RefreshStatus, Avalonia.Threading.DispatcherPriority.Background);
+        }
+        SceneService.Changed += OnSceneChanged;
+        root.DetachedFromVisualTree += (_, _) => SceneService.Changed -= OnSceneChanged;
+
+        return root;
     }
 
     // ═══════════════════════ Timeline Player Inspector UI ═══════════════════════

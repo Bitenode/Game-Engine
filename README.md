@@ -10,6 +10,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Component-Based Architecture** — GameObject/Behavior system with 34+ built-in component types and lifecycle methods (Awake, Start, Update, FixedUpdate, LateUpdate, OnDestroy)
 - **Visual Editor** — Dockable panel layout with Hierarchy, Scene View, Game View, Inspector, Project Browser, Console, Animation, Shader Editor, Profiler, and Build Settings panels
 - **C# Scripting** — Runtime compilation via Roslyn with hot-reload, `[Persist]` attribute for automatic serialization, and `[Require]` for component dependencies
+- **Visual Blueprints** — Node graphs (`.blueprint`) on the **Visual Blueprint** component: events, branching, delays, variables, scene actions, reflection get/set, and `BlueprintMessageEvent` for C# subscribers ([docs](Game-Engine/Docs/14_Visual_Blueprints.md))
 - **Editor Extensions** — Plugin system for custom menus, commands, custom inspectors, and the UIX declarative UI framework (21 widget types)
 - **Undo/Redo** — Full command-pattern undo/redo system across all editor operations
 - **Play Mode** — Scene snapshot and restore, ensuring runtime changes don't persist after stopping

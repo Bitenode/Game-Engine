@@ -1,0 +1,101 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Game_Engine.Views.BlueprintGraphPanel">
+  <UserControl.Styles>
+    <Style Selector="Button.accent">
+      <Setter Property="Background" Value="#2D6ABF"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="BorderBrush" Value="#4A8CFF"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="4"/>
+    </Style>
+    <Style Selector="Button.accent:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#3A82E8"/>
+      <Setter Property="Foreground" Value="White"/>
+    </Style>
+  </UserControl.Styles>
+  <DockPanel>
+    <Border DockPanel.Dock="Top" Background="#22252A" BorderBrush="#3A3E48" BorderThickness="0,0,0,1">
+      <Menu Background="Transparent" Foreground="#E0E4EA" FontSize="12">
+        <MenuItem Header="_File">
+          <MenuItem x:Name="MiNew" Header="_New blueprint"/>
+          <MenuItem x:Name="MiOpen" Header="_Open…"/>
+          <Separator/>
+          <MenuItem x:Name="MiSave" Header="_Save"/>
+          <MenuItem x:Name="MiSaveAs" Header="Save _As…"/>
+        </MenuItem>
+        <MenuItem Header="_Edit">
+          <MenuItem x:Name="MiClear" Header="_Clear graph"/>
+          <MenuItem x:Name="MiDuplicate" Header="_Duplicate selection"/>
+          <MenuItem x:Name="MiDeleteNode" Header="_Delete selection"/>
+        </MenuItem>
+        <MenuItem x:Name="MiInsertRoot" Header="_Insert"/>
+      </Menu>
+    </Border>
+
+    <Border DockPanel.Dock="Top" Background="#26282B" Padding="8,6" BorderBrush="#3A3E48" BorderThickness="0,0,0,1">
+      <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*">
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Blueprint:" Foreground="#99AABB" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,4"/>
+        <TextBlock x:Name="TxtDocumentPath" Grid.Row="0" Grid.Column="1" Text="(no file — use File → New or Open)"
+                   Foreground="#E0E4EA" FontSize="11" VerticalAlignment="Center" Margin="0,0,0,4" TextTrimming="CharacterEllipsis"/>
+        <TextBlock x:Name="TxtStatus" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                   Foreground="#88AA99" FontSize="10" TextWrapping="Wrap"/>
+      </Grid>
+    </Border>
+
+    <Border DockPanel.Dock="Top" Background="#26282B" Padding="8,6">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="Node" FontSize="11" Foreground="#99AABB" VerticalAlignment="Center"/>
+        <ComboBox x:Name="NodeKindCombo" Width="168" SelectedIndex="0"/>
+        <Button x:Name="BtnAddNode" Classes="accent" Content="Add node" Padding="10,4" FontSize="11"/>
+        <Border Width="1" Height="20" Background="#3A3E48" VerticalAlignment="Center"/>
+        <TextBlock FontSize="10" Foreground="#8899AA" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="620">
+          <Run Text="Ctrl+wheel zoom; middle‑drag pan; Ctrl+0 reset. Ctrl+click multi‑select. "/>
+          <Run FontWeight="Bold" Text="Exec"/>
+          <Run Text=" flow: drag from right pin to left. Attach graph with Scripting → Visual Blueprint on a GameObject."/>
+        </TextBlock>
+      </StackPanel>
+    </Border>
+
+    <Grid ColumnDefinitions="220,200,*" Margin="8">
+      <Border Grid.Column="0" Background="#1E1F22" CornerRadius="4" Padding="6" Margin="0,0,8,0">
+        <Grid RowDefinitions="Auto,*,Auto">
+          <TextBlock Grid.Row="0" Text="Nodes" FontWeight="SemiBold" Foreground="#99AABB" FontSize="11" Margin="0,0,0,6"/>
+          <ListBox x:Name="NodeList" Grid.Row="1" Background="Transparent" Foreground="#E0E4EA" FontSize="11"/>
+          <Border Grid.Row="2" Margin="0,8,0,0" Padding="0,8,0,0" BorderBrush="#3A3E48" BorderThickness="0,1,0,0">
+            <ScrollViewer MaxHeight="140">
+              <TextBlock x:Name="TxtSummary" TextWrapping="Wrap" Foreground="#8899AA" FontSize="10" LineHeight="15"/>
+            </ScrollViewer>
+          </Border>
+        </Grid>
+      </Border>
+
+      <Border Grid.Column="1" Background="#1E1F22" CornerRadius="4" Padding="8" Margin="0,0,8,0" BorderBrush="#2A2E38" BorderThickness="1">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="6">
+            <TextBlock Text="Selection" FontWeight="SemiBold" Foreground="#99AABB" FontSize="11"/>
+            <TextBlock Text="Title" Foreground="#778899" FontSize="10"/>
+            <TextBox x:Name="TxtPropTitle" FontSize="11" Watermark="Node title" IsEnabled="False"/>
+            <TextBlock Text="Kind" Foreground="#778899" FontSize="10"/>
+            <TextBlock x:Name="TblPropKind" Foreground="#E0E4EA" FontSize="11" Text="—"/>
+            <TextBlock Text="Id" Foreground="#778899" FontSize="10"/>
+            <TextBlock x:Name="TblPropId" Foreground="#8899AA" FontSize="10" TextWrapping="Wrap" Text="—"/>
+            <TextBlock x:Name="TblPropDesc" Foreground="#668899" FontSize="10" TextWrapping="Wrap" Text=""/>
+            <TextBlock x:Name="TblPropWires" Foreground="#8899AA" FontSize="10" TextWrapping="Wrap" Text=""/>
+            <StackPanel x:Name="PropExtrasHost" Spacing="4"/>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+
+      <Border Grid.Column="2" Background="#121418" CornerRadius="4" ClipToBounds="True" BorderBrush="#2A2E38" BorderThickness="1">
+        <Border x:Name="GraphViewport"
+                Background="#15161A"
+                ClipToBounds="True"
+                MinHeight="320"
+                Focusable="True">
+          <Canvas x:Name="GraphCanvas" Width="3200" Height="2400" Background="#15161A"/>
+        </Border>
+      </Border>
+    </Grid>
+  </DockPanel>
+</UserControl>

@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -7,6 +7,8 @@ using Game_Engine.Core;
 using Game_Engine.Core.Input;
 using System;
 using System.Collections.Generic;
+using System.IO;
+using Avalonia.Threading;
 using System.Linq;
 using static Game_Engine.Core.Input.Input;
 
@@ -27,6 +29,9 @@ namespace Game_Engine.Views
         public InputRemappingWindow()
         {
             InitializeComponent();
+
+            if (ProjectService.Current != null)
+                Input.TryLoadBindingsFromProject();
 
             _defaultMouseSensitivity = Input.MouseSensitivity;
 
@@ -302,10 +307,21 @@ namespace Game_Engine.Views
 
         private void OnSaveClicked(object sender, RoutedEventArgs e)
         {
-            var savedPath = Input.SaveBindingsToProject();
+            if (ProjectService.Current == null)
+            {
+                Title = "Input Remapping — open a project to save";
+                return;
+            }
+            Input.SaveBindingsToProject();
             ProjectService.TouchModified();
-            Title = "Input Remapping — saved ✓";
-            // brief visual feedback; we keep it simple (title text).
+            Title = "Input Remapping — saved";
+            var restore = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.2) };
+            restore.Tick += (_, __) =>
+            {
+                restore.Stop();
+                UpdateTitleWithPath();
+            };
+            restore.Start();
         }
 
         private void OnAddActionClicked(object sender, RoutedEventArgs e)
@@ -339,8 +355,25 @@ namespace Game_Engine.Views
 
         private void UpdateTitleWithPath()
         {
+            var root = ProjectService.Current?.RootPath;
             var p = Input.GetBindingsPathForCurrentProject();
-            Title = (p != null) ? $"Input Remapping — {p}" : "Input Remapping";
+            if (p != null && root != null)
+            {
+                try
+                {
+                    var rel = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(p))
+                        .Replace('\\', '/');
+                    Title = $"Input Remapping — {rel}";
+                }
+                catch
+                {
+                    Title = $"Input Remapping — {p}";
+                }
+            }
+            else if (ProjectService.Current == null)
+                Title = "Input Remapping (no project — open one to persist)";
+            else
+                Title = "Input Remapping";
         }
     }
 }

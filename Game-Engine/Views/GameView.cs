@@ -353,6 +353,14 @@ namespace Game_Engine.Views
             foreach (var c in go.Children) WalkTreeLOD(c, cam);
         }
 
+        static void WalkMeshLodGroup(GameObject go, SN.Vector3 cam)
+        {
+            if (!go.Enabled) return;
+            foreach (var b in go.Behaviors)
+                if (b is MeshLodGroup mg && mg.Enabled) mg.UpdateLOD(cam);
+            foreach (var c in go.Children) WalkMeshLodGroup(c, cam);
+        }
+
         static void WalkTerrainLOD(GameObject go, SN.Vector3 cam)
         {
             if (!go.Enabled) return;
@@ -657,6 +665,7 @@ namespace Game_Engine.Views
 
                 foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
                 foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
+                foreach (var root in SceneService.Root) WalkMeshLodGroup(root, camPos);
                 foreach (var planet in PlanetTerrain.ActivePlanets)
                 {
                     if (planet?.Config != null && planet.Config.MaxLodDepth > PLAYMODE_MAX_PLANET_LOD_DEPTH)

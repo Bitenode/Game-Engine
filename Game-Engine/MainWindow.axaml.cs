@@ -57,6 +57,7 @@ public partial class MainWindow : Window
             [typeof(ProfilerPanel)] = ("Profiler", DockRegion.Bottom, () => new ProfilerPanel()),
             [typeof(ShaderEditorPanel)] = ("Shader Editor", DockRegion.Center, () => new ShaderEditorPanel()),
             [typeof(BiomeGraphPanel)] = ("Biome Graph", DockRegion.Center, () => new BiomeGraphPanel()),
+            [typeof(BlueprintGraphPanel)] = ("Blueprint", DockRegion.Center, () => new BlueprintGraphPanel()),
         };
 
         // Defaults
@@ -100,6 +101,7 @@ public partial class MainWindow : Window
         BindNew("NewProfilerTab", typeof(ProfilerPanel), DockRegion.Bottom);
         BindNew("NewShaderEditorTab", typeof(ShaderEditorPanel), DockRegion.Center);
         BindNew("NewBiomeGraphTab", typeof(BiomeGraphPanel), DockRegion.Center);
+        BindNew("NewBlueprintTab", typeof(BlueprintGraphPanel), DockRegion.Center);
 
         if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
             settings.Click += (_, __) => InputRemappingAsync();
@@ -232,6 +234,7 @@ public partial class MainWindow : Window
         CommandRegistry.Register("editor.tab.profiler", "Window: New Profiler Tab", () => AddPanel(typeof(ProfilerPanel)));
         CommandRegistry.Register("editor.tab.shader", "Window: New Shader Editor Tab", () => AddPanel(typeof(ShaderEditorPanel)));
         CommandRegistry.Register("editor.tab.biome", "Window: New Biome Graph Tab", () => AddPanel(typeof(BiomeGraphPanel)));
+        CommandRegistry.Register("editor.tab.blueprint", "Window: New Blueprint Tab", () => AddPanel(typeof(BlueprintGraphPanel)));
 
         CommandRegistry.Register("editor.layout.reset", "Window: Reset Layout", () => ResetLayout());
 

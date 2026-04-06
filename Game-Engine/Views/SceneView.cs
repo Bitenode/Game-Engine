@@ -998,6 +998,19 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
     }
 
+    // ────────────── Mesh LOD Group (static meshes) ──────────────
+    void UpdateMeshLodGroups(SN.Vector3 camPos)
+    {
+        foreach (var root in SceneService.Root) WalkMeshLod(root, camPos);
+        static void WalkMeshLod(GameObject go, SN.Vector3 cam)
+        {
+            if (!go.Enabled) return;
+            foreach (var b in go.Behaviors)
+                if (b is MeshLodGroup mg && mg.Enabled) mg.UpdateLOD(cam);
+            foreach (var c in go.Children) WalkMeshLod(c, cam);
+        }
+    }
+
     // ────────────── Planet LOD Update ──────────────
     static void UpdatePlanetLOD(SN.Vector3 camPos)
     {
@@ -1664,6 +1677,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             UpdateTerrainLOD(camPos);
             // Update tree LOD per frame
             UpdateTreeLOD(camPos);
+            UpdateMeshLodGroups(camPos);
             // Update planet LOD per frame
             UpdatePlanetLOD(camPos);
 

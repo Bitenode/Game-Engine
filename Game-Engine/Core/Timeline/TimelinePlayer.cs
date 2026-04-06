@@ -23,7 +23,7 @@ namespace Game_Engine.Core.Timeline
     public sealed class TimelinePlayer : Behavior
     {
         /// <summary>The timeline to play.</summary>
-        public TimelineAsset? Timeline { get; set; }
+        [Persist] public TimelineAsset? Timeline { get; set; }
 
         [Persist] public bool PlayOnAwake { get; set; } = false;
         [Persist] public float Speed { get; set; } = 1f;
@@ -224,6 +224,11 @@ namespace Game_Engine.Core.Timeline
             {
                 var target = FindGameObject(clip.TargetName);
                 if (target == null) continue;
+
+                if (!_originalActivation.ContainsKey(clip.TargetName))
+                    _originalActivation[clip.TargetName] = target.Enabled;
+
+                // Cut-style: only the active clip window enables the camera rig; others stay off.
                 target.Enabled = clip.Contains(time);
             }
         }

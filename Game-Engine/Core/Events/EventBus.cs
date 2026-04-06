@@ -144,4 +144,12 @@ namespace Game_Engine.Core.Events
     {
         public GameObject Object { get; set; }
     }
+
+    /// <summary>String-named signal from visual blueprints (Fire Event node) — subscribe via <see cref="EventBus.Subscribe{T}(Action{T})"/>.</summary>
+    public struct BlueprintMessageEvent
+    {
+        public string Name { get; set; }
+        public string? Data { get; set; }
+        public GameObject? Sender { get; set; }
+    }
 }
