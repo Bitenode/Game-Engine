@@ -8,7 +8,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 
 ### Core Engine
 - **Component-Based Architecture** — GameObject/Behavior system with 34+ built-in component types and lifecycle methods (Awake, Start, Update, FixedUpdate, LateUpdate, OnDestroy)
-- **Visual Editor** — Dockable panel layout with Hierarchy, Scene View, Game View, Inspector, Project Browser, Console, Animation, Shader Editor, Profiler, and Build Settings panels
+- **Visual Editor** — Dockable panel layout with Hierarchy, Scene View, Game View, Inspector, Project Browser, Console, Animation, Shader Editor, Blueprint graph editor, Profiler, and Build Settings panels
 - **C# Scripting** — Runtime compilation via Roslyn with hot-reload, `[Persist]` attribute for automatic serialization, and `[Require]` for component dependencies
 - **Visual Blueprints** — Node graphs (`.blueprint`) on the **Visual Blueprint** component: events, branching, delays, variables, scene actions, reflection get/set, and `BlueprintMessageEvent` for C# subscribers ([docs](Game-Engine/Docs/14_Visual_Blueprints.md))
 - **Editor Extensions** — Plugin system for custom menus, commands, custom inspectors, and the UIX declarative UI framework (21 widget types)
@@ -75,7 +75,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 2. **Open** `Game-Engine/Game_Engine.sln` in Visual Studio 2022+ or Rider
 3. **Build & Run** — the editor window will appear with a default scene (Skybox, Camera, Light, Cube)
 4. **Create a Project** — File > New Project to set up a project folder
-5. **Start Building** — Right-click in the Hierarchy to add objects, sculpt terrain, write scripts, and more
+5. **Start Building** — Right-click in the Hierarchy to add objects, sculpt terrain, write C# scripts, author **visual blueprints** (**Window → New Blueprint Tab**), and more
 
 ---
 
@@ -88,7 +88,7 @@ Github Engine/
 │   ├── Views/            # Editor UI panels (Scene View, Inspector, Shader Editor, Profiler, etc.)
 │   ├── Docking/          # Dockable panel system
 │   ├── Standard Assets/  # Built-in shaders, skyboxes, code examples
-│   └── Docs/             # Comprehensive documentation (13 guides)
+│   └── Docs/             # Comprehensive documentation (14 guides)
 │
 ├── Engine.Player/        # Standalone game player (multi-platform)
 │   └── (Loads pre-compiled games without the editor)
@@ -105,7 +105,7 @@ Comprehensive documentation is available in the `Game-Engine/Docs/` folder:
 | Document | Topic |
 |----------|-------|
 | [01 — Engine Overview](Game-Engine/Docs/01_Engine_Overview.md) | Architecture, tech stack, core concepts, services, data flow |
-| [02 — Editor Guide](Game-Engine/Docs/02_Editor_Guide.md) | Editor panels, Scene View, Game View, Inspector, Shader Editor, Profiler, Build Settings |
+| [02 — Editor Guide](Game-Engine/Docs/02_Editor_Guide.md) | Editor panels, Scene View, Game View, Inspector, Shader Editor, Blueprint panel, Profiler, Build Settings |
 | [03 — Components Reference](Game-Engine/Docs/03_Components_Reference.md) | 34+ built-in components with properties, defaults, and usage |
 | [04 — Rendering Pipeline](Game-Engine/Docs/04_Rendering_Pipeline.md) | Render passes, shaders, shader graph, GPU resources, post-processing, particles, water |
 | [05 — Terrain System](Game-Engine/Docs/05_Terrain_System.md) | Terrain creation, 10 brush tools, splatmap painting, tree painting, chunking, LOD |
@@ -117,6 +117,7 @@ Comprehensive documentation is available in the `Game-Engine/Docs/` folder:
 | [11 — UIX Framework](Game-Engine/Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
 | [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, project configuration, dependencies, Engine.Player, publishing, ANGLE/OpenGL setup |
 | [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | PlanetTerrain, biome graph workflow, chunk streaming, and planet-aware Rigidbody/Camera behavior |
+| [14 — Visual Blueprints](Game-Engine/Docs/14_Visual_Blueprints.md) | Visual behavior graphs (`.blueprint`), Visual Blueprint component, nodes, reflection, EventBus integration |
 
 ---
 

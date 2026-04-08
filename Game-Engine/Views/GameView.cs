@@ -11,6 +11,7 @@ using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
 using Game_Engine.Core.Physics;
+using Game_Engine.Core.Rendering;
 using Game_Engine.Core.Rendering.GPU;
 using Silk.NET.OpenGL;
 using System;
@@ -75,13 +76,19 @@ namespace Game_Engine.Views
         private ShaderProgram? _ssaoBlurShader;
         private ShaderProgram? _ssrShader;
         private ShaderProgram? _volFogShader;
+        private ShaderProgram? _taaResolveShader;
         private GPUFramebuffer? _gbufferFBO;
         private GPUFramebuffer? _ssaoFBO;
         private GPUFramebuffer? _ssaoBlurFBO;
         private GPUFramebuffer? _ssrFBO;
         private GPUFramebuffer? _volFogFBO;
+        private GPUFramebuffer? _taaHistoryFbo;
+        private GPUFramebuffer? _taaTempFbo;
         private int _gbufferW, _gbufferH;
-        private SN.Vector3[]? _ssaoKernel;
+        private SN.Matrix4x4 _prevViewProj = SN.Matrix4x4.Identity;
+        private bool _taaResetHistory = true;
+        private int _taaFrameCounter;
+        private TiledLightTextureSystem? _tiledLights;
         #endregion
 
         #region Clocks & State
@@ -288,12 +295,14 @@ namespace Game_Engine.Views
                 _volFogShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.VolumetricFogVert, es),
                     ShaderSources.Adapt(ShaderSources.VolumetricFogFrag, es));
-
-                // Generate SSAO hemisphere kernel (biased toward the surface)
-                _ssaoKernel = GenerateSSAOKernel(32);
+                _taaResolveShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
+                    ShaderSources.Adapt(ShaderSources.TaaResolveFrag, es));
 
                 _fsQuad = new FullscreenQuad(g);
                 _cache = new ResourceCache(g);
+                GpuCompressionCaps.Initialize(g);
+                _tiledLights = new TiledLightTextureSystem(g);
                 _shadow = new ShadowMapGPU(g, 768, 768);
 
                 _canvasRenderer = new Core.Rendering.UI.CanvasRenderer(g, es);
@@ -317,6 +326,10 @@ namespace Game_Engine.Views
             _ssaoBlurFBO?.Dispose(); _ssaoBlurFBO = null;
             _ssrFBO?.Dispose(); _ssrFBO = null;
             _volFogFBO?.Dispose(); _volFogFBO = null;
+            _taaHistoryFbo?.Dispose(); _taaHistoryFbo = null;
+            _taaTempFbo?.Dispose(); _taaTempFbo = null;
+            _tiledLights?.Dispose(); _tiledLights = null;
+            _taaResolveShader?.Dispose(); _taaResolveShader = null;
             _ssrShader?.Dispose(); _ssrShader = null;
             _volFogShader?.Dispose(); _volFogShader = null;
             _ssaoBlurShader?.Dispose(); _ssaoBlurShader = null;
@@ -679,6 +692,129 @@ namespace Game_Engine.Views
             var sunSD = fallbackPlanetSunDir;
             bool isES = _glCtx.IsES;
 
+            bool useDeferred = ProjectRenderingSettings.UseDeferredRendering;
+            bool useTaa = postVolume?.TAAEnabled == true && useDeferred;
+            if (useTaa)
+            {
+                _taaFrameCounter++;
+                int fi = (_taaFrameCounter % 16) + 1;
+                float jx = (TaaHalton(fi, 2) - 0.5f) * 2f / Math.Max(1, W);
+                float jy = (TaaHalton(fi, 3) - 0.5f) * 2f / Math.Max(1, H);
+                proj.M13 += jx;
+                proj.M23 += jy;
+            }
+            SN.Matrix4x4.Invert(view * proj, out var invVpCurr);
+            SN.Matrix4x4 prevVp = _taaResetHistory ? (view * proj) : _prevViewProj;
+
+            GPUTexture? finalSceneTex = null;
+            double planetRenderMs = 0;
+
+            if (!useDeferred)
+            {
+                _taaResetHistory = true;
+                if (usePostFX && _postProcessShader != null)
+                {
+                    if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
+                    if (_sceneFBO_W != W || _sceneFBO_H != H)
+                    {
+                        _sceneFBO.SetupColorDepth(W, H);
+                        _sceneFBO_W = W; _sceneFBO_H = H;
+                    }
+                    _sceneFBO.Bind();
+                    g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+                    g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+                    Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
+                        skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
+                }
+
+                var planetRenderSwF = Stopwatch.StartNew();
+                SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache!,
+                    view, proj,
+                    SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                    lightIsPoint, lightPosW, lightRange,
+                    shadowFBO, shadowVP, camPos, sunSD,
+                    terrainShader: _terrainShader, isES: isES,
+                    lightColor: lightColorNorm);
+
+                if (_planetTerrainShader != null)
+                {
+                    foreach (var planet in PlanetTerrain.ActivePlanets)
+                    {
+                        if (planet?.Config == null) continue;
+                        var tp = planet.gameObject?.Transform?.Position;
+                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                        SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache!,
+                            view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                            pc, shadowFBO, shadowVP);
+                    }
+                }
+                if (_waterShader != null)
+                {
+                    var skyC = _sky != null
+                        ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
+                        : new SN.Vector3(0.5f, 0.6f, 0.8f);
+                    SceneRenderer.RenderWater(g, _waterShader, _cache!, view, proj,
+                        SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
+                }
+                if (_planetWaterShader != null)
+                {
+                    foreach (var planet in PlanetTerrain.ActivePlanets)
+                    {
+                        if (planet?.Config == null) continue;
+                        var tp = planet.gameObject?.Transform?.Position;
+                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                        SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache!,
+                            view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                            pc, planet.Config.SeaLevel);
+                    }
+                }
+                if (_planetAtmosphereShader != null)
+                {
+                    foreach (var planet in PlanetTerrain.ActivePlanets)
+                    {
+                        if (planet?.Config == null) continue;
+                        var tp = planet.gameObject?.Transform?.Position;
+                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                        SceneRenderer.RenderPlanetAtmosphere(g, _planetAtmosphereShader, _cache!,
+                            view, proj, planet, atmo, camPos, pc);
+                    }
+                }
+                if (_planetCloudShader != null)
+                {
+                    foreach (var planet in PlanetTerrain.ActivePlanets)
+                    {
+                        if (planet?.Config == null) continue;
+                        var tp = planet.gameObject?.Transform?.Position;
+                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                        SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache!,
+                            view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
+                    }
+                }
+                planetRenderSwF.Stop();
+                planetRenderMs = planetRenderSwF.Elapsed.TotalMilliseconds;
+
+                if (_particleShader != null)
+                    SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
+                if (_canvasRenderer != null && _cache != null)
+                {
+                    var viewProj = view * proj;
+                    foreach (var wc in Core.Component.UI.Canvas.All)
+                    {
+                        if (wc.IsActiveAndEnabled && wc.RenderMode == Core.Component.UI.CanvasRenderMode.WorldSpace)
+                            _canvasRenderer.RenderWorldCanvas(wc, in viewProj, _cache);
+                    }
+                }
+
+                finalSceneTex = usePostFX ? _sceneFBO?.ColorTexture : null;
+                _prevViewProj = view * proj;
+            }
+            else
+            {
+
             // ═══════════ DEFERRED RENDERING PIPELINE ═══════════
 
             // 1. G-BUFFER PASS — draw opaque standard geometry to MRT
@@ -698,7 +834,7 @@ namespace Game_Engine.Views
 
             // 2. SSAO PASS — screen-space ambient occlusion (half resolution)
             GPUTexture? ssaoResult = null;
-            if (useSSAO && _ssaoShader != null && _ssaoBlurShader != null && _ssaoKernel != null)
+            if (useSSAO && _ssaoShader != null && _ssaoBlurShader != null)
             {
                 int ssaoW = Math.Max(1, W / 2);
                 int ssaoH = Math.Max(1, H / 2);
@@ -717,16 +853,19 @@ namespace Game_Engine.Views
                 g.Clear(ClearBufferMask.ColorBufferBit);
 
                 float ssaoRadius = postVolume != null ? Math.Clamp(postVolume.SSAORadius, 0.05f, 3f) : 0.5f;
-                float ssaoBias = 0.025f / Math.Max(0.1f, postVolume?.SSAOIntensity ?? 1f);
+                float ssaoBias = postVolume != null ? Math.Clamp(postVolume.SSAOBias, 0.0001f, 0.2f) : 0.025f;
+                int ssaoSamples = postVolume != null ? Math.Clamp(postVolume.SSAOSamples, 4, 32) : 24;
+                float depthSig = postVolume != null ? Math.Clamp(postVolume.SSAODepthSigma, 1f, 500f) : 80f;
                 SceneRenderer.RenderSSAO(g, _ssaoShader, _fsQuad!, _gbufferFBO,
-                    view, proj, _ssaoKernel, W, H, ssaoRadius, ssaoBias);
+                    view, proj, W, H, ssaoRadius, ssaoBias, ssaoSamples);
 
                 // Blur SSAO
                 _ssaoBlurFBO.Bind();
                 g.ClearColor(1f, 1f, 1f, 1f);
                 g.Clear(ClearBufferMask.ColorBufferBit);
 
-                SceneRenderer.RenderSSAOBlur(g, _ssaoBlurShader, _fsQuad!, _ssaoFBO.ColorTexture!, ssaoW, ssaoH);
+                SceneRenderer.RenderSSAOBlur(g, _ssaoBlurShader, _fsQuad!, _ssaoFBO.ColorTexture!, _gbufferFBO,
+                    ssaoW, ssaoH, depthSig);
 
                 ssaoResult = _ssaoBlurFBO.ColorTexture;
             }
@@ -749,10 +888,16 @@ namespace Game_Engine.Views
 
             // 5. DEFERRED LIGHTING — fullscreen PBR lighting from G-buffer
             g.BindVertexArray(_fsQuad!.VAO);
+            float ssaoIntensity = postVolume != null ? postVolume.SSAOIntensity : 1f;
+            foreach (var rp in ReflectionProbe.ActiveProbes)
+                rp.EnsureGpuResources(g);
+            var probePick = ReflectionProbe.GetBestForPosition(camPos);
             SceneRenderer.RenderDeferredLighting(g, _deferredLightShader!, _fsQuad!,
                 _gbufferFBO, ssaoResult, shadowFBO,
                 view, proj, camPos, shadowVP, sunSD,
-                Ambient, 0.008f);
+                Ambient, 0.008f, ssaoIntensity,
+                _tiledLights, W, H,
+                probePick?.GpuCubemap, probePick?.Intensity ?? 0f);
             g.BindVertexArray(0);
 
             // 6. BLIT G-BUFFER DEPTH to scene FBO for correct forward overlay depth testing
@@ -840,7 +985,7 @@ namespace Game_Engine.Views
                 }
             }
             planetRenderSw.Stop();
-            double planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;
+            planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;
 
             // 9. PARTICLES
             if (_particleShader != null)
@@ -858,7 +1003,7 @@ namespace Game_Engine.Views
             }
 
             // 10. SSR — screen-space reflections (reads lit scene + G-buffer)
-            GPUTexture? finalSceneTex = _sceneFBO.ColorTexture;
+            finalSceneTex = _sceneFBO.ColorTexture;
             if (useSSR && _ssrShader != null && _sceneFBO.ColorTexture != null)
             {
                 if (_ssrFBO == null) _ssrFBO = new GPUFramebuffer(g);
@@ -871,7 +1016,10 @@ namespace Game_Engine.Views
 
                 g.BindVertexArray(_fsQuad!.VAO);
                 SceneRenderer.RenderSSR(g, _ssrShader, _fsQuad!, _sceneFBO.ColorTexture, _gbufferFBO,
-                    view, proj, camPos, W, H);
+                    view, proj, camPos, W, H,
+                    postVolume?.SSRMaxRaySteps ?? 64,
+                    postVolume?.SSRRoughnessCutoff ?? 0.6f,
+                    postVolume?.SSRMaxRayDistance ?? 50f);
                 g.BindVertexArray(0);
 
                 finalSceneTex = _ssrFBO.ColorTexture;
@@ -900,6 +1048,42 @@ namespace Game_Engine.Views
 
                 finalSceneTex = _volFogFBO.ColorTexture;
             }
+
+            // 10c. TAA — temporal resolve (camera motion via depth reprojection)
+            if (useTaa && _taaResolveShader != null && finalSceneTex != null && _gbufferFBO?.DepthTexture != null)
+            {
+                if (_taaHistoryFbo == null) _taaHistoryFbo = new GPUFramebuffer(g);
+                if (_taaHistoryFbo.Width != W || _taaHistoryFbo.Height != H)
+                    _taaHistoryFbo.SetupColorDepth(W, H);
+                if (_taaTempFbo == null) _taaTempFbo = new GPUFramebuffer(g);
+                if (_taaTempFbo.Width != W || _taaTempFbo.Height != H)
+                    _taaTempFbo.SetupColorDepth(W, H);
+
+                _taaTempFbo.Bind();
+                g.Viewport(0, 0, (uint)W, (uint)H);
+                g.Clear(ClearBufferMask.ColorBufferBit);
+                g.BindVertexArray(_fsQuad!.VAO);
+                SceneRenderer.RenderTemporalAA(g, _taaResolveShader, _fsQuad!, finalSceneTex,
+                    _taaHistoryFbo.ColorTexture, _gbufferFBO, invVpCurr, prevVp, W, H,
+                    postVolume?.TAAFrameBlend ?? 0.12f,
+                    postVolume?.TAASharpen ?? 0.35f,
+                    _taaResetHistory);
+                g.BindVertexArray(0);
+
+                g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _taaTempFbo.Handle);
+                g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _taaHistoryFbo.Handle);
+                g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
+                    ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
+
+                finalSceneTex = _taaTempFbo.ColorTexture;
+                _taaResetHistory = false;
+            }
+            else if (!useTaa)
+                _taaResetHistory = true;
+
+            _prevViewProj = view * proj;
+
+            } // end deferred branch
 
             // 11. POST-PROCESSING → Avalonia framebuffer
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
@@ -1015,32 +1199,17 @@ namespace Game_Engine.Views
         static void Ema(ref double acc, double sample, double a)
         { acc = acc <= 0 ? sample : (1 - a) * acc + a * sample; }
 
-        /// <summary>
-        /// Generate SSAO hemisphere kernel samples, biased toward the surface center.
-        /// Points are in tangent space with +Z as the surface normal.
-        /// </summary>
-        static SN.Vector3[] GenerateSSAOKernel(int size)
+        static float TaaHalton(int index, int b)
         {
-            var rng = new Random(42); // deterministic for reproducibility
-            var kernel = new SN.Vector3[size];
-            for (int i = 0; i < size; i++)
+            float f = 1f, r = 0f;
+            int i = index;
+            while (i > 0)
             {
-                // Random point in hemisphere
-                float x = (float)(rng.NextDouble() * 2.0 - 1.0);
-                float y = (float)(rng.NextDouble() * 2.0 - 1.0);
-                float z = (float)rng.NextDouble(); // hemisphere: z >= 0
-
-                var sample = SN.Vector3.Normalize(new SN.Vector3(x, y, z));
-                sample *= (float)rng.NextDouble();
-
-                // Bias toward center: more samples near the origin
-                float scale = (float)i / size;
-                scale = 0.1f + scale * scale * 0.9f; // lerp(0.1, 1.0, scale^2)
-                sample *= scale;
-
-                kernel[i] = sample;
+                f /= b;
+                r += f * (i % b);
+                i /= b;
             }
-            return kernel;
+            return r;
         }
 
         void UpdateFps(double dt)

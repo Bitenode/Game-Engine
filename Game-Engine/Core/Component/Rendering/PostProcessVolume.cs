@@ -23,11 +23,24 @@ namespace Game_Engine.Core.Component
         // ── SSAO ──
         [Persist] public bool SSAOEnabled { get; set; } = false;
         [Persist] public float SSAORadius { get; set; } = 0.5f;
+        /// <summary>How strongly SSAO darkens ambient (0 = off, 1 = full).</summary>
         [Persist] public float SSAOIntensity { get; set; } = 1f;
-        [Persist] public int SSAOSamples { get; set; } = 16;
+        [Persist] public float SSAOBias { get; set; } = 0.025f;
+        [Persist] public int SSAOSamples { get; set; } = 24;
+        /// <summary>Bilateral blur edge sharpness vs depth (higher = sharper depth edges).</summary>
+        [Persist] public float SSAODepthSigma { get; set; } = 80f;
 
         // ── SSR ──
         [Persist] public bool SSREnabled { get; set; } = false;
+        [Persist] public int SSRMaxRaySteps { get; set; } = 64;
+        [Persist] public float SSRRoughnessCutoff { get; set; } = 0.6f;
+        [Persist] public float SSRMaxRayDistance { get; set; } = 50f;
+
+        // ── TAA ──
+        [Persist] public bool TAAEnabled { get; set; } = false;
+        /// <summary>Weight for current frame (0.1 ≈ 10% new, 90% history).</summary>
+        [Persist] public float TAAFrameBlend { get; set; } = 0.12f;
+        [Persist] public float TAASharpen { get; set; } = 0.35f;
 
         // ── Fog ──
         [Persist] public bool FogEnabled { get; set; } = false;

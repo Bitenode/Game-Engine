@@ -371,18 +371,28 @@ namespace Game_Engine.Core.Component
                     _currentTriggers.Add(trigger);
             }
 
-            // Fire events
+            var listenerCol = _capsule ?? GetComponent<Collider>();
+
             foreach (var t in _currentTriggers)
             {
                 if (_previousTriggers.Contains(t))
+                {
                     OnTriggerStay?.Invoke(t);
+                    TriggerDispatcher.DispatchStay(listenerCol, t);
+                }
                 else
+                {
                     OnTriggerEnter?.Invoke(t);
+                    TriggerDispatcher.DispatchEnter(listenerCol, t);
+                }
             }
             foreach (var t in _previousTriggers)
             {
                 if (!_currentTriggers.Contains(t))
+                {
                     OnTriggerExit?.Invoke(t);
+                    TriggerDispatcher.DispatchExit(listenerCol, t);
+                }
             }
             _previousTriggers.Clear();
             foreach (var t in _currentTriggers) _previousTriggers.Add(t);

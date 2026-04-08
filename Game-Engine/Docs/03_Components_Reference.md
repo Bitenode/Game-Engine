@@ -4,7 +4,7 @@ Every component inherits from `Behavior` and attaches to a `GameObject`. Propert
 
 A component's `IsActiveAndEnabled` property is `true` only when both its own `Enabled` flag and the owning GameObject's `IsActiveInHierarchy` are `true`. All engine systems (game loop, rendering, physics queries, scene queries) use `IsActiveAndEnabled` to skip components on disabled GameObjects. Disabling a GameObject effectively silences all its components without changing their individual `Enabled` flags.
 
-The engine includes **34+ built-in component types** organized by category below.
+The engine includes **36+ built-in component types** organized by category below.
 
 ### Component Categories
 
@@ -12,8 +12,8 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 
 | Category | Components | Directory |
 |----------|-----------|-----------|
-| **Rendering** | Camera, Light, MeshFilter, MeshRenderer, SkinnedMeshRenderer | `Core/Component/Rendering/` |
-| **Physics** | Collider, BoxCollider, CapsuleCollider, MeshCollider, PlanetCollider, CharacterController, PlayerMovement, Rigidbody, RigidbodyPlayer | `Core/Component/Physics/` |
+| **Rendering** | Camera, Light, MeshFilter, MeshRenderer, MeshLodGroup, ReflectionProbe, SkinnedMeshRenderer | `Core/Component/Rendering/` (MeshLodGroup lives in `Core/Component/`) |
+| **Physics** | Collider, BoxCollider, CapsuleCollider, MeshCollider, PlanetCollider, CharacterController, PlayerMovement, Rigidbody, RigidbodyPlayer, TriggerVolume | `Core/Component/Physics/` |
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
@@ -45,6 +45,12 @@ Custom script components compiled from `Assets/` or `Packages/` appear in a sepa
 - Each `Vector3` sub-property (X, Y, Z) fires individual change notifications for fine-grained UI binding
 - The `Enabled` property always returns `true` and the setter is ignored
 - Children inherit parent transforms for hierarchical positioning
+
+---
+
+## GameObject identity
+
+Each scene object has a **`Name`**, **`Enabled`** flag, **`Tag`** (string, default `Untagged`), and **`Layer`** (integer **0–31**). `Tag` and `Layer` are serialized in `.scene` JSON when not at their defaults and appear under the Inspector **Object** section. They are used by **`TriggerVolume`** filtering and are intended for gameplay / physics queries.
 
 ---
 
@@ -165,6 +171,21 @@ GPU-accelerated bone skinning for skeletal animation. Replaces `MeshRenderer` fo
 
 ---
 
+## ReflectionProbe
+
+Box-style reflection probe: a **runtime RGBA8 cubemap** allocated on the GPU and filled by the engine’s reflection capture. Used for specular IBL in deferred lighting (see `GameView` / renderer integration).
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Resolution` | `int` | `128` | Cubemap face size (clamped 16–512, power-of-two recommended) |
+| `Intensity` | `float` | `0.35` | Specular IBL weight |
+| `Mode` | `ProbeRefreshMode` | `Baked` | `Baked` (capture when needed) or `Realtime` (periodic refresh) |
+| `RealtimeRefreshFrames` | `int` | `60` | Frames between realtime refreshes |
+
+**Runtime (not persisted):** `GPUTexture? GpuCubemap` — created by `EnsureGpuResources(GL)` when the view initializes probe GPU resources. The Inspector shows **status text** and **Request recapture** (`NeedsCapture`), not a file texture picker.
+
+---
+
 ## Material
 
 Not a component but defines surface properties used by `MeshRenderer`. Uses a physically-based rendering (PBR) model.
@@ -191,6 +212,12 @@ See the Materials and Textures document for full details.
 ## Colliders
 
 All colliders inherit from a `Collider` base class and provide `GetWorldAABB()` for broad-phase collision detection.
+
+### Collider (base)
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `IsTrigger` | `bool` | `false` | When **true**, the shape does not apply contact resolution; overlaps are reported as **trigger** events only. Editable in the Inspector for all collider types. See [Physics and Collision — Triggers and TriggerVolume](07_Physics_And_Collision.md#triggers-and-triggervolume). |
 
 ### BoxCollider
 Axis-aligned box collision shape.
@@ -292,6 +319,8 @@ Physics-based character movement controller with gravity, ground detection, slop
 - `OnTriggerStay(Collider)` — fired each frame while inside a trigger
 - `OnTriggerExit(Collider)` — fired when leaving a trigger volume
 
+**Behavior callbacks:** The engine also dispatches **`OnTriggerEnter` / `OnTriggerStay` / `OnTriggerExit`** virtuals on **every** enabled `Behavior` on **both** the character and the trigger GameObject (`TriggerDispatcher`). Prefer overriding those on scripts for gameplay; the C# **events** above remain for convenience.
+
 **Core method: `Simulate(Vector3 desiredHorizontalDelta, bool jump)`**
 
 Called from `FixedUpdate`. Performs the full physics simulation step:
@@ -389,9 +418,24 @@ Physics body component with force/impulse integration, trigger events, collider 
 - `OnTriggerEnter(Collider)`, `OnTriggerStay(Collider)`, `OnTriggerExit(Collider)`
 - `OnCollisionEnter(Collider, Vector3 normal)`
 
+**Behavior callbacks:** Same as `CharacterController` — `TriggerDispatcher` invokes **`Behavior.OnTrigger*`** on both bodies involved, in addition to these **events**.
+
 **Methods:**
 - `AddForce(force)`, `AddImpulse(impulse)`, `AddForceAtPosition(force, worldPoint)`
 - `WakeUp()` — wakes sleeping rigidbodies
+
+---
+
+## TriggerVolume
+
+Inspector-driven trigger presets and filters. Add to the **same GameObject** as a **trigger** collider (`IsTrigger` = true). Full behavior, gizmo colors, and reaction list semantics are documented in [07 — Physics and Collision](07_Physics_And_Collision.md#triggers-and-triggervolume).
+
+| Area | Summary |
+|------|--------|
+| **Presets** | `Custom`, `DamageZone`, `Checkpoint`, `SceneLoad`, `Activation` |
+| **Filters** | `LayerMask`, `TagFilter`, `OneShot`, `CooldownSeconds` |
+| **Damage** | `DamagePerSecond` on **Stay** to `IDamageable` on the **other** object; sample **`Health`** in Standard Assets |
+| **Reactions** | Serialized parallel lists for **On enter** / **On exit** (`LoadScene`, `SetObjectEnabled`, `PublishChannel` → `TriggerVolumeSignal` on `EventBus`) |
 
 ---
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Events;
+using Collider = Game_Engine.Core.Component.Collider;
 
 namespace Game_Engine.Core
 {
@@ -163,6 +164,15 @@ namespace Game_Engine.Core
         /// OnEnable() handles that case.
         /// </summary>
         public virtual void PostDeserialize() { }
+
+        /// <summary>Called when a trigger volume overlaps this object's collider (listener side), or when this object's trigger is overlapped.</summary>
+        public virtual void OnTriggerEnter(Collider? other) { }
+
+        /// <summary>Called each fixed step while the trigger overlap continues.</summary>
+        public virtual void OnTriggerStay(Collider? other) { }
+
+        /// <summary>Called when the overlap with a trigger ends.</summary>
+        public virtual void OnTriggerExit(Collider? other) { }
 
         // -------- Runtime helper you can call explicitly ----------------------
         public void EnsureDependenciesNow(bool notify = true)

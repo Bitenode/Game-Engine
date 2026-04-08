@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using SN = System.Numerics;
 using Assimp;
+using Game_Engine.Core;
 using Game_Engine.Core.Component;
 
 using CoreVec3 = Game_Engine.Core.Vector3;
@@ -57,7 +58,10 @@ namespace Game_Engine.Core.Importers
                 throw new InvalidDataException("No meshes in file, or import failed.");
 
             // Build materials first (index -> engine Material)
-            var materials = BuildMaterials(scene, modelDir);
+            string? assetsSearchRoot = ProjectService.Current?.AssetsPath;
+            if (string.IsNullOrEmpty(assetsSearchRoot) || !Directory.Exists(assetsSearchRoot))
+                assetsSearchRoot = null;
+            var materials = BuildMaterials(scene, modelDir, assetsSearchRoot);
 
             // Normalize scale — ALL meshes (including skinned) get vertex-scaled
             // so the model fits into ~1 unit radius. This is backward-compatible
@@ -287,7 +291,7 @@ namespace Game_Engine.Core.Importers
 
         // ---------------------------------------------------------------------------------------------
 
-        static Dictionary<int, Material> BuildMaterials(Scene sc, string modelDir)
+        static Dictionary<int, Material> BuildMaterials(Scene sc, string modelDir, string? projectAssetsRoot)
         {
             var dict = new Dictionary<int, Material>();
 
@@ -327,28 +331,28 @@ namespace Game_Engine.Core.Importers
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // Classic
-                AddAllTexturesOfType(aimat, TextureType.Diffuse, m, sc, modelDir, MaterialTexture.TexUsage.Albedo, seen);
-                AddAllTexturesOfType(aimat, TextureType.Specular, m, sc, modelDir, MaterialTexture.TexUsage.Specular, seen);
-                AddAllTexturesOfType(aimat, TextureType.Emissive, m, sc, modelDir, MaterialTexture.TexUsage.Emissive, seen);
-                AddAllTexturesOfType(aimat, TextureType.Normals, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
-                AddAllTexturesOfType(aimat, TextureType.Height, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
-                AddAllTexturesOfType(aimat, TextureType.Opacity, m, sc, modelDir, MaterialTexture.TexUsage.Opacity, seen);
-                AddAllTexturesOfType(aimat, TextureType.Ambient, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
-                AddAllTexturesOfType(aimat, TextureType.Lightmap, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
+                AddAllTexturesOfType(aimat, TextureType.Diffuse, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Albedo, seen);
+                AddAllTexturesOfType(aimat, TextureType.Specular, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Specular, seen);
+                AddAllTexturesOfType(aimat, TextureType.Emissive, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Emissive, seen);
+                AddAllTexturesOfType(aimat, TextureType.Normals, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Normal, seen);
+                AddAllTexturesOfType(aimat, TextureType.Height, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Normal, seen);
+                AddAllTexturesOfType(aimat, TextureType.Opacity, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Opacity, seen);
+                AddAllTexturesOfType(aimat, TextureType.Ambient, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.AmbientOcclusion, seen);
+                AddAllTexturesOfType(aimat, TextureType.Lightmap, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.AmbientOcclusion, seen);
 
                 // Some builds use extra enums
                 if (Enum.TryParse("BaseColor", out TextureType baseColorT))
-                    AddAllTexturesOfType(aimat, baseColorT, m, sc, modelDir, MaterialTexture.TexUsage.Albedo, seen);
+                    AddAllTexturesOfType(aimat, baseColorT, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Albedo, seen);
                 if (Enum.TryParse("NormalCamera", out TextureType normalCamT))
-                    AddAllTexturesOfType(aimat, normalCamT, m, sc, modelDir, MaterialTexture.TexUsage.Normal, seen);
+                    AddAllTexturesOfType(aimat, normalCamT, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Normal, seen);
                 if (Enum.TryParse("Metalness", out TextureType metalT))
-                    AddAllTexturesOfType(aimat, metalT, m, sc, modelDir, MaterialTexture.TexUsage.Metallic, seen);
+                    AddAllTexturesOfType(aimat, metalT, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Metallic, seen);
                 if (Enum.TryParse("DiffuseRoughness", out TextureType roughT))
-                    AddAllTexturesOfType(aimat, roughT, m, sc, modelDir, MaterialTexture.TexUsage.Roughness, seen);
+                    AddAllTexturesOfType(aimat, roughT, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Roughness, seen);
                 if (Enum.TryParse("Roughness", out TextureType roughT2))
-                    AddAllTexturesOfType(aimat, roughT2, m, sc, modelDir, MaterialTexture.TexUsage.Roughness, seen);
+                    AddAllTexturesOfType(aimat, roughT2, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.Roughness, seen);
                 if (Enum.TryParse("AmbientOcclusion", out TextureType aoT))
-                    AddAllTexturesOfType(aimat, aoT, m, sc, modelDir, MaterialTexture.TexUsage.AmbientOcclusion, seen);
+                    AddAllTexturesOfType(aimat, aoT, m, sc, modelDir, projectAssetsRoot, MaterialTexture.TexUsage.AmbientOcclusion, seen);
 
                 // Fallback sweep over all types
                 foreach (TextureType t in Enum.GetValues(typeof(TextureType)))
@@ -358,7 +362,7 @@ namespace Game_Engine.Core.Importers
                     {
                         if (!aimat.GetMaterialTexture(t, k, out var slot)) continue;
                         var guess = GuessUsageFromTypeOrName(t, slot.FilePath);
-                        AddTextureFromSlot(m, slot, sc, modelDir, guess, seen);
+                        AddTextureFromSlot(m, slot, sc, modelDir, projectAssetsRoot, guess, seen);
                     }
                 }
 
@@ -390,6 +394,19 @@ namespace Game_Engine.Core.Importers
                         m.BaseColor = Avalonia.Media.Color.FromArgb(255, m.BaseColor.R, m.BaseColor.G, m.BaseColor.B);
                 }
 
+                var guessDirs = new List<string>();
+                string t0 = Path.GetFullPath(Path.Combine(modelDir, "textures"));
+                if (Directory.Exists(t0)) guessDirs.Add(t0);
+                string t1 = Path.GetFullPath(Path.Combine(modelDir, "..", "textures"));
+                if (Directory.Exists(t1)) guessDirs.Add(t1);
+                var projRoot = ProjectService.Current?.RootPath;
+                if (!string.IsNullOrEmpty(projRoot))
+                    MaterialUtil.TryGuessMissingMapsByMaterialName(m, m.Name, guessDirs, projRoot);
+
+                if (!string.IsNullOrEmpty(projRoot))
+                    MaterialUtil.TryBindColAlphaSiblingMaps(m, projRoot);
+                MaterialUtil.EnsureOpaqueFoliageCutout(m);
+
                 dict[i] = m;
             }
 
@@ -397,7 +414,7 @@ namespace Game_Engine.Core.Importers
         }
 
         static void AddAllTexturesOfType(Assimp.Material aimat, TextureType type,
-                                 Material m, Scene sc, string dir,
+                                 Material m, Scene sc, string dir, string? projectAssetsRoot,
                                  MaterialTexture.TexUsage usage,
                                  HashSet<string> seen)
         {
@@ -405,18 +422,18 @@ namespace Game_Engine.Core.Importers
             for (int i = 0; i < n; i++)
             {
                 if (aimat.GetMaterialTexture(type, i, out var slot))
-                    AddTextureFromSlot(m, slot, sc, dir, usage, seen);
+                    AddTextureFromSlot(m, slot, sc, dir, projectAssetsRoot, usage, seen);
             }
         }
 
-        static void AddTextureFromSlot(Material m, TextureSlot slot, Scene sc, string dir,
+        static void AddTextureFromSlot(Material m, TextureSlot slot, Scene sc, string dir, string? projectAssetsRoot,
                                        MaterialTexture.TexUsage usage, HashSet<string> seen)
         {
             // Normalize a dedupe key (embedded textures have "*N")
             string key = slot.FilePath ?? string.Empty;
             if (!seen.Add(key)) return;
 
-            var (tex, resolvedAbsPath) = TryLoadTexture(slot, sc, dir);
+            var (tex, resolvedAbsPath) = TryLoadTexture(slot, sc, dir, projectAssetsRoot);
             if (tex == null) return;
 
             // Map enum to string for RuntimeTexSlot
@@ -505,7 +522,7 @@ namespace Game_Engine.Core.Importers
         /// Load texture data; return (Texture2D, absoluteResolvedPathOnDisk).
         /// Embedded textures are saved to disk next to the model so they can be referenced by material files.
         /// </summary>
-        static (Texture2D? tex, string? absPath) TryLoadTexture(TextureSlot slot, Scene sc, string dir)
+        static (Texture2D? tex, string? absPath) TryLoadTexture(TextureSlot slot, Scene sc, string dir, string? projectAssetsRoot)
         {
             // Embedded texture (FilePath like "*0", "*1", …)
             if (!string.IsNullOrEmpty(slot.FilePath) && slot.FilePath.StartsWith("*"))
@@ -550,27 +567,142 @@ namespace Game_Engine.Core.Importers
                 return (null, null);
             }
 
-            // External file path (relative to model)
+            // External file path — FBX often stores absolute paths from another machine or paths relative to wrong folder
             if (!string.IsNullOrEmpty(slot.FilePath))
             {
-                var p = slot.FilePath.Replace('\\', '/');
-                var tryPaths = new[]
+                var resolved = ResolveExternalTexturePath(slot.FilePath, dir, projectAssetsRoot);
+                if (resolved != null)
                 {
-                    Path.Combine(dir, p),
-                    Path.Combine(dir, Path.GetFileName(p))
-                };
-
-                foreach (var tp in tryPaths)
-                {
-                    if (File.Exists(tp))
-                    {
-                        try { return (Texture2D.FromFile(tp), Path.GetFullPath(tp)); }
-                        catch { /* ignore */ }
-                    }
+                    try { return (Texture2D.FromFile(resolved), resolved); }
+                    catch { /* ignore */ }
                 }
+
+                Log.Warning($"[ModelImporter] External texture not found: '{slot.FilePath}' (model dir: {dir})");
             }
 
             return (null, null);
+        }
+
+        static int ComparePathDepthShallowFirst(string a, string b)
+        {
+            int da = a.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries).Length;
+            int db = b.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries).Length;
+            int c = da.CompareTo(db);
+            return c != 0 ? c : string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Resolve an Assimp texture path to an existing file on disk (model folder, subfolders, then project Assets).</summary>
+        static string? ResolveExternalTexturePath(string rawPath, string modelDir, string? projectAssetsRoot)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath)) return null;
+
+            string p = rawPath.Trim().Trim('"');
+            if (p.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    p = new Uri(p, UriKind.Absolute).LocalPath;
+                }
+                catch
+                {
+                    p = p.Substring("file://".Length).TrimStart('/');
+                    if (p.Length >= 3 && p[0] == '/' && char.IsLetter(p[1]) && p[2] == ':')
+                        p = p.Substring(1);
+                    p = p.Replace('/', Path.DirectorySeparatorChar);
+                }
+            }
+
+            p = p.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+            string fileName = Path.GetFileName(p);
+            if (string.IsNullOrEmpty(fileName)) return null;
+
+            static string? TryExistingFile(string path)
+            {
+                try
+                {
+                    if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                        return Path.GetFullPath(path);
+                }
+                catch { }
+                return null;
+            }
+
+            var ordered = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            void TryAddCandidate(string? combined)
+            {
+                if (string.IsNullOrEmpty(combined)) return;
+                try
+                {
+                    string full = Path.GetFullPath(combined);
+                    if (seen.Add(full))
+                        ordered.Add(full);
+                }
+                catch { }
+            }
+
+            // 1) Absolute path as stored in FBX (often wrong machine — still try)
+            var absHit = Path.IsPathRooted(p) ? TryExistingFile(p) : null;
+            if (absHit != null) return absHit;
+
+            string rel = p;
+            while (rel.StartsWith("." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+                   rel.StartsWith("." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+            {
+                rel = rel.Length > 2 ? rel.Substring(2) : string.Empty;
+            }
+
+            TryAddCandidate(Path.Combine(modelDir, rel));
+            TryAddCandidate(Path.Combine(modelDir, fileName));
+            try
+            {
+                string parent = Path.GetFullPath(Path.Combine(modelDir, ".."));
+                TryAddCandidate(Path.Combine(parent, rel));
+                TryAddCandidate(Path.Combine(parent, fileName));
+            }
+            catch { }
+
+            foreach (var sub in new[] { "textures", "Textures", "maps", "Maps", "tex", "Tex", "materials", "Materials", "images", "Images" })
+            {
+                TryAddCandidate(Path.Combine(modelDir, sub, rel));
+                TryAddCandidate(Path.Combine(modelDir, sub, fileName));
+            }
+
+            foreach (var c in ordered)
+            {
+                var hit = TryExistingFile(c);
+                if (hit != null) return hit;
+            }
+
+            if (Directory.Exists(modelDir))
+            {
+                try
+                {
+                    var hits = Directory.EnumerateFiles(modelDir, fileName, SearchOption.AllDirectories).ToList();
+                    if (hits.Count > 0)
+                    {
+                        hits.Sort(ComparePathDepthShallowFirst);
+                        return Path.GetFullPath(hits[0]);
+                    }
+                }
+                catch { }
+            }
+
+            if (!string.IsNullOrEmpty(projectAssetsRoot) && Directory.Exists(projectAssetsRoot))
+            {
+                try
+                {
+                    var hits = Directory.EnumerateFiles(projectAssetsRoot, fileName, SearchOption.AllDirectories).ToList();
+                    if (hits.Count > 0)
+                    {
+                        hits.Sort(ComparePathDepthShallowFirst);
+                        return Path.GetFullPath(hits[0]);
+                    }
+                }
+                catch { }
+            }
+
+            return null;
         }
 
         static string GuessImageExtension(string? formatHint)
@@ -1112,7 +1244,8 @@ namespace Game_Engine.Core.Importers
                         ["Metallic"] = mat.Metallic,
                         ["Roughness"] = mat.Roughness,
                         ["Transparent"] = mat.Transparent,
-                        ["AlphaCutoff"] = mat.AlphaCutoff
+                        ["AlphaCutoff"] = mat.AlphaCutoff,
+                        ["LumaClip"] = mat.LumaClip
                     },
                     ["textures"] = texDict
                 };

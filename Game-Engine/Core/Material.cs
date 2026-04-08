@@ -14,10 +14,12 @@ namespace Game_Engine.Core
         public int Width { get; }
         public int Height { get; }
         public byte[] Rgba { get; }
+        /// <summary>Full path passed to <see cref="FromFile"/> when loaded from disk; used for BCn sidecar .dds.</summary>
+        public string? SourcePath { get; }
 
-        public Texture2D(int width, int height, byte[] rgba)
+        public Texture2D(int width, int height, byte[] rgba, string? sourcePath = null)
         {
-            Width = width; Height = height; Rgba = rgba;
+            Width = width; Height = height; Rgba = rgba; SourcePath = sourcePath;
         }
 
         static readonly Dictionary<string, Texture2D> s_fromFileCache = new(StringComparer.OrdinalIgnoreCase);
@@ -65,7 +67,7 @@ namespace Game_Engine.Core
                 var pixels = bmp.GetPixelSpan();
                 var rgba = new byte[bmp.Width * bmp.Height * 4];
                 pixels.CopyTo(rgba);
-                return new Texture2D(bmp.Width, bmp.Height, rgba);
+                return new Texture2D(bmp.Width, bmp.Height, rgba, path);
             }
             catch
             {
@@ -90,7 +92,7 @@ namespace Game_Engine.Core
             img.Depth = 8;
             var pixels = img.GetPixels();
             var rgba = pixels.ToByteArray(PixelMapping.RGBA);
-            return new Texture2D((int)img.Width, (int)img.Height, rgba);
+            return new Texture2D((int)img.Width, (int)img.Height, rgba, Path.GetFullPath(path));
         }
 
         static Texture2D DecodeTga(byte[] data, string debugPath)
@@ -225,7 +227,7 @@ namespace Game_Engine.Core
                 throw new Exception($"TGA unsupported image type {imageType}: {debugPath}");
             }
 
-            return new Texture2D(width, height, rgba);
+            return new Texture2D(width, height, rgba, Path.GetFullPath(debugPath));
         }
 
         static Texture2D DecodeTiff(string path)
@@ -420,7 +422,7 @@ namespace Game_Engine.Core
                 }
             }
 
-            return new Texture2D(width, height, rgba);
+            return new Texture2D(width, height, rgba, Path.GetFullPath(path));
         }
 
         static byte[] DecodeLzw(byte[] src, int offset, int length)
@@ -534,6 +536,9 @@ namespace Game_Engine.Core
         [JsonIgnore] public IImage Preview { get; set; }
         [Persist] public string SourcePath { get; set; }
 
+        /// <summary>When true and the texture is larger than 512px, a GPU-compressed .dds is built next to the source on first upload.</summary>
+        [Persist] public bool CompressTextures { get; set; } = true;
+
         public enum TexUsage
         {
             Albedo,
@@ -584,7 +589,11 @@ namespace Game_Engine.Core
         }
 
         [Persist] public bool Transparent { get; set; } = false;
-        [Persist] public float AlphaCutoff { get; set; } = 0.5f;
+        /// <summary>When &gt; 0, fragments with albedo alpha below this are discarded in the opaque pass (foliage cutout). Transparent materials use the cutoff from the renderer (low threshold).</summary>
+        [Persist] public float AlphaCutoff { get; set; } = 0f;
+
+        /// <summary>When &gt; 0, opaque pass also discards very dark albedo texels (RGB-only leaf sheets with no alpha channel).</summary>
+        [Persist] public float LumaClip { get; set; } = 0f;
 
         // Backing for Roughness/Smoothness pair
         private float _roughness = 0.5f;
@@ -644,6 +653,7 @@ namespace Game_Engine.Core
                 BaseColor = this.BaseColor,
                 Transparent = this.Transparent,
                 AlphaCutoff = this.AlphaCutoff,
+                LumaClip = this.LumaClip,
                 Metallic = this.Metallic,
                 ShaderAssetPath = this.ShaderAssetPath,
                 Lit = this.Lit

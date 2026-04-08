@@ -2,7 +2,7 @@
 
 ## What Is It?
 
-A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalonia 11** for the cross-platform UI framework, and **Silk.NET OpenGL** for GPU-accelerated rendering. The architecture follows a component-based design similar to Unity, with a scene graph, inspector, hierarchy panel, play mode, runtime scripting, physics, audio, animation, post-processing, and an extensible plugin system.
+A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalonia 11** for the cross-platform UI framework, and **Silk.NET OpenGL** for GPU-accelerated rendering. The architecture follows a component-based design similar to Unity, with a scene graph, inspector, hierarchy panel, play mode, runtime scripting, physics (**triggers**, **`TriggerVolume`** presets, tag/layer filtering), audio, animation, post-processing, and an extensible plugin system. The editor can offload heavy CPU work via **`EditorJobs`** / **`EditorJobScheduler`** (see [Scripting and Extensibility](06_Scripting_And_Extensibility.md)).
 
 ---
 
@@ -37,16 +37,18 @@ The solution contains two projects: **Game_Engine** (the editor) and **Engine.Pl
 ```
 Game-Engine/
 ├── Core/                        # Engine runtime (non-UI)
-│   ├── Component/               # All attachable components (34+ types, organized by category)
+│   ├── Component/               # All attachable components (36+ types, organized by category)
 │   │   ├── Transform.cs         # Position, rotation, scale (mandatory, always present)
 │   │   ├── Rendering/           # [ComponentCategory("Rendering")]
 │   │   │   ├── Camera.cs        # Perspective/orthographic camera
 │   │   │   ├── Light.cs         # Directional, point, spot lights
 │   │   │   ├── MeshFilter.cs    # Mesh geometry holder
 │   │   │   ├── MeshRenderer.cs  # Mesh rendering with materials
+│   │   │   ├── ReflectionProbe.cs # Runtime reflection cubemap / IBL probe
 │   │   │   └── SkinnedMeshRenderer.cs # GPU bone skinning
+│   │   ├── MeshLodGroup.cs      # [Rendering] Static mesh LOD distances
 │   │   ├── Physics/             # [ComponentCategory("Physics")]
-│   │   │   ├── Collider.cs      # Base collider class
+│   │   │   ├── Collider.cs      # Base collider class (+ IsTrigger)
 │   │   │   ├── BoxCollider.cs   # Box collision shape
 │   │   │   ├── CapsuleCollider.cs # Capsule collision shape
 │   │   │   ├── MeshCollider.cs  # Mesh-based collision
@@ -54,7 +56,8 @@ Game-Engine/
 │   │   │   ├── PlayerMovement.cs # FPS/TPS player movement
 │   │   │   ├── PlanetCollider.cs # Planet collider shell / AABB provider
 │   │   │   ├── Rigidbody.cs     # Physics body
-│   │   │   └── RigidbodyPlayer.cs # Player physics controller
+│   │   │   ├── RigidbodyPlayer.cs # Player physics controller
+│   │   │   └── TriggerVolume.cs # Trigger presets, filters, inspector reactions
 │   │   ├── Animation/           # [ComponentCategory("Animation")]
 │   │   │   ├── Animator.cs      # Skeletal animation state machine
 │   │   │   └── IKConstraint.cs  # Inverse kinematics
@@ -114,6 +117,8 @@ Game-Engine/
 │   │       ├── FullscreenQuad.cs# Fullscreen triangle for post-processing
 │   │       ├── ShaderSources.cs # All embedded GLSL shaders
 │   │       └── CustomShaderCache.cs # Custom shader compilation + caching
+│   ├── Editor/                  # Editor-only helpers (not runtime components)
+│   │   └── EditorJobScheduler.cs # Thread-pool jobs + Avalonia UI post (see EditorJobs façade)
 │   ├── Extensibility/           # Editor extension system
 │   │   ├── ExtensionService.cs  # Extension discovery and loading
 │   │   ├── EditorExtension.cs   # Base class for extensions

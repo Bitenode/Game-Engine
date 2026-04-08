@@ -185,6 +185,12 @@ namespace Game_Engine.Core
                         m.AlphaCutoff = Clamp01((float)acd);
                         MaterialLoadTrace($"[MatTrace:MatLoad] param.AlphaCutoff = {m.AlphaCutoff}");
                     }
+
+                    if (p.TryGetProperty("LumaClip", out var lcEl) && lcEl.TryGetDouble(out var lcd))
+                    {
+                        m.LumaClip = Clamp01((float)lcd);
+                        MaterialLoadTrace($"[MatTrace:MatLoad] param.LumaClip = {m.LumaClip}");
+                    }
                 }
 
                 // ---------- textures -> RuntimeTexSlot list ----------
@@ -254,6 +260,19 @@ namespace Game_Engine.Core
                 if (m.BaseColor.A == 0 && m.BaseColor.R == 0 && m.BaseColor.G == 0 && m.BaseColor.B == 0)
                     m.BaseColor = Colors.White;
                 if (m.Smoothness < 0f) m.Smoothness = 0.5f;
+
+                var guessDirs = new List<string>();
+                string? walk = Path.GetDirectoryName(abs);
+                for (int depth = 0; depth < 8 && !string.IsNullOrEmpty(walk); depth++)
+                {
+                    string tdx = Path.Combine(walk, "textures");
+                    if (Directory.Exists(tdx)) guessDirs.Add(tdx);
+                    walk = Directory.GetParent(walk)?.FullName;
+                }
+                MaterialUtil.TryGuessMissingMapsByMaterialName(m, m.Name, guessDirs, root);
+
+                MaterialUtil.TryBindColAlphaSiblingMaps(m, root);
+                MaterialUtil.EnsureOpaqueFoliageCutout(m);
 
                 // Read shader asset path from the material file
                 if (rootEl.TryGetProperty("shader", out var shaderEl) && shaderEl.ValueKind == JsonValueKind.String)

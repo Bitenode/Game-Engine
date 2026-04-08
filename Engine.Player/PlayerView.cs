@@ -167,6 +167,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
             _fsQuad = new FullscreenQuad(g);
             _cache = new ResourceCache(g);
+            GpuCompressionCaps.Initialize(g);
             _shadow = new ShadowMapGPU(g, 1024, 1024);
         }
         catch (Exception ex)

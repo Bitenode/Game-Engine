@@ -960,8 +960,8 @@ namespace Game_Engine.Core
             if (transparent && a >= 1.0f)
                 a = 0.35f;
 
-            // For blended transparency, don't aggressively discard fragments.
-            // Alpha-test (high cutoff) is only for opaque-pass cutout materials (b09ed5c / pre-df24afd).
+            // Blended transparency: discard nearly invisible pixels; keep material cutout
+            // threshold for the opaque pass (shader uses mat.AlphaCutoff when not transparent).
             if (transparent)
                 alphaCutoff = 0.01f;
 
@@ -1043,7 +1043,7 @@ namespace Game_Engine.Core
 
                     if (tex != null)
                     {
-                        var gpuTex = cache.GetTexture(tex);
+                        var gpuTex = slot is MaterialTexture ma ? cache.GetTexture(tex, ma) : cache.GetTexture(tex);
                         gpuTex.Bind(TextureUnit.Texture0);
                         hasAlbedo = true;
                         break;
@@ -1081,7 +1081,8 @@ namespace Game_Engine.Core
 
                     if (nTex != null)
                     {
-                        cache.GetTexture(nTex).Bind(TextureUnit.Texture1);
+                        var gpuN = slot is MaterialTexture mn ? cache.GetTexture(nTex, mn) : cache.GetTexture(nTex);
+                        gpuN.Bind(TextureUnit.Texture1);
                         hasNormal = true;
                         break;
                     }
@@ -1108,7 +1109,12 @@ namespace Game_Engine.Core
                     {
                         if (mtex.Usage == MaterialTexture.TexUsage.Specular) sTex = mtex.Texture;
                     }
-                    if (sTex != null) { cache.GetTexture(sTex).Bind(TextureUnit.Texture2); hasSpec = true; break; }
+                    if (sTex != null)
+                    {
+                        (slot is MaterialTexture ms ? cache.GetTexture(sTex, ms) : cache.GetTexture(sTex)).Bind(TextureUnit.Texture2);
+                        hasSpec = true;
+                        break;
+                    }
                 }
             }
             shader.SetTexture("uSpecularTex", 2);
@@ -1131,7 +1137,12 @@ namespace Game_Engine.Core
                     {
                         if (mtex.Usage == MaterialTexture.TexUsage.Metallic) mTex = mtex.Texture;
                     }
-                    if (mTex != null) { cache.GetTexture(mTex).Bind(TextureUnit.Texture3); hasMetal = true; break; }
+                    if (mTex != null)
+                    {
+                        (slot is MaterialTexture mm ? cache.GetTexture(mTex, mm) : cache.GetTexture(mTex)).Bind(TextureUnit.Texture3);
+                        hasMetal = true;
+                        break;
+                    }
                 }
             }
             shader.SetTexture("uMetallicTex", 3);
@@ -1154,7 +1165,12 @@ namespace Game_Engine.Core
                     {
                         if (mtex.Usage == MaterialTexture.TexUsage.Roughness) rTex = mtex.Texture;
                     }
-                    if (rTex != null) { cache.GetTexture(rTex).Bind(TextureUnit.Texture4); hasRough = true; break; }
+                    if (rTex != null)
+                    {
+                        (slot is MaterialTexture mr ? cache.GetTexture(rTex, mr) : cache.GetTexture(rTex)).Bind(TextureUnit.Texture4);
+                        hasRough = true;
+                        break;
+                    }
                 }
             }
             shader.SetTexture("uRoughnessTex", 4);
@@ -1177,7 +1193,12 @@ namespace Game_Engine.Core
                     {
                         if (mtex.Usage == MaterialTexture.TexUsage.AmbientOcclusion) aoTex = mtex.Texture;
                     }
-                    if (aoTex != null) { cache.GetTexture(aoTex).Bind(TextureUnit.Texture5); hasAO = true; break; }
+                    if (aoTex != null)
+                    {
+                        (slot is MaterialTexture mao ? cache.GetTexture(aoTex, mao) : cache.GetTexture(aoTex)).Bind(TextureUnit.Texture5);
+                        hasAO = true;
+                        break;
+                    }
                 }
             }
             shader.SetTexture("uAOTex", 5);
@@ -1200,11 +1221,49 @@ namespace Game_Engine.Core
                     {
                         if (mtex.Usage == MaterialTexture.TexUsage.Emissive) eTex = mtex.Texture;
                     }
-                    if (eTex != null) { cache.GetTexture(eTex).Bind(TextureUnit.Texture6); hasEmissiveTex = true; break; }
+                    if (eTex != null)
+                    {
+                        (slot is MaterialTexture me ? cache.GetTexture(eTex, me) : cache.GetTexture(eTex)).Bind(TextureUnit.Texture6);
+                        hasEmissiveTex = true;
+                        break;
+                    }
                 }
             }
             shader.SetTexture("uEmissiveTex", 6);
             shader.SetInt("uHasEmissiveTex", hasEmissiveTex ? 1 : 0);
+
+            // Opacity mask → unit 11 (material uses 0–6; cascaded shadows use 7–10)
+            const int opacityTexUnit = 11;
+            bool hasOpacity = false;
+            if (mat?.Textures != null)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    Texture2D? oTex = null;
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (usage.Contains("opacity") || usage.Contains("transparency") || usage == "mask")
+                            oTex = rts.Texture;
+                    }
+                    else if (slot is MaterialTexture mtex)
+                    {
+                        if (mtex.Usage == MaterialTexture.TexUsage.Opacity)
+                            oTex = mtex.Texture;
+                    }
+                    if (oTex != null)
+                    {
+                        (slot is MaterialTexture mo ? cache.GetTexture(oTex, mo) : cache.GetTexture(oTex))
+                            .Bind(TextureUnit.Texture0 + opacityTexUnit);
+                        hasOpacity = true;
+                        break;
+                    }
+                }
+            }
+            shader.SetTexture("uOpacityTex", opacityTexUnit);
+            shader.SetInt("uHasOpacityTex", hasOpacity ? 1 : 0);
+            shader.SetFloat("uLumaClip", mat?.LumaClip ?? 0f);
 
             // Emissive (update the values set earlier if we now have an emissive texture)
             if (mat != null && (mat.EmissiveIntensity > 0f || hasEmissiveTex))
@@ -1294,7 +1353,12 @@ namespace Game_Engine.Core
                         if (mtex.Usage == MaterialTexture.TexUsage.Albedo)
                             tex = mtex.Texture;
                     }
-                    if (tex != null) { cache.GetTexture(tex).Bind(TextureUnit.Texture0); hasAlbedo = true; break; }
+                    if (tex != null)
+                    {
+                        (slot is MaterialTexture ma0 ? cache.GetTexture(tex, ma0) : cache.GetTexture(tex)).Bind(TextureUnit.Texture0);
+                        hasAlbedo = true;
+                        break;
+                    }
                 }
             }
             if (!hasAlbedo) cache.GetWhiteTexture().Bind(TextureUnit.Texture0);
@@ -1319,7 +1383,12 @@ namespace Game_Engine.Core
                         if (mtex.Usage == MaterialTexture.TexUsage.Normal)
                             nTex = mtex.Texture;
                     }
-                    if (nTex != null) { cache.GetTexture(nTex).Bind(TextureUnit.Texture1); hasNormal = true; break; }
+                    if (nTex != null)
+                    {
+                        (slot is MaterialTexture mn0 ? cache.GetTexture(nTex, mn0) : cache.GetTexture(nTex)).Bind(TextureUnit.Texture1);
+                        hasNormal = true;
+                        break;
+                    }
                 }
             }
             if (!hasNormal)
@@ -1350,7 +1419,12 @@ namespace Game_Engine.Core
                         if (mtex.Usage == MaterialTexture.TexUsage.Specular)
                             sTex = mtex.Texture;
                     }
-                    if (sTex != null) { cache.GetTexture(sTex).Bind(TextureUnit.Texture2); hasSpec = true; break; }
+                    if (sTex != null)
+                    {
+                        (slot is MaterialTexture ms0 ? cache.GetTexture(sTex, ms0) : cache.GetTexture(sTex)).Bind(TextureUnit.Texture2);
+                        hasSpec = true;
+                        break;
+                    }
                 }
             }
             if (!hasSpec) cache.GetWhiteTexture().Bind(TextureUnit.Texture2);
@@ -1631,7 +1705,13 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 sunShineDir,
             float ambient,
-            float shadowBias)
+            float shadowBias,
+            float ssaoIntensity = 1f,
+            TiledLightTextureSystem? tiledLights = null,
+            int screenWidth = 0,
+            int screenHeight = 0,
+            GPUTexture? reflectionProbeCubemap = null,
+            float reflectionProbeBlend = 0f)
         {
             deferredShader.Use();
 
@@ -1676,10 +1756,12 @@ namespace Game_Engine.Core
                 ssaoTexture.Bind(TextureUnit.Texture5);
                 deferredShader.SetTexture("uSSAOTex", 5);
                 deferredShader.SetInt("uHasSSAO", 1);
+                deferredShader.SetFloat("uSSAOIntensity", Math.Clamp(ssaoIntensity, 0f, 2f));
             }
             else
             {
                 deferredShader.SetInt("uHasSSAO", 0);
+                deferredShader.SetFloat("uSSAOIntensity", 0f);
             }
 
             // Camera + inverse VP
@@ -1691,32 +1773,77 @@ namespace Game_Engine.Core
             // Ambient
             deferredShader.SetFloat("uAmbient", ambient);
 
-            // Multi-light upload
-            var lights = Component.Light.AllLights;
-            int lightCount = Math.Min(lights.Count, 16);
-            deferredShader.SetInt("uLightCount", lightCount);
-
-            for (int i = 0; i < lightCount; i++)
+            var dirScratch = new List<Light>(8);
+            var localScratch = new List<Light>(128);
+            if (tiledLights != null && screenWidth > 0 && screenHeight > 0)
+                tiledLights.BuildAndUpload(screenWidth, screenHeight, in view, in proj, dirScratch, localScratch);
+            else
             {
-                var light = lights[i];
-                int type = light.Type == LightType.Directional ? 0 : 1;
-                deferredShader.SetInt($"uLightTypes[{i}]", type);
-
-                if (light.Type == LightType.Directional)
+                foreach (var light in Light.AllLights)
                 {
-                    var dir = light.GetWorldDirection();
-                    deferredShader.SetVector3($"uLightDirs[{i}]", SN.Vector3.Normalize(-dir));
+                    if (light is not { Enabled: true, gameObject: not null }) continue;
+                    if (light.Type == LightType.Directional)
+                    {
+                        if (dirScratch.Count < TiledLightTextureSystem.MaxDirLights)
+                            dirScratch.Add(light);
+                    }
+                    else if (localScratch.Count < TiledLightTextureSystem.MaxLocalLights)
+                        localScratch.Add(light);
+                }
+            }
+
+            int dirCount = Math.Min(dirScratch.Count, TiledLightTextureSystem.MaxDirLights);
+            deferredShader.SetInt("uDirLightCount", dirCount);
+            for (int i = 0; i < TiledLightTextureSystem.MaxDirLights; i++)
+            {
+                if (i < dirCount)
+                {
+                    var light = dirScratch[i];
+                    var d = light.GetWorldDirection();
+                    deferredShader.SetVector3($"uDirLightDirs[{i}]", SN.Vector3.Normalize(-d));
+                    deferredShader.SetVector3($"uDirLightColors[{i}]",
+                        new SN.Vector3(light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f));
+                    deferredShader.SetFloat($"uDirLightIntensities[{i}]", light.Intensity);
                 }
                 else
                 {
-                    deferredShader.SetVector3($"uLightPositions[{i}]", light.GetWorldPosition());
-                    deferredShader.SetFloat($"uLightRanges[{i}]", Math.Max(0.001f, light.Range));
+                    deferredShader.SetVector3($"uDirLightDirs[{i}]", SN.Vector3.UnitY);
+                    deferredShader.SetVector3($"uDirLightColors[{i}]", SN.Vector3.Zero);
+                    deferredShader.SetFloat($"uDirLightIntensities[{i}]", 0f);
                 }
+            }
 
-                var col = light.GetColorRGB();
-                deferredShader.SetVector3($"uLightColors[{i}]", new SN.Vector3(
-                    light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f));
-                deferredShader.SetFloat($"uLightIntensities[{i}]", light.Intensity);
+            int localCount = localScratch.Count;
+            if (tiledLights != null && screenWidth > 0 && screenHeight > 0)
+            {
+                deferredShader.SetInt("uLocalLightCount", localCount);
+                deferredShader.SetInt("uTilesX", tiledLights.TilesX);
+                deferredShader.SetInt("uTilesY", tiledLights.TilesY);
+                if (localCount > 0)
+                    tiledLights.BindToShader(deferredShader, 6);
+            }
+            else
+            {
+                deferredShader.SetInt("uLocalLightCount", 0);
+                deferredShader.SetInt("uTilesX", 1);
+                deferredShader.SetInt("uTilesY", 1);
+            }
+
+            if (reflectionProbeCubemap != null && reflectionProbeBlend > 0.001f)
+            {
+                reflectionProbeCubemap.BindCubemap(TextureUnit.Texture9);
+                deferredShader.SetTexture("uProbeSpec", 9);
+                deferredShader.SetInt("uHasProbe", 1);
+                int dim = Math.Max(1, reflectionProbeCubemap.Width);
+                float mips = 1f + (float)Math.Floor(Math.Log2(dim));
+                deferredShader.SetFloat("uProbeMipCount", mips);
+                deferredShader.SetFloat("uProbeBlend", Math.Clamp(reflectionProbeBlend, 0f, 2f));
+            }
+            else
+            {
+                deferredShader.SetInt("uHasProbe", 0);
+                deferredShader.SetFloat("uProbeMipCount", 1f);
+                deferredShader.SetFloat("uProbeBlend", 0f);
             }
 
             // Draw fullscreen quad
@@ -1902,11 +2029,11 @@ namespace Game_Engine.Core
             GPUFramebuffer gbufferFBO,
             in SN.Matrix4x4 view,
             in SN.Matrix4x4 proj,
-            SN.Vector3[] kernel,
             int screenWidth,
             int screenHeight,
             float radius = 0.5f,
-            float bias = 0.025f)
+            float bias = 0.025f,
+            int sampleCount = 24)
         {
             ssaoShader.Use();
 
@@ -1928,12 +2055,9 @@ namespace Game_Engine.Core
             SN.Matrix4x4.Invert(vp, out var invVP);
             ssaoShader.SetMatrix4("uInvViewProj", invVP);
 
-            // Upload kernel samples
-            for (int i = 0; i < Math.Min(kernel.Length, 32); i++)
-                ssaoShader.SetVector3($"uSamples[{i}]", kernel[i]);
-
             ssaoShader.SetFloat("uRadius", radius);
             ssaoShader.SetFloat("uBias", bias);
+            ssaoShader.SetInt("uSampleCount", Math.Clamp(sampleCount, 4, 32));
             ssaoShader.SetVector2("uNoiseScale", screenWidth / 4f, screenHeight / 4f);
 
             gl.Disable(EnableCap.DepthTest);
@@ -1941,19 +2065,27 @@ namespace Game_Engine.Core
             gl.Enable(EnableCap.DepthTest);
         }
 
-        /// <summary>SSAO blur pass. The blur FBO must be bound before calling.</summary>
+        /// <summary>SSAO bilateral blur pass. The blur FBO must be bound before calling.</summary>
         public static void RenderSSAOBlur(
             GL gl,
             ShaderProgram blurShader,
             FullscreenQuad fsQuad,
             GPUTexture ssaoInput,
+            GPUFramebuffer gbufferFBO,
             int width,
-            int height)
+            int height,
+            float depthSigma = 80f)
         {
             blurShader.Use();
             ssaoInput.Bind(TextureUnit.Texture0);
             blurShader.SetTexture("uSSAOInput", 0);
+            if (gbufferFBO.DepthTexture != null)
+            {
+                gbufferFBO.DepthTexture.Bind(TextureUnit.Texture1);
+                blurShader.SetTexture("gDepth", 1);
+            }
             blurShader.SetVector2("uTexelSize", 1f / width, 1f / height);
+            blurShader.SetFloat("uDepthSigma", depthSigma);
 
             gl.Disable(EnableCap.DepthTest);
             fsQuad.Draw();
@@ -1974,7 +2106,10 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 proj,
             SN.Vector3 camPos,
             int screenWidth,
-            int screenHeight)
+            int screenHeight,
+            int maxRaySteps = 64,
+            float roughnessCutoff = 0.6f,
+            float maxRayLength = 50f)
         {
             ssrShader.Use();
 
@@ -2002,6 +2137,46 @@ namespace Game_Engine.Core
             ssrShader.SetMatrix4("uInvViewProj", invVP);
             ssrShader.SetVector3("uCamPos", camPos);
             ssrShader.SetVector2("uScreenSize", screenWidth, screenHeight);
+            ssrShader.SetInt("uMaxSteps", Math.Clamp(maxRaySteps, 4, 128));
+            ssrShader.SetFloat("uRoughnessCutoff", roughnessCutoff);
+            ssrShader.SetFloat("uMaxRayLength", Math.Max(1f, maxRayLength));
+
+            gl.Disable(EnableCap.DepthTest);
+            fsQuad.Draw();
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        public static void RenderTemporalAA(
+            GL gl,
+            ShaderProgram taaShader,
+            FullscreenQuad fsQuad,
+            GPUTexture currScene,
+            GPUTexture? history,
+            GPUFramebuffer gbufferFBO,
+            in SN.Matrix4x4 invViewProj,
+            in SN.Matrix4x4 prevViewProj,
+            int width,
+            int height,
+            float blendNew,
+            float sharpen,
+            bool resetHistory)
+        {
+            taaShader.Use();
+            currScene.Bind(TextureUnit.Texture0);
+            taaShader.SetTexture("uCurr", 0);
+            var histTex = history ?? currScene;
+            histTex.Bind(TextureUnit.Texture1);
+            taaShader.SetTexture("uHistory", 1);
+            if (gbufferFBO.DepthTexture != null)
+            {
+                gbufferFBO.DepthTexture.Bind(TextureUnit.Texture2);
+                taaShader.SetTexture("uDepth", 2);
+            }
+            taaShader.SetMatrix4("uInvViewProj", invViewProj);
+            taaShader.SetMatrix4("uPrevViewProj", prevViewProj);
+            taaShader.SetVector2("uTexel", 1f / width, 1f / height);
+            taaShader.SetFloat("uAlpha", resetHistory ? 1f : Math.Clamp(blendNew, 0.02f, 0.5f));
+            taaShader.SetFloat("uSharpen", Math.Clamp(sharpen, 0f, 1f));
 
             gl.Disable(EnableCap.DepthTest);
             fsQuad.Draw();

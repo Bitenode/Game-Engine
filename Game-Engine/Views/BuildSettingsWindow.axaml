@@ -234,6 +234,11 @@
                 <TextBlock Classes="label" Text="Version"/>
                 <TextBox x:Name="VersionBox" Width="140" Text="1.0.0" Watermark="1.0.0"/>
               </StackPanel>
+              <StackPanel Classes="form-row">
+                <TextBlock Classes="label" Text="Rendering"/>
+                <CheckBox x:Name="DeferredRenderingCheck" Content="Deferred shading in Game View (play mode)"
+                          ToolTip.Tip="When off, Game View uses forward rendering. Scene View stays forward for editor performance."/>
+              </StackPanel>
             </StackPanel>
           </Border>
         </Expander>

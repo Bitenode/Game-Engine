@@ -184,7 +184,7 @@ The `SceneSerialization` class handles conversion between live `GameObject` hier
 
 **Serialize (Save):**
 1. Walks the scene graph depth-first
-2. Creates DTOs for each GameObject (name, transform, children)
+2. Creates DTOs for each GameObject (name, enabled, **tag**, **layer** when not defaults, transform, children)
 3. Creates DTOs for each Behavior (type name, persisted properties)
 4. Resolves file paths to project-relative format
 5. Writes to JSON file

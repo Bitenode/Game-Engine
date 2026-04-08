@@ -11,6 +11,7 @@ using Game_Engine.Core;
 using Game_Engine.Core.Rendering.GPU;
 using CoreVec3 = Game_Engine.Core.Vector3;
 using Avalonia.Platform;
+using System.Linq;
 using System.Reflection;
 using System.Diagnostics;
 using System.IO;
@@ -69,9 +70,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private int _colliderVboCapacity;   // current VBO capacity in floats
     // Reusable per-frame line buffers (avoid GC pressure)
     private readonly List<float> _colLinesNormal = new();
-    private readonly List<float> _colLinesTrigger = new();
+    private readonly List<float> _colLinesTriggerNeutral = new();
+    private readonly List<float> _colLinesTriggerDamage = new();
+    private readonly List<float> _colLinesTriggerCheckpoint = new();
     private readonly List<float> _colLinesFaintN = new();
-    private readonly List<float> _colLinesFaintT = new();
+    private readonly List<float> _colLinesFaintNeutral = new();
+    private readonly List<float> _colLinesFaintDamage = new();
+    private readonly List<float> _colLinesFaintCheckpoint = new();
     // Terrain brush gizmo line buffers
     private readonly List<float> _terrainOuter = new();
     private readonly List<float> _terrainInner = new();
@@ -1360,6 +1365,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
             _fsQuad = new FullscreenQuad(g);
             _cache = new ResourceCache(g);
+            GpuCompressionCaps.Initialize(g);
 
             // Shadow map — 1024×1024 is a good balance of quality vs. performance.
             // 4096 was far too expensive for integrated GPUs (4× the fillrate).
@@ -2819,16 +2825,22 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         // Clear per-frame buffers
         _colLinesNormal.Clear();
-        _colLinesTrigger.Clear();
+        _colLinesTriggerNeutral.Clear();
+        _colLinesTriggerDamage.Clear();
+        _colLinesTriggerCheckpoint.Clear();
         _colLinesFaintN.Clear();
-        _colLinesFaintT.Clear();
+        _colLinesFaintNeutral.Clear();
+        _colLinesFaintDamage.Clear();
+        _colLinesFaintCheckpoint.Clear();
 
         // Gather all collider line segments from the scene hierarchy
         foreach (var go in SceneService.Root)
             GatherColliderLinesRecursive(go);
 
-        bool hasAny = _colLinesNormal.Count > 0 || _colLinesTrigger.Count > 0 ||
-                      _colLinesFaintN.Count > 0 || _colLinesFaintT.Count > 0;
+        bool hasAny = _colLinesNormal.Count > 0 || _colLinesTriggerNeutral.Count > 0 ||
+                      _colLinesTriggerDamage.Count > 0 || _colLinesTriggerCheckpoint.Count > 0 ||
+                      _colLinesFaintN.Count > 0 || _colLinesFaintNeutral.Count > 0 ||
+                      _colLinesFaintDamage.Count > 0 || _colLinesFaintCheckpoint.Count > 0;
         if (!hasAny) return;
 
         // Set up shared GL state
@@ -2846,11 +2858,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // DeepSkyBlue (#00BFFF) - regular colliders
         g.LineWidth(1.5f);
         DrawColliderLineBatch(g, _colLinesNormal, 0f, 191f / 255f, 1f, 1f);
-        // OrangeRed (#FF4500) - trigger colliders
-        DrawColliderLineBatch(g, _colLinesTrigger, 1f, 69f / 255f, 0f, 1f);
+        // Trigger volumes: neutral / damage / checkpoint (semi-transparent)
+        DrawColliderLineBatch(g, _colLinesTriggerNeutral, 0.15f, 0.55f, 1f, 0.55f);
+        DrawColliderLineBatch(g, _colLinesTriggerDamage, 1f, 0.25f, 0.2f, 0.65f);
+        DrawColliderLineBatch(g, _colLinesTriggerCheckpoint, 0.2f, 1f, 0.35f, 0.65f);
         // Faint AABB overlays for mesh colliders
         DrawColliderLineBatch(g, _colLinesFaintN, 0f, 191f / 255f, 1f, 0.25f);
-        DrawColliderLineBatch(g, _colLinesFaintT, 1f, 69f / 255f, 0f, 0.25f);
+        DrawColliderLineBatch(g, _colLinesFaintNeutral, 0.15f, 0.55f, 1f, 0.22f);
+        DrawColliderLineBatch(g, _colLinesFaintDamage, 1f, 0.25f, 0.2f, 0.22f);
+        DrawColliderLineBatch(g, _colLinesFaintCheckpoint, 0.2f, 1f, 0.35f, 0.22f);
 
         g.BindVertexArray(0);
         g.Disable(EnableCap.Blend);
@@ -2936,6 +2952,26 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     // Max triangles for full wireframe display — larger meshes use AABB only
     const int MaxColliderWireTris = 4000;
 
+    void GetTriggerGizmoBuffers(GameObject go, out List<float> mainTrig, out List<float> faintTrig)
+    {
+        var tv = go.Behaviors.OfType<TriggerVolume>().FirstOrDefault();
+        if (tv?.Preset == TriggerVolumePreset.DamageZone)
+        {
+            mainTrig = _colLinesTriggerDamage;
+            faintTrig = _colLinesFaintDamage;
+        }
+        else if (tv?.Preset == TriggerVolumePreset.Checkpoint)
+        {
+            mainTrig = _colLinesTriggerCheckpoint;
+            faintTrig = _colLinesFaintCheckpoint;
+        }
+        else
+        {
+            mainTrig = _colLinesTriggerNeutral;
+            faintTrig = _colLinesFaintNeutral;
+        }
+    }
+
     /// <summary>
     /// Recursively gathers line segments for all colliders in the scene graph.
     /// </summary>
@@ -2944,7 +2980,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         foreach (var col in go.Behaviors.OfType<Collider>())
         {
             bool isTrigger = col.IsTrigger;
-            var mainBuf = isTrigger ? _colLinesTrigger : _colLinesNormal;
+            List<float> mainBuf;
+            List<float> faintTrigBuf;
+            if (isTrigger)
+                GetTriggerGizmoBuffers(go, out mainBuf, out faintTrigBuf);
+            else
+            {
+                mainBuf = _colLinesNormal;
+                faintTrigBuf = _colLinesFaintN;
+            }
 
             if (col is PlanetCollider planetCol)
             {
@@ -2958,7 +3002,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 {
                     ColliderGizmos.CollectSphere(mainBuf, pc, planetCol.MaxRadius, 64);
                 }
-                var faintBuf = isTrigger ? _colLinesFaintT : _colLinesFaintN;
+                var faintBuf = isTrigger ? faintTrigBuf : _colLinesFaintN;
                 ColliderGizmos.CollectSphere(faintBuf, pc, planetCol.BaseRadius, 48);
                 continue;
             }
@@ -3009,7 +3053,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 }
 
                 // Always show faint AABB overlay for mesh colliders
-                var faintBuf = isTrigger ? _colLinesFaintT : _colLinesFaintN;
+                var faintBuf = isTrigger ? faintTrigBuf : _colLinesFaintN;
                 var aabb = mc.GetWorldAABB();
                 ColliderGizmos.CollectAABB(faintBuf, aabb);
                 continue;

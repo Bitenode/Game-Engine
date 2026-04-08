@@ -15,6 +15,7 @@ using Avalonia.Media;
 using Avalonia.VisualTree;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Editor;
 using Game_Engine.Core.Importers;
 
 namespace Game_Engine.Views
@@ -439,18 +440,33 @@ namespace Game_Engine.Views
             var files = await dlg.ShowAsync(win);
             if (files == null || files.Length == 0) return;
 
+            var path = files[0];
+            var prevCursor = Cursor;
+            Cursor = new Cursor(StandardCursorType.Wait);
             try
             {
-                var go = ModelImporter.ImportModel(files[0]);
-                if (_contextTarget == null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
+                GameObject go;
+                try
+                {
+                    go = await EditorJobScheduler.RunAsync(_ => ModelImporter.ImportModel(path));
+                }
+                catch (Exception ex)
+                {
+                    await EditorJobScheduler.InvokeOnUiAsync(() => Log.Error(ex, "Model import failed"));
+                    return;
+                }
 
-                SelectionService.Set(go);
-                SceneService.NotifyChanged();
-                Log.Success("Imported model: " + files[0]);
+                await EditorJobScheduler.InvokeOnUiAsync(() =>
+                {
+                    if (_contextTarget == null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
+                    SelectionService.Set(go);
+                    SceneService.NotifyChanged();
+                    Log.Success("Imported model: " + path);
+                });
             }
-            catch (Exception ex)
+            finally
             {
-                Log.Error(ex, "Model import failed");
+                await EditorJobScheduler.InvokeOnUiAsync(() => { Cursor = prevCursor; });
             }
         }
 

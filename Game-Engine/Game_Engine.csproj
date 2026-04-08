@@ -28,6 +28,7 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.*" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
+    <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.11.0" />
 
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
@@ -56,9 +57,7 @@
     <ItemGroup>
       <_StdAssetFile Include="Standard Assets\**\*" />
     </ItemGroup>
-    <Copy SourceFiles="@(_StdAssetFile)"
-          DestinationFiles="@(_StdAssetFile->'$(TargetDir)%(Identity)')"
-          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_StdAssetFile)" DestinationFiles="@(_StdAssetFile->'$(TargetDir)%(Identity)')" SkipUnchangedFiles="true" />
   </Target>
 
   <!-- Publish does not always pick up files added only via a post-Build Copy; mirror into the publish folder too. -->
@@ -66,10 +65,7 @@
     <ItemGroup>
       <_StdAssetFilePub Include="Standard Assets\**\*" />
     </ItemGroup>
-    <Copy SourceFiles="@(_StdAssetFilePub)"
-          DestinationFiles="@(_StdAssetFilePub->'$(PublishDir)%(Identity)')"
-          SkipUnchangedFiles="true"
-          Condition="'$(PublishDir)' != ''" />
+    <Copy SourceFiles="@(_StdAssetFilePub)" DestinationFiles="@(_StdAssetFilePub->'$(PublishDir)%(Identity)')" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
   </Target>
 
   <ItemGroup>

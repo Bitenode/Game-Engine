@@ -406,14 +406,23 @@ namespace Game_Engine.Core.Component
             foreach (var t in _currentTriggers)
             {
                 if (_previousTriggers.Contains(t))
+                {
                     OnTriggerStay?.Invoke(t);
+                    TriggerDispatcher.DispatchStay(myCollider, t);
+                }
                 else
+                {
                     OnTriggerEnter?.Invoke(t);
+                    TriggerDispatcher.DispatchEnter(myCollider, t);
+                }
             }
             foreach (var t in _previousTriggers)
             {
                 if (!_currentTriggers.Contains(t))
+                {
                     OnTriggerExit?.Invoke(t);
+                    TriggerDispatcher.DispatchExit(myCollider, t);
+                }
             }
             _previousTriggers.Clear();
             foreach (var t in _currentTriggers) _previousTriggers.Add(t);
@@ -472,18 +481,25 @@ namespace Game_Engine.Core.Component
             foreach (var t in _currentTriggers)
             {
                 if (_previousTriggers.Contains(t))
+                {
                     OnTriggerStay?.Invoke(t);
+                    TriggerDispatcher.DispatchStay(myCollider, t);
+                }
                 else
                 {
                     // Wake the body when a trigger first overlaps
                     WakeUp();
                     OnTriggerEnter?.Invoke(t);
+                    TriggerDispatcher.DispatchEnter(myCollider, t);
                 }
             }
             foreach (var t in _previousTriggers)
             {
                 if (!_currentTriggers.Contains(t))
+                {
                     OnTriggerExit?.Invoke(t);
+                    TriggerDispatcher.DispatchExit(myCollider, t);
+                }
             }
             _previousTriggers.Clear();
             foreach (var t in _currentTriggers) _previousTriggers.Add(t);

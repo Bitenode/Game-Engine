@@ -11,6 +11,8 @@ public class GameObject : INotifyPropertyChanged
     GameObject? _parent;
     bool _enabled = true;
     bool _hideInHierarchy = false;
+    string _tag = "Untagged";
+    int _layer;
 
     public string Name
     {
@@ -59,6 +61,34 @@ public class GameObject : INotifyPropertyChanged
             _hideInHierarchy = value;
             OnChanged(nameof(HideInHierarchy));
             Parent?.OnChanged(nameof(HierarchyChildren));
+            SceneService.NotifyChanged();
+        }
+    }
+
+    /// <summary>String tag for filtering (e.g. Player). Used by trigger volumes and gameplay queries.</summary>
+    public string Tag
+    {
+        get => _tag;
+        set
+        {
+            var v = value ?? "Untagged";
+            if (_tag == v) return;
+            _tag = v;
+            OnChanged(nameof(Tag));
+            SceneService.NotifyChanged();
+        }
+    }
+
+    /// <summary>Physics layer index 0–31. Used with layer masks on triggers and queries.</summary>
+    public int Layer
+    {
+        get => _layer;
+        set
+        {
+            var v = value < 0 ? 0 : (value > 31 ? 31 : value);
+            if (_layer == v) return;
+            _layer = v;
+            OnChanged(nameof(Layer));
             SceneService.NotifyChanged();
         }
     }

@@ -267,7 +267,11 @@ Displays and edits properties of the selected GameObject. Supports single and mu
 ### Header
 - **Enabled checkbox** — toggle next to the name field. Unchecking disables the entire GameObject and all its children: they are hidden from the scene, skipped during Update/FixedUpdate/LateUpdate, excluded from scene queries (`SceneQuery.FindBehaviors`), and shown in red in the Hierarchy. This does not change the individual component `Enabled` flags — it overrides them at the GameObject level.
 - **GameObject name** — editable text field
-- **LogLifecycle** checkbox — debug toggle that logs behavior lifecycle calls to the Console
+
+### Object (Tag & Layer)
+Below **Name**, the **Object** section edits:
+- **Tag** — string label (default `Untagged`), saved with the scene. Used by **`TriggerVolume`** filters, gameplay queries, and scripting.
+- **Layer** — integer **0–31**, saved with the scene. Used with **`TriggerVolume.LayerMask`** and future physics filtering.
 
 ### Components
 Each component (Behavior) on the selected object shows:
@@ -275,7 +279,7 @@ Each component (Behavior) on the selected object shows:
 - **Component name** — type label (e.g., "Transform", "MeshRenderer", "PlayerMovement")
 - **Copy** — serializes the component with the same rules as scene save; use **Paste component** (below **Add Component**) to add a duplicate instance on this or another GameObject. Transform is not copyable.
 - **Remove button** — delete the component (Transform cannot be removed)
-- **Properties** — all `[Persist]`-marked properties with type-appropriate editors
+- **Properties** — all `[Persist]`-marked properties with type-appropriate editors (plus a few runtime-only rows with custom UI, e.g. **`ReflectionProbe`** **GpuCubemap** status and **Request recapture** — not a texture file slot).
 
 **Paste component** appears above **+ Add Component** and applies the last copied component to the current GameObject.
 
@@ -308,8 +312,8 @@ Click the **"+ Add Component"** button at the bottom of the Inspector to open a 
 | **Misc** | Any components without a category annotation |
 | **Navigation** | NavMeshAgent |
 | **Networking** | NetworkAnimator, NetworkIdentity, NetworkTransform |
-| **Physics** | BoxCollider, CapsuleCollider, CharacterController, MeshCollider, PlayerMovement, Rigidbody, RigidbodyPlayer |
-| **Rendering** | Camera, Light, MeshFilter, MeshRenderer, SkinnedMeshRenderer |
+| **Physics** | BoxCollider, CapsuleCollider, CharacterController, MeshCollider, PlayerMovement, Rigidbody, RigidbodyPlayer, TriggerVolume |
+| **Rendering** | Camera, Light, MeshFilter, MeshRenderer, MeshLodGroup, ReflectionProbe, SkinnedMeshRenderer |
 | **Timeline** | TimelinePlayer |
 | **UI** | Canvas, RectTransform, UIButton, UIElement, UIImage, UIInputField, UIPanel, UIProgressBar, UISlider, UIText, UIToggle |
 | **Scripts** | Any custom Behavior scripts compiled from `Assets/` or `Packages/` |
@@ -337,6 +341,8 @@ Several built-in components have dedicated custom inspectors:
 | Component | Inspector Features |
 |-----------|-------------------|
 | **PlanetVegetationSystem** | Planet Vegetation runtime controls — live `Leaf Groups` / `Instances` stats, `Full Biome Populate` mode toggle, and one-click `Spawn Vegetation (Scene View)` / `Respawn (Clear + Spawn)` actions |
+| **ReflectionProbe** | **GpuCubemap** — explains runtime GPU cubemap allocation (not an importable 2D texture); **Request recapture** sets `NeedsCapture` |
+| **TriggerVolume** | **On enter** / **On exit** reaction rows (`LoadScene`, `SetObjectEnabled`, `PublishChannel`) with parallel list persistence |
 | **DialogueRunner** | Dialogue tree editor — node list with type/speaker/text, choice linking, variable store, voice clip paths per node, dialogue mode selector (Text / Voice / Both) |
 | **BehaviorTreeRunner** | Behavior tree editor — hierarchical node view with type selectors, child management, blackboard key-value editor, tick interval and running state |
 | **TimelinePlayer** | Timeline asset editor — name/duration/loop, playback status, track list with type badges and mute toggles, per-clip start/duration/blend/speed editors, track-type-specific fields |

@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Linq;
+using Game_Engine.Core.Rendering;
 
 namespace Game_Engine.Core
 {
@@ -150,6 +151,7 @@ namespace Game_Engine.Core
 
             Current = proj;
             EnsureFolders(proj);
+            ProjectRenderingSettings.Load(proj);
             ProjectOpened?.Invoke();
             Changed?.Invoke();
         }
@@ -162,6 +164,7 @@ namespace Game_Engine.Core
         {
             Current = proj;
             EnsureFolders(proj);
+            ProjectRenderingSettings.Load(proj);
         }
 
         public static void Close()

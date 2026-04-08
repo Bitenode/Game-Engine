@@ -188,6 +188,55 @@ The CharacterController uses the terrain's O(1) `SampleHeightWorld()` for ground
 
 ---
 
+## Triggers and `TriggerVolume`
+
+### `Collider.IsTrigger`
+
+Any `BoxCollider`, `CapsuleCollider`, or `MeshCollider` can set **`IsTrigger`**. Trigger colliders are listed in `PhysicsCache.TriggerColliders`, are skipped by `CollisionWorld` contact resolution, and do not generate blocking collision response. Overlaps are detected by **`CharacterController`** and **`Rigidbody`** using AABB tests against trigger volumes.
+
+### `Behavior` callbacks (Unity-style)
+
+When a body overlaps a trigger, the engine invokes **`OnTriggerEnter`**, **`OnTriggerStay`**, and **`OnTriggerExit`** on **every enabled `Behavior`** on **both** GameObjects: the listener’s collider side receives `other` = the trigger collider, and the trigger’s GameObject receives `other` = the listener collider. Existing **`Rigidbody` / `CharacterController` C# events** (`OnTriggerEnter` etc.) still fire as well.
+
+Implement gameplay by overriding these virtual methods on your scripts, or add a **`TriggerVolume`** component for inspector-driven presets.
+
+### `GameObject.Tag` and `GameObject.Layer`
+
+**Tag** is a string (default `Untagged`). **Layer** is an integer **0–31**. `TriggerVolume` can filter with **`LayerMask`** (bit mask) and optional **`TagFilter`**.
+
+### `TriggerVolume` component
+
+Add **`TriggerVolume`** (Physics category) on the same GameObject as a **trigger** collider. Configure:
+
+| Field | Role |
+|--------|------|
+| **Preset** | `Custom`, `DamageZone`, `Checkpoint`, `SceneLoad`, `Activation` |
+| **LayerMask** | If not zero, only overlapping objects whose **Layer** bit is set are handled |
+| **TagFilter** | If non-empty, overlapping object’s **Tag** must match exactly |
+| **OneShot** | After the first qualifying **Enter**, the `TriggerVolume` behavior disables itself |
+| **CooldownSeconds** | Minimum time between **Enter** handling |
+| **DamagePerSecond** | `DamageZone` only: applied on **Stay** to `IDamageable` on the **other** object |
+| **PlayerTag** | `Checkpoint` only: tags that may set the checkpoint (default `Player`) |
+| **SceneName** | `SceneLoad` preset: argument to `SceneManager.LoadScene` |
+| **TargetPathOrName** | `Activation` preset: hierarchy path `Root/Child` or first matching **Name** in the scene |
+| **EnableTargetOnEnter** / **DisableTargetOnExit** | Toggle target `GameObject.Enabled` |
+
+**Checkpoint** stores the instigator position in **`CheckpointService`** (`LastCheckpointPosition`, `HasCheckpoint`) for your respawn logic.
+
+### Inspector reactions (no C#)
+
+Under **On enter** / **On exit**, add rows: **Kind** (`LoadScene`, `SetObjectEnabled`, `PublishChannel`), **Primary** string, and **Bool** (for `SetObjectEnabled`). `PublishChannel` raises **`TriggerVolumeSignal`** on **`EventBus`**; subscribe with `EventBus.Subscribe<TriggerVolumeSignal>(handler)` and read **`Channel`**.
+
+### Scene view colors
+
+Trigger wireframes use **blue** (neutral / custom / scene load / activation), **red** (`DamageZone`), or **green** (`Checkpoint`) when a **`TriggerVolume`** is present on the same GameObject. Solid colliders stay **DeepSkyBlue** as before.
+
+### Limitations
+
+Only objects simulated with **`CharacterController`** or **`Rigidbody`** generate trigger overlap checks today. Mesh trigger tests use **AABB** approximation. For sample damage handling, see **`Health`** in Standard Assets (`IDamageable`).
+
+---
+
 ## PlayerMovement
 
 First-person / third-person player controller that integrates input, camera control, and physics via the CharacterController.
@@ -303,15 +352,18 @@ Per-frame caching system for physics queries. Avoids redundant collision tests w
 
 ## Collider Gizmos
 
-In the Scene View, collider shapes are visualized as green wireframes when gizmos are enabled:
+In the Scene View, collider wireframes use the **Wireframe** shader in the gizmo GL pass (toggle with the Scene View **Gizmo** control).
 
-| Collider Type | Gizmo |
-|---------------|-------|
-| BoxCollider | Green wireframe cube showing the box extents |
-| CapsuleCollider | Green wireframe capsule with hemisphere caps at both ends |
-| MeshCollider | Green wireframe of the collision mesh triangles |
+| Kind | Color / style |
+|------|----------------|
+| **Solid colliders** (`IsTrigger` = false) | DeepSkyBlue-style wireframe (box, capsule, mesh, etc.) |
+| **Triggers** (generic, no `TriggerVolume`) | Semi-transparent **blue** wire |
+| **`TriggerVolume` + DamageZone** | Semi-transparent **red** |
+| **`TriggerVolume` + Checkpoint** | Semi-transparent **green** |
+| **Other `TriggerVolume` presets** | Same neutral **blue** as generic triggers |
+| **MeshCollider** | Full wireframe when triangle count is modest; faint **AABB** overlay when too dense |
 
-Toggle visibility with the **Gizmo** button in the Scene View toolbar. Gizmos are rendered using the Wireframe shader in the Gizmo Pass (after the main scene rendering).
+Selection outline uses a separate highlight pass.
 
 ---
 

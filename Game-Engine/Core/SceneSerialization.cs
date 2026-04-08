@@ -212,6 +212,8 @@ namespace Game_Engine.Core
             {
                 Name = go.Name,
                 Enabled = go.Enabled ? null : false,   // only write when disabled (keeps files clean)
+                Tag = go.Tag == "Untagged" ? null : go.Tag,
+                Layer = go.Layer == 0 ? null : go.Layer,
                 Transform = new TransformDTO
                 {
                     LocalPosition = go.Transform.Position,
@@ -233,6 +235,8 @@ namespace Game_Engine.Core
             {
                 Name = go.Name,
                 Enabled = go.Enabled ? null : false,
+                Tag = go.Tag == "Untagged" ? null : go.Tag,
+                Layer = go.Layer == 0 ? null : go.Layer,
                 Transform = new TransformDTO
                 {
                     LocalPosition = go.Transform.Position,
@@ -253,6 +257,11 @@ namespace Game_Engine.Core
 
             if (dto.Enabled.HasValue)
                 go.Enabled = dto.Enabled.Value;
+
+            if (dto.Tag != null)
+                go.Tag = dto.Tag;
+            if (dto.Layer.HasValue)
+                go.Layer = dto.Layer.Value;
 
             if (dto.Transform != null)
             {
@@ -1366,6 +1375,12 @@ namespace Game_Engine.Core
                 }
             }
 
+            if (ProjectService.Current != null)
+            {
+                MaterialUtil.TryBindColAlphaSiblingMaps(mat, ProjectService.Current.RootPath);
+                MaterialUtil.EnsureOpaqueFoliageCutout(mat);
+            }
+
             return mat;
 
             // ---- local helpers (C# 7.3-friendly) ---------------------------------
@@ -1405,6 +1420,8 @@ namespace Game_Engine.Core
                             m.Transparent = true;
                         if (param.TryGetProperty("AlphaCutoff", out je) && je.ValueKind == JsonValueKind.Number)
                             m.AlphaCutoff = (float)je.GetDouble();
+                        if (param.TryGetProperty("LumaClip", out je) && je.ValueKind == JsonValueKind.Number)
+                            m.LumaClip = (float)je.GetDouble();
                     }
 
                     // textures (flat) or textures.obj { Albedo/Roughness/Metallic/AmbientOcclusion/Emissive/Opacity/Normal/Specular: "path" }
@@ -1439,6 +1456,9 @@ namespace Game_Engine.Core
                     if (string.IsNullOrWhiteSpace(m.Name))
                         m.Name = Path.GetFileNameWithoutExtension(absPath);
 
+                    if (ProjectService.Current != null)
+                        MaterialUtil.TryBindColAlphaSiblingMaps(m, ProjectService.Current.RootPath);
+                    MaterialUtil.EnsureOpaqueFoliageCutout(m);
                     return m;
                 }
             }
@@ -1641,6 +1661,8 @@ namespace Game_Engine.Core
     {
         public string? Name { get; set; }
         public bool? Enabled { get; set; }
+        public string? Tag { get; set; }
+        public int? Layer { get; set; }
         public TransformDTO? Transform { get; set; }
         public List<BehaviorDTO>? Behaviors { get; set; }
         public List<GameObjectDTO>? Children { get; set; }

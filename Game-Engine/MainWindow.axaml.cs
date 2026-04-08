@@ -41,6 +41,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        Opened += (_, __) => EditorJobScheduler.AttachDispatcher(Dispatcher.UIThread);
+
         _dock = new DockManager(LeftTabs, CenterTabs, CenterGameTabs, RightTabs, BottomLeftTabs, BottomTabs);
 
         // Register panels

@@ -270,7 +270,15 @@ public partial class InspectorPanel : UserControl
                          p.Name != nameof(MeshLodGroup.Lod1Distance) &&
                          p.Name != nameof(MeshLodGroup.Lod2Distance) &&
                          p.Name != nameof(MeshLodGroup.Lod3Distance) &&
-                         p.Name != nameof(MeshLodGroup.CurrentLodLevel)));
+                         p.Name != nameof(MeshLodGroup.CurrentLodLevel)))
+            .Where(p => !(b is TriggerVolume) ||
+                        (p.Name != nameof(TriggerVolume.OnEnterKinds) &&
+                         p.Name != nameof(TriggerVolume.OnEnterStrings) &&
+                         p.Name != nameof(TriggerVolume.OnEnterBools) &&
+                         p.Name != nameof(TriggerVolume.OnExitKinds) &&
+                         p.Name != nameof(TriggerVolume.OnExitStrings) &&
+                         p.Name != nameof(TriggerVolume.OnExitBools)))
+            .Where(p => !(b is ReflectionProbe) || p.Name != nameof(ReflectionProbe.GpuCubemap));
     }
 
     // Default property panel (what we previously inlined)
@@ -313,6 +321,9 @@ public partial class InspectorPanel : UserControl
             row.Children.Add(PropertyEditor(b, p));
             panel.Children.Add(row);
         }
+
+        if (b is ReflectionProbe rpProbe)
+            panel.Children.Add(ReflectionProbeGpuCubemapRow(rpProbe));
 
         // ── VegetationPainter: Build / Rebuild / Clear buttons + instance count ──
         if (b is Game_Engine.Core.Component.VegetationPainter vp)
@@ -1710,6 +1721,9 @@ public partial class InspectorPanel : UserControl
 
         Host.Children.Add(nameRow);
 
+        Host.Children.Add(SectionHeader("Object"));
+        Host.Children.Add(BuildObjectTagLayerRow(go));
+
         // ---- Transform (mandatory) -----------------------------------------
         Host.Children.Add(SectionHeader("Transform"));
         Host.Children.Add(EditorForTransform(go.Transform));
@@ -2040,6 +2054,9 @@ public partial class InspectorPanel : UserControl
 
             Host.Children.Add(nameRow);
 
+            Host.Children.Add(SectionHeader("Object"));
+            Host.Children.Add(BuildObjectTagLayerRow(go));
+
             // ---- Transform ----
             Host.Children.Add(SectionHeader("Transform"));
             Host.Children.Add(EditorForTransform(go.Transform));
@@ -2108,7 +2125,7 @@ public partial class InspectorPanel : UserControl
             float metallic = ReadF(p, "Metallic", 0f);
             float roughness = ReadF(p, "Roughness", 0.5f);
             bool transparent = ReadB(p, "Transparent", false);
-            float cutoff = ReadF(p, "AlphaCutoff", 0.5f);
+            float cutoff = ReadF(p, "AlphaCutoff", 0f);
 
             // Build into the existing Host container
             Host.Children.Clear();
@@ -2167,6 +2184,174 @@ public partial class InspectorPanel : UserControl
         FontWeight = FontWeight.Bold,
         Margin = new Thickness(0, 6, 0, 2)
     };
+
+    Control BuildObjectTagLayerRow(GameObject go)
+    {
+        var sp = new StackPanel { Spacing = 4, Margin = new Thickness(0, 0, 0, 8) };
+        var tagTb = new TextBox { MinWidth = 200 };
+        tagTb.Bind(TextBox.TextProperty, new Binding(nameof(GameObject.Tag)) { Source = go, Mode = BindingMode.TwoWay });
+        var pTag = typeof(GameObject).GetProperty(nameof(GameObject.Tag))!;
+        tagTb.GotFocus += (_, __) => BeginPropertyEdit(go, pTag);
+        tagTb.LostFocus += (_, __) => CommitPropertyEdit(go, pTag);
+        sp.Children.Add(InspectorLabeledRow("Tag", tagTb));
+
+        var layerTb = new TextBox { Width = 56, Text = go.Layer.ToString() };
+        var pLayer = typeof(GameObject).GetProperty(nameof(GameObject.Layer))!;
+        layerTb.GotFocus += (_, __) => BeginPropertyEdit(go, pLayer);
+        layerTb.LostFocus += (_, __) =>
+        {
+            if (int.TryParse(layerTb.Text, out var li)) go.Layer = li;
+            layerTb.Text = go.Layer.ToString();
+            CommitPropertyEdit(go, pLayer);
+        };
+        sp.Children.Add(InspectorLabeledRow("Layer (0–31)", layerTb));
+        return sp;
+    }
+
+    /// <summary>Runtime GPU cubemap is not a project asset; show status + recapture instead of a bogus type label.</summary>
+    Control ReflectionProbeGpuCubemapRow(ReflectionProbe probe)
+    {
+        var outer = new StackPanel { Spacing = 6, Margin = new Thickness(0, 2, 0, 4) };
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        head.Children.Add(new TextBlock
+        {
+            Text = "GpuCubemap",
+            Width = 120,
+            VerticalAlignment = VerticalAlignment.Top,
+            FontWeight = FontWeight.SemiBold
+        });
+
+        var col = new StackPanel { Spacing = 4, MaxWidth = 420 };
+        var tex = probe.GpuCubemap;
+        string detail;
+        if (tex == null || tex.Handle == 0)
+        {
+            detail = "Not allocated yet. The renderer creates this cubemap when Scene view, Game view, or play mode initializes probe GPU resources (see ReflectionProbe.EnsureGpuResources). It is not a file you assign here.";
+        }
+        else
+        {
+            detail = $"Runtime RGBA8 cubemap — {tex.Width}×{tex.Width} per face, OpenGL texture handle {tex.Handle}. Filled by the engine’s reflection capture; not editable as a 2D import.";
+            if (probe.NeedsCapture)
+                detail += " Pending capture.";
+        }
+
+        col.Children.Add(new TextBlock
+        {
+            Text = detail,
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.92,
+            FontSize = 12
+        });
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var recapture = new Button { Content = "Request recapture", Padding = new Thickness(10, 4) };
+        recapture.Click += (_, __) =>
+        {
+            probe.NeedsCapture = true;
+            SceneService.NotifyChanged();
+            if (probe.gameObject != null)
+                BuildUI(probe.gameObject);
+        };
+        actions.Children.Add(recapture);
+        col.Children.Add(actions);
+
+        head.Children.Add(col);
+        outer.Children.Add(head);
+        return outer;
+    }
+
+    Control TriggerVolumeReactionsUI(GameObject owner, TriggerVolume tv)
+    {
+        var root = new StackPanel { Spacing = 6, Margin = new Thickness(0, 4, 0, 0) };
+        root.Children.Add(new TextBlock
+        {
+            Text = "Reactions: LoadScene uses Primary as scene name; SetObjectEnabled uses Primary as hierarchy path or object name and Bool as enabled; PublishChannel sends TriggerVolumeSignal on EventBus.",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.75,
+            FontSize = 11
+        });
+        root.Children.Add(SectionHeader("On enter"));
+        root.Children.Add(BuildTriggerReactionList(owner, tv.OnEnterKinds, tv.OnEnterStrings, tv.OnEnterBools));
+        root.Children.Add(SectionHeader("On exit"));
+        root.Children.Add(BuildTriggerReactionList(owner, tv.OnExitKinds, tv.OnExitStrings, tv.OnExitBools));
+        return root;
+    }
+
+    static void AlignTriggerReactionLists(List<string> kinds, List<string> strings, List<bool> bools)
+    {
+        while (strings.Count < kinds.Count) strings.Add("");
+        while (bools.Count < kinds.Count) bools.Add(false);
+        while (strings.Count > kinds.Count) strings.RemoveAt(strings.Count - 1);
+        while (bools.Count > kinds.Count) bools.RemoveAt(bools.Count - 1);
+    }
+
+    Control BuildTriggerReactionList(GameObject owner, List<string> kinds, List<string> strings, List<bool> bools)
+    {
+        AlignTriggerReactionLists(kinds, strings, bools);
+        var box = new StackPanel { Spacing = 4 };
+        var kindNames = Enum.GetNames(typeof(TriggerReactionKind));
+
+        for (int i = 0; i < kinds.Count; i++)
+        {
+            int idx = i;
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+            var kindCb = new ComboBox { MinWidth = 140, ItemsSource = kindNames, SelectedItem = kinds[idx] };
+            kindCb.SelectionChanged += (_, __) =>
+            {
+                if (kindCb.SelectedItem is string sel) { kinds[idx] = sel; SceneService.NotifyChanged(); }
+            };
+            row.Children.Add(kindCb);
+
+            var primTb = new TextBox
+            {
+                MinWidth = 160,
+                Watermark = "Scene / path / channel",
+                Text = idx < strings.Count ? strings[idx] : ""
+            };
+            primTb.LostFocus += (_, __) =>
+            {
+                AlignTriggerReactionLists(kinds, strings, bools);
+                strings[idx] = primTb.Text ?? "";
+                SceneService.NotifyChanged();
+            };
+            row.Children.Add(primTb);
+
+            var boolCb = new CheckBox { Content = "Bool", IsChecked = idx < bools.Count && bools[idx] };
+            boolCb.IsCheckedChanged += (_, __) =>
+            {
+                AlignTriggerReactionLists(kinds, strings, bools);
+                bools[idx] = boolCb.IsChecked == true;
+                SceneService.NotifyChanged();
+            };
+            row.Children.Add(boolCb);
+
+            var rm = new Button { Content = "×", Padding = new Thickness(6, 0), Margin = new Thickness(4, 0, 0, 0) };
+            rm.Click += (_, __) =>
+            {
+                if (idx < 0 || idx >= kinds.Count) return;
+                kinds.RemoveAt(idx);
+                AlignTriggerReactionLists(kinds, strings, bools);
+                SceneService.NotifyChanged();
+                BuildUI(owner);
+            };
+            row.Children.Add(rm);
+            box.Children.Add(row);
+        }
+
+        var add = new Button { Content = "+ Add reaction", HorizontalAlignment = HorizontalAlignment.Left };
+        add.Click += (_, __) =>
+        {
+            kinds.Add(nameof(TriggerReactionKind.PublishChannel));
+            strings.Add("");
+            bools.Add(false);
+            AlignTriggerReactionLists(kinds, strings, bools);
+            SceneService.NotifyChanged();
+            BuildUI(owner);
+        };
+        box.Children.Add(add);
+        return box;
+    }
 
     void TryAppendUICustomInspector(StackPanel panel, Behavior b)
     {
@@ -2519,6 +2704,9 @@ public partial class InspectorPanel : UserControl
         // MeshCollider extra UI
         if (b is MeshCollider mc)
             outer.Children.Add(MeshColliderTargetRow(owner, mc));
+
+        if (b is TriggerVolume trigVol)
+            outer.Children.Add(TriggerVolumeReactionsUI(owner, trigVol));
 
         // Terrain extra UI (tools + brush masks + layers)
         if (b is Terrain terr)

@@ -1,7 +1,10 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.IO;
+using Game_Engine.Core;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Rendering;
 using Silk.NET.OpenGL;
 
 namespace Game_Engine.Core.Rendering.GPU;
@@ -17,7 +20,30 @@ public sealed class ResourceCache : IDisposable
 
     // Mesh → GPU mesh, keyed by reference identity
     private readonly Dictionary<Mesh, GPUMeshEntry> _meshes = new(64);
-    private readonly Dictionary<Texture2D, GPUTexture> _textures = new(64);
+    private readonly Dictionary<TexBindKey, GPUTexture> _textures = new(64);
+
+    /// <summary>After BCn GPU upload fails, skip re-attempting compression every frame (use RGBA path).</summary>
+    private readonly HashSet<(Texture2D Tex, MaterialTexture.TexUsage Usage)> _skipBcnCompress = new(64);
+
+    private readonly struct TexBindKey : IEquatable<TexBindKey>
+    {
+        public Texture2D Tex { get; }
+        public MaterialTexture.TexUsage Usage { get; }
+        public bool GpuCompressed { get; }
+
+        public TexBindKey(Texture2D tex, MaterialTexture.TexUsage usage, bool gpuCompressed)
+        {
+            Tex = tex;
+            Usage = usage;
+            GpuCompressed = gpuCompressed;
+        }
+
+        public bool Equals(TexBindKey o) =>
+            ReferenceEquals(Tex, o.Tex) && Usage == o.Usage && GpuCompressed == o.GpuCompressed;
+
+        public override bool Equals(object? obj) => obj is TexBindKey k && Equals(k);
+        public override int GetHashCode() => HashCode.Combine(Tex, Usage, GpuCompressed);
+    }
 
     // Per-context terrain splatmap textures (avoids cross-context GL issues)
     // Also tracks the splatmap version last uploaded so each context re-uploads independently.
@@ -41,6 +67,7 @@ public sealed class ResourceCache : IDisposable
     public void InvalidateAll()
     {
         _globalVersion++;
+        _skipBcnCompress.Clear();
     }
 
     /// <summary>
@@ -74,6 +101,7 @@ public sealed class ResourceCache : IDisposable
 
         _globalVersion++;
         FlushRequested = false;
+        _skipBcnCompress.Clear();
     }
 
     /// <summary>
@@ -119,17 +147,92 @@ public sealed class ResourceCache : IDisposable
     }
 
     /// <summary>
-    /// Get or create a GPUTexture for the given engine Texture2D.
+    /// Get or create a GPUTexture for the given engine Texture2D (RGBA8 path).
     /// </summary>
-    public GPUTexture GetTexture(Texture2D tex)
+    public GPUTexture GetTexture(Texture2D tex) => GetTexture(tex, null);
+
+    /// <summary>
+    /// Get or create a GPUTexture; when <paramref name="materialSlot"/> is set, may upload BCn-compressed mips from a sidecar .dds.
+    /// </summary>
+    public GPUTexture GetTexture(Texture2D tex, MaterialTexture? materialSlot)
     {
-        if (_textures.TryGetValue(tex, out var gpuTex))
+        GpuCompressionCaps.Initialize(_gl);
+        var usage = materialSlot?.Usage ?? MaterialTexture.TexUsage.Albedo;
+
+        if (materialSlot != null && TextureBcCompression.ShouldCompressMaterialSlot(materialSlot, tex)
+            && !_skipBcnCompress.Contains((tex, usage)))
+        {
+            var ckey = new TexBindKey(tex, usage, true);
+            if (_textures.TryGetValue(ckey, out var cachedC))
+                return cachedC;
+
+            if (TryCreateCompressedTexture(tex, materialSlot, out var gpuC, out bool skipBcn) && gpuC != null)
+            {
+                _textures[ckey] = gpuC;
+                return gpuC;
+            }
+            if (skipBcn)
+                _skipBcnCompress.Add((tex, usage));
+        }
+
+        var key = new TexBindKey(tex, usage, false);
+        if (_textures.TryGetValue(key, out var gpuTex))
             return gpuTex;
 
         gpuTex = new GPUTexture(_gl);
         gpuTex.Upload(tex);
-        _textures[tex] = gpuTex;
+        _textures[key] = gpuTex;
         return gpuTex;
+    }
+
+    bool TryCreateCompressedTexture(Texture2D tex, MaterialTexture slot, out GPUTexture? gpu, out bool skipFutureCompressionAttempts)
+    {
+        gpu = null;
+        skipFutureCompressionAttempts = false;
+        string? abs = TextureBcCompression.ResolveAbsoluteImagePath(slot.SourcePath);
+        if (string.IsNullOrEmpty(abs) || !File.Exists(abs))
+            abs = tex.SourcePath;
+        if (string.IsNullOrEmpty(abs) || !File.Exists(abs))
+            return false;
+
+        bool hasAlpha = TextureBcCompression.HasMeaningfulAlpha(tex.Rgba, tex.Width, tex.Height);
+        var wantFmt = TextureBcCompression.ChooseFormat(slot.Usage, hasAlpha, GpuCompressionCaps.Bptc);
+        if (!TextureBcCompression.IsFormatUploadSupported(wantFmt))
+        {
+            skipFutureCompressionAttempts = true;
+            return false;
+        }
+
+        string ddsPath = TextureBcCompression.GetSidecarDdsPath(abs);
+        bool ddsStale = !File.Exists(ddsPath)
+            || (File.Exists(abs) && File.GetLastWriteTimeUtc(ddsPath) < File.GetLastWriteTimeUtc(abs));
+        if (ddsStale)
+        {
+            if (!TextureBcCompression.TryEnsureSidecarDds(abs, tex.Rgba, tex.Width, tex.Height, wantFmt))
+                return false;
+        }
+
+        if (!TextureBcCompression.TryLoadDdsForGpu(ddsPath, out var dds, out var bcFmt) || dds == null)
+            return false;
+        if (!TextureBcCompression.IsFormatUploadSupported(bcFmt))
+        {
+            skipFutureCompressionAttempts = true;
+            return false;
+        }
+
+        gpu = new GPUTexture(_gl);
+        if (!gpu.TryUploadCompressedFromDds(dds, bcFmt, out bool stripSidecar))
+        {
+            gpu.Dispose();
+            gpu = null;
+            skipFutureCompressionAttempts = true;
+            if (stripSidecar)
+            {
+                try { File.Delete(ddsPath); } catch { /* ignore */ }
+            }
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -196,5 +299,6 @@ public sealed class ResourceCache : IDisposable
 
         _whiteTex?.Dispose();
         _whiteTex = null;
+        _skipBcnCompress.Clear();
     }
 }

@@ -4,6 +4,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Game_Engine.Core;
+using Game_Engine.Core.Rendering;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -54,6 +55,14 @@ namespace Game_Engine.Views
 
             // Update output path when platform changes
             PlatformBox.SelectionChanged += (_, __) => RefreshOutputPath();
+
+            ProjectRenderingSettings.Load(ProjectService.Current);
+            DeferredRenderingCheck.IsChecked = ProjectRenderingSettings.UseDeferredRendering;
+            DeferredRenderingCheck.IsCheckedChanged += (_, __) =>
+            {
+                if (DeferredRenderingCheck.IsChecked is bool b)
+                    ProjectRenderingSettings.Save(ProjectService.Current, b);
+            };
 
             BtnBuild.Click       += OnBuildClicked;
             BtnBuildAndRun.Click += OnBuildAndRunClicked;

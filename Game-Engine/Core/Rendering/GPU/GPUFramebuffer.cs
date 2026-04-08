@@ -139,9 +139,9 @@ public sealed class GPUFramebuffer : IDisposable
         ColorTextures[2] = new GPUTexture(_gl);
         ColorTextures[2].CreateColor(width, height);
 
-        // Depth (Depth24)
+        // Depth + stencil (DEPTH24_STENCIL8), fallback to depth-only on GLES / limited drivers
         DepthTexture = new GPUTexture(_gl);
-        DepthTexture.CreateDepth(width, height);
+        DepthTexture.CreateDepthStencil24(width, height);
 
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
 
@@ -155,7 +155,7 @@ public sealed class GPUFramebuffer : IDisposable
             FramebufferAttachment.ColorAttachment2,
             TextureTarget.Texture2D, ColorTextures[2].Handle, 0);
         _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
-            FramebufferAttachment.DepthAttachment,
+            FramebufferAttachment.DepthStencilAttachment,
             TextureTarget.Texture2D, DepthTexture.Handle, 0);
 
         unsafe
@@ -171,7 +171,17 @@ public sealed class GPUFramebuffer : IDisposable
 
         var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (status != GLEnum.FramebufferComplete)
-            System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] G-Buffer FBO incomplete: {status}");
+        {
+            DepthTexture.Dispose();
+            DepthTexture = new GPUTexture(_gl);
+            DepthTexture.CreateDepth(width, height);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+                FramebufferAttachment.DepthAttachment,
+                TextureTarget.Texture2D, DepthTexture.Handle, 0);
+            status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (status != GLEnum.FramebufferComplete)
+                System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] G-Buffer FBO incomplete: {status}");
+        }
     }
 
     /// <summary>Bind this FBO as the render target.</summary>

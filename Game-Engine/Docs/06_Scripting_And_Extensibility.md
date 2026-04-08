@@ -12,6 +12,25 @@ C# scripts can subscribe to `BlueprintMessageEvent` and continue to own heavy lo
 
 ---
 
+## Editor background jobs (`EditorJobs`)
+
+Heavy CPU work (for example model import or large file preparation) can freeze the editor if it runs on the UI thread. The engine provides **`Game_Engine.Core.Editor.EditorJobs`** (wrapping **`EditorJobScheduler`**) for editor code and hot-reload editor scripts:
+
+| API | Purpose |
+|-----|--------|
+| `EditorJobs.RunCpuAsync(ct => …)` | Run CPU-bound work on the thread pool. At most **two** heavy jobs run at once; pass a `CancellationToken` and honor it inside the callback for cooperative cancel. |
+| `EditorJobs.PostToUi(action, priority?)` | Queue work on the UI dispatcher without waiting (priority uses `EditorUiPostPriority`, not Avalonia types). |
+| `EditorJobs.InvokeOnUiAsync(action, priority?)` | `await` UI-thread execution of an `Action`. |
+| `EditorJobs.RunOnUiAsync(() => …)` | Same for a function that returns a value. |
+
+**Thread rules:** Inside `RunCpuAsync`, do **not** mutate the scene graph, `GameObject` hierarchies, selection, or any OpenGL or control state. Use that phase only for computation, parsing, or other thread-safe IO. When you have a result, call **`InvokeOnUiAsync`** or **`PostToUi`** to attach objects, call `SceneService.NotifyChanged()`, update the inspector, or log to the editor console. Play mode and **`Behavior` lifecycle methods** stay single-threaded unless the engine is redesigned for that.
+
+**Scope:** This improves responsiveness for CPU spikes; it does **not** by itself move **`SceneView` / `GameView`** compositing off the UI thread (that would need a separate rendering architecture).
+
+**Built-in usage:** The Hierarchy panel’s **Import model** command runs `ModelImporter.ImportModel` via **`EditorJobScheduler.RunAsync`**, then parents the result and updates selection on the UI thread (`InvokeOnUiAsync`). **`MainWindow`** attaches the Avalonia dispatcher on **`Opened`** (`EditorJobScheduler.AttachDispatcher(Dispatcher.UIThread)`).
+
+---
+
 ## C# Scripting
 
 ### Writing a Script
