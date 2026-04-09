@@ -36,6 +36,9 @@ namespace Game_Engine.Core.Networking
         public double Latency { get; internal set; }
         public DateTime ConnectedAt { get; internal set; }
 
+        /// <summary>UTC time of the last inbound packet from this peer (keepalive / timeout).</summary>
+        public DateTime LastHeardUtc { get; internal set; }
+
         /// <summary>User-assigned data for this peer (e.g., player name).</summary>
         public object? UserData { get; set; }
     }
@@ -81,6 +84,16 @@ namespace Game_Engine.Core.Networking
         private int _nextPeerId = 1;
         private bool _isServer;
         private int _localPort;
+        private DateTime _lastServerWidePingUtc;
+
+        /// <summary>Remove peers that send nothing for this long (client crash, closed app, lost route).</summary>
+        const double PeerIdleTimeoutSeconds = 12.0;
+
+        /// <summary>Server sends <see cref="MSG_PING"/> this often so idle clients still refresh <see cref="NetworkPeer.LastHeardUtc"/>.</summary>
+        const double ServerPingIntervalSeconds = 3.0;
+
+        /// <summary>Client gives up waiting for <see cref="MSG_CONNECT_ACK"/>.</summary>
+        const double ClientConnectTimeoutSeconds = 10.0;
 
         // ── Reliability ──
         private uint _sequenceNumber;
@@ -116,6 +129,7 @@ namespace Game_Engine.Core.Networking
             _isServer = true;
             _localPort = port;
             _udp = new UdpClient(port);
+            _lastServerWidePingUtc = DateTime.UtcNow;
             StartReceiveThread();
             Log.Info($"[Network] Server started on port {port}.");
         }
@@ -130,13 +144,14 @@ namespace Game_Engine.Core.Networking
             _udp = new UdpClient(0); // Bind to any available port
             _localPort = ((IPEndPoint)_udp.Client.LocalEndPoint!).Port;
 
-            var serverEP = new IPEndPoint(IPAddress.Parse(host), port);
+            var serverEP = NormalizeEndPoint(new IPEndPoint(IPAddress.Parse(host), port));
             var peer = new NetworkPeer
             {
                 PeerId = 0, // Server is always peer 0 for clients
                 EndPoint = serverEP,
                 State = ConnectionState.Connecting,
-                ConnectedAt = DateTime.UtcNow
+                ConnectedAt = DateTime.UtcNow,
+                LastHeardUtc = DateTime.UtcNow
             };
             _peers[0] = peer;
 
@@ -206,6 +221,7 @@ namespace Game_Engine.Core.Networking
 
             // Retry unacknowledged reliable messages
             RetryPending();
+            UpdateTimeoutsAndKeepalive();
         }
 
         /// <summary>
@@ -280,6 +296,10 @@ namespace Game_Engine.Core.Networking
         {
             byte type = data[0];
 
+            // Refresh last-seen for any packet except a brand-new server-side connect handshake.
+            if (!(type == MSG_CONNECT && _isServer))
+                TouchPeerByEndPoint(from);
+
             switch (type)
             {
                 case MSG_CONNECT:
@@ -317,12 +337,14 @@ namespace Game_Engine.Core.Networking
             if (!_isServer) return;
 
             int peerId = _nextPeerId++;
+            var ep = NormalizeEndPoint(from);
             var peer = new NetworkPeer
             {
                 PeerId = peerId,
-                EndPoint = from,
+                EndPoint = ep,
                 State = ConnectionState.Connected,
-                ConnectedAt = DateTime.UtcNow
+                ConnectedAt = DateTime.UtcNow,
+                LastHeardUtc = DateTime.UtcNow
             };
             _peers[peerId] = peer;
 
@@ -348,6 +370,7 @@ namespace Game_Engine.Core.Networking
             if (_peers.TryGetValue(0, out var peer))
             {
                 peer.State = ConnectionState.Connected;
+                peer.LastHeardUtc = DateTime.UtcNow;
                 Log.Info($"[Network] Connected to server (assigned peer ID: {assignedId}).");
                 OnPeerConnected?.Invoke(peer);
             }
@@ -396,6 +419,7 @@ namespace Game_Engine.Core.Networking
         private void HandleDisconnect(IPEndPoint from)
         {
             int peerId = FindPeerByEndPoint(from);
+            if (peerId < 0) return;
             if (_peers.TryGetValue(peerId, out var peer))
             {
                 peer.State = ConnectionState.Disconnected;
@@ -437,13 +461,102 @@ namespace Game_Engine.Core.Networking
             }
         }
 
+        private void TouchPeerByEndPoint(IPEndPoint from)
+        {
+            int id = FindPeerByEndPoint(from);
+            if (id < 0) return;
+            if (_peers.TryGetValue(id, out var peer) &&
+                (peer.State == ConnectionState.Connected || peer.State == ConnectionState.Connecting))
+                peer.LastHeardUtc = DateTime.UtcNow;
+        }
+
+        private static IPEndPoint NormalizeEndPoint(IPEndPoint ep)
+        {
+            var addr = ep.Address;
+            if (addr.AddressFamily == AddressFamily.InterNetworkV6 && addr.IsIPv4MappedToIPv6)
+                addr = addr.MapToIPv4();
+            return new IPEndPoint(addr, ep.Port);
+        }
+
+        private static bool EndPointsMatch(IPEndPoint a, IPEndPoint b)
+        {
+            if (a.Port != b.Port) return false;
+            var aa = a.Address;
+            var bb = b.Address;
+            if (aa.AddressFamily == AddressFamily.InterNetworkV6 && aa.IsIPv4MappedToIPv6)
+                aa = aa.MapToIPv4();
+            if (bb.AddressFamily == AddressFamily.InterNetworkV6 && bb.IsIPv4MappedToIPv6)
+                bb = bb.MapToIPv4();
+            return aa.Equals(bb);
+        }
+
         private int FindPeerByEndPoint(IPEndPoint ep)
         {
             foreach (var (id, peer) in _peers)
             {
-                if (peer.EndPoint.Equals(ep)) return id;
+                if (EndPointsMatch(peer.EndPoint, ep)) return id;
             }
             return -1;
+        }
+
+        private void UpdateTimeoutsAndKeepalive()
+        {
+            if (!_running || _udp == null) return;
+            var now = DateTime.UtcNow;
+
+            if (_isServer)
+            {
+                if ((now - _lastServerWidePingUtc).TotalSeconds >= ServerPingIntervalSeconds)
+                {
+                    _lastServerWidePingUtc = now;
+                    foreach (var peer in _peers.Values)
+                    {
+                        if (peer.State == ConnectionState.Connected)
+                            try { SendRaw(peer.EndPoint, new[] { MSG_PING }); } catch { }
+                    }
+                }
+
+                var serverPeerIds = new List<int>(_peers.Keys);
+                foreach (var id in serverPeerIds)
+                {
+                    if (!_peers.TryGetValue(id, out var peer)) continue;
+                    if (peer.State != ConnectionState.Connected) continue;
+                    if ((now - peer.LastHeardUtc).TotalSeconds > PeerIdleTimeoutSeconds)
+                        DropPeer(id, peer, "Timed out (no packets)");
+                }
+            }
+            else
+            {
+                var clientPeerIds = new List<int>(_peers.Keys);
+                foreach (var id in clientPeerIds)
+                {
+                    if (!_peers.TryGetValue(id, out var peer)) continue;
+                    if (peer.State == ConnectionState.Connecting &&
+                        (now - peer.ConnectedAt).TotalSeconds > ClientConnectTimeoutSeconds)
+                    {
+                        DropPeer(id, peer, "Connection handshake timed out");
+                        continue;
+                    }
+                    if (peer.State == ConnectionState.Connected &&
+                        (now - peer.LastHeardUtc).TotalSeconds > PeerIdleTimeoutSeconds)
+                        DropPeer(id, peer, "Timed out (server silent)");
+                }
+            }
+        }
+
+        private void DropPeer(int peerId, NetworkPeer peer, string reason)
+        {
+            try
+            {
+                if (peer.State == ConnectionState.Connected)
+                    SendRaw(peer.EndPoint, new[] { MSG_DISCONNECT });
+            }
+            catch { /* best-effort */ }
+
+            peer.State = ConnectionState.Disconnected;
+            _peers.Remove(peerId);
+            OnPeerDisconnected?.Invoke(peer, reason);
+            Log.Info($"[Network] Peer {peerId} closed: {reason}");
         }
 
         private void SendRaw(IPEndPoint target, byte[] data)

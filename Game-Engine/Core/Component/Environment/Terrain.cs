@@ -1,7 +1,9 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using SN = System.Numerics;
 
@@ -132,7 +134,7 @@ namespace Game_Engine.Core.Component
         public int SplatmapVersion { get; private set; }
 
         /// <summary>Mark the splatmap as needing GPU re-upload.</summary>
-        public void MarkSplatmapDirty() { SplatmapDirty = true; SplatmapVersion++; }
+        public void MarkSplatmapDirty() { SplatmapDirty = true; SplatmapVersion++; NeedsAssetSave = true; }
 
         /// <summary>Clear the dirty flag after GPU upload.</summary>
         public void ClearSplatmapDirty() => SplatmapDirty = false;
@@ -161,6 +163,24 @@ namespace Game_Engine.Core.Component
 
         /// <summary>Number of LOD levels per chunk (1=no LOD, 2=full+half, 3=full+half+quarter).</summary>
         [Persist] public int LodLevels { get; set; } = 3;
+
+        /// <summary>Distance to LOD1 = this value × chunk world size (full detail inside).</summary>
+        [Persist] public float LodDistanceNearChunks { get; set; } = 4f;
+
+        /// <summary>Distance to LOD2 = this value × chunk world size (when <see cref="LodLevels"/> ≥ 3).</summary>
+        [Persist] public float LodDistanceMidChunks { get; set; } = 10f;
+
+        /// <summary>World-units hysteresis on LOD boundaries to reduce popping (0 = off).</summary>
+        [Persist] public float LodHysteresisWorld { get; set; } = 0f;
+
+        /// <summary>
+        /// Collision mesh vertex step (1 = full resolution). Larger values reduce physics triangle count for this terrain.
+        /// </summary>
+        [Persist] public int CollisionLodStep { get; set; } = 1;
+
+        /// <summary>Set when height/splat data changed; streaming / tools can call <see cref="Save"/> when unloading.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool NeedsAssetSave { get; set; }
 
         /// <summary>Internal chunk data.</summary>
         internal sealed class TerrainChunk
@@ -244,18 +264,37 @@ namespace Game_Engine.Core.Component
                     var worldCenter = SN.Vector3.Transform(localCenter, W);
                     float dist = SN.Vector3.Distance(worldCenter, cameraPos);
 
-                    // LOD selection thresholds
-                    int lod;
-                    if (dist < chunkWorldSize * 4f)
-                        lod = 0; // full detail
-                    else if (dist < chunkWorldSize * 10f && LodLevels >= 2)
-                        lod = 1; // half resolution
-                    else if (LodLevels >= 3)
-                        lod = 2; // quarter resolution
-                    else
-                        lod = LodLevels - 1;
+                    float near = chunkWorldSize * Math.Max(0.01f, LodDistanceNearChunks);
+                    float mid = chunkWorldSize * Math.Max(0.01f, LodDistanceMidChunks);
+                    float h = Math.Max(0f, LodHysteresisWorld);
+                    int maxL = chunk.LodMeshes.Length - 1;
+                    int lod = chunk.CurrentLod;
 
-                    lod = Math.Clamp(lod, 0, chunk.LodMeshes.Length - 1);
+                    if (LodLevels <= 1)
+                        lod = 0;
+                    else if (LodLevels == 2)
+                    {
+                        if (lod == 0 && dist > near + h) lod = 1;
+                        else if (lod == 1 && dist < near - h) lod = 0;
+                    }
+                    else
+                    {
+                        if (lod == 0)
+                        {
+                            if (dist > near + h) lod = 1;
+                        }
+                        else if (lod == 1)
+                        {
+                            if (dist < near - h) lod = 0;
+                            else if (dist > mid + h && LodLevels >= 3) lod = 2;
+                        }
+                        else
+                        {
+                            if (dist < mid - h) lod = 1;
+                        }
+                    }
+
+                    lod = Math.Clamp(lod, 0, maxL);
                     if (lod != chunk.CurrentLod && chunk.LodMeshes[lod] != null)
                     {
                         chunk.CurrentLod = lod;
@@ -461,16 +500,19 @@ namespace Game_Engine.Core.Component
         /// <summary>Rebuild just the collision mesh (full resolution, no LOD).</summary>
         private void RebuildCollisionMesh()
         {
-            // Full-res mesh for MeshFilter (raycasting) and MeshCollider
-            var fullMesh = BuildFullMesh();
+            int step = Math.Max(1, CollisionLodStep);
+            var pickMesh = BuildFullMesh();
+            var colliderMesh = step <= 1
+                ? pickMesh
+                : BuildChunkMesh(0, 0, ResX - 1, ResZ - 1, step);
 
             var mf = GetComponent<MeshFilter>();
             if (mf == null) { mf = new MeshFilter(); gameObject.AddBehavior(mf); }
-            mf.Mesh = fullMesh;
+            mf.Mesh = pickMesh;
 
             var mc = GetComponent<MeshCollider>();
             if (mc == null) { mc = new MeshCollider(); gameObject.AddBehavior(mc); }
-            mc.Mesh = fullMesh;
+            mc.Mesh = colliderMesh;
         }
 
         /// <summary>Build the full-resolution mesh (used for collision and non-chunked rendering).</summary>
@@ -656,6 +698,7 @@ namespace Game_Engine.Core.Component
         {
             if (!InRange(x, 0, ResX - 1) || !InRange(z, 0, ResZ - 1)) return;
             Heights[z * ResX + x] = ClampHeight(h01);
+            NeedsAssetSave = true;
         }
 
         /// <summary>Get a single height sample (0..1).</summary>
@@ -815,6 +858,7 @@ namespace Game_Engine.Core.Component
         /// </summary>
         public void FinalizeStroke()
         {
+            NeedsAssetSave = true;
             if (_chunks != null && _chunksX > 0)
                 RebuildCollisionMesh();
         }
@@ -840,6 +884,13 @@ namespace Game_Engine.Core.Component
             public List<TerrainLayer>? Layers { get; set; }
             public float[]? Splatmap0 { get; set; }
             public float[]? Splatmap1 { get; set; }
+            public int? ChunkSize { get; set; }
+            public bool? UseChunking { get; set; }
+            public int? LodLevels { get; set; }
+            public float? LodDistanceNearChunks { get; set; }
+            public float? LodDistanceMidChunks { get; set; }
+            public float? LodHysteresisWorld { get; set; }
+            public int? CollisionLodStep { get; set; }
         }
 
         private void TrySaveToFile()
@@ -852,6 +903,15 @@ namespace Game_Engine.Core.Component
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                     Directory.CreateDirectory(dir);
 
+                if (IsBinaryTerrainPath(TerrainAssetPath))
+                {
+                    WriteTerrainBinary(abs);
+                    NeedsAssetSave = false;
+                    LogSuccess("Terrain saved (binary): " + TerrainAssetPath);
+                    ProjectService.TouchModified();
+                    return;
+                }
+
                 var data = new TerrainData
                 {
                     ResX = ResX,
@@ -863,7 +923,14 @@ namespace Game_Engine.Core.Component
                     Holes = Holes,
                     Layers = Layers?.Count > 0 ? Layers : null,
                     Splatmap0 = Splatmap0,
-                    Splatmap1 = Splatmap1
+                    Splatmap1 = Splatmap1,
+                    ChunkSize = ChunkSize,
+                    UseChunking = UseChunking,
+                    LodLevels = LodLevels,
+                    LodDistanceNearChunks = LodDistanceNearChunks,
+                    LodDistanceMidChunks = LodDistanceMidChunks,
+                    LodHysteresisWorld = LodHysteresisWorld,
+                    CollisionLodStep = CollisionLodStep
                 };
 
                 var json = JsonSerializer.Serialize(
@@ -871,6 +938,7 @@ namespace Game_Engine.Core.Component
                     new JsonSerializerOptions { WriteIndented = true }
                 );
                 File.WriteAllText(abs, json);
+                NeedsAssetSave = false;
 
                 LogSuccess("Terrain saved: " + TerrainAssetPath);
                 ProjectService.TouchModified();
@@ -889,37 +957,51 @@ namespace Game_Engine.Core.Component
                 string abs = ToAbsolutePath(TerrainAssetPath);
                 if (!File.Exists(abs)) return;
 
-                var text = File.ReadAllText(abs);
-                var data = JsonSerializer.Deserialize<TerrainData>(text);
-                if (data == null || data.Heights == null) return;
+                if (IsBinaryTerrainPath(TerrainAssetPath) || LooksLikeTerrainBinary(abs))
+                {
+                    if (ReadTerrainBinary(abs))
+                        NeedsAssetSave = false;
+                    else
+                        return;
+                }
+                else
+                {
+                    var text = File.ReadAllText(abs);
+                    var data = JsonSerializer.Deserialize<TerrainData>(text);
+                    if (data == null || data.Heights == null) return;
 
-                // apply without triggering intermediate rebuilds
-                _resX = Math.Max(2, data.ResX);
-                _resZ = Math.Max(2, data.ResZ);
-                _sizeX = data.SizeX;
-                _sizeZ = data.SizeZ;
-                _heightScale = data.HeightScale;
+                    // apply without triggering intermediate rebuilds
+                    _resX = Math.Max(2, data.ResX);
+                    _resZ = Math.Max(2, data.ResZ);
+                    _sizeX = data.SizeX;
+                    _sizeZ = data.SizeZ;
+                    _heightScale = data.HeightScale;
 
-                int need = _resX * _resZ;
-                Heights = (data.Heights.Length == need) ? data.Heights : new float[need];
-                Holes = (data.Holes != null && data.Holes.Length == need) ? data.Holes : null;
+                    int need = _resX * _resZ;
+                    Heights = (data.Heights.Length == need) ? data.Heights : new float[need];
+                    Holes = (data.Holes != null && data.Holes.Length == need) ? data.Holes : null;
 
-                // Only overwrite Layers/Splatmaps from file if the file actually contains them.
-                // The scene serializer may have more up-to-date data (e.g., user painted layers
-                // then saved the scene but not the .terrain.json file).
-                if (data.Layers != null && data.Layers.Count > 0)
-                    Layers = data.Layers;
-                else if (Layers == null)
-                    Layers = new List<TerrainLayer>();
-                // else: keep existing Layers from scene deserialization
+                    ApplyTerrainDataMeta(data);
 
-                if (data.Splatmap0 != null && data.Splatmap0.Length == need * 4)
-                    Splatmap0 = data.Splatmap0;
-                // else: keep existing Splatmap0 from scene deserialization
+                    // Only overwrite Layers/Splatmaps from file if the file actually contains them.
+                    // The scene serializer may have more up-to-date data (e.g., user painted layers
+                    // then saved the scene but not the .terrain.json file).
+                    if (data.Layers != null && data.Layers.Count > 0)
+                        Layers = data.Layers;
+                    else if (Layers == null)
+                        Layers = new List<TerrainLayer>();
+                    // else: keep existing Layers from scene deserialization
 
-                if (data.Splatmap1 != null && data.Splatmap1.Length == need * 4)
-                    Splatmap1 = data.Splatmap1;
-                // else: keep existing Splatmap1 from scene deserialization
+                    if (data.Splatmap0 != null && data.Splatmap0.Length == need * 4)
+                        Splatmap0 = data.Splatmap0;
+                    // else: keep existing Splatmap0 from scene deserialization
+
+                    if (data.Splatmap1 != null && data.Splatmap1.Length == need * 4)
+                        Splatmap1 = data.Splatmap1;
+                    // else: keep existing Splatmap1 from scene deserialization
+
+                    NeedsAssetSave = false;
+                }
             }
             finally
             {
@@ -936,6 +1018,232 @@ namespace Game_Engine.Core.Component
             LogInfo("Terrain loaded: " + TerrainAssetPath);
         }
 
+        static bool IsBinaryTerrainPath(string? rel) =>
+            !string.IsNullOrWhiteSpace(rel) &&
+            rel.EndsWith(".terrain.bin", StringComparison.OrdinalIgnoreCase);
+
+        static bool LooksLikeTerrainBinary(string absPath)
+        {
+            try
+            {
+                using var fs = File.OpenRead(absPath);
+                if (fs.Length < 8) return false;
+                Span<byte> hdr = stackalloc byte[4];
+                if (fs.Read(hdr) != 4) return false;
+                return hdr[0] == (byte)'G' && hdr[1] == (byte)'T' && hdr[2] == (byte)'E' && hdr[3] == (byte)'R';
+            }
+            catch { return false; }
+        }
+
+        void ApplyTerrainDataMeta(TerrainData data)
+        {
+            if (data.ChunkSize is >= 65) ChunkSize = data.ChunkSize.Value;
+            if (data.UseChunking.HasValue) UseChunking = data.UseChunking.Value;
+            if (data.LodLevels is >= 1 and <= 8) LodLevels = data.LodLevels.Value;
+            if (data.LodDistanceNearChunks is float f1 && float.IsFinite(f1) && f1 > 0f) LodDistanceNearChunks = f1;
+            if (data.LodDistanceMidChunks is float f2 && float.IsFinite(f2) && f2 > 0f) LodDistanceMidChunks = f2;
+            if (data.LodHysteresisWorld is float fh && float.IsFinite(fh) && fh >= 0f) LodHysteresisWorld = fh;
+            if (data.CollisionLodStep is >= 1) CollisionLodStep = data.CollisionLodStep.Value;
+        }
+
+        const int TerrainBinVersion = 2;
+        const uint TerrainFlagHoles = 1;
+        const uint TerrainFlagSplat0 = 2;
+        const uint TerrainFlagSplat1 = 4;
+        const uint TerrainFlagLayersJson = 8;
+
+        void WriteTerrainBinary(string absPath)
+        {
+            EnsureValidDimensions();
+            EnsureHeightsArray();
+            int need = ResX * ResZ;
+            uint flags = 0;
+            if (Holes != null && Holes.Length == need) flags |= TerrainFlagHoles;
+            if (Splatmap0 != null && Splatmap0.Length == need * 4) flags |= TerrainFlagSplat0;
+            if (Splatmap1 != null && Splatmap1.Length == need * 4) flags |= TerrainFlagSplat1;
+            string? layersJson = null;
+            if (Layers != null && Layers.Count > 0)
+            {
+                layersJson = JsonSerializer.Serialize(Layers);
+                flags |= TerrainFlagLayersJson;
+            }
+
+            using var fs = File.Create(absPath);
+            ReadOnlySpan<byte> magic = "GTER"u8;
+            fs.Write(magic);
+            WriteI32(fs, TerrainBinVersion);
+            WriteI32(fs, ResX);
+            WriteI32(fs, ResZ);
+            WriteF32(fs, SizeX);
+            WriteF32(fs, SizeZ);
+            WriteF32(fs, HeightScale);
+            WriteU32(fs, flags);
+            WriteI32(fs, ChunkSize);
+            fs.WriteByte(UseChunking ? (byte)1 : (byte)0);
+            fs.WriteByte((byte)Math.Clamp(LodLevels, 1, 255));
+            WriteI32(fs, CollisionLodStep);
+            WriteF32(fs, LodDistanceNearChunks);
+            WriteF32(fs, LodDistanceMidChunks);
+            WriteF32(fs, LodHysteresisWorld);
+
+            WriteF32Array(fs, Heights, need);
+            if ((flags & TerrainFlagHoles) != 0)
+            {
+                for (int i = 0; i < need; i++)
+                    fs.WriteByte(Holes![i] ? (byte)1 : (byte)0);
+            }
+            if ((flags & TerrainFlagSplat0) != 0)
+                WriteF32Array(fs, Splatmap0!, need * 4);
+            if ((flags & TerrainFlagSplat1) != 0)
+                WriteF32Array(fs, Splatmap1!, need * 4);
+            if ((flags & TerrainFlagLayersJson) != 0)
+            {
+                var utf8 = Encoding.UTF8.GetBytes(layersJson!);
+                WriteI32(fs, utf8.Length);
+                fs.Write(utf8);
+            }
+
+            static void WriteI32(FileStream s, int v)
+            {
+                Span<byte> b = stackalloc byte[4];
+                BinaryPrimitives.WriteInt32LittleEndian(b, v);
+                s.Write(b);
+            }
+            static void WriteU32(FileStream s, uint v)
+            {
+                Span<byte> b = stackalloc byte[4];
+                BinaryPrimitives.WriteUInt32LittleEndian(b, v);
+                s.Write(b);
+            }
+            static void WriteF32(FileStream s, float v)
+            {
+                Span<byte> b = stackalloc byte[4];
+                BinaryPrimitives.WriteSingleLittleEndian(b, v);
+                s.Write(b);
+            }
+            static void WriteF32Array(FileStream s, float[] arr, int count)
+            {
+                Span<byte> b = stackalloc byte[4];
+                for (int i = 0; i < count; i++)
+                {
+                    BinaryPrimitives.WriteSingleLittleEndian(b, arr[i]);
+                    s.Write(b);
+                }
+            }
+        }
+
+        bool ReadTerrainBinary(string absPath)
+        {
+            using var fs = File.OpenRead(absPath);
+            Span<byte> m = stackalloc byte[4];
+            if (fs.Read(m) != 4 || m[0] != (byte)'G' || m[1] != (byte)'T' || m[2] != (byte)'E' || m[3] != (byte)'R')
+                return false;
+            int ver = ReadI32(fs);
+            if (ver != TerrainBinVersion) return false;
+            int rx = ReadI32(fs);
+            int rz = ReadI32(fs);
+            float sx = ReadF32(fs);
+            float sz = ReadF32(fs);
+            float hs = ReadF32(fs);
+            uint flags = ReadU32(fs);
+            int chunkSz = ReadI32(fs);
+            int ub = fs.ReadByte();
+            if (ub < 0) return false;
+            bool useChunk = ub != 0;
+            int lodB = fs.ReadByte();
+            if (lodB < 0) return false;
+            int lodLv = lodB;
+            int colStep = ReadI32(fs);
+            float lodN = ReadF32(fs);
+            float lodM = ReadF32(fs);
+            float lodH = ReadF32(fs);
+
+            _resX = Math.Max(2, rx);
+            _resZ = Math.Max(2, rz);
+            _sizeX = sx;
+            _sizeZ = sz;
+            _heightScale = hs;
+            int need = _resX * _resZ;
+
+            Heights = new float[need];
+            if (!ReadF32Array(fs, Heights, need)) return false;
+
+            if ((flags & TerrainFlagHoles) != 0)
+            {
+                Holes = new bool[need];
+                for (int i = 0; i < need; i++)
+                {
+                    int b = fs.ReadByte();
+                    if (b < 0) return false;
+                    Holes[i] = b != 0;
+                }
+            }
+            else Holes = null;
+
+            if ((flags & TerrainFlagSplat0) != 0)
+            {
+                Splatmap0 = new float[need * 4];
+                if (!ReadF32Array(fs, Splatmap0, need * 4)) return false;
+            }
+            if ((flags & TerrainFlagSplat1) != 0)
+            {
+                Splatmap1 = new float[need * 4];
+                if (!ReadF32Array(fs, Splatmap1, need * 4)) return false;
+            }
+
+            if ((flags & TerrainFlagLayersJson) != 0)
+            {
+                int jsonLen = ReadI32(fs);
+                long rem = fs.Length - fs.Position;
+                if (jsonLen < 0 || jsonLen > rem || jsonLen > 64 * 1024 * 1024) return false;
+                var buf = new byte[jsonLen];
+                if (fs.Read(buf, 0, jsonLen) != jsonLen) return false;
+                var layers = JsonSerializer.Deserialize<List<TerrainLayer>>(Encoding.UTF8.GetString(buf));
+                if (layers != null && layers.Count > 0)
+                    Layers = layers;
+            }
+
+            if (chunkSz >= 65) ChunkSize = chunkSz;
+            UseChunking = useChunk;
+            if (lodLv >= 1) LodLevels = lodLv;
+            if (colStep >= 1) CollisionLodStep = colStep;
+            if (float.IsFinite(lodN) && lodN > 0f) LodDistanceNearChunks = lodN;
+            if (float.IsFinite(lodM) && lodM > 0f) LodDistanceMidChunks = lodM;
+            if (float.IsFinite(lodH) && lodH >= 0f) LodHysteresisWorld = lodH;
+
+            if (Layers == null) Layers = new List<TerrainLayer>();
+            return true;
+
+            static int ReadI32(FileStream s)
+            {
+                Span<byte> b = stackalloc byte[4];
+                if (s.Read(b) != 4) return 0;
+                return BinaryPrimitives.ReadInt32LittleEndian(b);
+            }
+            static uint ReadU32(FileStream s)
+            {
+                Span<byte> b = stackalloc byte[4];
+                if (s.Read(b) != 4) return 0;
+                return BinaryPrimitives.ReadUInt32LittleEndian(b);
+            }
+            static float ReadF32(FileStream s)
+            {
+                Span<byte> b = stackalloc byte[4];
+                if (s.Read(b) != 4) return 0f;
+                return BinaryPrimitives.ReadSingleLittleEndian(b);
+            }
+            static bool ReadF32Array(FileStream s, float[] arr, int count)
+            {
+                Span<byte> b = stackalloc byte[4];
+                for (int i = 0; i < count; i++)
+                {
+                    if (s.Read(b) != 4) return false;
+                    arr[i] = BinaryPrimitives.ReadSingleLittleEndian(b);
+                }
+                return true;
+            }
+        }
+
 
         // ------ Helpers --------------------------------------------------------
 
@@ -946,6 +1254,10 @@ namespace Game_Engine.Core.Component
             if (float.IsNaN(SizeX) || float.IsInfinity(SizeX)) SizeX = 100f;
             if (float.IsNaN(SizeZ) || float.IsInfinity(SizeZ)) SizeZ = 100f;
             if (float.IsNaN(HeightScale) || float.IsInfinity(HeightScale)) HeightScale = 20f;
+            if (!float.IsFinite(LodDistanceNearChunks) || LodDistanceNearChunks < 0.01f) LodDistanceNearChunks = 4f;
+            if (!float.IsFinite(LodDistanceMidChunks) || LodDistanceMidChunks < 0.01f) LodDistanceMidChunks = 10f;
+            if (!float.IsFinite(LodHysteresisWorld) || LodHysteresisWorld < 0f) LodHysteresisWorld = 0f;
+            CollisionLodStep = Math.Max(1, CollisionLodStep);
             // Force minimum chunk size of 65 (64 quads per edge) to keep draw call count low.
             // Old terrains saved with ChunkSize=33 would create 64 chunks for a 257x257 terrain;
             // with 65, that drops to 16 chunks = 4× fewer draw calls.

@@ -2,12 +2,13 @@
 using System.Linq;
 using System.Numerics;
 using Game_Engine.Core.Input;
+using Game_Engine.Core.Networking;
 
 namespace Game_Engine.Core.Component.UI
 {
     /// <summary>
     /// Controls main-menu navigation — switches between the main menu and settings panel,
-    /// and loads a scene when the Play button is clicked.
+    /// loads a scene when Play is clicked, and connects as a multiplayer client when Join is clicked.
     /// Uses the Input API directly for click detection and RectTransform hit testing.
     /// Attach to the root Canvas GameObject.
     /// </summary>
@@ -18,19 +19,27 @@ namespace Game_Engine.Core.Component.UI
         [Persist] public string SettingsButtonName { get; set; } = "Settings Button";
         [Persist] public string BackButtonName { get; set; } = "Back Button";
         [Persist] public string PlayButtonName { get; set; } = "Play Button";
+        [Persist] public string JoinButtonName { get; set; } = "Join Button";
         [Persist] public string QuitButtonName { get; set; } = "Quit Button";
 
         /// <summary>
-        /// The name of the scene to load when the Play button is clicked
-        /// (e.g. "Game" will load Scenes/Game.scene).
+        /// The name of the scene to load when Play is clicked, or after Join connects (if set).
+        /// Example: <c>Game</c> loads <c>Scenes/Game.scene</c>.
         /// </summary>
         [Persist] public string PlaySceneName { get; set; } = "";
+
+        /// <summary>Server hostname or IP for <see cref="NetworkManager.StartClient"/>.</summary>
+        [Persist] public string JoinHost { get; set; } = "127.0.0.1";
+
+        /// <summary>Server port for Join.</summary>
+        [Persist] public int JoinPort { get; set; } = 7777;
 
         private GameObject? _mainMenuGroup;
         private GameObject? _settingsPanel;
         private RectTransform? _settingsBtnRT;
         private RectTransform? _backBtnRT;
         private RectTransform? _playBtnRT;
+        private RectTransform? _joinBtnRT;
         private RectTransform? _quitBtnRT;
         private Canvas? _canvas;
         private bool _wasMouseDown;
@@ -48,11 +57,13 @@ namespace Game_Engine.Core.Component.UI
             var settingsBtnGO = FindChild(root, SettingsButtonName);
             var backBtnGO = FindChild(root, BackButtonName);
             var playBtnGO = FindChild(root, PlayButtonName);
+            var joinBtnGO = FindChild(root, JoinButtonName);
             var quitBtnGO = FindChild(root, QuitButtonName);
 
             _settingsBtnRT = settingsBtnGO?.Behaviors.OfType<RectTransform>().FirstOrDefault();
             _backBtnRT = backBtnGO?.Behaviors.OfType<RectTransform>().FirstOrDefault();
             _playBtnRT = playBtnGO?.Behaviors.OfType<RectTransform>().FirstOrDefault();
+            _joinBtnRT = joinBtnGO?.Behaviors.OfType<RectTransform>().FirstOrDefault();
             _quitBtnRT = quitBtnGO?.Behaviors.OfType<RectTransform>().FirstOrDefault();
 
             _showingSettings = false;
@@ -64,41 +75,50 @@ namespace Game_Engine.Core.Component.UI
         {
             if (_canvas == null) return;
 
-            // Derive click edge from the held state (always reliable)
             bool mouseIsDown = Input.Input.GetMouse(MouseButton.Left);
             bool clicked = mouseIsDown && !_wasMouseDown;
             _wasMouseDown = mouseIsDown;
 
             if (!clicked) return;
 
-            // Get viewport size and mouse position (both in DIP space)
             var vp = Input.Input.ViewportSize;
             if (vp.X <= 0 || vp.Y <= 0) return;
 
             var canvasRect = _canvas.GetCanvasRect(vp.X, vp.Y);
             float scale = _canvas.GetScaleFactor(vp.X, vp.Y);
 
-            // Convert mouse from top-left DIP to bottom-left canvas coordinates
             var mousePos = Input.Input.MousePosition;
             var canvasPoint = new Vector2(mousePos.X / scale, (vp.Y - mousePos.Y) / scale);
 
             if (!_showingSettings)
             {
-                // Play button — load the target scene
                 if (_playBtnRT != null && _playBtnRT.ContainsScreenPoint(canvasPoint, in canvasRect))
                 {
                     if (!string.IsNullOrWhiteSpace(PlaySceneName))
-                    {
                         SceneManager.LoadScene(PlaySceneName);
-                    }
                     else
-                    {
                         Log.Warning("[MainMenuController] Play button clicked but no PlaySceneName is set.");
-                    }
                     return;
                 }
 
-                // Settings button — open settings panel
+                if (_joinBtnRT != null && _joinBtnRT.ContainsScreenPoint(canvasPoint, in canvasRect))
+                {
+                    if (NetworkManager.IsActive)
+                    {
+                        Log.Warning("[MainMenuController] Join ignored — networking already active.");
+                        return;
+                    }
+
+                    string host = string.IsNullOrWhiteSpace(JoinHost) ? "127.0.0.1" : JoinHost.Trim();
+                    NetworkManager.StartClient(host, JoinPort);
+
+                    if (!string.IsNullOrWhiteSpace(PlaySceneName))
+                        SceneManager.LoadScene(PlaySceneName);
+                    else
+                        Log.Info("[MainMenuController] Join: connected; set PlaySceneName to auto-load a level after join.");
+                    return;
+                }
+
                 if (_settingsBtnRT != null && _settingsBtnRT.ContainsScreenPoint(canvasPoint, in canvasRect))
                 {
                     _showingSettings = true;
@@ -107,13 +127,12 @@ namespace Game_Engine.Core.Component.UI
                     return;
                 }
 
-                // Quit button — stop play mode (in editor) or exit application
                 if (_quitBtnRT != null && _quitBtnRT.ContainsScreenPoint(canvasPoint, in canvasRect))
                 {
                     Log.Info("[MainMenuController] Quit button clicked.");
-                    #if !DEBUG
+#if !DEBUG
                     System.Environment.Exit(0);
-                    #endif
+#endif
                     return;
                 }
             }
@@ -128,9 +147,6 @@ namespace Game_Engine.Core.Component.UI
             }
         }
 
-        /// <summary>
-        /// Recursively enable or disable all UIElement behaviors in a GameObject subtree.
-        /// </summary>
         private static void SetGroupVisible(GameObject? go, bool visible)
         {
             if (go == null) return;
@@ -143,7 +159,6 @@ namespace Game_Engine.Core.Component.UI
                 SetGroupVisible(child, visible);
         }
 
-        /// <summary>Recursively search for a child GameObject by name.</summary>
         private static GameObject? FindChild(GameObject? parent, string name)
         {
             if (parent == null) return null;

@@ -184,6 +184,10 @@ The `Simulate(Vector3 desiredHorizontalDelta, bool jump)` method runs the full p
 ### Terrain Integration
 The CharacterController uses the terrain's O(1) `SampleHeightWorld()` for ground detection on terrain surfaces. Per-frame caches of terrain objects and other colliders are maintained. Terrain `MeshCollider` objects are explicitly skipped in ray-triangle tests — only the heightmap lookup is used.
 
+**MeshCollider detail:** On each `Terrain`, the **`MeshFilter`** keeps a **full-resolution** mesh for editor picking. The **`MeshCollider`** may use a **subsampled** mesh when **`CollisionLodStep` > 1**, reducing physics triangle count without affecting `SampleHeightWorld`.
+
+**TerrainStreamer:** For streamed tiles, **`CollisionRingRadius`** can disable **`MeshCollider`** on outer tiles while leaving rendering enabled; grounding still uses height sampling where applicable.
+
 **Requires:** CapsuleCollider (auto-added via `[Require]`)
 
 ---

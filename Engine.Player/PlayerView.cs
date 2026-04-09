@@ -10,8 +10,10 @@ using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
+using Game_Engine.Core.Networking;
 using Game_Engine.Core.Physics;
 using Game_Engine.Core.Rendering.GPU;
+using Game_Engine.Core.Rendering.UI;
 using Silk.NET.OpenGL;
 using System;
 using System.Collections.Generic;
@@ -46,6 +48,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private ShadowMapGPU? _shadow;
     private GPUFramebuffer? _sceneFBO;
     private int _sceneFBO_W, _sceneFBO_H;
+    private CanvasRenderer? _canvasRenderer;
     #endregion
 
     #region Clocks & State
@@ -169,6 +172,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _cache = new ResourceCache(g);
             GpuCompressionCaps.Initialize(g);
             _shadow = new ShadowMapGPU(g, 1024, 1024);
+            _canvasRenderer = new CanvasRenderer(g, es);
         }
         catch (Exception ex)
         {
@@ -179,6 +183,8 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     protected override void OnOpenGlDeinit(GlInterface gl)
     {
         _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
+        _canvasRenderer?.Dispose();
+        _canvasRenderer = null;
         _postProcessShader?.Dispose(); _postProcessShader = null;
         _waterShader?.Dispose(); _waterShader = null;
         _particleShader?.Dispose(); _particleShader = null;
@@ -371,6 +377,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
 
         // Terrain & Tree LOD
+        TerrainStreamer.SyncAll(camPos);
         foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
         foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
 
@@ -399,6 +406,17 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (_particleShader != null)
             SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
 
+        // World-space UI (same stage as GameView — before post blit when using scene FBO)
+        if (_canvasRenderer != null && _cache != null)
+        {
+            var viewProj = view * proj;
+            foreach (var wc in Core.Component.UI.Canvas.All)
+            {
+                if (wc.IsActiveAndEnabled && wc.RenderMode == Core.Component.UI.CanvasRenderMode.WorldSpace)
+                    _canvasRenderer.RenderWorldCanvas(wc, in viewProj, _cache);
+            }
+        }
+
         // --- POST-PROCESSING BLIT ---
         if (usePostFX && _sceneFBO?.ColorTexture != null)
         {
@@ -419,6 +437,12 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         }
+
+        // Screen-space overlay UI (main menu, etc.) — must draw after final color is on the Avalonia FB
+        g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+        g.Viewport(0, 0, (uint)W, (uint)H);
+        if (_canvasRenderer != null && _cache != null)
+            _canvasRenderer.RenderOverlays(W, H, _cache);
 
         g.Flush();
         CleanupGLState(g, fb);
@@ -533,6 +557,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             Input.FeedMouseDelta(cur.X - _lastMouse.X, cur.Y - _lastMouse.Y);
         _lastMouse = cur;
         _hasLastMouse = true;
+        Input.FeedMousePosition(cur.X, cur.Y);
     }
     #endregion
 
@@ -549,6 +574,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 clearRegistries: () =>
                 {
                     PostProcessVolume.ClearAll();
+                    Core.Component.UI.Canvas.ClearAll();
                     Core.Rendering.UI.UIEventSystem.Reset();
                     Input.ClearAll();
                 },
@@ -572,6 +598,14 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (dt > 0.05) dt = 0.05;
         Core.Time.BeginUpdate(dt);
         Input.NewFrame((float)dt);
+        Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
+        {
+            int vpW = Math.Max(1, (int)Bounds.Width);
+            int vpH = Math.Max(1, (int)Bounds.Height);
+            UIEventSystem.ProcessEvents(vpW, vpH);
+        }
+        if (NetworkManager.IsActive)
+            NetworkManager.Update();
         ForEachBehavior(b => b.__Update());
         ForEachBehavior(b => b.__LateUpdate());
         Input.EndFrame();

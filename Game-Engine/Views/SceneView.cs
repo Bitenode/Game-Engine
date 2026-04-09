@@ -1679,6 +1679,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             // sunShineDir was computed for the shadow pass; fall back to a default if not set
             var sunSD = fallbackPlanetSunDir;
+            TerrainStreamer.SyncAll(camPos);
             // Update terrain LOD per frame
             UpdateTerrainLOD(camPos);
             // Update tree LOD per frame

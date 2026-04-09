@@ -26,7 +26,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Vegetation System** — GPU-instanced grass, rocks, and debris with chunked rendering, distance culling, and terrain-aware placement
 
 ### World Building
-- **Terrain System** — Heightmap-based terrain with 10 sculpting/painting tools, multi-material splatmap painting (up to 8 layers), chunking, per-chunk LOD, tree painting, and O(1) heightmap collision
+- **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
 - **3D Model Import** — FBX, OBJ, glTF/GLB, DAE via AssimpNet with automatic material extraction, skeleton building, and bone animation import
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
@@ -43,12 +43,24 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 ### Audio & Networking
 - **Audio System** — Cross-platform OpenAL backend (via Silk.NET) with native 3D spatial audio, distance attenuation, Doppler effect, and audio occlusion (raycast-based obstruction detection)
 - **Audio Mixer** — Hierarchical mixer groups (Master > Music/SFX/UI/Voice), 7 effect types (Reverb, Echo, LowPass, HighPass, Chorus, Distortion, Compressor), snapshots with smooth transitions, and 10 reverb zone presets
-- **Networking** — Server/client multiplayer with NetworkIdentity, NetworkTransform (interpolated sync), NetworkAnimator (state sync), RPC system, and UDP transport
+- **Networking** — Static `NetworkManager` API (server/client, RPCs, UDP transport with keepalive and idle disconnect) plus Inspector components NetworkIdentity, NetworkTransform (interpolated sync), and NetworkAnimator (state sync); Standard Assets include sample menu/server UI (`MainMenuController`, `ServerHostController` / `Main Menu.scene`, `Server.scene`). The game loop invokes `NetworkManager.Update` automatically in Game View and Engine.Player.
 
 ### Tools & Profiling
 - **Profiler** — Real-time FPS, frame time, draw call, and vertex/triangle count monitoring
 - **Build Settings** — Package games as standalone Engine.Player executables for Windows, macOS, and Linux (x64/ARM64)
 - **Wind System** — Global wind parameters driving tree and vegetation animation
+
+### Combined feature notes (this branch)
+
+The following areas were developed together; see the linked docs for detail.
+
+| Area | What changed |
+|------|----------------|
+| **Terrain** | Optional **`.terrain.bin`** heightmap assets; tunable **LOD distance bands** and **`LodHysteresisWorld`** to reduce popping; **`CollisionLodStep`** for lighter physics meshes while keeping full-res height sampling; **`TerrainStreamer`** component for camera-centered tile load/unload with optional **collision ring**. **Scene View**, **Game View**, and **Engine.Player** call **`TerrainStreamer.SyncAll`** each frame. |
+| **Networking** | UDP transport **keepalive** (server ping / client pong), **idle and handshake timeouts**, **IPv4 / IPv4-mapped IPv6** endpoint matching; **`NetworkManager.Update`** driven from **Game View** and **Player View** so sessions survive scene changes; **PlayerWindow** calls **`NetworkManager.Stop`** on close. |
+| **Standalone player** | **Canvas** screen-space UI via **`CanvasRenderer`**; **`UIEventSystem`** + **`Input.FeedMousePosition`**; linked **Standard Assets** UI scripts (**`MainMenuController`**, **`ServerHostController`**) so scene types resolve; **BCnEncoder.Net** / **Magick.NET** package parity for shared Core texture paths. |
+| **Standard Assets** | **Main Menu**: **Join** button and client connect fields (**`JoinHost`**, **`JoinPort`**). **Server** sample: **`Server.scene`** + **`ServerHostController`** (host UI, optional game scene / save slot, log mirror). |
+| **Documentation** | Updates across **01, 02, 03, 04, 05, 07, 09, 12** plus this README to match the above. |
 
 ---
 
@@ -108,7 +120,7 @@ Comprehensive documentation is available in the `Game-Engine/Docs/` folder:
 | [02 — Editor Guide](Game-Engine/Docs/02_Editor_Guide.md) | Editor panels, Scene View, Game View, Inspector, Shader Editor, Blueprint panel, Profiler, Build Settings |
 | [03 — Components Reference](Game-Engine/Docs/03_Components_Reference.md) | 34+ built-in components with properties, defaults, and usage |
 | [04 — Rendering Pipeline](Game-Engine/Docs/04_Rendering_Pipeline.md) | Render passes, shaders, shader graph, GPU resources, post-processing, particles, water |
-| [05 — Terrain System](Game-Engine/Docs/05_Terrain_System.md) | Terrain creation, 10 brush tools, splatmap painting, tree painting, chunking, LOD |
+| [05 — Terrain System](Game-Engine/Docs/05_Terrain_System.md) | Terrain creation, 10 brush tools, splatmap painting, tree painting, chunking, LOD, binary assets, `TerrainStreamer` |
 | [06 — Scripting & Extensibility](Game-Engine/Docs/06_Scripting_And_Extensibility.md) | C# scripting, lifecycle, APIs, editor extensions, command registry, custom inspectors |
 | [07 — Physics & Collision](Game-Engine/Docs/07_Physics_And_Collision.md) | Colliders, CharacterController, physics joints, BVH, raycasting, terrain collision |
 | [08 — Materials & Textures](Game-Engine/Docs/08_Materials_And_Textures.md) | PBR materials, shader graph materials, texture slots, transparency, custom shaders |

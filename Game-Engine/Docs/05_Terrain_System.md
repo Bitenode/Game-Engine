@@ -2,7 +2,7 @@
 
 ## Overview
 
-The terrain system provides a heightmap-based, editable landscape with multi-material splatmap painting, chunk-based rendering for performance, per-chunk level of detail, and multiple sculpting/painting tools. Terrain data is stored as a `Terrain` component on a GameObject and persisted to `.terrain.json` files for reliable data preservation.
+The terrain system provides a heightmap-based, editable landscape with multi-material splatmap painting, chunk-based rendering for performance, per-chunk level of detail, and multiple sculpting/painting tools. Terrain data is stored as a `Terrain` component on a GameObject and persisted to **`.terrain.json`** (human-readable) or **`.terrain.bin`** (compact binary for large heightmaps). Optional **`TerrainStreamer`** components load and unload square **tiles** around the camera into separate `Terrain` children for large worlds.
 
 ---
 
@@ -28,6 +28,10 @@ The terrain system provides a heightmap-based, editable landscape with multi-mat
 | Chunk Size      | 65      | Vertices per chunk edge (pow2+1)     | — |
 | Use Chunking    | true    | Enable chunk-based rendering         | — |
 | LOD Levels      | 3       | Number of detail levels per chunk    | 1-3 |
+| `LodDistanceNearChunks` | `4` | LOD 0 vs 1 distance = this × chunk world size | > 0 |
+| `LodDistanceMidChunks`   | `10` | LOD 1 vs 2 distance = this × chunk world size (if LOD ≥ 3) | > 0 |
+| `LodHysteresisWorld`    | `0` | Extra world-units margin on LOD boundaries to reduce popping | ≥ 0 |
+| `CollisionLodStep`      | `1` | Vertex step for **physics** mesh (1 = full); picking uses full res | ≥ 1 |
 
 ### Memory Layout
 Heights are stored as a flat `float[]` array in **row-major** order with length `ResX * ResZ`. Each value is in the range 0.0 to 1.0. The index for position (x, z) is `z * ResX + x`.
@@ -269,7 +273,8 @@ Large terrains are split into rectangular chunks for performance. Chunking enabl
 2. Each chunk becomes a **child GameObject** with its own `MeshFilter` and `MeshRenderer`
 3. The parent terrain's material is shared across all chunks
 4. The parent terrain's `MeshRenderer` is disabled (chunks handle rendering)
-5. The parent terrain's `MeshFilter` retains the full-resolution mesh for raycasting and collision
+5. The parent terrain's `MeshFilter` retains the **full-resolution** mesh for editor picking and brush raycasts
+6. The parent terrain's `MeshCollider` may use a **lower-resolution** triangle mesh when **`CollisionLodStep` > 1** (fewer physics triangles; height-based `SampleHeightWorld` queries are unchanged)
 
 ### Benefits
 | Benefit | Description |
@@ -300,15 +305,39 @@ Each chunk maintains multiple mesh resolutions that trade geometric detail for r
 | 2         | 4 (quarter) | Every fourth vertex | Far from camera |
 
 ### LOD Selection
-`UpdateLOD(cameraPos)` is called each frame for each terrain. For each chunk, the distance from the camera to the chunk center determines which LOD level to use:
+`UpdateLOD(cameraPos)` is called each frame for each terrain. For each chunk, the distance from the camera to the chunk center selects the LOD level using:
 
-| Distance | LOD Level | Threshold |
-|----------|-----------|-----------|
-| Near     | LOD 0 (full detail) | < `chunkWorldSize × 4` |
-| Medium   | LOD 1 (half detail) | < `chunkWorldSize × 10` |
-| Far      | LOD 2 (quarter detail) | >= `chunkWorldSize × 10` |
+- **Near band:** `chunkWorldSize × LodDistanceNearChunks` — inside this distance, LOD 0 (full detail) when hysteresis allows
+- **Mid band:** `chunkWorldSize × LodDistanceMidChunks` — used when `LodLevels ≥ 3` to choose LOD 1 vs LOD 2
 
-The threshold distances scale proportionally with chunk size and terrain dimensions, so larger terrains have proportionally larger LOD bands.
+**Hysteresis:** When **`LodHysteresisWorld` > 0**, LOD only changes when the camera crosses these bands by the hysteresis margin (Schmitt-style behavior), which reduces visible popping when moving along a boundary.
+
+---
+
+## Terrain streaming (`TerrainStreamer`)
+
+Add an **Environment → TerrainStreamer** component to a parent GameObject to maintain a **moving window** of terrain tiles around the camera.
+
+### How it works
+1. **`TerrainStreamer.SyncAll(worldFocus)`** is invoked every frame from **Scene View**, **Game View**, and **Player View** using the active camera position.
+2. The streamer computes which **tile indices** `(tx, tz)` should be loaded using a **Chebyshev radius** **`RingRadius`** around the tile under the focus point (in the streamer's local XZ plane).
+3. For each required tile, a child GameObject **`TerrainTile_{tx}_{tz}`** is created if missing, with a **`Terrain`** whose **`TerrainAssetPath`** points under **`TilesSubfolder`**, e.g. `Assets/Terrain/StreamedWorld/tile_0_0.terrain.json` or `.terrain.bin` when **`SaveTilesAsBinary`** is enabled.
+4. Tiles that leave the ring are **removed from the hierarchy**; if the terrain has **`NeedsAssetSave`**, it is written with **`Save()`** first.
+
+### Collision ring (optional physics scaling)
+**`CollisionRingRadius`** (≥ 0, or `-1` for “all tiles collidable”) controls **`MeshCollider.Enabled`** per tile: only tiles within that **Chebyshev distance** of the **center** tile keep mesh colliders enabled. Outer tiles remain visible; character grounding still uses **`SampleHeightWorld`** where applicable. Combine with per-tile **`CollisionLodStep`** on streamed terrains to reduce physics mesh complexity.
+
+### Inspector highlights
+| Property | Role |
+|----------|------|
+| `StreamingEnabled` | When `false`, **`SyncAll` does not add/remove tiles** (fixed tile layout for authoring). |
+| `TilesSubfolder` | Project-relative folder for `tile_X_Y` assets. |
+| `TileWorldSize` | Same as each tile's `Terrain.SizeX` / `SizeZ`. |
+| `RingRadius` | Chebyshev distance of loaded tiles from the focus tile. |
+| `TileResolutionX` / `TileResolutionZ` / `TileHeightScale` | Defaults for new tiles. |
+| `TileChunkSize`, `TileUseChunking`, `TileLodLevels` | Chunking defaults for new tiles. |
+
+After scene load, existing **`TerrainTile_*`** children are **re-registered** so they are not duplicated on the next sync.
 
 ---
 
@@ -319,8 +348,10 @@ Terrain data is saved in two locations for reliability:
 ### 1. Scene File (`.scene`)
 The `[Persist]`-marked properties on the Terrain component are serialized with the scene, including `TerrainAssetPath`, `ResX`, `ResZ`, `Heights`, `Layers`, `Splatmap0`, `Splatmap1`, etc.
 
-### 2. Terrain Asset File (`.terrain.json`)
-The full terrain data is also saved to a separate JSON file:
+### 2. Terrain Asset File (`.terrain.json` or `.terrain.bin`)
+The full terrain data is also saved to a separate file beside the project:
+
+**JSON (`.terrain.json`)** — editable, includes extended settings:
 
 ```json
 {
@@ -331,6 +362,13 @@ The full terrain data is also saved to a separate JSON file:
   "HeightScale": 20.0,
   "Heights": [0.0, 0.1, -0.2, ...],
   "Holes": [false, false, true, ...],
+  "ChunkSize": 65,
+  "UseChunking": true,
+  "LodLevels": 3,
+  "LodDistanceNearChunks": 4.0,
+  "LodDistanceMidChunks": 10.0,
+  "LodHysteresisWorld": 0.0,
+  "CollisionLodStep": 1,
   "Layers": [
     {
       "TexturePath": "Assets/grass.png",
@@ -345,8 +383,15 @@ The full terrain data is also saved to a separate JSON file:
 }
 ```
 
+Older files without the chunk/LOD/collision fields keep engine defaults when loading.
+
+**Binary (`.terrain.bin`)** — little-endian, magic `GTER`, versioned header, then height samples and optional holes, splatmaps, and serialized layer list. Use for very large heightmaps where JSON size or parse time matters. Set **`TerrainAssetPath`** to a path ending in **`.terrain.bin`**, or use **`TerrainStreamer.SaveTilesAsBinary`**.
+
+### Dirty flag and streaming
+**`NeedsAssetSave`** is set when heights/splats change (e.g. brushes, **`FinalizeStroke`**, **`MarkSplatmapDirty`**). It is cleared after a successful **`Save()`** or load. Streamers use it to decide whether to persist a tile when unloading.
+
 ### Auto-Save Behavior
-The `.terrain.json` file is automatically saved:
+The terrain asset file is automatically saved:
 - After each brush stroke (when the mouse button is released)
 - When terrain layers are added or removed in the Inspector
 - When layer texture paths are changed
@@ -354,9 +399,9 @@ The `.terrain.json` file is automatically saved:
 
 ### Load Priority
 When a terrain loads, data sources are prioritized:
-1. If a `.terrain.json` file exists at `TerrainAssetPath`, heights and dimensions are loaded from it
-2. Layers and splatmaps are loaded from the `.terrain.json` file if present; otherwise, scene-deserialized data is preserved
-3. If no `.terrain.json` exists, a flat terrain is created and saved
+1. If a file exists at **`TerrainAssetPath`**, it is loaded (**binary** if the path ends with **`.terrain.bin`** or the file starts with magic **`GTER`**; otherwise **JSON**)
+2. Layers and splatmaps are read from that file when present; otherwise, scene-deserialized data is preserved (same rules as before for JSON)
+3. If no asset file exists, a flat terrain is created and saved
 
 ### Lifecycle Events
 | Event | Action |

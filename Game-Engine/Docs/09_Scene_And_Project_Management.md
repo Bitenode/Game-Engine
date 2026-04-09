@@ -496,31 +496,59 @@ Access in-editor via the **Profiler Panel** (Window > Profiler) or programmatica
 
 ## Networking
 
-### NetworkManager
-Central multiplayer networking system supporting server/client architecture:
+Large-world **terrain streaming** (`TerrainStreamer`, `.terrain.bin`, LOD tuning) is covered in **[05 — Terrain System](05_Terrain_System.md)**; this section covers **runtime scene flow**, **audio mixer**, **networking**, and **SceneManager**.
 
+### Static API vs. Inspector components
+
+The **Add Component → Networking** menu only lists **`NetworkIdentity`**, **`NetworkTransform`**, and **`NetworkAnimator`** (files under `Core/Component/Networking/`). Your screenshot of that folder is the **complete** set of networking **behaviors** shipped with the engine.
+
+**`NetworkManager`** lives in `Core/Networking/NetworkManager.cs` — it is a **static** API, **not** a component you drop on a GameObject. You do **not** need another script in the Networking folder to run a server: call `NetworkManager.StartServer` / `Stop` / `Update` from code, or rely on the editor **Game View** / standalone **Player View** tick loop (see **Game loop integration** below). The Standard Assets **ServerHostController** / **MainMenuController** scripts no longer need to call `Update` themselves; they remain valid for starting/stopping the server or handling menu clicks.
+
+### Game loop integration
+
+`NetworkManager.Update()` must run **once per frame** while `NetworkManager.IsActive` so the transport can dequeue messages and run timeout/keepalive logic. The engine calls this automatically from:
+
+- **`GameView.TickUpdate`** (editor play mode)
+- **`PlayerView.TickUpdate`** (standalone **Engine.Player**)
+
+If you add a **custom** host or client entry point without going through those views, call `NetworkManager.Update()` from your own main loop.
+
+### NetworkManager (static)
 | Feature | Description |
 |---------|-------------|
-| **Server/Client** | Host as server or connect as client |
+| **Server/Client** | `StartServer` / `StartClient` |
 | **Object Registry** | Tracks all `NetworkIdentity` objects |
-| **State Broadcast** | Server broadcasts object state to all clients |
-| **RPC System** | Register and invoke remote procedure calls |
-| **Peer Management** | Track connected peers with IDs |
+| **State Broadcast** | Server can `BroadcastState` to peers |
+| **RPC System** | `RegisterRPC`, `SendRPC` / `SendRPCAll` |
+| **Peer Management** | Connected peers and connect/disconnect events |
 
 ### NetworkTransport
-Low-level UDP transport layer:
+Low-level UDP transport (used by `NetworkManager`):
 - **Unreliable datagrams** — fast state updates (position, rotation)
-- **Reliable messages** — RPCs and critical state changes
-- **Connection management** — handshake, keep-alive, disconnect handling
+- **Reliable messages** — RPCs and critical state changes (sequence + ACK)
+- **Connection management** — connect / connect-ack handshake, explicit `MSG_DISCONNECT`, **last-seen tracking** on every inbound packet
+- **Keepalive & idle timeout** — the **server** broadcasts `MSG_PING` on a short interval; clients reply with `MSG_PONG` (existing handler). If a peer sends **no** qualifying traffic for a configured idle window (~12 seconds by default), the transport removes the peer and raises **`OnPeerDisconnected`** (covers crashed clients and closed apps that never sent disconnect)
+- **Endpoint matching** — IPv4 and IPv4-mapped IPv6 endpoints are normalized so disconnect and routing stay consistent on loopback and dual-stack hosts
 
-### Networking Components
+Standalone **Engine.Player** calls **`NetworkManager.Stop()`** when the game window closes so peers receive a best-effort disconnect when the process shuts down cleanly.
+
+### Networking components (Inspector)
 | Component | Purpose |
 |-----------|---------|
-| `NetworkIdentity` | Identifies a networked GameObject (required for any networked object) |
+| `NetworkIdentity` | Identifies a networked GameObject (required for any replicated object) |
 | `NetworkTransform` | Synchronizes position/rotation/scale with interpolation |
 | `NetworkAnimator` | Synchronizes animation state and parameters |
 
-See the [Components Reference](03_Components_Reference.md) for full property details.
+### Standard Assets — server lobby
+
+| Asset | Description |
+|-------|-------------|
+| `Standard Assets/UI/Server.scene` | Example server UI scene |
+| `Standard Assets/Code Examples/UI/ServerHostController.cs` | Starts/stops `NetworkManager`, optional `SceneManager` / save slot, log console |
+
+See [Components Reference — Networking components](03_Components_Reference.md#networking-components) for full property details.
+
+**Not included (build your own or extend):** LAN discovery, matchmaking, dedicated process wrapper, or a second “HUD-only” network component — the engine exposes transport + `NetworkManager` and the three replication components above.
 
 ---
 

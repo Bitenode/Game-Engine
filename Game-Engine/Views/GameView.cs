@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
+using Game_Engine.Core.Networking;
 using Game_Engine.Core.Physics;
 using Game_Engine.Core.Rendering;
 using Game_Engine.Core.Rendering.GPU;
@@ -669,6 +670,8 @@ namespace Game_Engine.Views
             {
                 shouldUpdateLod = true;
             }
+
+            TerrainStreamer.SyncAll(camPos);
 
             if (shouldUpdateLod)
             {
@@ -1542,6 +1545,9 @@ namespace Game_Engine.Views
                 int vpH = Math.Max(1, (int)Bounds.Height);
                 Core.Rendering.UI.UIEventSystem.ProcessEvents(vpW, vpH);
             }
+
+            if (NetworkManager.IsActive)
+                NetworkManager.Update();
 
             Profiler.Begin("Scripts");
             ForEachBehavior(b => b.__Update());

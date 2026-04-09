@@ -138,7 +138,7 @@ When a Terrain is selected, the Scene View enters terrain editing mode:
 - A circular brush indicator follows the mouse on the terrain surface
 - 10 brush tools are available in the Inspector (see Terrain System doc)
 - Left-click applies the tool, right-click applies the inverse
-- Brush strokes auto-save terrain data on mouse release
+- Brush strokes auto-save terrain data on mouse release (to the terrain’s `.terrain.json` / `.terrain.bin` asset path)
 
 ---
 
@@ -175,7 +175,7 @@ During Play mode, Scene View remains live and renders the same runtime world fro
 2. All audio playback is stopped
 3. The scene is deserialized from the snapshot, restoring the exact pre-play state
 4. Material textures are restored
-5. Terrain data is reloaded from `.terrain.json` files
+5. Terrain data is reloaded from per-tile terrain asset files (`.terrain.json` or `.terrain.bin` per `TerrainAssetPath`)
 
 The Game View also displays an FPS counter next to the stop button for performance monitoring.
 
@@ -308,10 +308,10 @@ Click the **"+ Add Component"** button at the bottom of the Inspector to open a 
 | **Audio** | AudioListener, AudioSource, ReverbZone |
 | **Dialogue** | DialogueRunner |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume |
-| **Environment** | Skybox, Terrain, Tree, TreeLOD, VegetationPainter, Water |
+| **Environment** | Skybox, Terrain, TerrainStreamer, Tree, TreeLOD, VegetationPainter, Water |
 | **Misc** | Any components without a category annotation |
 | **Navigation** | NavMeshAgent |
-| **Networking** | NetworkAnimator, NetworkIdentity, NetworkTransform |
+| **Networking** | NetworkAnimator, NetworkIdentity, NetworkTransform — hosting uses static `Game_Engine.Core.Networking.NetworkManager` (or Standard Assets `ServerHostController`), not a fourth Inspector component |
 | **Physics** | BoxCollider, CapsuleCollider, CharacterController, MeshCollider, PlayerMovement, Rigidbody, RigidbodyPlayer, TriggerVolume |
 | **Rendering** | Camera, Light, MeshFilter, MeshRenderer, MeshLodGroup, ReflectionProbe, SkinnedMeshRenderer |
 | **Timeline** | TimelinePlayer |
@@ -374,7 +374,7 @@ ProjectRoot/
 │   ├── Textures/        # Image files (PNG, JPG, BMP)
 │   ├── Materials/       # Material definitions (.material)
 │   ├── Scripts/         # C# scripts (.cs)
-│   └── Terrain/         # Auto-generated terrain data (.terrain.json)
+│   └── Terrain/         # Terrain data (`.terrain.json` and optional `.terrain.bin`)
 ├── Scenes/              # Scene files (.scene)
 ├── Packages/            # Editor extensions and reusable scripts
 ├── Builds/              # Compiled script assemblies (auto-generated)

@@ -163,8 +163,11 @@
             "SettingsButtonName": "Settings Button",
             "BackButtonName": "Back Button",
             "PlayButtonName": "Play Button",
+            "JoinButtonName": "Join Button",
             "QuitButtonName": "Quit Button",
             "PlaySceneName": "test 5",
+            "JoinHost": "127.0.0.1",
+            "JoinPort": 7777,
             "Enabled": true,
             "LogLifecycle": false
           }
@@ -360,7 +363,7 @@
                     "PivotX": 0.5,
                     "PivotY": 0.5,
                     "AnchoredPositionX": 0,
-                    "AnchoredPositionY": 30,
+                    "AnchoredPositionY": 38,
                     "SizeDeltaX": 320,
                     "SizeDeltaY": 56,
                     "Rotation2D": 0,
@@ -468,6 +471,143 @@
               "prefabPath": null
             },
             {
+              "name": "Join Button",
+              "transform": {
+                "localPosition": [
+                  0,
+                  0,
+                  0
+                ],
+                "localRotationEuler": [
+                  0,
+                  0,
+                  0
+                ],
+                "localScale": [
+                  1,
+                  1,
+                  1
+                ]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.5,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.5,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": -7,
+                    "SizeDeltaX": 320,
+                    "SizeDeltaY": 56,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIImage, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "SpritePath": null,
+                    "ImageType": 0,
+                    "FillAmount": 1,
+                    "PreserveAspect": false,
+                    "Raycastable": true,
+                    "Color": "#FF2A7A6A",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIButton, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Interactable": true,
+                    "NormalColor": "#FF2A7A6A",
+                    "HighlightedColor": "#FF3A9A8A",
+                    "PressedColor": "#FF1A5A5A",
+                    "DisabledColor": "#FF505050",
+                    "FadeDuration": 0.1,
+                    "Raycastable": true,
+                    "Color": "#FFFFFFFF",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [
+                {
+                  "name": "Join Label",
+                  "transform": {
+                    "localPosition": [
+                      0,
+                      0,
+                      0
+                    ],
+                    "localRotationEuler": [
+                      0,
+                      0,
+                      0
+                    ],
+                    "localScale": [
+                      1,
+                      1,
+                      1
+                    ]
+                  },
+                  "behaviors": [
+                    {
+                      "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "AnchorMinX": 0,
+                        "AnchorMinY": 0,
+                        "AnchorMaxX": 1,
+                        "AnchorMaxY": 1,
+                        "PivotX": 0.5,
+                        "PivotY": 0.5,
+                        "AnchoredPositionX": 0,
+                        "AnchoredPositionY": 0,
+                        "SizeDeltaX": 0,
+                        "SizeDeltaY": 0,
+                        "Rotation2D": 0,
+                        "ScaleX": 1,
+                        "ScaleY": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    },
+                    {
+                      "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "Text": "JOIN GAME",
+                        "FontSize": 26,
+                        "FontPath": null,
+                        "Alignment": 1,
+                        "WordWrap": false,
+                        "LineSpacing": 1,
+                        "Raycastable": false,
+                        "Color": "#FFFFFFFF",
+                        "Opacity": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    }
+                  ],
+                  "children": [],
+                  "prefabId": null,
+                  "prefabPath": null
+                }
+              ],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
               "name": "Settings Button",
               "transform": {
                 "localPosition": [
@@ -497,7 +637,7 @@
                     "PivotX": 0.5,
                     "PivotY": 0.5,
                     "AnchoredPositionX": 0,
-                    "AnchoredPositionY": -40,
+                    "AnchoredPositionY": -52,
                     "SizeDeltaX": 320,
                     "SizeDeltaY": 56,
                     "Rotation2D": 0,
@@ -634,7 +774,7 @@
                     "PivotX": 0.5,
                     "PivotY": 0.5,
                     "AnchoredPositionX": 0,
-                    "AnchoredPositionY": -110,
+                    "AnchoredPositionY": -122,
                     "SizeDeltaX": 320,
                     "SizeDeltaY": 56,
                     "Rotation2D": 0,

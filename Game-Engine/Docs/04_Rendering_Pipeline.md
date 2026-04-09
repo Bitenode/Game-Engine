@@ -12,7 +12,7 @@ Each frame, both SceneView and GameView execute these passes in order:
 
 ```
  1. Material Warm-Up        (MaterialRebind.RepairScene — resolve null materials)
- 2. Terrain LOD Update      (UpdateLOD per terrain — distance-based chunk LOD)
+ 2. Terrain streaming + LOD  (`TerrainStreamer.SyncAll` — tile ring around camera; `UpdateLOD` per terrain — distance-based chunk LOD with optional hysteresis)
  3. Skinned Mesh Update     (Compute bone matrices for SkinnedMeshRenderers)
  4. Shadow Pass             (Depth-only into 4096x4096 shadow FBO)
  5. Sky Pass                (Fullscreen quad — gradient + texture + sun glow)
@@ -457,9 +457,10 @@ Each mesh has a bounding sphere computed from its vertices. Before drawing, the 
 - `MeshFilter.Mesh` is upgraded in-place when the projected size increases
 
 **Terrain LOD:**
-- Per-chunk, 3 levels (LOD 0 = full, LOD 1 = half, LOD 2 = quarter resolution)
-- Selected by camera distance to chunk center
-- Thresholds scale with chunk size and terrain dimensions
+- Per-chunk, up to 3 mesh levels (LOD 0 = full, LOD 1 = half, LOD 2 = quarter vertex step)
+- Selected by camera distance to chunk center; thresholds are **`LodDistanceNearChunks`** and **`LodDistanceMidChunks`** times chunk world size
+- Optional **`LodHysteresisWorld`** reduces LOD popping at band boundaries
+- **`TerrainStreamer.SyncAll`** runs before LOD so streamed tiles exist for the same frame
 
 **Tree LOD (`TreeLOD`):**
 - 4 levels: LOD 0 (full mesh), LOD 1 (medium), LOD 2 (low), LOD 3 (billboard impostor)

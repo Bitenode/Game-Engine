@@ -17,7 +17,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
 | **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
@@ -547,12 +547,18 @@ Heightmap-based terrain with multi-material splatmap painting, chunking for perf
 | `UseChunking`       | `bool`         | `true`    | Enable chunk-based rendering             |
 | `ChunkSize`         | `int`          | `65`      | Vertices per chunk edge (typically pow2+1) |
 | `LodLevels`         | `int`          | `3`       | LOD levels per chunk (1-3)               |
+| `LodDistanceNearChunks` | `float`   | `4`       | LOD 0/1 band = chunk size × this         |
+| `LodDistanceMidChunks`  | `float`   | `10`      | LOD 1/2 band = chunk size × this (if LOD ≥ 3) |
+| `LodHysteresisWorld`    | `float`   | `0`       | Hysteresis margin (world units) on LOD switches |
+| `CollisionLodStep`      | `int`     | `1`       | Vertex step for physics `MeshCollider` (1 = full) |
 | `Layers`            | `List<TerrainLayer>` | `[]` | Terrain texture layers (up to 8)         |
 | `Splatmap0`         | `float[]`      | `null`    | Per-vertex layer weights for layers 0-3 (RGBA, length = ResX*ResZ*4) |
 | `Splatmap1`         | `float[]`      | `null`    | Per-vertex layer weights for layers 4-7  |
-| `TerrainAssetPath`  | `string`       | `""`      | Path to `.terrain.json` data file        |
+| `TerrainAssetPath`  | `string`       | `""`      | Path to `.terrain.json` or `.terrain.bin` |
 | `AutoLoadOnStart`   | `bool`         | `true`    | Load terrain data on startup             |
 | `AutoSaveOnChange`  | `bool`         | varies    | Auto-save after every modification       |
+
+**Runtime flags (not serialized):** `NeedsAssetSave` — set when height/splat data changes; cleared on successful save/load (used by `TerrainStreamer` when unloading tiles).
 
 **Key methods:**
 - `SetHeight(x, z, h)` / `GetHeight(x, z)` — individual height sample access
@@ -562,17 +568,36 @@ Heightmap-based terrain with multi-material splatmap painting, chunking for perf
 - `RebuildDirtyChunks(rebuildCollision)` — rebuild only modified chunks
 - `UpdateLOD(cameraPos)` — select LOD level per chunk based on camera distance
 - `FinalizeStroke()` — rebuild collision mesh at full resolution after a brush stroke
-- `Save()` / `Load()` — persist to/from `.terrain.json` file
+- `Save()` / `Load()` — persist to/from terrain asset file (JSON or binary per path)
 - `EnsureSplatmaps()` — allocate splatmap arrays if needed
 - `MarkSplatmapDirty()` / `ClearSplatmapDirty()` — GPU re-upload tracking
 - `MarkChunksDirty(minVx, minVz, maxVx, maxVz)` / `MarkAllChunksDirty()` — chunk dirty tracking
 
-**LOD thresholds:**
-- Near (< `chunkWorldSize * 4f`) → LOD 0 (full detail)
-- Medium → LOD 1 (half detail, every other vertex)
-- Far (> `chunkWorldSize * 10f`) → LOD 2 (quarter detail, every fourth vertex)
+**LOD thresholds:** Configurable via **`LodDistanceNearChunks`** and **`LodDistanceMidChunks`** (multipliers on chunk world size). Optional **`LodHysteresisWorld`** reduces LOD popping.
 
 **Requires:** MeshFilter, MeshRenderer, MeshCollider (auto-added via `[Require]`)
+
+---
+
+## TerrainStreamer
+
+Loads and unloads **`Terrain`** tile children around a moving world focus (camera). See **Terrain System** for behavior details.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `StreamingEnabled` | `bool` | `true` | When `false`, sync does not spawn/despawn tiles |
+| `TilesSubfolder` | `string` | `Assets/Terrain/StreamedWorld` | Project-relative folder for `tile_X_Y` assets |
+| `TileWorldSize` | `float` | `100` | World size of each square tile |
+| `RingRadius` | `int` | `2` | Chebyshev radius of tiles to keep loaded |
+| `TileResolutionX` / `TileResolutionZ` | `int` | `129` | Heightmap resolution per new tile |
+| `TileHeightScale` | `float` | `20` | Height scale for new tiles |
+| `TileChunkSize` | `int` | `65` | Chunk size for new tiles |
+| `TileUseChunking` | `bool` | `true` | Chunking for new tiles |
+| `TileLodLevels` | `int` | `3` | LOD levels for new tiles |
+| `SaveTilesAsBinary` | `bool` | `false` | New tiles use `.terrain.bin` instead of `.terrain.json` |
+| `CollisionRingRadius` | `int` | `1` | Tiles within this Chebyshev distance of the center tile keep **`MeshCollider`** enabled; `-1` = all tiles |
+
+**Static API:** `TerrainStreamer.SyncAll(Vector3 worldFocus)` — call is already wired from Scene/Game/Player views.
 
 ---
 
@@ -1299,6 +1324,38 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 - **Jump buffering** — responsive jump input
 
 **Requires:** Rigidbody, CapsuleCollider (auto-added via `[Require]`)
+
+---
+
+## Networking components
+
+The **Add Component → Networking** submenu lists exactly three behaviors in `Core/Component/Networking/`:
+
+| Component | Purpose |
+|-----------|---------|
+| **NetworkIdentity** | Registers a GameObject with the network registry; **required** for any replicated object. |
+| **NetworkTransform** | Optional — syncs transform (depends on `NetworkIdentity`). |
+| **NetworkAnimator** | Optional — syncs `Animator` state (depends on `NetworkIdentity` + `Animator`). |
+
+### Core networking API (not Inspector components)
+
+**`NetworkManager`** and **`NetworkTransport`** live under `Core/Networking/`. They are **not** `Behavior` components — you do **not** add them to a GameObject. There is no separate “network manager” script in the component folder comparable to a Unity `NetworkManager` **component**; hosting is done by calling the **static** API from your own `Behavior` or from the Standard Assets server UI.
+
+| Type | Namespace / path | Role |
+|------|------------------|------|
+| `NetworkManager` | `Game_Engine.Core.Networking` | `StartServer(port)`, `StartClient(host, port)`, `Stop`, `Update` (the editor **Game View** and standalone **Player View** call this each frame while `IsActive`; only custom hosts need to call it manually), RPC helpers, `BroadcastState`, registry for `NetworkIdentity` instances |
+| `NetworkTransport` | `Game_Engine.Core.Networking` | UDP transport (reliable + unreliable); ping keepalive, idle timeouts, disconnect events; used internally by `NetworkManager` |
+
+### Server host UI (Standard Assets)
+
+| Asset | Path |
+|-------|------|
+| **ServerHostController** | `Standard Assets/Code Examples/UI/ServerHostController.cs` — Canvas UI: Start/Stop server, optional game scene name and save slot (`SceneManager` / `SaveManager`), rolling log lines via `Log.Logged`. |
+| **Server.scene** | `Standard Assets/UI/Server.scene` — example layout using that controller. |
+| **MainMenuController** | `Standard Assets/Code Examples/UI/MainMenuController.cs` — main menu: Play, **Join** (`NetworkManager.StartClient`), Settings, Quit; set `JoinHost` / `JoinPort` on the component (defaults `127.0.0.1` / `7777`). |
+| **Main Menu.scene** | `Standard Assets/UI/Main Menu.scene` — template menu scene (includes Join). Copy into your project’s `Scenes/` or open from Standard Assets after install. |
+
+**Do you need more network scripts?** For a **listen-only server** with no replicated entities, **no** — `NetworkManager` (plus optional `ServerHostController`) is enough. Add **NetworkIdentity** (and **NetworkTransform** / **NetworkAnimator** when needed) only on objects that must replicate to clients (players, synced props, animated avatars).
 
 ---
 

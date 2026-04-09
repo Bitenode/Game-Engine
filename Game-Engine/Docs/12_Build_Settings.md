@@ -200,6 +200,29 @@ The player does **not** duplicate engine source code. Instead, it links the shar
 
 This means the player gets all engine systems (rendering, physics, audio, animation, components) but none of the editor UI or extension systems.
 
+### Standard Assets UI scripts (linked into the player)
+
+The editor project compiles everything under `Game-Engine/` (including `Standard Assets/Code Examples/`) into **Game_Engine.dll**. Scene files store behavior types by full name (e.g. `Game_Engine.Core.Component.UI.MainMenuController, Game_Engine`). The standalone player uses a **different** assembly name (**Engine.Player**), so types must still exist in that assembly.
+
+The player project therefore **also compiles** the Standard Assets **UI sample behaviors** used by shipped scenes:
+
+| Linked path | Purpose |
+|-------------|---------|
+| `Standard Assets/Code Examples/UI/*.cs` | **MainMenuController**, **ServerHostController**, and any future UI samples colocated there |
+
+Other Standard Assets scripts (gameplay demos, planet tools, etc.) are **not** linked automatically; ship them via **GameScripts.dll** or add explicit `<Compile Include="...">` entries if your scenes reference those types.
+
+### Runtime UI and game loop (PlayerView)
+
+**PlayerView** mirrors the editor **Game View** for core runtime behavior:
+
+- **OpenGL scene** — forward rendering path, terrain, optional post-processing
+- **Canvas / screen-space UI** — uses **`CanvasRenderer`** + **`RenderOverlays`** so `Canvas` + **Screen Space Overlay** menus (e.g. Main Menu) draw on top of the 3D framebuffer
+- **Input** — viewport size and **`UIEventSystem.ProcessEvents`** run in the update tick so UI hit-testing matches the editor; pointer move feeds **`Input.FeedMousePosition`**
+- **Networking** — **`NetworkManager.Update()`** runs each frame while networking is active (see [Networking — Game loop integration](09_Scene_And_Project_Management.md#game-loop-integration))
+
+On window close, **PlayerWindow** invokes **`NetworkManager.Stop()`** so the UDP transport can notify peers before exit.
+
 ### NuGet Dependencies (Player)
 
 Same as the editor project **except**:

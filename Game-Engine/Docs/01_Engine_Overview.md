@@ -72,6 +72,7 @@ Game-Engine/
 │   │   ├── Environment/         # [ComponentCategory("Environment")]
 │   │   │   ├── Skybox.cs        # Sky gradient + equirectangular texture
 │   │   │   ├── Terrain.cs       # Heightmap terrain with splatmaps
+│   │   │   ├── TerrainStreamer.cs # Camera-centered terrain tile streaming
 │   │   │   ├── PlanetTerrain.cs # Cube-sphere planet terrain with biome graph integration
 │   │   │   ├── Tree.cs          # Procedural/imported trees with wind
 │   │   │   ├── TreeLOD.cs       # Tree level-of-detail management
@@ -79,7 +80,7 @@ Game-Engine/
 │   │   │   └── Water.cs         # Gerstner wave water rendering
 │   │   ├── Navigation/          # [ComponentCategory("Navigation")]
 │   │   │   └── NavMeshAgent.cs  # Navigation agent
-│   │   ├── Networking/          # [ComponentCategory("Networking")]
+│   │   ├── Networking/          # [ComponentCategory("Networking")] — only these 3 are Inspector behaviors
 │   │   │   ├── NetworkIdentity.cs   # Network object identity
 │   │   │   ├── NetworkTransform.cs  # Network transform sync
 │   │   │   └── NetworkAnimator.cs   # Network animation sync
@@ -177,8 +178,8 @@ Game-Engine/
 │   ├── Timeline/                # Timeline / Cutscene sequencer
 │   │   ├── Timeline.cs          # TimelineAsset, TimelineTrack, TimelineClip
 │   │   └── TimelinePlayer.cs    # Timeline playback component
-│   ├── Networking/              # Multiplayer networking
-│   │   ├── NetworkManager.cs    # Server/client lifecycle + RPC system
+│   ├── Networking/              # Multiplayer (static API — not Add Component entries)
+│   │   ├── NetworkManager.cs    # Static server/client, RPC, registry (call from Behaviors / ServerHostController)
 │   │   └── NetworkTransport.cs  # Low-level UDP transport layer
 │   ├── Audio/                   # Audio subsystems
 │   │   └── AudioMixer.cs        # Hierarchical audio mixing with effects
@@ -362,7 +363,7 @@ Scene Graph (GameObjects + Behaviors)
 SceneRenderer.RenderGPU()
     │
     ├─► Material Warm-Up (MaterialRebind.RepairScene)
-    ├─► Terrain LOD Update (per-chunk distance LOD)
+    ├─► TerrainStreamer.SyncAll + Terrain LOD Update (streaming tiles, per-chunk distance LOD)
     ├─► Shadow Pass (4096x4096 depth-only FBO, front-face culling)
     ├─► Sky Pass (gradient + equirectangular texture + sun glow)
     ├─► Grid Pass (infinite ground grid with distance fade)
@@ -385,7 +386,7 @@ SceneRenderer.RenderGPU()
 | Project         | JSON        | `project.json` in project root               | ID, name, paths, timestamps |
 | Scenes          | JSON        | `Scenes/*.scene`                             | Full hierarchy + component data |
 | Materials       | JSON        | `Assets/**/*.material`                       | PBR properties + texture paths |
-| Terrain         | JSON        | `Assets/Terrain/*.terrain.json`              | Auto-saved on brush strokes |
+| Terrain         | JSON / binary | `Assets/Terrain/*.terrain.json` or `.terrain.bin` | JSON default; binary optional; brush strokes; `TerrainStreamer` tile unload |
 | Input Bindings  | JSON        | `ProjectSettings/input.bindings.json`        | Axes, actions, mouse sensitivity |
 | Scripts         | C# source   | `Assets/**/*.cs`, `Packages/**/*.cs`         | Compiled by Roslyn at runtime |
 | Compiled Scripts| DLL         | `Builds/EditorScripts_<timestamp>.dll`       | Auto-generated, hot-reloaded |

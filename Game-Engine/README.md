@@ -21,7 +21,7 @@ All docs are in the `Docs/` folder:
 | [02 — Editor Guide](Docs/02_Editor_Guide.md) | Editor panels, Scene View, Game View, Inspector, Shader Editor, Profiler, Build Settings |
 | [03 — Components Reference](Docs/03_Components_Reference.md) | 34+ built-in components with properties, defaults, and usage |
 | [04 — Rendering Pipeline](Docs/04_Rendering_Pipeline.md) | Render passes, shaders, shader graph, GPU resources, post-processing, particles, water |
-| [05 — Terrain System](Docs/05_Terrain_System.md) | Terrain creation, 10 brush tools, splatmap painting, tree painting, chunking, LOD |
+| [05 — Terrain System](Docs/05_Terrain_System.md) | Terrain creation, 10 brush tools, splatmap painting, tree painting, chunking, LOD, `.terrain.bin`, `TerrainStreamer` |
 | [06 — Scripting & Extensibility](Docs/06_Scripting_And_Extensibility.md) | C# scripting, lifecycle, APIs, editor extensions, command registry, custom inspectors |
 | [07 — Physics & Collision](Docs/07_Physics_And_Collision.md) | Colliders, CharacterController, physics joints, BVH, raycasting, terrain collision |
 | [08 — Materials & Textures](Docs/08_Materials_And_Textures.md) | PBR materials, shader graph materials, texture slots, transparency, custom shaders |

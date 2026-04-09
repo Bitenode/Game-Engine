@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Markup.Xaml;
 using Game_Engine.Core;
+using Game_Engine.Core.Networking;
 using System;
 using System.IO;
 using System.IO.Compression;
@@ -40,6 +41,9 @@ public partial class PlayerWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        if (NetworkManager.IsActive)
+            NetworkManager.Stop();
+
         // Clean up extracted assets from temp
         if (_tempRoot != null)
         {

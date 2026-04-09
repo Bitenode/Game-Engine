@@ -1,0 +1,804 @@
+{
+  "version": 2,
+  "root": [
+    {
+      "name": "Directional Light",
+      "transform": {
+        "localPosition": [0, 3, 0],
+        "localRotationEuler": [50, -30, 0],
+        "localScale": [1, 1, 1]
+      },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Component.Light, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "Type": 0,
+            "Intensity": 1,
+            "Range": 100,
+            "InnerAngle": 25,
+            "OuterAngle": 35,
+            "Color": "#FFFFFFFF",
+            "CastShadows": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        },
+        {
+          "type": "Game_Engine.Core.Component.Skybox, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "Top": "#FF0A1628",
+            "Bottom": "#FF020408",
+            "Ambient": 0.3,
+            "Texture": null,
+            "TexturePath": null,
+            "TextureBlend": 0,
+            "Yaw": 0,
+            "SunElevation": 45,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "Main Camera",
+      "transform": {
+        "localPosition": [0, 1, -10],
+        "localRotationEuler": [0, 0, 0],
+        "localScale": [1, 1, 1]
+      },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Component.Camera, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "Projection": 0,
+            "FieldOfView": 60,
+            "OrthoSize": 12,
+            "Near": 0.1,
+            "Far": 1000,
+            "ViewportX": 0,
+            "ViewportY": 0,
+            "ViewportW": 1,
+            "ViewportH": 1,
+            "Clear": 0,
+            "Background": "#FF0A0A14",
+            "IsMain": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "UI Canvas",
+      "transform": {
+        "localPosition": [0, 0, 0],
+        "localRotationEuler": [0, 0, 0],
+        "localScale": [1, 1, 1]
+      },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "AnchorMinX": 0,
+            "AnchorMinY": 0,
+            "AnchorMaxX": 1,
+            "AnchorMaxY": 1,
+            "PivotX": 0.5,
+            "PivotY": 0.5,
+            "AnchoredPositionX": 0,
+            "AnchoredPositionY": 0,
+            "SizeDeltaX": 0,
+            "SizeDeltaY": 0,
+            "Rotation2D": 0,
+            "ScaleX": 1,
+            "ScaleY": 1,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        },
+        {
+          "type": "Game_Engine.Core.Component.UI.Canvas, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "RenderMode": 0,
+            "SortOrder": 0,
+            "PixelPerfect": true,
+            "ScaleMode": 1,
+            "ReferenceResolutionX": 1920,
+            "ReferenceResolutionY": 1080,
+            "MatchWidthOrHeight": 0.5,
+            "WorldSizeX": 5,
+            "WorldSizeY": 3,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        },
+        {
+          "type": "Game_Engine.Core.Component.UI.ServerHostController, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "Port": 7777,
+            "AutoStartOnPlay": false,
+            "StartButtonName": "Start Server Button",
+            "StopButtonName": "Stop Server Button",
+            "StatusTextName": "Status Text",
+            "SceneNameInputName": "Scene Name Input",
+            "SaveSlotInputName": "Save Slot Input",
+            "ConsoleTextName": "Console Text",
+            "MaxConsoleLines": 40,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "Server Panel",
+          "transform": {
+            "localPosition": [0, 0, 0],
+            "localRotationEuler": [0, 0, 0],
+            "localScale": [1, 1, 1]
+          },
+          "behaviors": [
+            {
+              "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+              "properties": {
+                "AnchorMinX": 0,
+                "AnchorMinY": 0,
+                "AnchorMaxX": 1,
+                "AnchorMaxY": 1,
+                "PivotX": 0.5,
+                "PivotY": 0.5,
+                "AnchoredPositionX": 0,
+                "AnchoredPositionY": 0,
+                "SizeDeltaX": 0,
+                "SizeDeltaY": 0,
+                "Rotation2D": 0,
+                "ScaleX": 1,
+                "ScaleY": 1,
+                "Enabled": true,
+                "LogLifecycle": false
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "Background",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0,
+                    "AnchorMinY": 0,
+                    "AnchorMaxX": 1,
+                    "AnchorMaxY": 1,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 0,
+                    "SizeDeltaY": 0,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIPanel, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "SpritePath": null,
+                    "Raycastable": false,
+                    "Color": "#CC0A0A18",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Title Text",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.78,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.78,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 40,
+                    "SizeDeltaX": 900,
+                    "SizeDeltaY": 90,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Text": "GAME SERVER",
+                    "FontSize": 56,
+                    "FontPath": null,
+                    "Alignment": 1,
+                    "WordWrap": false,
+                    "LineSpacing": 1,
+                    "Raycastable": false,
+                    "Color": "#FFFFFFFF",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Scene Name Input",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.67,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.67,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 720,
+                    "SizeDeltaY": 44,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIInputField, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Text": "",
+                    "Placeholder": "Game scene name (no .scene extension)",
+                    "CharacterLimit": 128,
+                    "ContentType": 0,
+                    "FontSize": 22,
+                    "FontPath": "",
+                    "ReadOnly": false,
+                    "BackgroundColor": "#FF252530",
+                    "TextColor": "#FFFFFFFF",
+                    "PlaceholderColor": "#FF808080",
+                    "CursorColor": "#FFFFFFFF",
+                    "SelectionColor": "#6040A0FF",
+                    "FocusedBorderColor": "#FF40A0FF",
+                    "FocusBorderWidth": 2,
+                    "DeselectOnClickOutside": true,
+                    "Raycastable": true,
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Save Slot Input",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.61,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.61,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 160,
+                    "SizeDeltaY": 44,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIInputField, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Text": "",
+                    "Placeholder": "0",
+                    "CharacterLimit": 6,
+                    "ContentType": 1,
+                    "FontSize": 22,
+                    "FontPath": "",
+                    "ReadOnly": false,
+                    "BackgroundColor": "#FF252530",
+                    "TextColor": "#FFFFFFFF",
+                    "PlaceholderColor": "#FF808080",
+                    "CursorColor": "#FFFFFFFF",
+                    "SelectionColor": "#6040A0FF",
+                    "FocusedBorderColor": "#FF40A0FF",
+                    "FocusBorderWidth": 2,
+                    "DeselectOnClickOutside": true,
+                    "Raycastable": true,
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Console Panel",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.05,
+                    "AnchorMinY": 0.28,
+                    "AnchorMaxX": 0.95,
+                    "AnchorMaxY": 0.54,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 0,
+                    "SizeDeltaY": 0,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIPanel, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "SpritePath": null,
+                    "Raycastable": false,
+                    "Color": "#F0101018",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [
+                {
+                  "name": "Console Text",
+                  "transform": {
+                    "localPosition": [0, 0, 0],
+                    "localRotationEuler": [0, 0, 0],
+                    "localScale": [1, 1, 1]
+                  },
+                  "behaviors": [
+                    {
+                      "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "AnchorMinX": 0,
+                        "AnchorMinY": 0,
+                        "AnchorMaxX": 1,
+                        "AnchorMaxY": 1,
+                        "PivotX": 0.5,
+                        "PivotY": 0.5,
+                        "AnchoredPositionX": 0,
+                        "AnchoredPositionY": 0,
+                        "SizeDeltaX": -20,
+                        "SizeDeltaY": -16,
+                        "Rotation2D": 0,
+                        "ScaleX": 1,
+                        "ScaleY": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    },
+                    {
+                      "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "Text": "",
+                        "FontSize": 15,
+                        "FontPath": null,
+                        "Alignment": 0,
+                        "WordWrap": true,
+                        "LineSpacing": 1.05,
+                        "Raycastable": false,
+                        "Color": "#FFB0C0D0",
+                        "Opacity": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    }
+                  ],
+                  "children": [],
+                  "prefabId": null,
+                  "prefabPath": null
+                }
+              ],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Status Text",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.56,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.56,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 1000,
+                    "SizeDeltaY": 44,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Text": "Stopped - click Start to listen.",
+                    "FontSize": 24,
+                    "FontPath": null,
+                    "Alignment": 1,
+                    "WordWrap": true,
+                    "LineSpacing": 1,
+                    "Raycastable": false,
+                    "Color": "#FFCCCCCC",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Start Server Button",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.2,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.2,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 320,
+                    "SizeDeltaY": 56,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIImage, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "SpritePath": null,
+                    "ImageType": 0,
+                    "FillAmount": 1,
+                    "PreserveAspect": false,
+                    "Raycastable": true,
+                    "Color": "#FF2A5CAA",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIButton, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Interactable": true,
+                    "NormalColor": "#FF2A5CAA",
+                    "HighlightedColor": "#FF3A7CDA",
+                    "PressedColor": "#FF1A3C7A",
+                    "DisabledColor": "#FF505050",
+                    "FadeDuration": 0.1,
+                    "Raycastable": true,
+                    "Color": "#FFFFFFFF",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [
+                {
+                  "name": "Start Label",
+                  "transform": {
+                    "localPosition": [0, 0, 0],
+                    "localRotationEuler": [0, 0, 0],
+                    "localScale": [1, 1, 1]
+                  },
+                  "behaviors": [
+                    {
+                      "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "AnchorMinX": 0,
+                        "AnchorMinY": 0,
+                        "AnchorMaxX": 1,
+                        "AnchorMaxY": 1,
+                        "PivotX": 0.5,
+                        "PivotY": 0.5,
+                        "AnchoredPositionX": 0,
+                        "AnchoredPositionY": 0,
+                        "SizeDeltaX": 0,
+                        "SizeDeltaY": 0,
+                        "Rotation2D": 0,
+                        "ScaleX": 1,
+                        "ScaleY": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    },
+                    {
+                      "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "Text": "START SERVER",
+                        "FontSize": 28,
+                        "FontPath": null,
+                        "Alignment": 1,
+                        "WordWrap": false,
+                        "LineSpacing": 1,
+                        "Raycastable": false,
+                        "Color": "#FFFFFFFF",
+                        "Opacity": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    }
+                  ],
+                  "children": [],
+                  "prefabId": null,
+                  "prefabPath": null
+                }
+              ],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Stop Server Button",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.12,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.12,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 320,
+                    "SizeDeltaY": 56,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIImage, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "SpritePath": null,
+                    "ImageType": 0,
+                    "FillAmount": 1,
+                    "PreserveAspect": false,
+                    "Raycastable": true,
+                    "Color": "#FF3A3A4A",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIButton, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Interactable": true,
+                    "NormalColor": "#FF3A3A4A",
+                    "HighlightedColor": "#FF5A5A6A",
+                    "PressedColor": "#FF2A2A3A",
+                    "DisabledColor": "#FF505050",
+                    "FadeDuration": 0.1,
+                    "Raycastable": true,
+                    "Color": "#FFFFFFFF",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [
+                {
+                  "name": "Stop Label",
+                  "transform": {
+                    "localPosition": [0, 0, 0],
+                    "localRotationEuler": [0, 0, 0],
+                    "localScale": [1, 1, 1]
+                  },
+                  "behaviors": [
+                    {
+                      "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "AnchorMinX": 0,
+                        "AnchorMinY": 0,
+                        "AnchorMaxX": 1,
+                        "AnchorMaxY": 1,
+                        "PivotX": 0.5,
+                        "PivotY": 0.5,
+                        "AnchoredPositionX": 0,
+                        "AnchoredPositionY": 0,
+                        "SizeDeltaX": 0,
+                        "SizeDeltaY": 0,
+                        "Rotation2D": 0,
+                        "ScaleX": 1,
+                        "ScaleY": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    },
+                    {
+                      "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                      "properties": {
+                        "Text": "STOP SERVER",
+                        "FontSize": 28,
+                        "FontPath": null,
+                        "Alignment": 1,
+                        "WordWrap": false,
+                        "LineSpacing": 1,
+                        "Raycastable": false,
+                        "Color": "#FFCCCCCC",
+                        "Opacity": 1,
+                        "Enabled": true,
+                        "LogLifecycle": false
+                      }
+                    }
+                  ],
+                  "children": [],
+                  "prefabId": null,
+                  "prefabPath": null
+                }
+              ],
+              "prefabId": null,
+              "prefabPath": null
+            },
+            {
+              "name": "Hint Text",
+              "transform": {
+                "localPosition": [0, 0, 0],
+                "localRotationEuler": [0, 0, 0],
+                "localScale": [1, 1, 1]
+              },
+              "behaviors": [
+                {
+                  "type": "Game_Engine.Core.Component.UI.RectTransform, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "AnchorMinX": 0.5,
+                    "AnchorMinY": 0.045,
+                    "AnchorMaxX": 0.5,
+                    "AnchorMaxY": 0.045,
+                    "PivotX": 0.5,
+                    "PivotY": 0.5,
+                    "AnchoredPositionX": 0,
+                    "AnchoredPositionY": 0,
+                    "SizeDeltaX": 1000,
+                    "SizeDeltaY": 72,
+                    "Rotation2D": 0,
+                    "ScaleX": 1,
+                    "ScaleY": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                },
+                {
+                  "type": "Game_Engine.Core.Component.UI.UIText, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+                  "properties": {
+                    "Text": "Scene name matches Scenes/<name>.scene. Save slot loads Saves/slot_<n>.json (after the game scene loads). Console mirrors the engine log. UDP port is on ServerHostController.",
+                    "FontSize": 17,
+                    "FontPath": null,
+                    "Alignment": 1,
+                    "WordWrap": true,
+                    "LineSpacing": 1,
+                    "Raycastable": false,
+                    "Color": "#80AAAAAA",
+                    "Opacity": 1,
+                    "Enabled": true,
+                    "LogLifecycle": false
+                  }
+                }
+              ],
+              "children": [],
+              "prefabId": null,
+              "prefabPath": null
+            }
+          ],
+          "prefabId": null,
+          "prefabPath": null
+        }
+      ],
+      "prefabId": null,
+      "prefabPath": null
+    }
+  ]
+}
