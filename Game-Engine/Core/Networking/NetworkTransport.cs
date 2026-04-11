@@ -121,6 +121,12 @@ namespace Game_Engine.Core.Networking
         public int LocalPort => _localPort;
 
         /// <summary>
+        /// Development-only: probability in [0,1] that an inbound payload is dropped before delivery (stress testing).
+        /// Does not simulate latency; use for lossy-link testing on loopback.
+        /// </summary>
+        public double SimulatedIncomingPacketLossChance { get; set; }
+
+        /// <summary>
         /// Start as a server, listening on the specified port.
         /// </summary>
         public void StartServer(int port)
@@ -388,6 +394,11 @@ namespace Game_Engine.Core.Networking
             uint seq = br.ReadUInt32();
             int len = br.ReadInt32();
             var payload = br.ReadBytes(len);
+
+            if (SimulatedIncomingPacketLossChance > 0 &&
+                SimulatedIncomingPacketLossChance < 1.0 &&
+                System.Random.Shared.NextDouble() < SimulatedIncomingPacketLossChance)
+                return;
 
             // Find peer
             int peerId = FindPeerByEndPoint(from);

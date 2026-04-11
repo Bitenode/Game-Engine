@@ -179,9 +179,11 @@ Game-Engine/
 │   │   ├── Timeline.cs          # TimelineAsset, TimelineTrack, TimelineClip
 │   │   └── TimelinePlayer.cs    # Timeline playback component
 │   ├── Networking/              # Multiplayer (static API — not Add Component entries)
-│   │   ├── NetworkManager.cs         # Static server/client, RPC, registry, world fingerprint hook
-│   │   ├── NetworkTransport.cs       # Low-level UDP transport layer
-│   │   ├── NetworkGameplayRules.cs   # IsAuthoritativePeer, IsRemoteProxy, IsLocallyControlledPlayer
+│   │   ├── NetworkManager.cs           # Static server/client, RPC, registry, message dispatch
+│   │   ├── NetworkManager.Spawning.cs  # Runtime spawn/despawn, late-join sync, client input channel
+│   │   ├── NetworkManager.Replication.cs # Rate limits, interest filter, disconnect policy, reliable state snap
+│   │   ├── NetworkTransport.cs        # Low-level UDP transport layer
+│   │   ├── NetworkGameplayRules.cs    # IsAuthoritativePeer, IsRemoteProxy, IsLocallyControlledPlayer
 │   │   └── NetworkWorldDiagnostics.cs # Terrain/planet asset fingerprint log for multiplayer
 │   ├── Audio/                   # Audio subsystems
 │   │   └── AudioMixer.cs        # Hierarchical audio mixing with effects

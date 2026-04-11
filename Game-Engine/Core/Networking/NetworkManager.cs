@@ -16,7 +16,7 @@ namespace Game_Engine.Core.Networking
     /// Central network manager — manages the connection lifecycle,
     /// object spawning, state synchronization, and RPC dispatch.
     /// </summary>
-    public static class NetworkManager
+    public static partial class NetworkManager
     {
         // ── State ──
         private static NetworkTransport? _transport;
@@ -60,8 +60,8 @@ namespace Game_Engine.Core.Networking
         {
             if (IsActive) return;
             _transport = new NetworkTransport();
-            _transport.OnPeerConnected += peer => OnPlayerConnected?.Invoke(peer);
-            _transport.OnPeerDisconnected += (peer, reason) => OnPlayerDisconnected?.Invoke(peer, reason);
+            _transport.OnPeerConnected += OnTransportPeerConnected;
+            _transport.OnPeerDisconnected += HandleTransportPeerDisconnected;
             _transport.OnDataReceived += HandleNetworkData;
             _transport.StartServer(port);
             _role = NetworkRole.Server;
@@ -73,8 +73,8 @@ namespace Game_Engine.Core.Networking
         {
             if (IsActive) return;
             _transport = new NetworkTransport();
-            _transport.OnPeerConnected += peer => OnPlayerConnected?.Invoke(peer);
-            _transport.OnPeerDisconnected += (peer, reason) => OnPlayerDisconnected?.Invoke(peer, reason);
+            _transport.OnPeerConnected += OnTransportPeerConnected;
+            _transport.OnPeerDisconnected += HandleTransportPeerDisconnected;
             _transport.OnDataReceived += HandleNetworkData;
             _transport.StartClient(host, port);
             _role = NetworkRole.Client;
@@ -90,6 +90,8 @@ namespace Game_Engine.Core.Networking
             _networkedObjects.Clear();
             _stateBroadcastAccum = 0f;
             _loggedSharedWorldSnapshot = false;
+            ClearSpawnState();
+            ResetReplicationState();
             Log.Info("[NetworkManager] Network stopped.");
         }
 
@@ -167,6 +169,11 @@ namespace Game_Engine.Core.Networking
         public static void SendRPC(int peerId, string methodName, byte[] data)
         {
             if (_transport == null) return;
+            if (data.Length > MaxRpcPayloadBytes)
+            {
+                Log.Warning($"[Network] RPC payload too large ({data.Length} > {MaxRpcPayloadBytes})");
+                return;
+            }
 
             using var ms = new MemoryStream();
             using var bw = new BinaryWriter(ms, Encoding.UTF8);
@@ -182,6 +189,11 @@ namespace Game_Engine.Core.Networking
         public static void SendRPCAll(string methodName, byte[] data)
         {
             if (_transport == null) return;
+            if (data.Length > MaxRpcPayloadBytes)
+            {
+                Log.Warning($"[Network] RPC payload too large ({data.Length} > {MaxRpcPayloadBytes})");
+                return;
+            }
 
             using var ms = new MemoryStream();
             using var bw = new BinaryWriter(ms, Encoding.UTF8);
@@ -198,25 +210,15 @@ namespace Game_Engine.Core.Networking
         /// <summary>
         /// Broadcast the state of all networked objects to all peers.
         /// Call at a fixed rate (e.g., 20Hz) from the server.
+        /// Uses <see cref="ShouldReplicateToPeer"/> when set; otherwise full broadcast (with optional unchanged omission).
         /// </summary>
         public static void BroadcastState()
         {
             if (!IsServer || _transport == null) return;
-
-            using var ms = new MemoryStream();
-            using var bw = new BinaryWriter(ms, Encoding.UTF8);
-            bw.Write((byte)NetMessageType.StateSync);
-            bw.Write(_networkedObjects.Count);
-
-            foreach (var (netId, identity) in _networkedObjects)
-            {
-                bw.Write(netId);
-                var state = identity.SerializeState();
-                bw.Write(state.Length);
-                bw.Write(state);
-            }
-
-            _transport.SendToAll(ms.ToArray(), 0, DeliveryMode.Unreliable);
+            if (ShouldReplicateToPeer != null)
+                BroadcastStateFiltered();
+            else
+                BroadcastStateFullInternal();
         }
 
         // ── Message handling ──
@@ -229,14 +231,30 @@ namespace Game_Engine.Core.Networking
             using var br = new BinaryReader(ms, Encoding.UTF8);
 
             var msgType = (NetMessageType)br.ReadByte();
+            if (ShouldDropInboundMessage(peer, msgType)) return;
 
             switch (msgType)
             {
                 case NetMessageType.RPC:
+                    if (IsServer && !TryConsumeInboundRate(peer.PeerId, false)) return;
                     HandleRPC(peer.PeerId, br);
                     break;
                 case NetMessageType.StateSync:
-                    HandleStateSync(br);
+                    if (IsClient)
+                        HandleStateSync(br);
+                    break;
+                case NetMessageType.Spawn:
+                    if (IsClient)
+                        HandleSpawnMessage(br);
+                    break;
+                case NetMessageType.Despawn:
+                    if (IsClient)
+                        HandleDespawnMessage(br);
+                    break;
+                case NetMessageType.ClientInput:
+                    if (IsServer && !TryConsumeInboundRate(peer.PeerId, true)) return;
+                    if (IsServer)
+                        HandleClientInputMessage(peer.PeerId, br);
                     break;
             }
         }
@@ -246,7 +264,17 @@ namespace Game_Engine.Core.Networking
             try
             {
                 string methodName = br.ReadString();
+                if (methodName.Length > MaxRpcMethodNameChars)
+                {
+                    Log.Warning($"[Network] RPC method name too long");
+                    return;
+                }
                 int len = br.ReadInt32();
+                if (len < 0 || len > MaxRpcPayloadBytes)
+                {
+                    Log.Warning($"[Network] RPC payload length invalid: {len}");
+                    return;
+                }
                 byte[] rpcData = br.ReadBytes(len);
 
                 if (_rpcHandlers.TryGetValue(methodName, out var handler))
@@ -281,12 +309,13 @@ namespace Game_Engine.Core.Networking
             }
         }
 
-        private enum NetMessageType : byte
+        internal enum NetMessageType : byte
         {
             RPC = 1,
             StateSync = 2,
             Spawn = 3,
-            Despawn = 4
+            Despawn = 4,
+            ClientInput = 5
         }
     }
 }

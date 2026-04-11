@@ -1343,8 +1343,8 @@ The **Add Component → Networking** submenu lists exactly three behaviors in `C
 
 | Type | Namespace / path | Role |
 |------|------------------|------|
-| `NetworkManager` | `Game_Engine.Core.Networking` | `StartServer(port)`, `StartClient(host, port)`, `Stop`, `Update` (**Game View** / **Player View** call `Update` each frame when active; custom hosts must call it themselves), RPC helpers, `BroadcastState`, `NetworkIdentity` registry (duplicate `NetworkId` rejected; optional world fingerprint log) |
-| `NetworkTransport` | `Game_Engine.Core.Networking` | UDP transport (reliable + unreliable); ping keepalive, idle timeouts, disconnect events; used internally by `NetworkManager` |
+| `NetworkManager` | `Game_Engine.Core.Networking` | `StartServer` / `StartClient`, `Stop`, `Update`; RPCs; `BroadcastState` (optional **`ShouldReplicateToPeer`**, **`OmitUnchangedStateInBroadcast`**); registry; spawn/despawn; client input; rate limits; **`BroadcastReliableStateSnapshotFor`**; **`NetworkWorldDiagnostics`** (see [09 — Scene & Project](09_Scene_And_Project_Management.md#networking)) |
+| `NetworkTransport` | `Game_Engine.Core.Networking` | UDP transport (reliable + unreliable); ping keepalive, idle timeouts; **`SimulatedIncomingPacketLossChance`** (dev testing); used internally by `NetworkManager` |
 | `NetworkGameplayRules` | `Game_Engine.Core.Networking` | Static: `IsAuthoritativePeer`, `IsRemoteProxy`, `IsLocallyControlledPlayer` — use in gameplay code with `NetworkIdentity` |
 | `NetworkWorldDiagnostics` | `Game_Engine.Core.Networking` | `LogSharedWorldSnapshot()` — logs terrain/planet asset paths and seeds (called automatically once per scene while networking is active; see [09 — Scene & Project](09_Scene_And_Project_Management.md#networking)) |
 
@@ -1369,7 +1369,9 @@ Network identity component that identifies a GameObject for multiplayer synchron
 |----------------|---------|---------|--------------------------------------|
 | `NetworkId`    | `uint`  | `0`     | Unique ID for replication. **Prefer a stable non-zero value** saved in the scene so server and clients map the same object. If `0` while networking is active, `NetworkManager` may auto-assign (with a warning — registration order can differ between peers). Duplicate IDs on two objects are rejected at registration. |
 | `IsLocalPlayer`| `bool`  | `false` | True if owned by the local player    |
-| `OwnerPeerId`  | `int`   | `-1`    | Peer ID of the owner (-1 = server)   |
+| `OwnerPeerId`  | `int`   | `-1`    | Peer ID of the owner (-1 = server). Set by **`ServerSpawn(..., ownerPeerId)`** for runtime objects; used with **`DespawnOwnedRuntimeSpawnsOnDisconnect`**. |
+
+**Static:** `StatePayloadFormatVersion` — `1` = float state (default), `2` = quantized (see [09 — Security & limits](09_Scene_And_Project_Management.md#security-limits-and-trust)).
 
 **Read-only:**
 - `HasAuthority` — true if the local machine controls this object (server or owner). For gameplay branching, see also **`NetworkGameplayRules`** (`IsAuthoritativePeer`, `IsRemoteProxy`, `IsLocallyControlledPlayer`).

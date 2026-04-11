@@ -525,10 +525,12 @@ If you add a **custom** host or client entry point without going through those v
 |---------|-------------|
 | **Server/Client** | `StartServer` / `StartClient` |
 | **Object Registry** | Tracks all `NetworkIdentity` objects. **`RegisterObject`** rejects a **duplicate `NetworkId`** (two different objects with the same ID) and logs an error. **`UnregisterObject`** removes only if the instance matches the registry entry (safe if registration failed). If **`NetworkId` is `0`** while networking is **active**, a **warning** is logged and an ID is auto-assigned — prefer **stable non-zero IDs** in the scene so every peer maps the same object. Auto-assigned IDs skip collisions with existing registry keys. |
-| **State Broadcast** | Server pushes `NetworkIdentity` state (`SerializeState` / `DeserializeState`) ~20×/s via `BroadcastState` (invoked from `NetworkManager.Update` when `IsServer`) |
+| **State Broadcast** | Server pushes `NetworkIdentity` state (`SerializeState` / `DeserializeState`) ~20×/s via `BroadcastState`. **Clients** apply incoming state; the **server** ignores inbound `StateSync`. Optional **`ShouldReplicateToPeer(netId, peerId)`** filters which objects each client receives (per-peer sends). Optional **`OmitUnchangedStateInBroadcast`** skips objects whose serialized state is unchanged since the last tick (bandwidth saver; not true delta encoding). |
 | **RPC System** | `RegisterRPC`, `SendRPC` / `SendRPCAll` |
 | **Peer Management** | Connected peers and connect/disconnect events |
 | **World fingerprint** | First `Update` after a scene has roots (while active) triggers **`NetworkWorldDiagnostics`** once per scene load — see table above. |
+| **Runtime spawn** | **`RegisterSpawnPrefab(key, Func<GameObject>)`** registers a factory (do **not** add `NetworkIdentity` inside the factory). **`ServerSpawn(key, position, rotation, scale, ownerPeerId)`** (server only) allocates a **`NetworkId`**, sets **`OwnerPeerId`**, **`SceneService.Add`**, reliable **Spawn**, then **`BroadcastReliableStateSnapshotFor(netId)`** so clients get one guaranteed state packet. **`ServerDespawn(identity)`** notifies clients with **Despawn**. Prefab keys are capped (**`MaxSpawnPrefabKeyChars`**). Register the **same keys** on server and every client. **Late join:** server **re-sends all runtime spawns** to new peers. **`DespawnOwnedRuntimeSpawnsOnDisconnect`** optionally **`ServerDespawn`** runtime spawns whose **`OwnerPeerId`** matches a disconnecting client. |
+| **Client input channel** | **`RegisterClientInputHandler`** (server) receives **`SendClientInputToServer`** payloads from clients (reliable). Encode your own binary format (e.g. axes, buttons). |
 
 ### NetworkTransport
 Low-level UDP transport (used by `NetworkManager`):
@@ -537,8 +539,29 @@ Low-level UDP transport (used by `NetworkManager`):
 - **Connection management** — connect / connect-ack handshake, explicit `MSG_DISCONNECT`, **last-seen tracking** on every inbound packet
 - **Keepalive & idle timeout** — the **server** broadcasts `MSG_PING` on a short interval; clients reply with `MSG_PONG`. If a peer sends no traffic for the idle window (~12 seconds by default), the transport removes the peer and raises **`OnPeerDisconnected`**
 - **Endpoint matching** — IPv4 and IPv4-mapped IPv6 endpoints are normalized so disconnect and routing stay consistent on loopback and dual-stack hosts
+- **Dev simulation** — **`SimulatedIncomingPacketLossChance`** (0–1) randomly drops inbound payloads before delivery (stress testing on loopback; not latency simulation)
 
 Standalone **Engine.Player** calls **`NetworkManager.Stop()`** when the game window closes so peers receive a best-effort disconnect when the process shuts down cleanly.
+
+### Security, limits, and trust
+
+| Mechanism | Description |
+|-----------|-------------|
+| **Role checks** | **Clients** ignore inbound **`ClientInput`**. **Servers** ignore inbound **`StateSync`**, **Spawn**, and **Despawn** (only the server process should originate these). |
+| **Rate limits** | Server inbound **RPC** and **ClientInput** messages are capped per peer per second (`MaxRpcMessagesPerPeerPerSecond`, `MaxClientInputMessagesPerPeerPerSecond`). |
+| **Payload caps** | RPC payloads max **`MaxRpcPayloadBytes`** (512 KiB); method names max **`MaxRpcMethodNameChars`**; client input max 1 MiB per message. |
+| **Trust** | **LAN** assumes friendly peers. **Internet** games should use a platform/SDK for authentication, encryption, and NAT traversal — not provided in core. |
+
+### State payload format (`NetworkIdentity`)
+
+| Value | Meaning |
+|-------|---------|
+| **`StatePayloadFormatVersion = 1`** | Default: leading format byte + full floats + optional `NetworkTransform` tail. |
+| **`StatePayloadFormatVersion = 2`** | Quantized `int16` transform components (smaller packets); must match on server and all clients. |
+
+### Headless / dedicated server
+
+Use the same contract as editor play: call **`NetworkManager.StartServer`**, run your simulation loop, and invoke **`NetworkManager.Update()`** every frame (e.g. from **Engine.Player**’s **`PlayerView.TickUpdate`** pattern, or a minimal host process without Avalonia UI). Load the same gameplay scene and assets as clients; no separate “headless” binary is required beyond a normal build that does not open the editor.
 
 ### Networking components (Inspector)
 | Component | Purpose |
@@ -554,7 +577,7 @@ Standalone **Engine.Player** calls **`NetworkManager.Stop()`** when the game win
 1. **Join** calls `NetworkManager.StartClient(JoinHost, JoinPort)`.
 2. If **`PlaySceneName`** is set (e.g. `Game`), the client subscribes once to **`NetworkManager.OnPlayerConnected`**. When the UDP handshake finishes (`CONNECT_ACK`), it calls **`SceneManager.LoadScene(PlaySceneName)`** so the menu scene is replaced **after** the connection exists. That avoids loading the level before the transport is ready and ensures **`NetworkIdentity`** / **`NetworkTransform`** on the loaded scene register while networking is active.
 
-Set **`PlaySceneName`** to the **same** gameplay scene file name (without `.scene`) that the server uses, and give **`NetworkIdentity.NetworkId`** stable non-zero values in the scene so server and client map the same logical objects (IDs are not negotiated over the wire yet). See **`NetworkGameplayRules`** for authoritative vs client-local checks in gameplay scripts.
+Set **`PlaySceneName`** to the **same** gameplay scene file name (without `.scene`) that the server uses, and give **`NetworkIdentity.NetworkId`** stable non-zero values in the scene so server and client map the same logical objects. **Scene-placed** objects still use fixed IDs; **runtime-spawned** objects get server-assigned IDs via **`ServerSpawn`**. See **`NetworkGameplayRules`** for authoritative vs client-local checks in gameplay scripts.
 
 ### World / save data vs. network transforms
 
@@ -576,7 +599,7 @@ For multiplayer, treat **terrain/planet files** as shared level data (same files
 
 See [Components Reference — Networking components](03_Components_Reference.md#networking-components) for full property details.
 
-**Not included (build your own or extend):** LAN discovery, matchmaking, dedicated process wrapper, or a second “HUD-only” network component — the engine exposes transport + `NetworkManager` and the three replication components above.
+**Not included (build your own or extend):** LAN discovery, matchmaking, **NAT traversal / relay / TURN**, end-to-end **encryption**, full **rollback** netcode — the engine exposes transport + `NetworkManager` (including spawn/despawn, interest filter, optional unchanged omission, client input, rate limits) and the three Inspector networking components.
 
 ---
 
