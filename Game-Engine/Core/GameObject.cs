@@ -183,6 +183,17 @@ public class GameObject : INotifyPropertyChanged
         return b;
     }
 
+    /// <summary>
+    /// Wire a component during scene deserialization: same as <see cref="AddBehavior"/> but does not
+    /// call <see cref="Behavior.OnEnable"/> until persisted fields (including <c>Enabled</c>) are applied.
+    /// </summary>
+    internal Behavior AddBehaviorForDeserialization(Behavior b)
+    {
+        b.gameObject = this;
+        Behaviors.Add(b);
+        return b;
+    }
+
     public void RemoveBehavior(Behavior b)
     {
         if (b is Transform) return; // never remove

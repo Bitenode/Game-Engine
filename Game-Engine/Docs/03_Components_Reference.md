@@ -1316,7 +1316,7 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 **Features:**
 - **Swimming** — automatic underwater movement when the Rigidbody detects submersion
 - **Momentum-based** — natural sliding, pushing, and inertia
-- **Planet movement** — robust tangent-basis movement projected onto the local surface plane
+- **Planet movement** — tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
 - **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
@@ -1343,8 +1343,10 @@ The **Add Component → Networking** submenu lists exactly three behaviors in `C
 
 | Type | Namespace / path | Role |
 |------|------------------|------|
-| `NetworkManager` | `Game_Engine.Core.Networking` | `StartServer(port)`, `StartClient(host, port)`, `Stop`, `Update` (the editor **Game View** and standalone **Player View** call this each frame while `IsActive`; only custom hosts need to call it manually), RPC helpers, `BroadcastState`, registry for `NetworkIdentity` instances |
+| `NetworkManager` | `Game_Engine.Core.Networking` | `StartServer(port)`, `StartClient(host, port)`, `Stop`, `Update` (**Game View** / **Player View** call `Update` each frame when active; custom hosts must call it themselves), RPC helpers, `BroadcastState`, `NetworkIdentity` registry (duplicate `NetworkId` rejected; optional world fingerprint log) |
 | `NetworkTransport` | `Game_Engine.Core.Networking` | UDP transport (reliable + unreliable); ping keepalive, idle timeouts, disconnect events; used internally by `NetworkManager` |
+| `NetworkGameplayRules` | `Game_Engine.Core.Networking` | Static: `IsAuthoritativePeer`, `IsRemoteProxy`, `IsLocallyControlledPlayer` — use in gameplay code with `NetworkIdentity` |
+| `NetworkWorldDiagnostics` | `Game_Engine.Core.Networking` | `LogSharedWorldSnapshot()` — logs terrain/planet asset paths and seeds (called automatically once per scene while networking is active; see [09 — Scene & Project](09_Scene_And_Project_Management.md#networking)) |
 
 ### Server host UI (Standard Assets)
 
@@ -1352,10 +1354,10 @@ The **Add Component → Networking** submenu lists exactly three behaviors in `C
 |-------|------|
 | **ServerHostController** | `Standard Assets/Code Examples/UI/ServerHostController.cs` — Canvas UI: Start/Stop server, optional game scene name and save slot (`SceneManager` / `SaveManager`), rolling log lines via `Log.Logged`. |
 | **Server.scene** | `Standard Assets/UI/Server.scene` — example layout using that controller. |
-| **MainMenuController** | `Standard Assets/Code Examples/UI/MainMenuController.cs` — main menu: Play, **Join** (`NetworkManager.StartClient`), Settings, Quit; set `JoinHost` / `JoinPort` on the component (defaults `127.0.0.1` / `7777`). |
+| **MainMenuController** | `Standard Assets/Code Examples/UI/MainMenuController.cs` — Play, **Join** (`StartClient`), Settings, Quit. **`PlaySceneName`**: optional gameplay scene loaded **after** `OnPlayerConnected` when using Join. **`JoinHost`** / **`JoinPort`**: client target (defaults `127.0.0.1` / `7777`). |
 | **Main Menu.scene** | `Standard Assets/UI/Main Menu.scene` — template menu scene (includes Join). Copy into your project’s `Scenes/` or open from Standard Assets after install. |
 
-**Do you need more network scripts?** For a **listen-only server** with no replicated entities, **no** — `NetworkManager` (plus optional `ServerHostController`) is enough. Add **NetworkIdentity** (and **NetworkTransform** / **NetworkAnimator** when needed) only on objects that must replicate to clients (players, synced props, animated avatars).
+A listen-only server with no replicated entities needs only `NetworkManager` and optionally `ServerHostController`. Put **NetworkIdentity** (and **NetworkTransform** / **NetworkAnimator** when needed) on GameObjects that must replicate to clients.
 
 ---
 
@@ -1365,12 +1367,12 @@ Network identity component that identifies a GameObject for multiplayer synchron
 
 | Property       | Type    | Default | Description                          |
 |----------------|---------|---------|--------------------------------------|
-| `NetworkId`    | `uint`  | `0`     | Unique network ID (assigned by server) |
+| `NetworkId`    | `uint`  | `0`     | Unique ID for replication. **Prefer a stable non-zero value** saved in the scene so server and clients map the same object. If `0` while networking is active, `NetworkManager` may auto-assign (with a warning — registration order can differ between peers). Duplicate IDs on two objects are rejected at registration. |
 | `IsLocalPlayer`| `bool`  | `false` | True if owned by the local player    |
 | `OwnerPeerId`  | `int`   | `-1`    | Peer ID of the owner (-1 = server)   |
 
 **Read-only:**
-- `HasAuthority` — true if the local machine controls this object (server or owner)
+- `HasAuthority` — true if the local machine controls this object (server or owner). For gameplay branching, see also **`NetworkGameplayRules`** (`IsAuthoritativePeer`, `IsRemoteProxy`, `IsLocallyControlledPlayer`).
 
 **Methods:**
 - `SerializeState()` — serialize transform and component state to bytes

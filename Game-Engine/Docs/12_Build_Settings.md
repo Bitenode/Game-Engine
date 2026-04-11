@@ -202,9 +202,9 @@ This means the player gets all engine systems (rendering, physics, audio, animat
 
 ### Standard Assets UI scripts (linked into the player)
 
-The editor project compiles everything under `Game-Engine/` (including `Standard Assets/Code Examples/`) into **Game_Engine.dll**. Scene files store behavior types by full name (e.g. `Game_Engine.Core.Component.UI.MainMenuController, Game_Engine`). The standalone player uses a **different** assembly name (**Engine.Player**), so types must still exist in that assembly.
+The editor builds **Game_Engine.dll** from the whole `Game-Engine/` tree, including `Standard Assets/Code Examples/`. Scene JSON stores behavior types with an assembly-qualified name (e.g. `..., Game_Engine`). **Engine.Player** is a different assembly name, so any behavior type referenced from a scene file must be compiled into the player.
 
-The player project therefore **also compiles** the Standard Assets **UI sample behaviors** used by shipped scenes:
+The player **`<Compile Include="...">`** list adds the Standard Assets **UI** samples that ship with scenes:
 
 | Linked path | Purpose |
 |-------------|---------|
@@ -214,14 +214,14 @@ Other Standard Assets scripts (gameplay demos, planet tools, etc.) are **not** l
 
 ### Runtime UI and game loop (PlayerView)
 
-**PlayerView** mirrors the editor **Game View** for core runtime behavior:
+**PlayerView** (standalone build) runs the same class of work as **Game View**: render the 3D frame, then overlay UI, then pump input and networking.
 
-- **OpenGL scene** — forward rendering path, terrain, optional post-processing
-- **Canvas / screen-space UI** — uses **`CanvasRenderer`** + **`RenderOverlays`** so `Canvas` + **Screen Space Overlay** menus (e.g. Main Menu) draw on top of the 3D framebuffer
-- **Input** — viewport size and **`UIEventSystem.ProcessEvents`** run in the update tick so UI hit-testing matches the editor; pointer move feeds **`Input.FeedMousePosition`**
-- **Networking** — **`NetworkManager.Update()`** runs each frame while networking is active (see [Networking — Game loop integration](09_Scene_And_Project_Management.md#game-loop-integration))
+- **OpenGL** — forward path, terrain, optional post-processing
+- **Canvas** — **`CanvasRenderer.RenderOverlays`** draws **Screen Space Overlay** canvases on top of the framebuffer
+- **Input** — **`UIEventSystem.ProcessEvents`**, viewport size, **`Input.FeedMousePosition`** on pointer move
+- **Networking** — **`NetworkManager.Update()`** when `IsActive` ([Game loop integration](09_Scene_And_Project_Management.md#game-loop-integration))
 
-On window close, **PlayerWindow** invokes **`NetworkManager.Stop()`** so the UDP transport can notify peers before exit.
+**PlayerWindow** calls **`NetworkManager.Stop()`** on close so **`Dispose()`** can send disconnect packets.
 
 ### NuGet Dependencies (Player)
 

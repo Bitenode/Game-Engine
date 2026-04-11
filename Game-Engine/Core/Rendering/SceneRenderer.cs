@@ -830,6 +830,11 @@ namespace Game_Engine.Core
                     if (!TryPairMeshRendererForFilter(behaviors, ref nextMR, mesh, out var mr) || mr == null || mr.Wireframe)
                         continue;
 
+                    // Chunked terrain: parent GO keeps MeshFilter + MeshRenderer enabled (serialized). The actual
+                    // surface is drawn per Chunk_* child; skip the full-res parent mesh to avoid double draws.
+                    if (terrain != null && ReferenceEquals(go, terrain.gameObject) && terrain.IsChunkedRenderingActive)
+                        continue;
+
                     var sph = GetMeshSphere(mesh);
                     if (!SphereInsideFrustum(ref sph, world, planes)) continue;
 
@@ -1846,16 +1851,45 @@ namespace Game_Engine.Core
                 deferredShader.SetFloat("uProbeBlend", 0f);
             }
 
-            // Draw fullscreen quad
+            // Draw fullscreen quad — do not write depth here; scene FBO depth is filled by the
+            // gbuffer→scene blit in GameView so forward overlays (terrain) depth-test correctly.
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.Blend);
+            gl.DepthMask(false);
             fsQuad.Draw();
+            gl.DepthMask(true);
+            gl.Enable(EnableCap.DepthTest);
+        }
+
+        /// <summary>
+        /// Fills the current framebuffer's depth buffer from a depth texture (fullscreen pass).
+        /// Color writes are masked off; call with the scene FBO bound after deferred lighting.
+        /// </summary>
+        public static void RenderDepthTextureToFramebufferDepth(
+            GL gl,
+            ShaderProgram depthCopyShader,
+            FullscreenQuad fsQuad,
+            GPUTexture gbufferDepth)
+        {
+            // Sample depth as a float (same as deferred). Shadow maps use compare mode; gbuffer depth must not.
+            const TextureParameterName TextureCompareMode = (TextureParameterName)0x884C;
+            gl.ColorMask(false, false, false, false);
+            gl.DepthMask(true);
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.StencilTest);
+            depthCopyShader.Use();
+            gbufferDepth.Bind(TextureUnit.Texture0);
+            gl.TexParameter(TextureTarget.Texture2D, TextureCompareMode, 0);
+            depthCopyShader.SetTexture("uDepth", 0);
+            fsQuad.Draw();
+            gl.ColorMask(true, true, true, true);
+            gl.DepthMask(true);
             gl.Enable(EnableCap.DepthTest);
         }
 
         /// <summary>
         /// Forward overlay pass: renders terrain, custom shader items, and transparent objects.
-        /// Must be called after RenderGBufferPass (which populates the draw item lists).
+        /// Re-gathers draw items for this view/proj (do not rely on lists left from RenderGBufferPass alone).
         /// </summary>
         public static void RenderForwardOverlays(
             GL gl,
@@ -1877,9 +1911,16 @@ namespace Game_Engine.Core
             bool isES = true,
             SN.Vector3 lightColor = default)
         {
-            var opaqueItems = s_opaqueItems;
-            var transparentItems = s_transparentItems;
-            if (opaqueItems == null) return;
+            var viewProj = view * proj;
+            var planes = s_planes ??= new Plane[6];
+            ExtractFrustumPlanes(viewProj, planes);
+
+            var opaqueItems = s_opaqueItems ??= new List<DrawItem>(256);
+            var transparentItems = s_transparentItems ??= new List<DrawItem>(64);
+            opaqueItems.Clear();
+            transparentItems.Clear();
+            foreach (var root in SceneService.Root)
+                GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
 
             var renderCtx = new RenderContext
             {
@@ -1900,6 +1941,16 @@ namespace Game_Engine.Core
             if (terrainShader != null)
             {
                 Terrain? boundTerrain = null;
+                gl.Disable(EnableCap.StencilTest);
+                gl.ColorMask(true, true, true, true);
+                gl.DepthMask(true);
+                gl.Enable(EnableCap.DepthTest);
+                // Deferred-only: scene depth was copied from the G-buffer (terrain was never drawn there).
+                // LEQUAL + slight polygon offset tolerates quantization / copy vs rasterization mismatch; strict
+                // Less can reject every terrain fragment if stored depth is even one ULP closer than drawn depth.
+                gl.DepthFunc(DepthFunction.Lequal);
+                gl.Enable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(-1f, -1f);
                 terrainShader.Use();
                 SetLightUniforms(terrainShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
                 terrainShader.SetMatrix4("uView", view);
@@ -1933,6 +1984,8 @@ namespace Game_Engine.Core
                     }
                     DrawTerrainChunk(gl, terrainShader, cache, item);
                 }
+                gl.Disable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(0f, 0f);
             }
 
             // CUSTOM SHADER FORWARD PASS — re-render items that have custom shaders
@@ -2288,6 +2341,17 @@ namespace Game_Engine.Core
 
             var world = TransformUtil.WorldFromTransform(go.Transform) * parentWorld;
 
+            Terrain? shadowTerrain = null;
+            foreach (var b in go.Behaviors)
+            {
+                if (shadowTerrain == null && b is Terrain st && st.Enabled) shadowTerrain = st;
+            }
+            if (shadowTerrain == null && go.Parent != null)
+            {
+                foreach (var b in go.Parent.Behaviors)
+                    if (b is Terrain st && st.Enabled) { shadowTerrain = st; break; }
+            }
+
             // Pair MeshFilters with MeshRenderers in order (no allocations).
             var behaviors = go.Behaviors;
             int nextMR = 0;
@@ -2298,6 +2362,9 @@ namespace Game_Engine.Core
                     var mesh = f.Mesh;
                     if (mesh == null) continue;
                     if (!TryPairMeshRendererForFilter(behaviors, ref nextMR, mesh, out var mr) || mr == null || !mr.CastShadows)
+                        continue;
+
+                    if (shadowTerrain != null && ReferenceEquals(go, shadowTerrain.gameObject) && shadowTerrain.IsChunkedRenderingActive)
                         continue;
 
                     var sph = GetMeshSphere(mesh);

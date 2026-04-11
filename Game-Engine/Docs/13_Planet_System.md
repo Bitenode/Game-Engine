@@ -215,7 +215,7 @@ Additional runtime state:
 
 `RigidbodyPlayer` is planet-aware and uses `Rigidbody.LocalUp`:
 
-- Builds move axes from a robust tangent basis derived from `LocalUp`
+- Builds move axes from a tangent basis derived from `LocalUp`
 - Applies acceleration and drag in tangent space on planets
 - Jumps along `LocalUp` (not always world +Y)
 - Avoids pole-specific movement mode switching to prevent axis flips/discontinuities

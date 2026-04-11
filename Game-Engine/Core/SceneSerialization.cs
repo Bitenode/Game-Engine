@@ -387,10 +387,12 @@ namespace Game_Engine.Core
             try { instance = Activator.CreateInstance(type) as Behavior; } catch { }
             if (instance == null) return;
 
-            go.AddBehavior(instance);
+            // Do not use AddBehavior(): it calls OnEnable() before persisted properties exist.
+            go.AddBehaviorForDeserialization(instance);
 
             // ---------- Apply persisted [Persist] properties ----------
-            var props = GetPersistableProps(type).ToDictionary(p => p.Name, p => p, StringComparer.Ordinal);
+            // OrdinalIgnoreCase: JSON may use different casing for keys than C# property names.
+            var props = GetPersistableProps(type).ToDictionary(p => p.Name, p => p, StringComparer.OrdinalIgnoreCase);
             if (dto.Properties != null)
             {
                 foreach (var kv in dto.Properties)
@@ -399,7 +401,11 @@ namespace Game_Engine.Core
                     try
                     {
                         var converted = ConvertPersisted(kv.Value, pi.PropertyType);
-                        pi.SetValue(instance, converted);
+                        // Apply Enabled without firing OnEnable/OnDisable until all props + PostDeserialize run.
+                        if (pi.Name == nameof(Behavior.Enabled) && pi.PropertyType == typeof(bool) && converted is bool eb)
+                            instance.SetEnabledSilent(eb);
+                        else
+                            pi.SetValue(instance, converted);
                     }
                     catch
                     {
@@ -594,6 +600,12 @@ namespace Game_Engine.Core
             // (e.g., Terrain reloading heights from .terrain.json that were overwritten
             //  by stale [Persist] properties from the scene file).
             try { instance.PostDeserialize(); } catch { }
+
+            // Single OnEnable for enabled components (skipped during AddBehaviorForDeserialization).
+            if (instance.Enabled)
+            {
+                try { instance.OnEnable(); } catch { /* keep scene load resilient */ }
+            }
         }
 
 
@@ -943,44 +955,46 @@ namespace Game_Engine.Core
 
         static IEnumerable<PropertyInfo> GetPersistableProps(Type t)
         {
-            var flags = BindingFlags.Instance | BindingFlags.Public;
-            foreach (var p in t.GetProperties(flags))
+            // DeclaredOnly + walk base types: Type.GetProperties(Public|Instance) without DeclaredOnly is
+            // inconsistent for inherited members across runtimes; Behavior.Enabled must always be found
+            // so CapsuleCollider, MeshRenderer, etc. round-trip Enabled in scene snapshots.
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly;
+            for (var cur = t; cur != null && typeof(Behavior).IsAssignableFrom(cur); cur = cur.BaseType)
             {
-                if (!p.CanRead || !p.CanWrite) continue;
-                if (p.GetIndexParameters().Length > 0) continue;
-
-                var hasPersist = p.GetCustomAttributes(true).Any(a => a.GetType().Name == "PersistAttribute");
-                var hasDoNot = p.GetCustomAttributes(true).Any(a => a.GetType().Name == "DoNotPersistAttribute");
-                if (hasDoNot) continue;
-
-                // Normal opt-in
-                if (hasPersist)
+                foreach (var p in cur.GetProperties(flags))
                 {
-                    yield return p;
-                    continue;
-                }
+                    if (!p.CanRead || !p.CanWrite) continue;
+                    if (p.GetIndexParameters().Length > 0) continue;
 
-                // ---- Back-compat / safety for MeshFilter ----
-                // We always persist these even if not annotated, to preserve old scenes and keep defaults working.
-                if (t.FullName == "Game_Engine.Core.Component.MeshFilter")
-                {
-                    // Geometry (may be skipped later by PersistValue if ModelPath is present)
-                    if (p.Name == "Mesh" && p.PropertyType == typeof(Mesh))
+                    var hasPersist = p.GetCustomAttributes(true).Any(a => a.GetType().Name == "PersistAttribute");
+                    var hasDoNot = p.GetCustomAttributes(true).Any(a => a.GetType().Name == "DoNotPersistAttribute");
+                    if (hasDoNot) continue;
+
+                    if (hasPersist)
                     {
                         yield return p;
                         continue;
                     }
 
-                    // Rebuild hints for multi-part models
-                    if (p.Name == "ModelPath" && p.PropertyType == typeof(string))
+                    // ---- Back-compat / safety for MeshFilter ----
+                    if (t.FullName == "Game_Engine.Core.Component.MeshFilter")
                     {
-                        yield return p;
-                        continue;
-                    }
-                    if (p.Name == "ModelPartIndex" && (p.PropertyType == typeof(int) || p.PropertyType == typeof(string)))
-                    {
-                        yield return p;
-                        continue;
+                        if (p.Name == "Mesh" && p.PropertyType == typeof(Mesh))
+                        {
+                            yield return p;
+                            continue;
+                        }
+
+                        if (p.Name == "ModelPath" && p.PropertyType == typeof(string))
+                        {
+                            yield return p;
+                            continue;
+                        }
+                        if (p.Name == "ModelPartIndex" && (p.PropertyType == typeof(int) || p.PropertyType == typeof(string)))
+                        {
+                            yield return p;
+                            continue;
+                        }
                     }
                 }
             }

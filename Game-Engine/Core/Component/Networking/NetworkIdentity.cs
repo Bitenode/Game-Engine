@@ -9,11 +9,16 @@ namespace Game_Engine.Core.Component
     /// Network identity component — identifies a GameObject on the network.
     /// Must be attached to any GameObject that participates in networking.
     /// Handles state serialization/deserialization for network synchronization.
+    /// For multiplayer, set <see cref="NetworkId"/> to a stable non-zero value in the scene so every peer maps the same object;
+    /// use <see cref="NetworkGameplayRules"/> for authoritative vs client-local gameplay.
     /// </summary>
     [ComponentCategory("Networking")]
     public sealed class NetworkIdentity : Behavior
     {
-        /// <summary>Unique network ID assigned by the NetworkManager.</summary>
+        /// <summary>
+        /// Unique ID for replication. Prefer a stable non-zero value saved in the scene; if zero while networking is active,
+        /// <see cref="NetworkManager.RegisterObject"/> may auto-assign (risky if registration order differs between peers).
+        /// </summary>
         [Persist] public uint NetworkId { get; set; }
 
         /// <summary>True if this object is owned by the local player.</summary>

@@ -78,6 +78,7 @@ namespace Game_Engine.Views
         private ShaderProgram? _ssrShader;
         private ShaderProgram? _volFogShader;
         private ShaderProgram? _taaResolveShader;
+        private ShaderProgram? _depthCopyShader;
         private GPUFramebuffer? _gbufferFBO;
         private GPUFramebuffer? _ssaoFBO;
         private GPUFramebuffer? _ssaoBlurFBO;
@@ -127,6 +128,8 @@ namespace Game_Engine.Views
         IPointer? _capturedPointer;
 
         string? _playSnapshotPath;
+        /// <summary>Project .scene path before play snapshot overwrote <see cref="SceneService.CurrentScenePath"/>; restored after load.</summary>
+        string? _scenePathBeforePlay;
         // Cache material textures across play snapshot save/restore so they survive serialization
         private Dictionary<string, List<object>>? _snapshotMaterialTextures;
 
@@ -299,6 +302,9 @@ namespace Game_Engine.Views
                 _taaResolveShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
                     ShaderSources.Adapt(ShaderSources.TaaResolveFrag, es));
+                _depthCopyShader = new ShaderProgram(g,
+                    ShaderSources.Adapt(ShaderSources.BlitVert, es),
+                    ShaderSources.Adapt(ShaderSources.DepthCopyFrag, es));
 
                 _fsQuad = new FullscreenQuad(g);
                 _cache = new ResourceCache(g);
@@ -331,6 +337,7 @@ namespace Game_Engine.Views
             _taaTempFbo?.Dispose(); _taaTempFbo = null;
             _tiledLights?.Dispose(); _tiledLights = null;
             _taaResolveShader?.Dispose(); _taaResolveShader = null;
+            _depthCopyShader?.Dispose(); _depthCopyShader = null;
             _ssrShader?.Dispose(); _ssrShader = null;
             _volFogShader?.Dispose(); _volFogShader = null;
             _ssaoBlurShader?.Dispose(); _ssaoBlurShader = null;
@@ -903,11 +910,35 @@ namespace Game_Engine.Views
                 probePick?.GpuCubemap, probePick?.Intensity ?? 0f);
             g.BindVertexArray(0);
 
-            // 6. BLIT G-BUFFER DEPTH to scene FBO for correct forward overlay depth testing
-            g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _gbufferFBO.Handle);
-            g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _sceneFBO.Handle);
-            g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
-                ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
+            // 6. COPY G-BUFFER DEPTH → scene FBO (required before terrain forward pass).
+            // Prefer shader copy: reads the same depth texture the deferred pass uses (texelFetch), so depth matches
+            // what lighting sampled. glBlitFramebuffer can report success but mis-copy when one FBO fell back to
+            // depth-only attachment and the other uses D24S8 (silent terrain depth-test failure on some drivers).
+            _sceneFBO.Bind();
+            while (g.GetError() != GLEnum.NoError) { }
+            if (_depthCopyShader != null && _gbufferFBO.DepthTexture != null)
+            {
+                SceneRenderer.RenderDepthTextureToFramebufferDepth(g, _depthCopyShader, _fsQuad!, _gbufferFBO.DepthTexture);
+                g.BindVertexArray(0);
+            }
+            else
+            {
+                g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _gbufferFBO.Handle);
+                g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _sceneFBO.Handle);
+                const ClearBufferMask StencilBufferBit = (ClearBufferMask)0x400;
+                g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
+                    ClearBufferMask.DepthBufferBit | StencilBufferBit, BlitFramebufferFilter.Nearest);
+                if (g.GetError() != GLEnum.NoError)
+                {
+                    while (g.GetError() != GLEnum.NoError) { }
+                    g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
+                        ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
+                }
+#if DEBUG
+                if (g.GetError() != GLEnum.NoError)
+                    Debug.WriteLine($"[GameView] depth blit failed (no depth-copy shader): {g.GetError()}");
+#endif
+            }
             _sceneFBO.Bind();
 
             // 7. FORWARD OVERLAYS — terrain, custom shaders, transparent objects
@@ -1317,25 +1348,36 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Paused:
                     _fixedTimer.Stop(); _updateTimer.Stop(); break;
                 case GamePanel.GameState.Stopped:
+                {
+                    // Capture selection before LoadFromFile: SceneService.SceneReplaced (e.g. SceneView)
+                    // clears SelectionService, so ReSelectAfterRestore cannot read the old Current afterward.
+                    string? restoreSelName = SelectionService.Current?.Name;
+
                     _fixedTimer.Stop(); _updateTimer.Stop();
                     _updateWatch.Reset(); _fixedWatch.Reset();
                     Game_Engine.Core.AudioBackend.StopAll();   // kill all audio immediately
-                    CallOnDestroyAll();
-                    // Purge static component registries that __OnDestroy may have missed
-                    PostProcessVolume.ClearAll();
-                    Core.Component.UI.Canvas.ClearAll();
-                    Light.ClearAll();
-                    SceneManager.Reset();
-                    RestorePlaySnapshot();
+
+                    // Only tear down + reload when we have a play snapshot (Enter Play created one).
+                    // Otherwise __OnDestroy runs without ReplaceAll → every Behavior.Enabled stays false.
+                    if (_playSnapshotPath != null)
+                    {
+                        CallOnDestroyAll();
+                        PostProcessVolume.ClearAll();
+                        Core.Component.UI.Canvas.ClearAll();
+                        Light.ClearAll();
+                        SceneManager.Reset();
+                        RestorePlaySnapshot();
+                        // After scene restore, re-bind selection (SceneReplaced may have cleared Current).
+                        ReSelectAfterRestore(restoreSelName);
+                    }
+
                     SceneRenderer.ResetBiomeTexDebug();
-                    // After scene restore, the old selected GO no longer exists in the new scene tree.
-                    // Try to re-select a GO with the same name, or clear the selection.
-                    ReSelectAfterRestore();
                     _awakened = _started = false; _collidersWarm = false; _needsWarm = true;
                     if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
                     _mouseLook = false; _hasLastMouse = false;
                     Input.ClearAll();
                     break;
+                }
             }
             _renderInFlight = false; // Reset gate so first frame renders immediately
             InvalidateVisual();
@@ -1347,13 +1389,18 @@ namespace Game_Engine.Views
             // Cache material textures before snapshot — serialization doesn't preserve them
             _snapshotMaterialTextures = CacheMaterialTextures();
             var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"GE_PlaySnapshot_{Guid.NewGuid():N}.scene");
-            SceneService.SaveToFile(tmp); _playSnapshotPath = tmp;
+            // Save without SceneService.SaveToFile so CurrentScenePath stays the user's project scene.
+            _scenePathBeforePlay = SceneService.CurrentScenePath;
+            SceneSerialization.SaveScene(tmp, SceneService.Root);
+            _playSnapshotPath = tmp;
         }
 
         void RestorePlaySnapshot()
         {
             if (_playSnapshotPath == null) return;
             SceneService.LoadFromFile(_playSnapshotPath);
+            SceneService.SetCurrentScenePath(_scenePathBeforePlay);
+            _scenePathBeforePlay = null;
             // Re-apply cached material textures and transparent flags
             if (_snapshotMaterialTextures != null)
             {
@@ -1368,21 +1415,22 @@ namespace Game_Engine.Views
         /// <summary>
         /// After scene restore, find a GO with the same name as the previously selected one
         /// and re-select it so the inspector refreshes with the new (restored) instance.
+        /// Pass <paramref name="nameFromBeforeRestore"/> — selection is often cleared during
+        /// <see cref="SceneService.SceneReplaced"/> before this runs.
         /// </summary>
-        void ReSelectAfterRestore()
+        void ReSelectAfterRestore(string? nameFromBeforeRestore)
         {
-            var prev = SelectionService.Current;
-            if (prev == null) { SelectionService.Touch(); return; }
-            string? name = prev.Name;
-            // Walk the restored scene to find a match by name
-            GameObject? match = null;
-            if (!string.IsNullOrEmpty(name))
+            string? name = nameFromBeforeRestore;
+            if (string.IsNullOrEmpty(name))
             {
-                foreach (var root in SceneService.Root)
-                {
-                    match = FindByName(root, name);
-                    if (match != null) break;
-                }
+                SelectionService.Touch();
+                return;
+            }
+            GameObject? match = null;
+            foreach (var root in SceneService.Root)
+            {
+                match = FindByName(root, name);
+                if (match != null) break;
             }
             SelectionService.Set(match); // re-select (or clear if not found)
         }

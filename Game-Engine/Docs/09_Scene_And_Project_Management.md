@@ -496,13 +496,20 @@ Access in-editor via the **Profiler Panel** (Window > Profiler) or programmatica
 
 ## Networking
 
-Large-world **terrain streaming** (`TerrainStreamer`, `.terrain.bin`, LOD tuning) is covered in **[05 — Terrain System](05_Terrain_System.md)**; this section covers **runtime scene flow**, **audio mixer**, **networking**, and **SceneManager**.
+Terrain streaming (`.terrain.bin`, `TerrainStreamer`, LOD settings) is documented in **[05 — Terrain System](05_Terrain_System.md)**.
 
 ### Static API vs. Inspector components
 
 The **Add Component → Networking** menu only lists **`NetworkIdentity`**, **`NetworkTransform`**, and **`NetworkAnimator`** (files under `Core/Component/Networking/`). Your screenshot of that folder is the **complete** set of networking **behaviors** shipped with the engine.
 
-**`NetworkManager`** lives in `Core/Networking/NetworkManager.cs` — it is a **static** API, **not** a component you drop on a GameObject. You do **not** need another script in the Networking folder to run a server: call `NetworkManager.StartServer` / `Stop` / `Update` from code, or rely on the editor **Game View** / standalone **Player View** tick loop (see **Game loop integration** below). The Standard Assets **ServerHostController** / **MainMenuController** scripts no longer need to call `Update` themselves; they remain valid for starting/stopping the server or handling menu clicks.
+**`NetworkManager`** lives in `Core/Networking/NetworkManager.cs` — it is a **static** API, **not** a component you drop on a GameObject. You do **not** need another script in the Networking folder to run a server: call `NetworkManager.StartServer` / `Stop` / `Update` from your own code, or use the **Game View** / **Player View** loop (see **Game loop integration** below). **ServerHostController** and **MainMenuController** can start/stop the client or server and handle UI; they do not need to call `NetworkManager.Update` because **GameView** / **PlayerView** already do.
+
+Companion types in `Core/Networking/` (also not Inspector components):
+
+| Type | Role |
+|------|------|
+| **`NetworkGameplayRules`** | Static helpers: `IsAuthoritativePeer`, `IsRemoteProxy`, `IsLocallyControlledPlayer` — use in gameplay code to separate server simulation, client proxies, and local input. |
+| **`NetworkWorldDiagnostics`** | `LogSharedWorldSnapshot()` — logs terrain/planet asset paths and seeds once per loaded scene while networking is active (compare server vs client logs to verify identical world data). Invoked automatically from `NetworkManager.Update` after a scene is present; resets when the scene is replaced or networking stops. |
 
 ### Game loop integration
 
@@ -517,17 +524,18 @@ If you add a **custom** host or client entry point without going through those v
 | Feature | Description |
 |---------|-------------|
 | **Server/Client** | `StartServer` / `StartClient` |
-| **Object Registry** | Tracks all `NetworkIdentity` objects |
-| **State Broadcast** | Server can `BroadcastState` to peers |
+| **Object Registry** | Tracks all `NetworkIdentity` objects. **`RegisterObject`** rejects a **duplicate `NetworkId`** (two different objects with the same ID) and logs an error. **`UnregisterObject`** removes only if the instance matches the registry entry (safe if registration failed). If **`NetworkId` is `0`** while networking is **active**, a **warning** is logged and an ID is auto-assigned — prefer **stable non-zero IDs** in the scene so every peer maps the same object. Auto-assigned IDs skip collisions with existing registry keys. |
+| **State Broadcast** | Server pushes `NetworkIdentity` state (`SerializeState` / `DeserializeState`) ~20×/s via `BroadcastState` (invoked from `NetworkManager.Update` when `IsServer`) |
 | **RPC System** | `RegisterRPC`, `SendRPC` / `SendRPCAll` |
 | **Peer Management** | Connected peers and connect/disconnect events |
+| **World fingerprint** | First `Update` after a scene has roots (while active) triggers **`NetworkWorldDiagnostics`** once per scene load — see table above. |
 
 ### NetworkTransport
 Low-level UDP transport (used by `NetworkManager`):
 - **Unreliable datagrams** — fast state updates (position, rotation)
 - **Reliable messages** — RPCs and critical state changes (sequence + ACK)
 - **Connection management** — connect / connect-ack handshake, explicit `MSG_DISCONNECT`, **last-seen tracking** on every inbound packet
-- **Keepalive & idle timeout** — the **server** broadcasts `MSG_PING` on a short interval; clients reply with `MSG_PONG` (existing handler). If a peer sends **no** qualifying traffic for a configured idle window (~12 seconds by default), the transport removes the peer and raises **`OnPeerDisconnected`** (covers crashed clients and closed apps that never sent disconnect)
+- **Keepalive & idle timeout** — the **server** broadcasts `MSG_PING` on a short interval; clients reply with `MSG_PONG`. If a peer sends no traffic for the idle window (~12 seconds by default), the transport removes the peer and raises **`OnPeerDisconnected`**
 - **Endpoint matching** — IPv4 and IPv4-mapped IPv6 endpoints are normalized so disconnect and routing stay consistent on loopback and dual-stack hosts
 
 Standalone **Engine.Player** calls **`NetworkManager.Stop()`** when the game window closes so peers receive a best-effort disconnect when the process shuts down cleanly.
@@ -538,6 +546,26 @@ Standalone **Engine.Player** calls **`NetworkManager.Stop()`** when the game win
 | `NetworkIdentity` | Identifies a networked GameObject (required for any replicated object) |
 | `NetworkTransform` | Synchronizes position/rotation/scale with interpolation |
 | `NetworkAnimator` | Synchronizes animation state and parameters |
+
+### Client join → gameplay scene
+
+**MainMenuController** (`Standard Assets/Code Examples/UI/MainMenuController.cs`):
+
+1. **Join** calls `NetworkManager.StartClient(JoinHost, JoinPort)`.
+2. If **`PlaySceneName`** is set (e.g. `Game`), the client subscribes once to **`NetworkManager.OnPlayerConnected`**. When the UDP handshake finishes (`CONNECT_ACK`), it calls **`SceneManager.LoadScene(PlaySceneName)`** so the menu scene is replaced **after** the connection exists. That avoids loading the level before the transport is ready and ensures **`NetworkIdentity`** / **`NetworkTransform`** on the loaded scene register while networking is active.
+
+Set **`PlaySceneName`** to the **same** gameplay scene file name (without `.scene`) that the server uses, and give **`NetworkIdentity.NetworkId`** stable non-zero values in the scene so server and client map the same logical objects (IDs are not negotiated over the wire yet). See **`NetworkGameplayRules`** for authoritative vs client-local checks in gameplay scripts.
+
+### World / save data vs. network transforms
+
+| Mechanism | What it does |
+|-----------|----------------|
+| **`NetworkIdentity` + `BroadcastState`** | Replicates **transform** (and `NetworkTransform` extras) from server to clients. Does **not** ship full **Terrain** heightmaps or **PlanetTerrain** height/biome payloads. |
+| **`Terrain`** | Persists height/splat/etc. under **`TerrainAssetPath`** (`.terrain.json` / `.terrain.bin`). See [05 — Terrain System](05_Terrain_System.md). Edits call **`Terrain.Save()`** / asset write on the machine that sculpted. |
+| **`PlanetTerrain`** | Planet height and biome data live in **`.planet`** / linked assets; see [13 — Planet System](13_Planet_System.md). |
+| **`SaveManager`** | Slot JSON saves **`ISaveable`** behaviors. **`Terrain`** / **`PlanetTerrain`** are **not** `ISaveable` by default—use terrain/planet asset files for world shape, or implement **`ISaveable`** on a wrapper if you need slot data to reference asset paths. |
+
+For multiplayer, treat **terrain/planet files** as shared level data (same files on server and clients); use **network components** only for objects that move or change at runtime. After connecting, check the log for **`[NetworkWorld] Shared world fingerprint`** — server and client should report the same paths and seeds for each `Terrain` / `TerrainStreamer` / `PlanetTerrain`.
 
 ### Standard Assets — server lobby
 

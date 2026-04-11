@@ -77,17 +77,18 @@ public sealed class GPUFramebuffer : IDisposable
         ColorTexture = new GPUTexture(_gl);
         ColorTexture.CreateColor(width, height);
 
-        // Depth renderbuffer — we don't need to sample depth, just need it for Z-test
+        // Depth: prefer DEPTH24_STENCIL8 to match the G-buffer FBO so glBlitFramebuffer
+        // depth copies are format-compatible with ANGLE / GLES. Fall back to depth-only.
         DepthTexture?.Dispose();
         DepthTexture = new GPUTexture(_gl);
-        DepthTexture.CreateDepth(width, height);
+        DepthTexture.CreateDepthStencil24(width, height);
 
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
         _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
             FramebufferAttachment.ColorAttachment0,
             TextureTarget.Texture2D, ColorTexture.Handle, 0);
         _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
-            FramebufferAttachment.DepthAttachment,
+            FramebufferAttachment.DepthStencilAttachment,
             TextureTarget.Texture2D, DepthTexture.Handle, 0);
 
         // Explicitly set draw buffer — prevents inheriting DrawBuffers(None)
@@ -100,7 +101,17 @@ public sealed class GPUFramebuffer : IDisposable
 
         var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (status != GLEnum.FramebufferComplete)
-            System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] Color+Depth FBO incomplete: {status}");
+        {
+            DepthTexture.Dispose();
+            DepthTexture = new GPUTexture(_gl);
+            DepthTexture.CreateDepth(width, height);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+                FramebufferAttachment.DepthAttachment,
+                TextureTarget.Texture2D, DepthTexture.Handle, 0);
+            status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (status != GLEnum.FramebufferComplete)
+                System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] Color+Depth FBO incomplete: {status}");
+        }
 
         // Don't unbind to FB 0 — in Avalonia's shared GL context, FB 0 is NOT the
         // screen.  The caller should bind the correct target after setup.

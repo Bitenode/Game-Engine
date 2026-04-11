@@ -1636,6 +1636,26 @@ void main()
 }
 ";
 
+    /// <summary>
+    /// Copies a depth texture into the current framebuffer's depth buffer (writes gl_FragDepth only).
+    /// Used instead of glBlitFramebuffer for gbuffer→scene depth on drivers where blit fails or mismatches formats (e.g. ANGLE).
+    /// </summary>
+    public const string DepthCopyFrag = @"
+#version 330 core
+in vec2 vUV;
+uniform sampler2D uDepth;
+out vec4 FragColor;
+void main()
+{
+    // texelFetch avoids filtering / edge issues; clamp to valid range for packed D24S8 textures.
+    ivec2 dims = textureSize(uDepth, 0);
+    ivec2 tc = clamp(ivec2(gl_FragCoord.xy), ivec2(0), dims - ivec2(1));
+    float d = texelFetch(uDepth, tc, 0).r;
+    gl_FragDepth = d;
+    FragColor = vec4(0.0);
+}
+";
+
     // ════════════════ PARTICLE BILLBOARD SHADER ════════════════
 
     public const string ParticleVert = @"

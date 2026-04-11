@@ -311,7 +311,7 @@ Click the **"+ Add Component"** button at the bottom of the Inspector to open a 
 | **Environment** | Skybox, Terrain, TerrainStreamer, Tree, TreeLOD, VegetationPainter, Water |
 | **Misc** | Any components without a category annotation |
 | **Navigation** | NavMeshAgent |
-| **Networking** | NetworkAnimator, NetworkIdentity, NetworkTransform — hosting uses static `Game_Engine.Core.Networking.NetworkManager` (or Standard Assets `ServerHostController`), not a fourth Inspector component |
+| **Networking** | NetworkAnimator, NetworkIdentity, NetworkTransform — hosting uses static `Game_Engine.Core.Networking.NetworkManager` (or Standard Assets `ServerHostController`), not a fourth Inspector component. Helpers `NetworkGameplayRules` and `NetworkWorldDiagnostics` live in the same namespace but are code-only (see [09 — Scene & Project](09_Scene_And_Project_Management.md#networking)). |
 | **Physics** | BoxCollider, CapsuleCollider, CharacterController, MeshCollider, PlayerMovement, Rigidbody, RigidbodyPlayer, TriggerVolume |
 | **Rendering** | Camera, Light, MeshFilter, MeshRenderer, MeshLodGroup, ReflectionProbe, SkinnedMeshRenderer |
 | **Timeline** | TimelinePlayer |

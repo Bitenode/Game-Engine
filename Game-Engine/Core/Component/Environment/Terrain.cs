@@ -201,6 +201,12 @@ namespace Game_Engine.Core.Component
         public int ChunksX => _chunksX;
         public int ChunksZ => _chunksZ;
 
+        /// <summary>
+        /// True when the terrain surface is rendered via <c>Chunk_*</c> child meshes instead of the parent
+        /// <see cref="MeshFilter"/> mesh. Used by <see cref="Rendering.SceneRenderer"/> to avoid drawing both.
+        /// </summary>
+        public bool IsChunkedRenderingActive => _chunks != null && _chunksX > 0 && _chunksZ > 0;
+
         /// <summary>Mark specific chunk(s) as needing rebuild based on vertex coordinate range.</summary>
         public void MarkChunksDirty(int minVx, int minVz, int maxVx, int maxVz)
         {
@@ -369,9 +375,11 @@ namespace Game_Engine.Core.Component
                 for (int cx = 0; cx < _chunksX; cx++)
                     RebuildSingleChunk(_chunks[cz, cx]);
 
-            // Disable parent MeshRenderer for rendering (chunks handle it)
-            // But keep MeshFilter for raycasting
-            parentMR.Enabled = false;
+            // Do NOT set parentMR.Enabled = false: that value is persisted in .scene files and makes every
+            // MeshRenderer look "off" after load. SceneRenderer skips drawing the parent MF/MR pair when
+            // IsChunkedRenderingActive (Chunk_* children draw the surface instead).
+            // Keep the component enabled so materials stay wired and the inspector matches intent.
+            parentMR.Enabled = true;
 
             // Build collision mesh on parent
             RebuildCollisionMesh();

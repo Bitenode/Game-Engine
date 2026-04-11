@@ -23,8 +23,8 @@ namespace Game_Engine.Core.Component.UI
         [Persist] public string QuitButtonName { get; set; } = "Quit Button";
 
         /// <summary>
-        /// The name of the scene to load when Play is clicked, or after Join connects (if set).
-        /// Example: <c>Game</c> loads <c>Scenes/Game.scene</c>.
+        /// Play: load this scene immediately. Join: load after <see cref="NetworkManager.OnPlayerConnected"/> (handshake complete).
+        /// Example: <c>Game</c> → <c>Scenes/Game.scene</c>.
         /// </summary>
         [Persist] public string PlaySceneName { get; set; } = "";
 
@@ -44,6 +44,7 @@ namespace Game_Engine.Core.Component.UI
         private Canvas? _canvas;
         private bool _wasMouseDown;
         private bool _showingSettings;
+        private string? _joinPendingScene;
 
         public override void Start()
         {
@@ -69,6 +70,24 @@ namespace Game_Engine.Core.Component.UI
             _showingSettings = false;
             SetGroupVisible(_mainMenuGroup, true);
             SetGroupVisible(_settingsPanel, false);
+        }
+
+        public override void OnDestroy()
+        {
+            NetworkManager.OnPlayerConnected -= OnJoinHandshakeComplete;
+            base.OnDestroy();
+        }
+
+        /// <summary>After the client receives CONNECT_ACK, load the game scene so NetworkIdentity objects exist while the session is active.</summary>
+        void OnJoinHandshakeComplete(NetworkPeer _)
+        {
+            NetworkManager.OnPlayerConnected -= OnJoinHandshakeComplete;
+            if (string.IsNullOrWhiteSpace(_joinPendingScene))
+                return;
+            string name = _joinPendingScene.Trim();
+            _joinPendingScene = null;
+            SceneManager.LoadScene(name);
+            Log.Info($"[MainMenuController] Join: loading '{name}' after connect.");
         }
 
         public override void Update()
@@ -110,12 +129,18 @@ namespace Game_Engine.Core.Component.UI
                     }
 
                     string host = string.IsNullOrWhiteSpace(JoinHost) ? "127.0.0.1" : JoinHost.Trim();
-                    NetworkManager.StartClient(host, JoinPort);
+                    NetworkManager.OnPlayerConnected -= OnJoinHandshakeComplete;
+                    _joinPendingScene = null;
 
                     if (!string.IsNullOrWhiteSpace(PlaySceneName))
-                        SceneManager.LoadScene(PlaySceneName);
+                    {
+                        _joinPendingScene = PlaySceneName.Trim();
+                        NetworkManager.OnPlayerConnected += OnJoinHandshakeComplete;
+                    }
                     else
-                        Log.Info("[MainMenuController] Join: connected; set PlaySceneName to auto-load a level after join.");
+                        Log.Warning("[MainMenuController] Join: set PlaySceneName to the gameplay scene (e.g. Game) so the client loads after connect.");
+
+                    NetworkManager.StartClient(host, JoinPort);
                     return;
                 }
 

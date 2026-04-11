@@ -50,18 +50,6 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Build Settings** — Package games as standalone Engine.Player executables for Windows, macOS, and Linux (x64/ARM64)
 - **Wind System** — Global wind parameters driving tree and vegetation animation
 
-### Combined feature notes (this branch)
-
-The following areas were developed together; see the linked docs for detail.
-
-| Area | What changed |
-|------|----------------|
-| **Terrain** | Optional **`.terrain.bin`** heightmap assets; tunable **LOD distance bands** and **`LodHysteresisWorld`** to reduce popping; **`CollisionLodStep`** for lighter physics meshes while keeping full-res height sampling; **`TerrainStreamer`** component for camera-centered tile load/unload with optional **collision ring**. **Scene View**, **Game View**, and **Engine.Player** call **`TerrainStreamer.SyncAll`** each frame. |
-| **Networking** | UDP transport **keepalive** (server ping / client pong), **idle and handshake timeouts**, **IPv4 / IPv4-mapped IPv6** endpoint matching; **`NetworkManager.Update`** driven from **Game View** and **Player View** so sessions survive scene changes; **PlayerWindow** calls **`NetworkManager.Stop`** on close. |
-| **Standalone player** | **Canvas** screen-space UI via **`CanvasRenderer`**; **`UIEventSystem`** + **`Input.FeedMousePosition`**; linked **Standard Assets** UI scripts (**`MainMenuController`**, **`ServerHostController`**) so scene types resolve; **BCnEncoder.Net** / **Magick.NET** package parity for shared Core texture paths. |
-| **Standard Assets** | **Main Menu**: **Join** button and client connect fields (**`JoinHost`**, **`JoinPort`**). **Server** sample: **`Server.scene`** + **`ServerHostController`** (host UI, optional game scene / save slot, log mirror). |
-| **Documentation** | Updates across **01, 02, 03, 04, 05, 07, 09, 12** plus this README to match the above. |
-
 ---
 
 ## Technology Stack
@@ -100,7 +88,7 @@ Github Engine/
 │   ├── Views/            # Editor UI panels (Scene View, Inspector, Shader Editor, Profiler, etc.)
 │   ├── Docking/          # Dockable panel system
 │   ├── Standard Assets/  # Built-in shaders, skyboxes, code examples
-│   └── Docs/             # Comprehensive documentation (14 guides)
+│   └── Docs/             # Topic guides (14 markdown files)
 │
 ├── Engine.Player/        # Standalone game player (multi-platform)
 │   └── (Loads pre-compiled games without the editor)
@@ -112,7 +100,7 @@ Github Engine/
 
 ## Documentation
 
-Comprehensive documentation is available in the `Game-Engine/Docs/` folder:
+Documentation for the engine and editor is in `Game-Engine/Docs/`:
 
 | Document | Topic |
 |----------|-------|

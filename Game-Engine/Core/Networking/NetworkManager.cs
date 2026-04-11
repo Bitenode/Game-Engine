@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using Game_Engine.Core;
 using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core.Networking
@@ -23,6 +24,14 @@ namespace Game_Engine.Core.Networking
         private static readonly Dictionary<uint, NetworkIdentity> _networkedObjects = new();
         private static readonly Dictionary<string, Action<int, byte[]>> _rpcHandlers = new();
         private static uint _nextNetId = 1;
+        private static float _stateBroadcastAccum;
+        private const float StateBroadcastInterval = 1f / 20f; // 20 Hz transform/state sync
+        private static bool _loggedSharedWorldSnapshot;
+
+        static NetworkManager()
+        {
+            SceneService.SceneReplaced += () => { _loggedSharedWorldSnapshot = false; };
+        }
 
         /// <summary>Current network role.</summary>
         public static NetworkRole Role => _role;
@@ -79,6 +88,8 @@ namespace Game_Engine.Core.Networking
             _transport = null;
             _role = NetworkRole.None;
             _networkedObjects.Clear();
+            _stateBroadcastAccum = 0f;
+            _loggedSharedWorldSnapshot = false;
             Log.Info("[NetworkManager] Network stopped.");
         }
 
@@ -88,6 +99,23 @@ namespace Game_Engine.Core.Networking
         public static void Update()
         {
             _transport?.Poll();
+
+            if (IsActive && !_loggedSharedWorldSnapshot && SceneService.Root.Count > 0)
+            {
+                NetworkWorldDiagnostics.LogSharedWorldSnapshot();
+                _loggedSharedWorldSnapshot = true;
+            }
+
+            // Server: broadcast NetworkIdentity state to all peers (Time.deltaTime valid after Time.BeginUpdate in game loop)
+            if (IsServer && _transport != null && _networkedObjects.Count > 0)
+            {
+                _stateBroadcastAccum += Game_Engine.Core.Time.deltaTime;
+                if (_stateBroadcastAccum >= StateBroadcastInterval)
+                {
+                    _stateBroadcastAccum %= StateBroadcastInterval;
+                    BroadcastState();
+                }
+            }
         }
 
         // ── Object registration ──
@@ -95,15 +123,36 @@ namespace Game_Engine.Core.Networking
         /// <summary>Register a networked object.</summary>
         public static void RegisterObject(NetworkIdentity identity)
         {
-            if (identity.NetworkId == 0)
-                identity.NetworkId = _nextNetId++;
-            _networkedObjects[identity.NetworkId] = identity;
+            uint id = identity.NetworkId;
+
+            if (id == 0)
+            {
+                if (IsActive)
+                    Log.Warning("[NetworkIdentity] NetworkId is 0 while networking is active. Assign stable non-zero IDs in the scene for multiplayer; auto-assigned IDs can desync if registration order differs between peers.");
+                id = AllocateUniqueNetId();
+                identity.NetworkId = id;
+            }
+            else if (_networkedObjects.TryGetValue(id, out var existing) && !ReferenceEquals(existing, identity))
+            {
+                Log.Error($"[NetworkIdentity] Duplicate NetworkId {id} on '{identity.gameObject?.Name}' and '{existing.gameObject?.Name}'. Replication will be wrong until IDs are unique.");
+                return;
+            }
+
+            _nextNetId = System.Math.Max(_nextNetId, id + 1);
+            _networkedObjects[id] = identity;
+        }
+
+        static uint AllocateUniqueNetId()
+        {
+            while (_networkedObjects.ContainsKey(_nextNetId)) _nextNetId++;
+            return _nextNetId++;
         }
 
         /// <summary>Unregister a networked object.</summary>
         public static void UnregisterObject(NetworkIdentity identity)
         {
-            _networkedObjects.Remove(identity.NetworkId);
+            if (_networkedObjects.TryGetValue(identity.NetworkId, out var reg) && ReferenceEquals(reg, identity))
+                _networkedObjects.Remove(identity.NetworkId);
         }
 
         // ── RPC System ──
