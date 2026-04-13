@@ -1,25 +1,49 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net9.0;net9.0-windows10.0.19041.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <RootNamespace>Game_Engine</RootNamespace>
     <AssemblyName>Engine.Player</AssemblyName>
+    <OutputType>WinExe</OutputType>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)'=='net9.0'">
     <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64;linux-x64;linux-arm64</RuntimeIdentifiers>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)'=='net9.0-windows10.0.19041.0'">
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <!-- SDK requires this literal for Microsoft Store / Xbox-targeted app packages -->
+    <WindowsPackageType>MSIX</WindowsPackageType>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <GenerateAppxPackageOnBuild>false</GenerateAppxPackageOnBuild>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+    <GenerateAppInstallerFile>false</GenerateAppInstallerFile>
+    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <AppxBundle>Never</AppxBundle>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)'=='net9.0-windows10.0.19041.0'">
+    <AppxManifest Include="Properties\Package.appxmanifest" />
+    <Content Include="Assets\**\*" />
+  </ItemGroup>
 
   <!-- Player-specific define so shared Core files can #if !PLAYER -->
   <PropertyGroup>
     <DefineConstants>$(DefineConstants);PLAYER</DefineConstants>
   </PropertyGroup>
 
+  <!-- Android host lives in Engine.Player.Android; keep stubs out of desktop builds -->
+  <ItemGroup>
+    <Compile Remove="Platforms\Android\**\*" />
+  </ItemGroup>
+
   <!-- Link shared Core source files from the editor project -->
   <ItemGroup>
     <Compile Include="..\Game-Engine\Core\**\*.cs" Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**;..\Game-Engine\Core\Editor\**" Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
-    <!-- Sample UI behaviors referenced by Standard Assets scenes (Main Menu, Server host). Editor builds these into Game_Engine.dll; player must compile them too or scene deserialization skips the types. -->
     <Compile Include="..\Game-Engine\Standard Assets\Code Examples\UI\*.cs" Link="StdUI\%(Filename)%(Extension)" />
   </ItemGroup>
 
@@ -38,12 +62,13 @@
 
     <PackageReference Include="NAudio" Version="2.3.0" />
 
-    <!-- Required by Core/Material.cs (Texture2D PSD/TIFF) and GPU BCn texture paths -->
     <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.11.0" />
 
     <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
     <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="System.Reactive" Version="6.1.0" />
+
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.3233" Condition="'$(TargetFramework)'=='net9.0-windows10.0.19041.0'" />
   </ItemGroup>
 </Project>

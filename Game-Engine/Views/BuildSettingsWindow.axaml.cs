@@ -128,7 +128,13 @@ namespace Game_Engine.Views
 
                 // ── Platform ──
                 if (root.TryGetProperty("platform", out var platform))
-                    SelectComboBoxItem(PlatformBox, platform.GetString() ?? "Windows");
+                {
+                    var plat = platform.GetString() ?? "Windows";
+                    // Legacy label
+                    if (string.Equals(plat, "Windows (MSIX)", StringComparison.OrdinalIgnoreCase))
+                        plat = "Xbox";
+                    SelectComboBoxItem(PlatformBox, plat);
+                }
 
                 // ── Architecture ──
                 if (root.TryGetProperty("architecture", out var arch))
@@ -556,18 +562,41 @@ namespace Game_Engine.Views
                     Log.Info($"[Build] Build succeeded — output: {outDir}");
                 }
 
-                if (launch && exePath != null && File.Exists(exePath))
+                if (launch && !string.IsNullOrEmpty(exePath) && File.Exists(exePath))
                 {
                     StatusText.Text += " — Launching...";
                     Log.Info($"[Build] Launching {exePath}");
                     try
                     {
-                        Process.Start(new ProcessStartInfo
+                        if (IsWindowsAppPackagePath(exePath))
                         {
-                            FileName = exePath,
-                            WorkingDirectory = Path.GetDirectoryName(exePath),
-                            UseShellExecute = true
-                        });
+                            var escaped = exePath.Replace("'", "''");
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = "powershell.exe",
+                                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"Add-AppxPackage -Path '{escaped}'\"",
+                                UseShellExecute = true
+                            });
+                        }
+                        else if (exePath.EndsWith(".apk", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = "adb",
+                                Arguments = $"install -r \"{exePath}\"",
+                                UseShellExecute = false,
+                                CreateNoWindow = true
+                            });
+                        }
+                        else
+                        {
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = exePath,
+                                WorkingDirectory = Path.GetDirectoryName(exePath),
+                                UseShellExecute = true
+                            });
+                        }
                     }
                     catch (Exception launchEx)
                     {
@@ -598,6 +627,15 @@ namespace Game_Engine.Views
             public bool Fullscreen;
         }
 
+        /// <summary>Returns true if <paramref name="path"/> is a sideloadable Windows app package (.msix, .msixbundle, or .appx).</summary>
+        private static bool IsWindowsAppPackagePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            return path.EndsWith(".msix", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".msixbundle", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".appx", StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>
         /// Map Build Settings platform + architecture choices to a .NET Runtime Identifier.
         /// </summary>
@@ -606,11 +644,21 @@ namespace Game_Engine.Views
             var arch = architecture.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? "arm64" : "x64";
             return platform switch
             {
-                "macOS"   => $"osx-{arch}",
-                "Linux"   => $"linux-{arch}",
-                _         => $"win-{arch}"   // Windows (default)
+                "macOS"            => $"osx-{arch}",
+                "Linux"            => $"linux-{arch}",
+                "Android"          => architecture.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? "android-arm64" : "android-x64",
+                "Xbox"             => $"win-{arch}",
+                _                  => $"win-{arch}"   // Windows (unpackaged)
             };
         }
+
+        private static string GetTargetFramework(string platform) =>
+            platform switch
+            {
+                "Xbox"           => "net9.0-windows10.0.19041.0",
+                "Android"        => "net9.0-android",
+                _                => "net9.0"
+            };
 
         /// <summary>
         /// Locate the Engine.Player.csproj relative to this editor project.
@@ -644,91 +692,67 @@ namespace Game_Engine.Views
         }
 
         /// <summary>
+        /// Locate Engine.Player.Android.csproj (Android-only host) next to Engine.Player.
+        /// </summary>
+        private static string FindPlayerAndroidCsproj()
+        {
+            var dir = AppContext.BaseDirectory;
+            for (int i = 0; i < 8; i++)
+            {
+                var candidate = Path.Combine(dir, "Engine.Player.Android", "Engine.Player.Android.csproj");
+                if (File.Exists(candidate)) return candidate;
+                var parent = Directory.GetParent(dir)?.FullName;
+                if (parent == null || parent == dir) break;
+                dir = parent;
+            }
+
+            var editorCsproj = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Game_Engine.csproj");
+            if (File.Exists(editorCsproj))
+            {
+                var editorDir = Path.GetDirectoryName(Path.GetFullPath(editorCsproj))!;
+                var wsRoot = Path.GetDirectoryName(editorDir)!;
+                var candidate2 = Path.Combine(wsRoot, "Engine.Player.Android", "Engine.Player.Android.csproj");
+                if (File.Exists(candidate2)) return candidate2;
+            }
+
+            throw new FileNotFoundException(
+                "Could not find Engine.Player.Android/Engine.Player.Android.csproj. " +
+                "Make sure the Android player project exists next to Engine.Player/.");
+        }
+
+        /// <summary>
         /// Full build pipeline: compile scripts -> dotnet publish -> package assets + Data.
-        /// Returns the path to the built executable (for launch).
+        /// Returns a path to the primary output for launch (unpackaged exe, Windows app package, or APK) when present.
         /// </summary>
         private string? PerformBuild(Project proj, string outDir, List<string> scenePaths, BuildInfo info)
         {
+            if (string.Equals(info.Platform, "Xbox", StringComparison.OrdinalIgnoreCase)
+                && !OperatingSystem.IsWindows())
+                throw new Exception("Xbox packaging must be run on Windows.");
+
+            if (string.Equals(info.Platform, "Android", StringComparison.OrdinalIgnoreCase))
+                return PerformBuildAndroid(proj, outDir, scenePaths, info);
+
             _copyWarnings = 0;
             Directory.CreateDirectory(outDir);
 
             var rid = GetRuntimeIdentifier(info.Platform, info.Architecture);
+            var tfm = GetTargetFramework(info.Platform);
             var dataDir = Path.Combine(outDir, "Data");
             Directory.CreateDirectory(dataDir);
 
             // ── Step 1: Compile user scripts ──
-            Log.Info("[Build] Step 1/4: Compiling user scripts...");
-            var scriptRoots = ScriptCompiler.GetProjectScriptRoots().ToList();
-            string? scriptsDllPath = null;
-
-            if (scriptRoots.Count > 0)
-            {
-                var dllOut = Path.Combine(dataDir, "GameScripts.dll");
-                var compileResult = ScriptCompiler.CompileToDll(
-                    scriptRoots, dllOut,
-                    assemblyName: "GameScripts",
-                    optimized: info.Configuration == "Release");
-
-                if (!compileResult.Success)
-                {
-                    throw new Exception($"Script compilation failed:\n{compileResult.ErrorText}");
-                }
-
-                if (compileResult.FileCount > 0)
-                {
-                    scriptsDllPath = compileResult.DllPath;
-                    Log.Info($"[Build] Compiled {compileResult.FileCount} script(s) → GameScripts.dll");
-                }
-                else
-                {
-                    Log.Info("[Build] No user scripts found — skipping script compilation.");
-                }
-            }
-            else
-            {
-                Log.Info("[Build] No script roots — skipping script compilation.");
-            }
+            Log.Info("[Build] Step 1/5: Compiling user scripts...");
+            CompilePlayerScripts(dataDir, info.Configuration == "Release");
 
             // ── Step 2: dotnet publish Engine.Player ──
-            Log.Info($"[Build] Step 2/4: Publishing Engine.Player ({rid}, {info.Configuration})...");
+            Log.Info($"[Build] Step 2/5: Publishing Engine.Player ({tfm}, {rid}, {info.Configuration})...");
             var playerCsproj = FindPlayerCsproj();
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = "dotnet",
-                Arguments = $"publish \"{playerCsproj}\" -c {info.Configuration} -r {rid} --self-contained -o \"{outDir}\"",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using (var proc = Process.Start(psi)!)
-            {
-                var stdout = proc.StandardOutput.ReadToEnd();
-                var stderr = proc.StandardError.ReadToEnd();
-                proc.WaitForExit();
-
-                if (proc.ExitCode != 0)
-                {
-                    var combined = (stdout + "\n" + stderr).Trim();
-                    // Extract just the error lines for a cleaner message
-                    var errorLines = combined.Split('\n')
-                        .Where(l => l.Contains("error ", StringComparison.OrdinalIgnoreCase))
-                        .Take(10);
-                    var errorSummary = string.Join("\n", errorLines);
-                    if (string.IsNullOrWhiteSpace(errorSummary))
-                        errorSummary = combined.Length > 800 ? combined[..800] + "..." : combined;
-
-                    throw new Exception($"dotnet publish failed (exit code {proc.ExitCode}):\n{errorSummary}");
-                }
-
-                Log.Info("[Build] dotnet publish completed successfully.");
-            }
+            RunDotnetPublish(playerCsproj,
+                $"publish \"{playerCsproj}\" -c {info.Configuration} -f {tfm} -r {rid} --self-contained -o \"{outDir}\"");
 
             // ── Step 3: Package assets into Data/Assets.dll ──
             Log.Info("[Build] Step 3/5: Packaging assets into Assets.dll...");
-
             if (Directory.Exists(proj.AssetsPath))
             {
                 var dllPath = Path.Combine(dataDir, "Assets.dll");
@@ -737,34 +761,127 @@ namespace Game_Engine.Views
                 Log.Info($"[Build] Assets.dll created ({new FileInfo(dllPath).Length / 1024} KB)");
             }
 
-            // Copy only the scenes in the build list
             Log.Info("[Build] Step 4/5: Copying scenes...");
+            CopyBuildScenes(dataDir, scenePaths);
+
+            Log.Info("[Build] Step 5/5: Writing build manifest...");
+            var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
+            SaveBuildSettings(info, sceneOrder);
+
+            if (string.Equals(info.Platform, "Xbox", StringComparison.OrdinalIgnoreCase))
+            {
+                var xboxPackagePath = FindFirstFile(outDir, "*.msix")
+                    ?? FindFirstFile(outDir, "*.msixbundle")
+                    ?? FindFirstFile(outDir, "*.appx");
+                if (xboxPackagePath != null)
+                    return xboxPackagePath;
+                Log.Info("[Build] No Windows app package in output — using unpackaged Engine.Player.exe. For retail Xbox, ship with Xbox GDK; see Package.appxmanifest for Desktop + Xbox device families.");
+            }
+
+            string exeName = rid.StartsWith("win") ? "Engine.Player.exe" : "Engine.Player";
+            var exePath = Path.Combine(outDir, exeName);
+            return File.Exists(exePath) ? exePath : null;
+        }
+
+        private string? PerformBuildAndroid(Project proj, string outDir, List<string> scenePaths, BuildInfo info)
+        {
+            _copyWarnings = 0;
+            Directory.CreateDirectory(outDir);
+
+            var tempRoot = Path.Combine(Path.GetTempPath(), "EnginePlayerAndroid_" + Guid.NewGuid().ToString("N"));
+            var dataDir = Path.Combine(tempRoot, "Data");
+            Directory.CreateDirectory(dataDir);
+
+            try
+            {
+                Log.Info("[Build] Step 1/5: Compiling user scripts (Android)...");
+                CompilePlayerScripts(dataDir, info.Configuration == "Release");
+
+                Log.Info("[Build] Step 2/5: Packaging assets and scenes (Android)...");
+                if (Directory.Exists(proj.AssetsPath))
+                {
+                    var dllPath = Path.Combine(dataDir, "Assets.dll");
+                    if (File.Exists(dllPath)) File.Delete(dllPath);
+                    CreateAssetPak(proj.AssetsPath, dllPath);
+                    Log.Info($"[Build] Assets.dll created ({new FileInfo(dllPath).Length / 1024} KB)");
+                }
+
+                CopyBuildScenes(dataDir, scenePaths);
+
+                var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
+                SaveBuildSettings(info, sceneOrder);
+
+                var zipPath = Path.Combine(tempRoot, "player_data.zip");
+                if (File.Exists(zipPath)) File.Delete(zipPath);
+                ZipFile.CreateFromDirectory(dataDir, zipPath);
+
+                var rid = GetRuntimeIdentifier(info.Platform, info.Architecture);
+                var androidCsproj = FindPlayerAndroidCsproj();
+                Log.Info($"[Build] Step 3/5: Publishing Engine.Player.Android (net9.0-android, {rid})...");
+                RunDotnetPublish(androidCsproj,
+                    $"publish \"{androidCsproj}\" -c {info.Configuration} -f net9.0-android -r {rid} --self-contained " +
+                    $"-p:EnginePlayerZipPath=\"{zipPath}\" -o \"{outDir}\"");
+
+                var apk = FindFirstFile(outDir, "*.apk");
+                return apk;
+            }
+            finally
+            {
+                try { Directory.Delete(tempRoot, recursive: true); }
+                catch { /* best-effort */ }
+            }
+        }
+
+        private void CompilePlayerScripts(string dataDir, bool optimized)
+        {
+            var scriptRoots = ScriptCompiler.GetProjectScriptRoots().ToList();
+            if (scriptRoots.Count == 0)
+            {
+                Log.Info("[Build] No script roots — skipping script compilation.");
+                return;
+            }
+
+            var dllOut = Path.Combine(dataDir, "GameScripts.dll");
+            var compileResult = ScriptCompiler.CompileToDll(
+                scriptRoots, dllOut,
+                assemblyName: "GameScripts",
+                optimized: optimized);
+
+            if (!compileResult.Success)
+                throw new Exception($"Script compilation failed:\n{compileResult.ErrorText}");
+
+            if (compileResult.FileCount > 0)
+                Log.Info($"[Build] Compiled {compileResult.FileCount} script(s) → GameScripts.dll");
+            else
+                Log.Info("[Build] No user scripts found — skipping script compilation.");
+        }
+
+        private void CopyBuildScenes(string dataDir, List<string> scenePaths)
+        {
             var scenesOutDir = Path.Combine(dataDir, "Scenes");
             Directory.CreateDirectory(scenesOutDir);
             for (int i = 0; i < scenePaths.Count; i++)
             {
                 var src = scenePaths[i];
-                if (File.Exists(src))
+                if (!File.Exists(src)) continue;
+                var dest = Path.Combine(scenesOutDir, Path.GetFileName(src));
+                try
                 {
-                    var dest = Path.Combine(scenesOutDir, Path.GetFileName(src));
-                    try
-                    {
-                        using var srcStream = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                        using var dstStream = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None);
-                        srcStream.CopyTo(dstStream);
-                    }
-                    catch (Exception ex)
-                    {
-                        _copyWarnings++;
-                        Log.Warning($"[Build] Could not copy scene '{Path.GetFileName(src)}': {ex.Message}");
-                    }
+                    using var srcStream = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var dstStream = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None);
+                    srcStream.CopyTo(dstStream);
+                }
+                catch (Exception ex)
+                {
+                    _copyWarnings++;
+                    Log.Warning($"[Build] Could not copy scene '{Path.GetFileName(src)}': {ex.Message}");
                 }
             }
+        }
 
-            // ── Step 5: Write build.json manifest to Data/ ──
-            Log.Info("[Build] Step 5/5: Writing build manifest...");
+        private List<string> WriteDataManifest(string dataDir, List<string> scenePaths, BuildInfo info)
+        {
             var sceneOrder = scenePaths.Select(p => Path.GetFileName(p)).ToList();
-
             var manifest = JsonSerializer.Serialize(new
             {
                 product       = info.ProductName,
@@ -786,14 +903,52 @@ namespace Game_Engine.Views
             }, new JsonSerializerOptions { WriteIndented = true });
 
             File.WriteAllText(Path.Combine(dataDir, "build.json"), manifest);
+            return sceneOrder;
+        }
 
-            // Save editor settings to ProjectSettings/build.json for next session
-            SaveBuildSettings(info, sceneOrder);
+        private static void RunDotnetPublish(string playerCsproj, string arguments)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
 
-            // Determine the executable name for launch
-            string exeName = rid.StartsWith("win") ? "Engine.Player.exe" : "Engine.Player";
-            var exePath = Path.Combine(outDir, exeName);
-            return File.Exists(exePath) ? exePath : null;
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEnd();
+            var stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+
+            if (proc.ExitCode != 0)
+            {
+                var combined = (stdout + "\n" + stderr).Trim();
+                var errorLines = combined.Split('\n')
+                    .Where(l => l.Contains("error ", StringComparison.OrdinalIgnoreCase))
+                    .Take(10);
+                var errorSummary = string.Join("\n", errorLines);
+                if (string.IsNullOrWhiteSpace(errorSummary))
+                    errorSummary = combined.Length > 800 ? combined[..800] + "..." : combined;
+
+                throw new Exception($"dotnet publish failed (exit code {proc.ExitCode}):\n{errorSummary}");
+            }
+
+            Log.Info("[Build] dotnet publish completed successfully.");
+        }
+
+        private static string? FindFirstFile(string root, string pattern)
+        {
+            try
+            {
+                return Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories).FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static int _copyWarnings;

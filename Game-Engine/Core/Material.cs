@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
+#if !ANDROID
 using ImageMagick;
+#endif
 using SkiaSharp;
 
 namespace Game_Engine.Core
@@ -72,13 +74,20 @@ namespace Game_Engine.Core
             catch
             {
                 if (ext == ".psd" || ext == ".psb")
+                {
+#if ANDROID
+                    throw new Exception("PSD/PSB textures are not supported on Android; use PNG, JPEG, or TGA.");
+#else
                     return DecodePsdWithMagick(path);
+#endif
+                }
                 if (ext == ".tif" || ext == ".tiff")
                     return DecodeTiff(path);
                 throw;
             }
         }
 
+#if !ANDROID
         static Texture2D DecodePsdWithMagick(string path)
         {
             using var img = new MagickImage(path);
@@ -94,6 +103,7 @@ namespace Game_Engine.Core
             var rgba = pixels.ToByteArray(PixelMapping.RGBA);
             return new Texture2D((int)img.Width, (int)img.Height, rgba, Path.GetFullPath(path));
         }
+#endif
 
         static Texture2D DecodeTga(byte[] data, string debugPath)
         {

@@ -4,7 +4,7 @@ using Avalonia.Markup.Xaml;
 
 namespace Game_Engine;
 
-public partial class App : Application
+public partial class App : Avalonia.Application
 {
     /// <summary>Path to build.json, set by Program.Main before the app starts.</summary>
     public static string? BuildJsonPath { get; set; }
@@ -15,6 +15,9 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             desktop.MainWindow = new PlayerWindow();
+        else if (ApplicationLifetime is ISingleViewApplicationLifetime single)
+            single.MainView = new PlayerRoot();
+
         base.OnFrameworkInitializationCompleted();
     }
 }

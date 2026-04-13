@@ -6,5 +6,5 @@
         Width="1280" Height="720"
         Background="Black"
         WindowStartupLocation="CenterScreen">
-    <local:PlayerView x:Name="View" />
+    <local:PlayerRoot x:Name="Root" />
 </Window>

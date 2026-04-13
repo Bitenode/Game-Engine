@@ -17,16 +17,25 @@ Github Engine/
 │   ├── MainWindow.axaml            # Editor main window
 │   └── Standard Assets/            # Built-in assets
 │
-└── Engine.Player/                  # Standalone player project
-    ├── Engine.Player.csproj        # Player project file
+└── Engine.Player/                  # Standalone player project (desktop + Windows TFM for packaging)
+    ├── Engine.Player.csproj        # Player project file (net9.0, net9.0-windows10.0.19041.0)
     ├── Program.cs                  # Player entry point (loads build.json)
+    ├── Properties/Package.appxmanifest # App package manifest (Desktop + Windows.Xbox device families)
     └── App.axaml                   # Player Avalonia application
+└── Engine.Player.Android/          # Avalonia Android host (APK)
+    └── Engine.Player.Android.csproj
 ```
 
 | Project | Purpose | Output | Roslyn | UIX | Extensions | Runtime IDs |
 |---------|---------|--------|--------|-----|------------|-------------|
 | **Game_Engine** | Editor + development | `WinExe` | Yes (runtime C# compilation) | Yes | Yes | Any CPU |
-| **Engine.Player** | Standalone game player | `WinExe` | No (loads pre-compiled DLLs) | No | No | Multi-platform |
+| **Engine.Player** | Standalone game player | `WinExe` | No (loads pre-compiled DLLs) | No | No | Multi-platform + `net9.0-windows10.0.19041.0` for Xbox / Microsoft Store app packages |
+| **Engine.Player.Android** | Same core, Android APK | `Exe` (net9.0-android) | No | No | No | android-arm64, android-x64 |
+
+### Android and Xbox from Build Settings
+
+- **Android** — Build Settings runs `dotnet publish` on `Engine.Player.Android` with `-f net9.0-android`. Game `Data` is zipped and passed as `Data.zip` in the APK assets; the player extracts it on first launch. Install the [.NET Android workload](https://learn.microsoft.com/dotnet/mobile/get-started) (`dotnet workload install android`). Release APK signing: set keystore properties as in [Avalonia Android deployment](https://docs.avaloniaui.net/docs/deployment/android).
+- **Xbox** — Publishes `Engine.Player` with `net9.0-windows10.0.19041.0` (Windows app package TFM). `Package.appxmanifest` declares **`Windows.Desktop`** and **`Windows.Xbox`** so a Store submission can target PC and Xbox device families where Microsoft allows your app type. **Important:** a **full-trust Win32** (`Windows.FullTrustApplication`) Avalonia player is not the same as a native **Xbox GDK** title; shipping a game to retail Xbox consoles usually requires the [Microsoft GDK](https://learn.microsoft.com/gaming/gdk/) and an Xbox-specific build pipeline, not only this editor packaging path. Use this target for manifest and publish settings aligned with Xbox + PC Store packaging; replace placeholder `Assets/` tiles and set a valid package identity publisher. A signed app package (often a `.msix` file from tooling) may require [Windows App SDK](https://learn.microsoft.com/windows/apps/windows-app-sdk/) / Visual Studio packaging; the build always produces a runnable `Engine.Player.exe` plus `Data/` when no packaged output appears.
 
 ---
 

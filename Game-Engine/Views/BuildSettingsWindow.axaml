@@ -170,8 +170,10 @@
               <ComboBox x:Name="PlatformBox" Width="200"
                         SelectedIndex="0">
                 <ComboBoxItem Content="Windows"/>
+                <ComboBoxItem Content="Xbox"/>
                 <ComboBoxItem Content="Linux"/>
                 <ComboBoxItem Content="macOS"/>
+                <ComboBoxItem Content="Android"/>
               </ComboBox>
             </StackPanel>
 

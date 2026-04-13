@@ -2,10 +2,49 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+#if !ANDROID
 using NAudio.Wave;
+#endif
 
 namespace Game_Engine.Core
 {
+#if ANDROID
+    /// <summary>Placeholder audio backend on Android (NAudio is not used). Playback is disabled until a mobile backend is added.</summary>
+    public static class AudioBackend
+    {
+        private static readonly List<WeakReference<AudioHandle>> s_activeHandles = new();
+
+        public static string? ResolveAudioPath(string filePath) => null;
+
+        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop) => null;
+
+        public static void PlayOneShot(string filePath, float volume = 1f) { }
+
+        public static void StopAll()
+        {
+            lock (s_activeHandles) s_activeHandles.Clear();
+        }
+
+        public static void Shutdown() => StopAll();
+
+        public static void EnsureInit() { }
+
+        public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up) { }
+    }
+
+    public sealed class AudioHandle : IDisposable
+    {
+        public bool IsPlaying => false;
+        public TimeSpan Duration => TimeSpan.Zero;
+        public float Volume { get; set; }
+        public bool Loop { get; set; }
+        public float Pan { get; set; }
+        public void Pause() { }
+        public void Resume() { }
+        public void Stop() => Dispose();
+        public void Dispose() { }
+    }
+#else
     /// <summary>
     /// Low-level audio backend using NAudio.
     /// Each sound gets its own WaveOutEvent for maximum compatibility.
@@ -253,4 +292,5 @@ namespace Game_Engine.Core
             try { _reader.Dispose(); } catch { }
         }
     }
+#endif
 }
