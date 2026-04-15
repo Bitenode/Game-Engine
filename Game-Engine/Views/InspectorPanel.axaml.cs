@@ -2204,7 +2204,9 @@ public partial class InspectorPanel : UserControl
             layerTb.Text = go.Layer.ToString();
             CommitPropertyEdit(go, pLayer);
         };
-        sp.Children.Add(InspectorLabeledRow("Layer (0–31)", layerTb));
+        var layerRow = InspectorLabeledRow("Layer (0–31)", layerTb);
+        ToolTip.SetTip(layerTb, "Each collider uses its GameObject’s layer. Combine with Physics.Raycast(..., layerMask) and CollisionLayerMask on Rigidbody / CharacterController.");
+        sp.Children.Add(layerRow);
         return sp;
     }
 
@@ -5177,7 +5179,7 @@ public partial class InspectorPanel : UserControl
         return box;
     }
 
-    // --- Terrain: Tools row (icons are unicode; swap to real icons WIP) ----
+    // --- Terrain: Tools row (vector Path / shape icons) ----
     Control TerrainToolsRow(GameObject owner, Terrain t)
     {
         var state = GetTerrainState(t);
@@ -5201,12 +5203,12 @@ public partial class InspectorPanel : UserControl
             return null; // procedural
         };
 
-        var tools = new (int id, string tip, string glyph)[]
+        var tools = new (int id, string tip)[]
         {
-        (0,"Raise/Lower","⛰"), (1,"Paint Holes","◯"), (2,"Noise","⋯"),
-        (3,"Stitch/Blend","∞"), (4,"Sculpt","🖌"), (5,"Flatten","▭"),
-        (6,"Erode","⛏"), (7,"Paint Layers","👤"), (8,"Smooth","〰"),
-        (9,"Paint Trees","🌲")
+            (0, "Raise/Lower"), (1, "Paint Holes"), (2, "Noise"),
+            (3, "Stitch/Blend"), (4, "Sculpt"), (5, "Flatten"),
+            (6, "Erode"), (7, "Paint Layers"), (8, "Smooth"),
+            (9, "Paint Trees")
         };
 
         var bar = new WrapPanel { Orientation = Orientation.Horizontal };
@@ -5226,7 +5228,7 @@ public partial class InspectorPanel : UserControl
         {
             var b = new ToggleButton
             {
-                Content = new TextBlock { Text = tool.glyph, FontSize = 16, VerticalAlignment = VerticalAlignment.Center },
+                Content = TerrainInspectorIcons.TerrainToolContent(tool.id),
                 MinWidth = 32,
                 MinHeight = 28,
                 Margin = new Thickness(3, 0, 3, 0),
@@ -5573,7 +5575,138 @@ public partial class InspectorPanel : UserControl
                 Avalonia.Controls.Grid.SetColumn(removeBtn, 3);
                 grid.Children.Add(removeBtn);
 
-                row.Child = grid;
+                var layerBlock = new StackPanel { Spacing = 4 };
+                layerBlock.Children.Add(grid);
+
+                var pbr = new StackPanel
+                {
+                    Orientation = Orientation.Vertical,
+                    Spacing = 4,
+                    Margin = new Thickness(28, 0, 0, 4)
+                };
+                string normalTip = idx < 5
+                    ? "Tangent-space normal map (RGB). Alpha used for parallax when Height is empty."
+                    : "Normal maps are applied for layers 0–4 only (GPU texture budget). Use roughness/metallic here.";
+                var nRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                nRow.Children.Add(new TextBlock { Text = "N", FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Width = 14 });
+                var nLabel = new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(layer.NormalMapPath) ? "(no normal)" : Path.GetFileName(layer.NormalMapPath),
+                    FontSize = 10,
+                    MaxWidth = 100,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                ToolTip.SetTip(nLabel, layer.NormalMapPath);
+                var nBtn = new Button { Content = "…", MinWidth = 22, MinHeight = 20, Padding = new Thickness(2) };
+                ToolTip.SetTip(nBtn, normalTip);
+                nBtn.Click += async (_, __) =>
+                {
+                    var dlg = new Avalonia.Controls.OpenFileDialog
+                    {
+                        Title = $"Normal map — layer {idx}",
+                        Filters = new List<Avalonia.Controls.FileDialogFilter>
+                        {
+                            new Avalonia.Controls.FileDialogFilter { Name = "Images", Extensions = { "png", "jpg", "jpeg", "bmp", "tga" } }
+                        }
+                    };
+                    var win = TopLevel.GetTopLevel(this) as Window;
+                    var result = await dlg.ShowAsync(win);
+                    if (result != null && result.Length > 0)
+                    {
+                        string abs = result[0];
+                        var proj = ProjectService.Current;
+                        if (proj != null)
+                        {
+                            try { abs = Path.GetRelativePath(proj.RootPath, abs).Replace('\\', '/'); }
+                            catch { }
+                        }
+                        layer.NormalMapPath = abs;
+                        nLabel.Text = Path.GetFileName(abs);
+                        ToolTip.SetTip(nLabel, abs);
+                        t.MarkSplatmapDirty();
+                        t.Save();
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    }
+                };
+                nRow.Children.Add(nLabel);
+                nRow.Children.Add(nBtn);
+
+                var roughS = new Slider { Minimum = 0, Maximum = 1, Value = layer.Roughness, Width = 72 };
+                ToolTip.SetTip(roughS, "Roughness");
+                roughS.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property == RangeBase.ValueProperty)
+                    {
+                        layer.Roughness = (float)roughS.Value;
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    }
+                };
+                var metalS = new Slider { Minimum = 0, Maximum = 1, Value = layer.Metallic, Width = 72 };
+                ToolTip.SetTip(metalS, "Metallic");
+                metalS.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property == RangeBase.ValueProperty)
+                    {
+                        layer.Metallic = (float)metalS.Value;
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    }
+                };
+                nRow.Children.Add(new TextBlock { Text = "R", FontSize = 9, VerticalAlignment = VerticalAlignment.Center });
+                nRow.Children.Add(roughS);
+                nRow.Children.Add(new TextBlock { Text = "M", FontSize = 9, VerticalAlignment = VerticalAlignment.Center });
+                nRow.Children.Add(metalS);
+                pbr.Children.Add(nRow);
+
+                var hRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                hRow.Children.Add(new TextBlock { Text = "H", FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Width = 14 });
+                var hLabel = new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(layer.HeightMapPath) ? "(parallax: use normal α)" : Path.GetFileName(layer.HeightMapPath),
+                    FontSize = 10,
+                    MaxWidth = 140,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                ToolTip.SetTip(hLabel, string.IsNullOrEmpty(layer.HeightMapPath)
+                    ? "Optional height map for future use; parallax uses normal-map alpha when this is empty."
+                    : layer.HeightMapPath);
+                var hBtn = new Button { Content = "…", MinWidth = 22, MinHeight = 20, Padding = new Thickness(2) };
+                ToolTip.SetTip(hBtn, "Optional dedicated height texture (reserved; parallax uses normal alpha today)");
+                hBtn.Click += async (_, __) =>
+                {
+                    var dlg = new Avalonia.Controls.OpenFileDialog
+                    {
+                        Title = $"Height map — layer {idx}",
+                        Filters = new List<Avalonia.Controls.FileDialogFilter>
+                        {
+                            new Avalonia.Controls.FileDialogFilter { Name = "Images", Extensions = { "png", "jpg", "jpeg", "bmp", "tga" } }
+                        }
+                    };
+                    var win = TopLevel.GetTopLevel(this) as Window;
+                    var result = await dlg.ShowAsync(win);
+                    if (result != null && result.Length > 0)
+                    {
+                        string abs = result[0];
+                        var proj = ProjectService.Current;
+                        if (proj != null)
+                        {
+                            try { abs = Path.GetRelativePath(proj.RootPath, abs).Replace('\\', '/'); }
+                            catch { }
+                        }
+                        layer.HeightMapPath = abs;
+                        hLabel.Text = Path.GetFileName(abs);
+                        ToolTip.SetTip(hLabel, abs);
+                        t.Save();
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    }
+                };
+                hRow.Children.Add(hLabel);
+                hRow.Children.Add(hBtn);
+                pbr.Children.Add(hRow);
+
+                layerBlock.Children.Add(pbr);
+                row.Child = layerBlock;
                 layersPanel.Children.Add(row);
             }
 
@@ -5613,11 +5746,11 @@ public partial class InspectorPanel : UserControl
     {
         var state = GetTerrainState(t);
 
-        Border BrushButton(string glyph, int idx)
+        Border BrushButton(int idx)
         {
             var tb = new ToggleButton
             {
-                Content = new TextBlock { Text = glyph, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center },
+                Content = TerrainInspectorIcons.BrushMaskContent(idx),
                 MinWidth = 36,
                 MinHeight = 36,
                 Margin = new Thickness(2)
@@ -5642,9 +5775,8 @@ public partial class InspectorPanel : UserControl
 
         // Use a WrapPanel so brush chips wrap instead of running off
         var row = new WrapPanel { Orientation = Orientation.Horizontal };
-        string[] glyphs = { "●", "○", "⬤", "◐", "⬡", "☆", "✦", "✳" };
-        for (int i = 0; i < glyphs.Length; i++)
-            row.Children.Add(BrushButton(glyphs[i], i));
+        for (int i = 0; i < 8; i++)
+            row.Children.Add(BrushButton(i));
 
         var top = new StackPanel { Spacing = 6 };
         top.Children.Add(SectionTitle("Brush Masks"));

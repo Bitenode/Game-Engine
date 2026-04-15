@@ -65,6 +65,8 @@ namespace Game_Engine.Core.Networking
             _transport.OnDataReceived += HandleNetworkData;
             _transport.StartServer(port);
             _role = NetworkRole.Server;
+            NetworkSurfaceDispatch.AttachServerHandler();
+            PlanetTerrain.EnsurePlanetNetworkRpcsRegistered();
             Log.Info("[NetworkManager] Server started.");
         }
 
@@ -78,6 +80,7 @@ namespace Game_Engine.Core.Networking
             _transport.OnDataReceived += HandleNetworkData;
             _transport.StartClient(host, port);
             _role = NetworkRole.Client;
+            PlanetTerrain.EnsurePlanetNetworkRpcsRegistered();
             Log.Info($"[NetworkManager] Client connecting to {host}:{port}...");
         }
 
@@ -92,6 +95,7 @@ namespace Game_Engine.Core.Networking
             _loggedSharedWorldSnapshot = false;
             ClearSpawnState();
             ResetReplicationState();
+            PlanetTerrain.ResetPlanetNetworkStatics();
             Log.Info("[NetworkManager] Network stopped.");
         }
 
@@ -256,6 +260,15 @@ namespace Game_Engine.Core.Networking
                     if (IsServer)
                         HandleClientInputMessage(peer.PeerId, br);
                     break;
+                case NetMessageType.SurfaceChunkRequest:
+                    if (IsServer && !TryConsumeSurfaceChunkRequestRate(peer.PeerId)) return;
+                    if (IsServer)
+                        HandleSurfaceChunkRequest(peer.PeerId, br);
+                    break;
+                case NetMessageType.SurfaceChunkData:
+                    if (IsClient)
+                        HandleSurfaceChunkData(br);
+                    break;
             }
         }
 
@@ -315,7 +328,9 @@ namespace Game_Engine.Core.Networking
             StateSync = 2,
             Spawn = 3,
             Despawn = 4,
-            ClientInput = 5
+            ClientInput = 5,
+            SurfaceChunkRequest = 6,
+            SurfaceChunkData = 7
         }
     }
 }

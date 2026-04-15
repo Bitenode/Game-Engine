@@ -200,9 +200,10 @@ Each terrain layer has:
 |----------------|----------|---------|--------------------------------------|
 | `TexturePath`  | `string` | `""`    | Albedo image file path               |
 | `Tiling`       | `float`  | `10`    | UV repetition scale                  |
-| `NormalMapPath` | `string`| `""`    | Normal map path (reserved for future)|
-| `Roughness`    | `float`  | `0.8`   | Surface roughness (reserved)         |
-| `Metallic`     | `float`  | `0`     | Metallic value (reserved)            |
+| `NormalMapPath` | `string`| `""`    | Tangent-space normal map (RGB). **Applied for layers 0–4** (GPU texture unit budget); layers 5–7 use geometry normals for normal mapping but still blend albedo / roughness / metallic |
+| `Roughness`    | `float`  | `0.8`   | Splatted PBR roughness (blended by weights) |
+| `Metallic`     | `float`  | `0`     | Splatted PBR metallic (blended by weights) |
+| `HeightMapPath` | `string`| `""`    | Optional reserved path; **parallax** uses the **alpha channel of the normal map** when height is empty |
 
 ### Terrain Layers UI (Inspector)
 When a Terrain is selected, a "Terrain Layers" section appears below the brush tools:
@@ -211,6 +212,7 @@ When a Terrain is selected, a "Terrain Layers" section appears below the brush t
    - Layer index number (click to select as the active paint layer)
    - Texture thumbnail / "..." button to browse for a texture file
    - Tiling slider for texture repetition
+   - Normal map picker, roughness / metallic sliders, optional height path
    - "X" button to remove the layer
 2. **+ Add Layer** — adds a new layer (up to 8 maximum)
 3. The active paint layer is highlighted in the UI
@@ -220,7 +222,8 @@ When a Terrain is selected, a "Terrain Layers" section appears below the brush t
 - Splatmap data is uploaded to the GPU as **RGBA32F** float textures
 - Each view (SceneView, GameView) maintains its own GPU splatmap textures
 - A `SplatmapVersion` counter ensures both views re-upload independently when data changes
-- The Terrain shader samples both splatmaps and blends up to 8 layer textures with per-layer tiling
+- The terrain fragment shader blends up to **8 albedo layers**, splat-weighted **roughness** and **metallic**, **tangent normals** from layers **0–4** (when normal maps are set), optional **parallax** from normal-map **alpha**, then Blinn–Phong-style lighting with shadow mapping
+- **Texture units:** splatmaps + shadow + 8 albedos + 5 normal slots fit within typical **16** fragment texture units (layers 5–7 omit bound normal maps)
 - **Triplanar projection:** On steep cliff faces (where the surface normal is mostly horizontal), textures are projected from the side to prevent stretching artifacts
 - **Fallback:** When no layers are defined, the terrain uses the standard material color from its `MeshRenderer`
 

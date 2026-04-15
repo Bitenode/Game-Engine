@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "minEngineVersion": "0.0.1",
+  "maxEngineVersion": "99.0.0",
+  "displayName": "My add-on pack",
+  "version": "1.0.0",
+  "author": "Your name",
+  "description": "Short description for validation output and logs.",
+  "homepageUrl": "https://example.com/my-addon",
+  "assemblies": [
+    "EditorScripts_20260101120000.dll",
+    "MyPrebuiltPack.dll"
+  ]
+}

@@ -25,9 +25,20 @@ namespace Game_Engine.Core
 
         private static bool _sealedBuiltins;
 
+        /// <summary>Command ids overwritten since the last <see cref="ClearExtensions"/> (diagnostics).</summary>
+        public static IReadOnlyList<string> RecentIdCollisions => _recentCollisions;
+
+        private static readonly List<string> _recentCollisions = new();
+
         public static void Register(string id, string displayName, Action exec, Func<bool> canExec = null)
         {
             if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException(nameof(id));
+
+            if (_map.TryGetValue(id, out var existing))
+            {
+                Log.Warning($"[CommandRegistry] Command id '{id}' is already registered (was: {existing.DisplayName}); overwriting with '{displayName}'.");
+                _recentCollisions.Add($"{id}: '{existing.DisplayName}' -> '{displayName}'");
+            }
 
             _map[id] = new Command
             {
@@ -59,6 +70,7 @@ namespace Game_Engine.Core
         /// Remove commands that were added by extensions (everything not in the builtin snapshot).
         public static void ClearExtensions()
         {
+            _recentCollisions.Clear();
             var toRemove = _map.Keys.Where(k => !_builtins.Contains(k)).ToList();
             foreach (var k in toRemove) _map.Remove(k);
         }

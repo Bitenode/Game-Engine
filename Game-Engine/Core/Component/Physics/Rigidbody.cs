@@ -32,6 +32,9 @@ namespace Game_Engine.Core.Component
         [Persist] public bool FreezePositionY { get; set; } = false;
         [Persist] public bool FreezePositionZ { get; set; } = false;
 
+        /// <summary>Bitmask of scene layers this body collides with (see <see cref="GameObject.Layer"/>). <c>-1</c> = all layers.</summary>
+        [Persist] public int CollisionLayerMask { get; set; } = -1;
+
         // ── Runtime state ──
         public SN.Vector3 Velocity { get; set; } = SN.Vector3.Zero;
         public SN.Vector3 AngularVelocity { get; set; } = SN.Vector3.Zero;
@@ -278,6 +281,7 @@ namespace Game_Engine.Core.Component
                     var other = PhysicsCache.NonMeshColliders[i];
                     if (ReferenceEquals(other, myCollider) || !other.IsActiveAndEnabled) continue;
                     if (other.gameObject == gameObject) continue; // skip own colliders
+                    if (!PhysicsLayerMask.Includes(CollisionLayerMask, other.gameObject.Layer)) continue;
 
                     var otherAABB = other.GetWorldAABB();
                     var testMin = myAABB.Min + delta;
@@ -311,6 +315,7 @@ namespace Game_Engine.Core.Component
                 {
                     var mc = PhysicsCache.MeshColliders[mi];
                     if (mc.gameObject == gameObject) continue;
+                    if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
 
                     // First, rough AABB check to skip distant MeshColliders
                     var mcAABB = mc.GetWorldAABB();
@@ -395,6 +400,7 @@ namespace Game_Engine.Core.Component
                     var trigger = PhysicsCache.TriggerColliders[i];
                     if (ReferenceEquals(trigger, myCollider)) continue;
                     if (trigger.gameObject == gameObject) continue;
+                    if (!PhysicsLayerMask.Includes(CollisionLayerMask, trigger.gameObject.Layer)) continue;
 
                     var trigAABB = trigger.GetWorldAABB();
                     if (Overlaps(finalMin, finalMax, trigAABB.Min, trigAABB.Max))

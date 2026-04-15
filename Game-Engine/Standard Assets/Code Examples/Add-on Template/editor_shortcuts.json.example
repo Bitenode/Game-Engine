@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "bindings": {
+    "addon.scene.reportSelection": "Ctrl+Alt+R",
+    "addon.batch.logSelection": "Ctrl+Alt+L"
+  }
+}

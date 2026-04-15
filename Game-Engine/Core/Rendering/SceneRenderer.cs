@@ -494,6 +494,8 @@ namespace Game_Engine.Core
         // Static string arrays for terrain shader uniforms (avoid per-draw-call allocation)
         private static readonly string[] s_layerNames = { "uLayer0", "uLayer1", "uLayer2", "uLayer3", "uLayer4", "uLayer5", "uLayer6", "uLayer7" };
         private static readonly string[] s_tilingNames = { "uTiling0", "uTiling1", "uTiling2", "uTiling3", "uTiling4", "uTiling5", "uTiling6", "uTiling7" };
+        /// <summary>Normal map samplers for terrain layers 0–4 (texture units 12–16; layers 5–7 use geometry normal only).</summary>
+        private static readonly string[] s_terrainNormalLayerNames = { "uNormalLayer0", "uNormalLayer1", "uNormalLayer2", "uNormalLayer3", "uNormalLayer4" };
 
         public static void RenderGPU(
             GL gl,
@@ -608,6 +610,7 @@ namespace Game_Engine.Core
                 terrainShader.SetMatrix4("uView", view);
                 terrainShader.SetMatrix4("uProj", proj);
                 terrainShader.SetVector3("uCamPos", camPos);
+                terrainShader.SetFloat("uParallaxStrength", 0.035f);
 
                 if (shadowFBO?.DepthTexture != null)
                 {
@@ -1515,7 +1518,28 @@ namespace Game_Engine.Core
 
                 shader.SetTexture(s_layerNames[i], texUnit);
                 shader.SetFloat(s_tilingNames[i], layer.Tiling);
+                shader.SetFloat("uRough" + i, layer.Roughness);
+                shader.SetFloat("uMetal" + i, layer.Metallic);
             }
+
+            // Normal maps for layers 0–4 only (TerrainFrag uses 16 fragment samplers on GLES/ANGLE: splat×2 + layers×8 + normals×5 + shadow).
+            for (int i = 0; i < 5; i++)
+            {
+                int hasLayer = i < layerCount ? 1 : 0;
+                string? npath = hasLayer != 0 ? terrain.Layers[i].NormalMapPath : null;
+                bool wantN = !string.IsNullOrEmpty(npath);
+                Texture2D? ntex = wantN ? TryLoadLayerTexture(npath!) : null;
+                int nUnit = 12 + i;
+                if (ntex != null)
+                    cache.GetTexture(ntex).Bind(TextureUnit.Texture0 + nUnit);
+                else
+                    cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + nUnit);
+
+                shader.SetTexture(s_terrainNormalLayerNames[i], nUnit);
+                shader.SetInt("uHasNormal" + i, (ntex != null) ? 1 : 0);
+            }
+            for (int i = 5; i < 8; i++)
+                shader.SetInt("uHasNormal" + i, 0);
         }
 
         /// <summary>
@@ -1545,7 +1569,6 @@ namespace Game_Engine.Core
             var tint = item.MR.Color;
             r *= tint.R / 255f; g2 *= tint.G / 255f; b *= tint.B / 255f; a *= tint.A / 255f;
             shader.SetVector4("uBaseColor", r, g2, b, a);
-            shader.SetInt("uHasAlbedoTex", 0);
 
             gpuMesh.Draw();
         }
@@ -1956,6 +1979,7 @@ namespace Game_Engine.Core
                 terrainShader.SetMatrix4("uView", view);
                 terrainShader.SetMatrix4("uProj", proj);
                 terrainShader.SetVector3("uCamPos", camPos);
+                terrainShader.SetFloat("uParallaxStrength", 0.035f);
 
                 if (shadowFBO?.DepthTexture != null)
                 {

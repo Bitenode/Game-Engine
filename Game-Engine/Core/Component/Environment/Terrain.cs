@@ -26,6 +26,12 @@ namespace Game_Engine.Core.Component
 
         /// <summary>Metallic value (PBR).</summary>
         public float Metallic { get; set; } = 0f;
+
+        /// <summary>
+        /// Optional height/displacement texture for parallax (if empty, the normal map alpha channel is used when a normal map is present).
+        /// Per-layer normal maps are only applied for layers 0–4 (GPU texture unit budget); layers 5–7 still use albedo and roughness/metallic.
+        /// </summary>
+        public string HeightMapPath { get; set; } = "";
     }
 
     /// <summary>

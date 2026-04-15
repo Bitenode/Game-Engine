@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Text;
 using Avalonia.Controls;
 
 namespace Game_Engine.Core.Extensibility
@@ -20,22 +22,70 @@ namespace Game_Engine.Core.Extensibility
         // hot slot for editor scripts we load from disk (so we can unload them on rebuild)
         private static AssemblyLoadContext? s_editorScriptsAlc;
 
+        private static readonly List<string> _scratchWarnings = new();
+        private static readonly List<string> _scratchErrors = new();
+
         // ----------------------------- Public API -----------------------------
 
         /// <summary>Wipes all discovered extensions and their menu model.</summary>
         public static void Clear(bool notify = false)
         {
+            ExtensionPanelRegistry.Clear();
+            DisposeExtensionInstances();
             _instances.Clear();
             _menuRoots.Clear();
             if (notify) Changed?.Invoke();            // default false: no notify
         }
 
+        /// <summary>
+        /// Sync extensions with <see cref="ProjectService.Current"/>: load hot <c>EditorScripts_*.dll</c> when
+        /// <c>Builds/EditorScripts</c> exists; otherwise unload hot assemblies (if any) and use AppDomain scan only.
+        /// </summary>
+        public static void RefreshForCurrentProject()
+        {
+            var proj = ProjectService.Current;
+            if (proj is null)
+            {
+                CommandRegistry.ClearExtensions();
+                TryUnloadEditorScriptsAlc();
+                RefreshFromAppDomain();
+                return;
+            }
+
+            var baseDir = string.IsNullOrWhiteSpace(proj.BuildsPath) ? proj.RootPath : proj.BuildsPath;
+            var dir = Path.Combine(baseDir!, "EditorScripts");
+            if (!Directory.Exists(dir))
+            {
+                Game_Engine.Core.Log.Info("[Ext] No EditorScripts folder; using AppDomain extensions only.");
+                CommandRegistry.ClearExtensions();
+                TryUnloadEditorScriptsAlc();
+                RefreshFromAppDomain();
+                return;
+            }
+
+            RefreshFromEditorScriptsFolder();
+        }
+
         /// <summary>Rebuild extensions/menu from specific assemblies (e.g. freshly loaded scripts).</summary>
-        public static void RefreshFromAssemblies(IEnumerable<Assembly> assemblies)
+        /// <param name="clearScratch">When false, keep accumulated manifest/DLL diagnostic lines (used when loading from EditorScripts folder).</param>
+        public static void RefreshFromAssemblies(
+            IEnumerable<Assembly> assemblies,
+            bool clearScratch = true,
+            string? editorScriptsDir = null,
+            string? manifestPath = null,
+            EditorExtensionsManifest? manifest = null,
+            IReadOnlyList<string>? explicitHotDllPaths = null)
         {
             var list = (assemblies ?? Array.Empty<Assembly>()).ToList();
-           // Log.Info($"[Ext] RefreshFromAssemblies() — assemblies passed={list.Count}");
 
+            ExtensionPanelRegistry.Clear();
+            if (clearScratch)
+            {
+                _scratchWarnings.Clear();
+                _scratchErrors.Clear();
+            }
+
+            DisposeExtensionInstances();
             _instances.Clear();
             _menuRoots.Clear();
 
@@ -47,45 +97,71 @@ namespace Game_Engine.Core.Extensibility
                 {
                     if (t == null || t.IsAbstract) continue;
                     if (!typeof(EditorExtension).IsAssignableFrom(t)) continue;
-                    map[t.FullName ?? t.Name] = t; // last in wins
+                    var key = t.FullName ?? t.Name;
+                    if (map.TryGetValue(key, out var prev) && prev != t)
+                        _scratchWarnings.Add($"Duplicate EditorExtension type '{key}': using last in assembly order ({asm.GetName().Name}).");
+                    map[key] = t;
                 }
             }
 
             foreach (var t in map.Values)
             {
                 try { _instances.Add((EditorExtension)Activator.CreateInstance(t)); }
-                catch (Exception ex) { Log.Error(ex, $"[Ext] CreateInstance failed: {t.FullName}"); }
+                catch (Exception ex)
+                {
+                    var msg = $"CreateInstance failed: {t.FullName}: {ex.Message}";
+                    _scratchErrors.Add(msg);
+                    Log.Error(ex, "[Ext] " + msg);
+                }
             }
 
             var b = new MenuBuilder();
             var ui = new EditorUI(b);
             foreach (var ext in _instances)
-                try { ext.Contribute(ui); } catch (Exception ex) { Log.Error(ex, $"[Ext] Contribute failed: {ext.GetType().FullName}"); }
+            {
+                try { ext.Contribute(ui); }
+                catch (Exception ex)
+                {
+                    var msg = $"Contribute failed: {ext.GetType().FullName}: {ex.Message}";
+                    _scratchErrors.Add(msg);
+                    Log.Error(ex, "[Ext] " + msg);
+                }
+            }
 
             _menuRoots.AddRange(b.TopLevelMenus);
-            //Log.Info($"[Ext] Built menu model — roots={_menuRoots.Count}");
+            var dllPaths = explicitHotDllPaths ?? ExtractDllPathsFromAssemblies(list);
+            RecordDiagnosticsSnapshot(
+                clearScratch ? "Assemblies" : "EditorScripts",
+                clearScratch ? null : editorScriptsDir,
+                manifestPath,
+                manifest,
+                dllPaths,
+                _scratchWarnings,
+                _scratchErrors);
             Changed?.Invoke();
         }
 
-        
-
         /// <summary>
-        /// Clear existing extension commands/menus, then (re)load EditorScripts_*.dll
-        /// from the current project's Builds/EditorScripts folder, and rebuild menus.
+        /// Clear existing extension commands/menus, then (re)load editor script assemblies from the
+        /// current project's <c>Builds/EditorScripts</c> folder, and rebuild menus.
         /// </summary>
         public static void RefreshFromEditorScriptsFolder()
         {
-            // wipe commands (extensions only) and menu roots/instances
-           // Game_Engine.Core.Log.Info("[Ext] RefreshFromEditorScriptsFolder() — clearing extension commands + menus");
             CommandRegistry.ClearExtensions();
+            ExtensionPanelRegistry.Clear();
+            _scratchWarnings.Clear();
+            _scratchErrors.Clear();
+
+            DisposeExtensionInstances();
             _instances.Clear();
             _menuRoots.Clear();
 
             var proj = ProjectService.Current;
             if (proj is null)
             {
-                Game_Engine.Core.Log.Warning("[Ext] No project; nothing to load.");
-                Changed?.Invoke();
+                Game_Engine.Core.Log.Warning("[Ext] No project; reverting to AppDomain extensions.");
+                TryUnloadEditorScriptsAlc();
+                RefreshFromAppDomain();
                 return;
             }
 
@@ -94,61 +170,110 @@ namespace Game_Engine.Core.Extensibility
             if (!Directory.Exists(dir))
             {
                 Game_Engine.Core.Log.Warning("[Ext] EditorScripts folder not found: " + dir);
-                Changed?.Invoke();
+                TryUnloadEditorScriptsAlc();
+                RefreshFromAppDomain();
                 return;
             }
 
-            // unload previous ALC so the new DLL can be loaded cleanly
             try { s_editorScriptsAlc?.Unload(); } catch { }
+            s_editorScriptsAlc = null;
             GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
 
-            s_editorScriptsAlc = new AssemblyLoadContext("EditorScriptsHot", isCollectible: true);
+            var manifestPath = Path.Combine(dir, EditorExtensionsManifest.FileName);
+            var manifest = EditorExtensionsManifest.TryLoad(manifestPath, out var manifestLoadErr);
+            if (!string.IsNullOrEmpty(manifestLoadErr))
+                _scratchWarnings.Add("Manifest parse: " + manifestLoadErr);
 
-            // load latest EditorScripts_*.dll (or all — here we pick the newest one)
-            var latest = Directory.EnumerateFiles(dir, "EditorScripts_*.dll", SearchOption.TopDirectoryOnly)
-                                  .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
-                                  .FirstOrDefault();
-
-            if (latest is null)
+            var paths = EditorExtensionsManifest.ResolveDllPaths(dir, manifest, ProjectService.EngineVersion, out var skipReason);
+            if (paths is null)
             {
-                Game_Engine.Core.Log.Info("[Ext] No EditorScripts_*.dll found to load.");
-                Changed?.Invoke();
+                if (!string.IsNullOrEmpty(skipReason))
+                {
+                    Game_Engine.Core.Log.Warning("[Ext] " + skipReason);
+                    _scratchErrors.Add(skipReason);
+                }
+                RefreshFromAssemblies(new[] { typeof(EditorExtension).Assembly }, clearScratch: false, dir, manifestPath, manifest, explicitHotDllPaths: Array.Empty<string>());
+                LogExtensionSummary("EditorScripts (manifest skipped)", manifest, manifestPath, 0);
                 return;
             }
 
-            // load from memory (no file lock); try to load the PDB for nicer stack traces
-            Assembly? asm = null;
+            if (paths.Count == 0)
+            {
+                Game_Engine.Core.Log.Info("[Ext] No EditorScripts_*.dll in folder; built-in editor extensions only.");
+                RefreshFromAssemblies(new[] { typeof(EditorExtension).Assembly }, clearScratch: false, dir, manifestPath, manifest, explicitHotDllPaths: Array.Empty<string>());
+                LogExtensionSummary("EditorScripts (no hot DLLs)", manifest, manifestPath, 0);
+                return;
+            }
+
+            s_editorScriptsAlc = new AssemblyLoadContext("EditorScriptsHot", isCollectible: true);
+            var alc = s_editorScriptsAlc;
+            alc.Resolving += (_, name) =>
+            {
+                if (name?.Name is null) return null;
+                var dep = Path.Combine(dir, name.Name + ".dll");
+                if (!File.Exists(dep)) return null;
+                return LoadDllIntoAlc(alc, dep, _scratchWarnings);
+            };
+
+            var list = new List<Assembly>(paths.Count + 1) { typeof(EditorExtension).Assembly };
+            foreach (var dllPath in paths)
+            {
+                var asm = LoadDllIntoAlc(alc, dllPath, _scratchWarnings);
+                if (asm != null) list.Add(asm);
+            }
+
+            RefreshFromAssemblies(list, clearScratch: false, dir, manifestPath, manifest, explicitHotDllPaths: paths);
+            LogExtensionSummary("EditorScripts", manifest, manifestPath, paths.Count);
+        }
+
+        private static IReadOnlyList<string> ExtractDllPathsFromAssemblies(List<Assembly> assemblies)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var a in assemblies)
+            {
+                try
+                {
+                    if (a.IsDynamic) continue;
+                    var loc = a.Location;
+                    if (!string.IsNullOrEmpty(loc) && loc.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                        set.Add(loc);
+                }
+                catch { /* dynamic / empty */ }
+            }
+            return set.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static Assembly? LoadDllIntoAlc(AssemblyLoadContext alc, string dllPath, List<string>? warnings)
+        {
             try
             {
-                using var fs = new FileStream(latest, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var fs = new FileStream(dllPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var ms = new MemoryStream();
                 fs.CopyTo(ms);
                 ms.Position = 0;
 
                 Stream? pdb = null;
-                var pdbPath = Path.ChangeExtension(latest, ".pdb");
+                var pdbPath = Path.ChangeExtension(dllPath, ".pdb");
                 if (File.Exists(pdbPath)) pdb = new MemoryStream(File.ReadAllBytes(pdbPath));
 
-                asm = (pdb != null) ? s_editorScriptsAlc.LoadFromStream(ms, pdb) : s_editorScriptsAlc.LoadFromStream(ms);
-              //  Game_Engine.Core.Log.Info($"[Ext] Loaded editor script assembly: {Path.GetFileName(latest)}");
+                return pdb != null ? alc.LoadFromStream(ms, pdb) : alc.LoadFromStream(ms);
             }
             catch (Exception ex)
             {
-                Game_Engine.Core.Log.Warning($"[Ext] Failed to load {latest}: {ex.Message}");
+                var msg = $"Failed to load {dllPath}: {ex.Message}";
+                Game_Engine.Core.Log.Warning("[Ext] " + msg);
+                warnings?.Add(msg);
+                return null;
             }
-
-            // build the extension model ONLY from the loaded editor script assembly
-            var list = new List<Assembly>();
-            if (asm != null) list.Add(asm);
-
-            // Reuse existing builder logic
-            RefreshFromAssemblies(list);
         }
 
-
-
-    public static void ReloadFromAppDomain()
+        public static void ReloadFromAppDomain()
         {
+            ExtensionPanelRegistry.Clear();
+            _scratchWarnings.Clear();
+            _scratchErrors.Clear();
+
+            DisposeExtensionInstances();
             _instances.Clear();
             _menuRoots.Clear();
 
@@ -176,14 +301,21 @@ namespace Game_Engine.Core.Extensibility
             }
 
             _menuRoots.AddRange(b.TopLevelMenus);
-            Changed?.Invoke();                        
+            RecordDiagnosticsSnapshot("ReloadFromAppDomain", null, null, null, Array.Empty<string>(), _scratchWarnings, _scratchErrors);
+            Changed?.Invoke();
         }
 
         /// <summary>Rebuild extensions/menu by scanning the current AppDomain.</summary>
         public static void RefreshFromAppDomain()
         {
+            CommandRegistry.ClearExtensions();
+            ExtensionPanelRegistry.Clear();
+            _scratchWarnings.Clear();
+            _scratchErrors.Clear();
+
+            DisposeExtensionInstances();
+
             var asms = AppDomain.CurrentDomain.GetAssemblies();
-           // Log.Info($"[Ext] RefreshFromAppDomain: scanning={asms.Length}");
 
             _instances.Clear();
             _menuRoots.Clear();
@@ -208,6 +340,8 @@ namespace Game_Engine.Core.Extensibility
             }
 
             BuildMenus();
+            LogExtensionSummary("AppDomain", null, null, 0);
+            RecordDiagnosticsSnapshot("AppDomain", null, null, null, Array.Empty<string>(), _scratchWarnings, _scratchErrors);
             Changed?.Invoke();
         }
 
@@ -226,12 +360,37 @@ namespace Game_Engine.Core.Extensibility
 
         // --------------------------- Implementation --------------------------
 
+        private static void RecordDiagnosticsSnapshot(
+            string loadSource,
+            string? editorScriptsDir,
+            string? manifestPath,
+            EditorExtensionsManifest? manifest,
+            IReadOnlyList<string> loadedDllPaths,
+            List<string> warnings,
+            List<string> errors)
+        {
+            var collisionCopy = CommandRegistry.RecentIdCollisions.ToList();
+            var extNames = _instances.Select(e => e.GetType().FullName ?? e.GetType().Name).ToList();
+
+            ExtensionDiagnostics.Record(new ExtensionDiagnostics.Snapshot
+            {
+                LoadSource = loadSource,
+                EditorScriptsDir = editorScriptsDir,
+                ManifestPath = manifestPath,
+                Manifest = manifest,
+                LoadedDllPaths = loadedDllPaths,
+                ExtensionTypeNames = extNames,
+                Warnings = warnings.ToList(),
+                Errors = errors.ToList(),
+                CommandIdCollisions = collisionCopy
+            });
+        }
+
         private static void BuildMenus()
         {
             var builder = new MenuBuilder();
             var ui = new EditorUI(builder);
 
-          //  Log.Info($"[Ext] Contribute: instances={_instances.Count}");
             for (int i = 0; i < _instances.Count; i++)
             {
                 try { _instances[i].Contribute(ui); }
@@ -239,7 +398,6 @@ namespace Game_Engine.Core.Extensibility
             }
 
             _menuRoots.AddRange(builder.TopLevelMenus);
-          //  Log.Info($"[Ext] Built menu model: roots={_menuRoots.Count}");
         }
 
         private static void AddChildren(MenuItem parent, MenuNode node)
@@ -289,8 +447,6 @@ namespace Game_Engine.Core.Extensibility
                     break;
             }
         }
-
-        // ---- helpers for Toggle/Invoke items ----
 
         private static void ToggleBool(string behaviorTypeName, string propName)
         {
@@ -351,6 +507,57 @@ namespace Game_Engine.Core.Extensibility
                 }
             }
             return null;
+        }
+
+        private static void TryUnloadEditorScriptsAlc()
+        {
+            try { s_editorScriptsAlc?.Unload(); } catch { }
+            s_editorScriptsAlc = null;
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        }
+
+        private static void DisposeExtensionInstances()
+        {
+            for (int i = 0; i < _instances.Count; i++)
+            {
+                try { _instances[i]?.Dispose(); }
+                catch (Exception ex) { Log.Error(ex, $"[Ext] Dispose failed: {_instances[i]?.GetType().FullName}"); }
+            }
+        }
+
+        private static void LogExtensionSummary(string loadSource, EditorExtensionsManifest? manifest, string? manifestPath, int hotDllCount)
+        {
+            var sb = new StringBuilder();
+            sb.Append("[Ext] ");
+            sb.Append(loadSource);
+            sb.Append(": count=").Append(_instances.Count);
+            if (manifest != null)
+            {
+                if (!string.IsNullOrWhiteSpace(manifest.DisplayName))
+                    sb.Append(", pack=").Append(manifest.DisplayName);
+                if (!string.IsNullOrWhiteSpace(manifest.Version))
+                    sb.Append(", ver=").Append(manifest.Version);
+                if (!string.IsNullOrWhiteSpace(manifest.Author))
+                    sb.Append(", by=").Append(manifest.Author);
+                if (!string.IsNullOrWhiteSpace(manifest.Description))
+                    sb.Append(", desc=").Append(manifest.Description);
+            }
+            if (!string.IsNullOrWhiteSpace(manifestPath))
+                sb.Append(", manifest=").Append(manifestPath);
+            if (hotDllCount > 0)
+                sb.Append(", hotDlls=").Append(hotDllCount);
+            sb.Append(". Types: ");
+            if (_instances.Count == 0)
+                sb.Append("(none)");
+            else
+            {
+                for (int i = 0; i < _instances.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(_instances[i].GetType().FullName ?? _instances[i].GetType().Name);
+                }
+            }
+            Game_Engine.Core.Log.Info(sb.ToString());
         }
     }
 }

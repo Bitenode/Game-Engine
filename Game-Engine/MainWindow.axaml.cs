@@ -37,6 +37,8 @@ public partial class MainWindow : Window
     // Map panel type -> (Base title, default region, factory)
     private Dictionary<Type, (string Base, DockRegion Region, Func<Control> Factory)> _registry = null!;
 
+    private readonly List<Type> _extensionPanelTypes = new();
+
     public MainWindow()
     {
         InitializeComponent();
@@ -60,6 +62,7 @@ public partial class MainWindow : Window
             [typeof(ShaderEditorPanel)] = ("Shader Editor", DockRegion.Center, () => new ShaderEditorPanel()),
             [typeof(BiomeGraphPanel)] = ("Biome Graph", DockRegion.Center, () => new BiomeGraphPanel()),
             [typeof(BlueprintGraphPanel)] = ("Blueprint", DockRegion.Center, () => new BlueprintGraphPanel()),
+            [typeof(ExtensionsStatusPanel)] = ("Extensions", DockRegion.Right, () => new ExtensionsStatusPanel()),
         };
 
         // Defaults
@@ -104,6 +107,7 @@ public partial class MainWindow : Window
         BindNew("NewShaderEditorTab", typeof(ShaderEditorPanel), DockRegion.Center);
         BindNew("NewBiomeGraphTab", typeof(BiomeGraphPanel), DockRegion.Center);
         BindNew("NewBlueprintTab", typeof(BlueprintGraphPanel), DockRegion.Center);
+        BindNew("NewExtensionsStatusTab", typeof(ExtensionsStatusPanel), DockRegion.Right);
 
         if (this.FindControl<MenuItem>("InputRemappingMenu") is { } settings)
             settings.Click += (_, __) => InputRemappingAsync();
@@ -184,15 +188,24 @@ public partial class MainWindow : Window
         ExtensionService.Changed -= OnExtensionsChanged;
         ExtensionService.Changed += OnExtensionsChanged;
 
-        // Initial populate: scan current AppDomain for extensions; event will rebuild menus
-        ExtensionService.RefreshFromAppDomain();
+        // Initial populate: AppDomain-only when no project; with a project, EditorScripts folder wins
+        ExtensionService.RefreshForCurrentProject();
+        EditorShortcutBindings.ReloadForCurrentProject();
 
         // Also build once now so the bar is correct even if no extensions are found
         RebuildExtensionMenus();
 
         // Keep menus in sync when a project opens/closes (event will rebuild)
-        ProjectService.ProjectOpened += () => ExtensionService.RefreshFromAppDomain();
-        ProjectService.ProjectClosed += () => ExtensionService.RefreshFromAppDomain();
+        ProjectService.ProjectOpened += () =>
+        {
+            EditorShortcutBindings.ReloadForCurrentProject();
+            ExtensionService.RefreshForCurrentProject();
+        };
+        ProjectService.ProjectClosed += () =>
+        {
+            EditorShortcutBindings.ReloadForCurrentProject();
+            ExtensionService.RefreshForCurrentProject();
+        };
 
         // Final: window title etc.
         RefreshProjectUI();
@@ -237,6 +250,7 @@ public partial class MainWindow : Window
         CommandRegistry.Register("editor.tab.shader", "Window: New Shader Editor Tab", () => AddPanel(typeof(ShaderEditorPanel)));
         CommandRegistry.Register("editor.tab.biome", "Window: New Biome Graph Tab", () => AddPanel(typeof(BiomeGraphPanel)));
         CommandRegistry.Register("editor.tab.blueprint", "Window: New Blueprint Tab", () => AddPanel(typeof(BlueprintGraphPanel)));
+        CommandRegistry.Register("editor.tab.extensionsStatus", "Window: New Extensions Status Tab", () => AddPanel(typeof(ExtensionsStatusPanel)));
 
         CommandRegistry.Register("editor.layout.reset", "Window: Reset Layout", () => ResetLayout());
 
@@ -585,7 +599,20 @@ public partial class MainWindow : Window
         {
             ShowCommandPalette();
             e.Handled = true;
+            return;
         }
+
+        if (EditorShortcutBindings.TryExecuteMatching(e, TryRunEditorCommandById))
+            e.Handled = true;
+    }
+
+    private bool TryRunEditorCommandById(string id)
+    {
+        if (FocusInMainWindowTextEntry()) return false;
+        var c = CommandRegistry.TryGet(id);
+        if (c == null || !c.CanExecute()) return false;
+        c.Execute();
+        return true;
     }
 
     public void ShowCommandPalette()
@@ -674,13 +701,16 @@ public partial class MainWindow : Window
         try
         {
             var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
-            ExtensionService.RefreshFromEditorScriptsFolder();
+            ExtensionService.RefreshForCurrentProject();
             RefreshProjectUI();
             RebuildExtensionMenus();
-            Log.Success($"Scripts compiled ({files} files, {types} behavior types). Extensions reloaded.");
+            var msg = $"Scripts compiled ({files} files, {types} behavior types). Extensions reloaded.";
+            ExtensionDiagnostics.RecordCompileReload(true, msg);
+            Log.Success(msg);
         }
         catch (Exception ex)
         {
+            ExtensionDiagnostics.RecordCompileReload(false, ex.Message);
             Log.Error($"Script compile failed: {ex.Message}");
         }
     }
@@ -689,6 +719,10 @@ public partial class MainWindow : Window
     // ---------- layout / tabs ----------
     public void RebuildExtensionMenus()
     {
+        MergeExtensionPanelRegistryIntoDockRegistry();
+        RegisterExtensionPanelCommands();
+        RebuildAddonPanelsSubmenu();
+
         var host = this.FindControl<Menu>("MainMenu");
         if (host == null) { Log.Warning("[UI] RebuildExtensionMenus: MainMenu not found"); return; }
 
@@ -710,6 +744,54 @@ public partial class MainWindow : Window
 
         // dump what’s there
         //DumpMenu(host);
+    }
+
+    private void MergeExtensionPanelRegistryIntoDockRegistry()
+    {
+        foreach (var t in _extensionPanelTypes)
+            _registry.Remove(t);
+        _extensionPanelTypes.Clear();
+
+        foreach (var e in ExtensionPanelRegistry.Entries)
+        {
+            _registry[e.PanelType] = (e.Title, e.Region, e.Factory);
+            _extensionPanelTypes.Add(e.PanelType);
+        }
+    }
+
+    private void RegisterExtensionPanelCommands()
+    {
+        CommandRegistry.UnregisterWhere(c => c.Id.StartsWith("editor.ext.panel.", StringComparison.OrdinalIgnoreCase));
+        bool HasProject() => ProjectService.Current is not null;
+        foreach (var e in ExtensionPanelRegistry.Entries)
+        {
+            var panelType = e.PanelType;
+            var region = e.Region;
+            CommandRegistry.Register(e.CommandId, $"Window: {e.Title} (add-on)", () => AddPanel(panelType, region), HasProject);
+        }
+    }
+
+    private void RebuildAddonPanelsSubmenu()
+    {
+        if (this.FindControl<MenuItem>("MI_AddonPanelsRoot") is not { } root) return;
+        root.Items.Clear();
+        if (ExtensionPanelRegistry.Entries.Count == 0)
+        {
+            root.Header = "Add-on panels (none)";
+            root.IsEnabled = false;
+            return;
+        }
+
+        root.Header = "Add-on panels";
+        root.IsEnabled = true;
+        foreach (var e in ExtensionPanelRegistry.Entries)
+        {
+            var pt = e.PanelType;
+            var reg = e.Region;
+            var mi = new MenuItem { Header = e.Title };
+            mi.Click += (_, __) => AddPanel(pt, reg);
+            root.Items.Add(mi);
+        }
     }
 
     private static void DumpMenu(Menu host)
@@ -957,8 +1039,7 @@ public partial class MainWindow : Window
         if (ProjectService.Current is { } opened)
             RecentProjectsStore.AddRecent(opened.ManifestPath);
         RefreshProjectUI();
-        ExtensionService.RefreshFromAppDomain();
-        RebuildExtensionMenus();
+        // Extensions already refreshed by ProjectService.ProjectOpened → ExtensionService.RefreshForCurrentProject
         SceneService.SetCurrentScenePath(null);
         SceneService.SetDirty(false);
         TryAutoLoadLastOpenedScene();

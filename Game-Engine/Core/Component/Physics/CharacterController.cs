@@ -49,6 +49,9 @@ namespace Game_Engine.Core.Component
         [Persist] public float UnstickMaxExtent { get; set; } = 5f;
         [Persist] public bool UnstickSkipIfInside { get; set; } = true;
 
+        /// <summary>Bitmask of scene layers this controller collides with. <c>-1</c> = all layers.</summary>
+        [Persist] public int CollisionLayerMask { get; set; } = -1;
+
         // ── Push interaction ──
         /// <summary>Force multiplier when pushing Rigidbody objects on contact.</summary>
         [Persist] public float PushForce { get; set; } = 3.0f;
@@ -320,6 +323,7 @@ namespace Game_Engine.Core.Component
             {
                 var rb = Rigidbody.All[i];
                 if (rb.IsKinematic || rb.gameObject == gameObject) continue;
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, rb.gameObject.Layer)) continue;
 
                 var rbCollider = rb.gameObject?.Behaviors?.OfType<Collider>().FirstOrDefault();
                 if (rbCollider == null) continue;
@@ -365,6 +369,7 @@ namespace Game_Engine.Core.Component
             {
                 var trigger = PhysicsCache.TriggerColliders[i];
                 if (trigger.gameObject == gameObject) continue;
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, trigger.gameObject.Layer)) continue;
 
                 var trigAABB = trigger.GetWorldAABB();
                 if (OverlapsAABB(playerMin, playerMax, trigAABB.Min, trigAABB.Max))
@@ -445,6 +450,7 @@ namespace Game_Engine.Core.Component
             for (int ti = 0; ti < terrains.Count; ti++)
             {
                 var terrain = terrains[ti];
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, terrain.gameObject.Layer)) continue;
                 for (int r2 = 0; r2 < starts.Length; r2++)
                 {
                     if (terrain.SampleHeightWorld(starts[r2].X, starts[r2].Z, out float hY, out SN.Vector3 hN))
@@ -457,6 +463,7 @@ namespace Game_Engine.Core.Component
             for (int mi = 0; mi < meshColliders.Count; mi++)
             {
                 var mc = meshColliders[mi];
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -487,6 +494,7 @@ namespace Game_Engine.Core.Component
                 {
                     var col = nonMeshColliders[ci];
                     if (col.gameObject == this.gameObject) continue;
+                    if (!PhysicsLayerMask.Includes(CollisionLayerMask, col.gameObject.Layer)) continue;
                     var aabb = col.GetWorldAABB();
                     for (int r2 = 0; r2 < starts.Length; r2++)
                     {
@@ -540,6 +548,7 @@ namespace Game_Engine.Core.Component
             for (int mi = 0; mi < meshColliders.Count; mi++)
             {
                 var mc = meshColliders[mi];
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -566,6 +575,7 @@ namespace Game_Engine.Core.Component
                 {
                     var col = nonMeshColliders[ci];
                     if (col.gameObject == this.gameObject) continue;
+                    if (!PhysicsLayerMask.Includes(CollisionLayerMask, col.gameObject.Layer)) continue;
                     var aabb = col.GetWorldAABB();
                     for (int r2 = 0; r2 < starts.Length; r2++)
                     {
@@ -670,6 +680,7 @@ namespace Game_Engine.Core.Component
             {
                 var col = nonMeshColliders[ci];
                 if (col.gameObject == this.gameObject) continue;
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, col.gameObject.Layer)) continue;
                 var aabb = col.GetWorldAABB();
 
                 // ignore "world hulls"
@@ -743,6 +754,7 @@ namespace Game_Engine.Core.Component
             for (int mi = 0; mi < meshColliders.Count; mi++)
             {
                 var mc = meshColliders[mi];
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
                 foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                 {
                     if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
@@ -778,6 +790,7 @@ namespace Game_Engine.Core.Component
             {
                 var c = nonMeshColliders[ci];
                 if (c.gameObject == this.gameObject) continue;
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, c.gameObject.Layer)) continue;
                 var a2 = c.GetWorldAABB();
                 if (a2.Max.Y < bandMinY || a2.Min.Y > bandMaxY) continue;
 

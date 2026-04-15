@@ -527,6 +527,7 @@ If you add a **custom** host or client entry point without going through those v
 | **Object Registry** | Tracks all `NetworkIdentity` objects. **`RegisterObject`** rejects a **duplicate `NetworkId`** (two different objects with the same ID) and logs an error. **`UnregisterObject`** removes only if the instance matches the registry entry (safe if registration failed). If **`NetworkId` is `0`** while networking is **active**, a **warning** is logged and an ID is auto-assigned — prefer **stable non-zero IDs** in the scene so every peer maps the same object. Auto-assigned IDs skip collisions with existing registry keys. |
 | **State Broadcast** | Server pushes `NetworkIdentity` state (`SerializeState` / `DeserializeState`) ~20×/s via `BroadcastState`. **Clients** apply incoming state; the **server** ignores inbound `StateSync`. Optional **`ShouldReplicateToPeer(netId, peerId)`** filters which objects each client receives (per-peer sends). Optional **`OmitUnchangedStateInBroadcast`** skips objects whose serialized state is unchanged since the last tick (bandwidth saver; not true delta encoding). |
 | **RPC System** | `RegisterRPC`, `SendRPC` / `SendRPCAll` |
+| **Surface streaming** | **`SurfaceChunkRequest`** (client→server) and fragmented **`SurfaceChunkData`** (server→client) for large meshes/tiles. **`RequestSurfaceChunk`**, **`SendSurfaceChunkResponse`**, **`SurfaceChunkRequestHandler`**. Kinds: **`SurfaceKindPlanetChunk`**, **`SurfaceKindTerrainTile`**. Server attaches **`NetworkSurfaceDispatch`** in **`StartServer`**. |
 | **Peer Management** | Connected peers and connect/disconnect events |
 | **World fingerprint** | First `Update` after a scene has roots (while active) triggers **`NetworkWorldDiagnostics`** once per scene load — see table above. |
 | **Runtime spawn** | **`RegisterSpawnPrefab(key, Func<GameObject>)`** registers a factory (do **not** add `NetworkIdentity` inside the factory). **`ServerSpawn(key, position, rotation, scale, ownerPeerId)`** (server only) allocates a **`NetworkId`**, sets **`OwnerPeerId`**, **`SceneService.Add`**, reliable **Spawn**, then **`BroadcastReliableStateSnapshotFor(netId)`** so clients get one guaranteed state packet. **`ServerDespawn(identity)`** notifies clients with **Despawn**. Prefab keys are capped (**`MaxSpawnPrefabKeyChars`**). Register the **same keys** on server and every client. **Late join:** server **re-sends all runtime spawns** to new peers. **`DespawnOwnedRuntimeSpawnsOnDisconnect`** optionally **`ServerDespawn`** runtime spawns whose **`OwnerPeerId`** matches a disconnecting client. |
@@ -547,9 +548,9 @@ Standalone **Engine.Player** calls **`NetworkManager.Stop()`** when the game win
 
 | Mechanism | Description |
 |-----------|-------------|
-| **Role checks** | **Clients** ignore inbound **`ClientInput`**. **Servers** ignore inbound **`StateSync`**, **Spawn**, and **Despawn** (only the server process should originate these). |
-| **Rate limits** | Server inbound **RPC** and **ClientInput** messages are capped per peer per second (`MaxRpcMessagesPerPeerPerSecond`, `MaxClientInputMessagesPerPeerPerSecond`). |
-| **Payload caps** | RPC payloads max **`MaxRpcPayloadBytes`** (512 KiB); method names max **`MaxRpcMethodNameChars`**; client input max 1 MiB per message. |
+| **Role checks** | **Clients** ignore inbound **`ClientInput`** and **`SurfaceChunkRequest`**. **Servers** ignore inbound **`StateSync`**, **Spawn**, **Despawn**, and **`SurfaceChunkData`** (only the server sends surface payloads). |
+| **Rate limits** | Server inbound **RPC**, **ClientInput**, and **`SurfaceChunkRequest`** messages are capped per peer per second (`MaxRpcMessagesPerPeerPerSecond`, `MaxClientInputMessagesPerPeerPerSecond`, `MaxSurfaceChunkRequestsPerPeerPerSecond`). |
+| **Payload caps** | RPC payloads max **`MaxRpcPayloadBytes`** (512 KiB); method names max **`MaxRpcMethodNameChars`**; client input max 1 MiB per message; assembled surface payloads max **`MaxSurfaceChunkAssembledBytes`** (fragmented **`SurfaceChunkData`**). |
 | **Trust** | **LAN** assumes friendly peers. **Internet** games should use a platform/SDK for authentication, encryption, and NAT traversal — not provided in core. |
 
 ### State payload format (`NetworkIdentity`)
@@ -585,10 +586,11 @@ Set **`PlaySceneName`** to the **same** gameplay scene file name (without `.scen
 |-----------|----------------|
 | **`NetworkIdentity` + `BroadcastState`** | Replicates **transform** (and `NetworkTransform` extras) from server to clients. Does **not** ship full **Terrain** heightmaps or **PlanetTerrain** height/biome payloads. |
 | **`Terrain`** | Persists height/splat/etc. under **`TerrainAssetPath`** (`.terrain.json` / `.terrain.bin`). See [05 — Terrain System](05_Terrain_System.md). Edits call **`Terrain.Save()`** / asset write on the machine that sculpted. |
-| **`PlanetTerrain`** | Planet height and biome data live in **`.planet`** / linked assets; see [13 — Planet System](13_Planet_System.md). |
+| **`PlanetTerrain`** | Planet height and biome data live in **`.planet`** / linked assets; see [13 — Planet System](13_Planet_System.md). With **`StreamSurfaceFromServerWhenClient`**, clients **do not** run procedural chunk mesh generation — they request meshes from the server. |
+| **`TerrainStreamer`** | With **`StreamTilesFromServerWhenClient`**, clients request tile heightmaps from the server instead of loading local **`TilesSubfolder`** files. Add **`NetworkIdentity`** on the streamer (and matching **`NetworkId`**) when multiple streamers exist. |
 | **`SaveManager`** | Slot JSON saves **`ISaveable`** behaviors. **`Terrain`** / **`PlanetTerrain`** are **not** `ISaveable` by default—use terrain/planet asset files for world shape, or implement **`ISaveable`** on a wrapper if you need slot data to reference asset paths. |
 
-For multiplayer, treat **terrain/planet files** as shared level data (same files on server and clients); use **network components** only for objects that move or change at runtime. After connecting, check the log for **`[NetworkWorld] Shared world fingerprint`** — server and client should report the same paths and seeds for each `Terrain` / `TerrainStreamer` / `PlanetTerrain`.
+For multiplayer, you can either treat **terrain/planet files** as shared level data (same files on every peer) **or** use **server streaming** (`StreamSurfaceFromServerWhenClient` / `StreamTilesFromServerWhenClient`) so only the host generates procedural surfaces. Use **network components** for objects that move or change at runtime. After connecting, check the log for **`[NetworkWorld]`** fingerprint lines — when streaming, the client log notes **`streamSurface=1`** / **`streamTiles=1`** for components that rely on the server.
 
 ### Standard Assets — server lobby
 

@@ -22,12 +22,13 @@ namespace Game_Engine.Core.Physics
         }
 
         /// Return all colliders whose world AABB overlaps the given AABB.
-        public static IEnumerable<Component.Collider> QueryAABB(SN.Vector3 min, SN.Vector3 max)
+        public static IEnumerable<Component.Collider> QueryAABB(SN.Vector3 min, SN.Vector3 max, int layerMask = -1)
         {
             for (int i = 0; i < _colliders.Count; i++)
             {
                 var c = _colliders[i];
                 if (!c.IsActiveAndEnabled) continue;
+                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
                 var a = c.GetWorldAABB();
                 if (Overlaps(a.Min, a.Max, min, max)) yield return c;
             }
@@ -82,6 +83,7 @@ namespace Game_Engine.Core.Physics
             {
                 var c = _colliders[i];
                 if (!c.IsActiveAndEnabled || c.IsTrigger) continue;
+                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
 
                 var aabb = c.GetWorldAABB();
                 if (RayAABB(origin, direction, aabb.Min, aabb.Max, out float t, out SN.Vector3 normal) && t < bestT && t >= 0f)
@@ -103,7 +105,7 @@ namespace Game_Engine.Core.Physics
         /// <summary>
         /// Cast a ray and return ALL hits (unsorted). Useful for pierce queries.
         /// </summary>
-        public static List<RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDist)
+        public static List<RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDist, int layerMask = -1)
         {
             direction = SN.Vector3.Normalize(direction);
             var results = new List<RaycastHit>();
@@ -112,6 +114,7 @@ namespace Game_Engine.Core.Physics
             {
                 var c = _colliders[i];
                 if (!c.IsActiveAndEnabled) continue;
+                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
 
                 var aabb = c.GetWorldAABB();
                 if (RayAABB(origin, direction, aabb.Min, aabb.Max, out float t, out SN.Vector3 normal) && t <= maxDist && t >= 0f)
@@ -129,13 +132,14 @@ namespace Game_Engine.Core.Physics
         }
 
         /// <summary>Sphere overlap query — returns all colliders within a sphere.</summary>
-        public static List<Component.Collider> OverlapSphere(SN.Vector3 center, float radius)
+        public static List<Component.Collider> OverlapSphere(SN.Vector3 center, float radius, int layerMask = -1)
         {
             var results = new List<Component.Collider>();
             for (int i = 0; i < _colliders.Count; i++)
             {
                 var c = _colliders[i];
                 if (!c.IsActiveAndEnabled) continue;
+                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
 
                 var aabb = c.GetWorldAABB();
                 // Expand AABB by radius for sphere test

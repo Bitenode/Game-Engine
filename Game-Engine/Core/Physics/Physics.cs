@@ -14,33 +14,33 @@ namespace Game_Engine.Core.Physics
         /// <summary>
         /// Cast a ray and return true if any collider is hit.
         /// </summary>
-        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f)
+        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f, int layerMask = -1)
         {
-            return CollisionWorld.Raycast(origin, direction, maxDistance, out _);
+            return CollisionWorld.Raycast(origin, direction, maxDistance, out _, layerMask);
         }
 
         /// <summary>
         /// Cast a ray and return hit information for the closest collider.
         /// </summary>
-        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, out CollisionWorld.RaycastHit hit, float maxDistance = 1000f)
+        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, out CollisionWorld.RaycastHit hit, float maxDistance = 1000f, int layerMask = -1)
         {
-            return CollisionWorld.Raycast(origin, direction, maxDistance, out hit);
+            return CollisionWorld.Raycast(origin, direction, maxDistance, out hit, layerMask);
         }
 
         /// <summary>
         /// Cast a ray and return all hits along the ray.
         /// </summary>
-        public static List<CollisionWorld.RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f)
+        public static List<CollisionWorld.RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f, int layerMask = -1)
         {
-            return CollisionWorld.RaycastAll(origin, direction, maxDistance);
+            return CollisionWorld.RaycastAll(origin, direction, maxDistance, layerMask);
         }
 
         /// <summary>
         /// Find all colliders within a sphere centered at <paramref name="center"/>.
         /// </summary>
-        public static List<Component.Collider> OverlapSphere(SN.Vector3 center, float radius)
+        public static List<Component.Collider> OverlapSphere(SN.Vector3 center, float radius, int layerMask = -1)
         {
-            return CollisionWorld.OverlapSphere(center, radius);
+            return CollisionWorld.OverlapSphere(center, radius, layerMask);
         }
 
         /// <summary>Gravity vector used by the default physics simulation.</summary>

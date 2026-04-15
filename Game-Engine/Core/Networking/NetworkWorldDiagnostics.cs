@@ -29,7 +29,10 @@ namespace Game_Engine.Core.Networking
             }
 
             var sb = new StringBuilder();
-            sb.Append("[NetworkWorld] Shared world fingerprint (compare server vs client): ");
+            bool clientStream = NetworkManager.IsActive && NetworkManager.IsClient;
+            sb.Append(clientStream
+                ? "[NetworkWorld] World fingerprint (client may stream surfaces from server; paths/seeds describe the server world): "
+                : "[NetworkWorld] Shared world fingerprint (compare server vs client): ");
 
             if (terrains.Count > 0)
             {
@@ -52,6 +55,8 @@ namespace Game_Engine.Core.Networking
                     var s = streamers[i];
                     if (i > 0) sb.Append("; ");
                     sb.Append(HierarchyPath(s.gameObject)).Append(" folder=").Append(s.TilesSubfolder ?? "");
+                    if (clientStream && s.StreamTilesFromServerWhenClient)
+                        sb.Append(" streamTiles=1");
                 }
                 sb.Append("] ");
             }
@@ -68,6 +73,8 @@ namespace Game_Engine.Core.Networking
                         .Append(" biome=").Append(p.BiomeGraphPath ?? "")
                         .Append(" seed=").Append(p.Seed)
                         .Append(" weatherSeed=").Append(p.WeatherSeed);
+                    if (clientStream && p.StreamSurfaceFromServerWhenClient)
+                        sb.Append(" streamSurface=1");
                 }
                 sb.Append(']');
             }

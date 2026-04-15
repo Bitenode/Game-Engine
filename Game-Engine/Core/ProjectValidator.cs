@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+#if !PLAYER
+using Game_Engine.Core.Extensibility;
+#endif
 
 namespace Game_Engine.Core;
 
@@ -19,6 +22,11 @@ public static class ProjectValidator
 
         foreach (var scenePath in Directory.EnumerateFiles(project.ScenesPath, "*.scene", SearchOption.AllDirectories))
             ValidateScene(scenePath, project.RootPath, issues);
+
+#if !PLAYER
+        foreach (var line in ExtensionDiagnostics.GetValidationIssues())
+            issues.Add(line);
+#endif
 
         return issues;
     }

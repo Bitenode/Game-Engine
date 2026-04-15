@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Game_Engine.Core;
+using Game_Engine.Core.Networking;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -20,6 +21,9 @@ namespace Game_Engine.Core.Component
 
         /// <summary>When false, tile set is not modified by <see cref="SyncStreaming"/> (fixed layout).</summary>
         [Persist] public bool StreamingEnabled { get; set; } = true;
+
+        /// <summary>When networking as a client, request tile heightmaps from the server instead of loading local tile files.</summary>
+        [Persist] public bool StreamTilesFromServerWhenClient { get; set; } = true;
 
         /// <summary>Update streaming for every active streamer using the given world-space focus (e.g. camera).</summary>
         public static void SyncAll(in SN.Vector3 worldFocus)
@@ -206,6 +210,8 @@ namespace Game_Engine.Core.Component
             var go = new GameObject($"TerrainTile_{tx}_{tz}");
             go.Transform.Position = new Vector3(tx * T, 0, tz * T);
 
+            bool streamClient = NetworkManager.IsActive && NetworkManager.IsClient && StreamTilesFromServerWhenClient;
+
             var terr = new Terrain
             {
                 TerrainAssetPath = rel,
@@ -217,7 +223,7 @@ namespace Game_Engine.Core.Component
                 ChunkSize = Math.Max(3, TileChunkSize),
                 UseChunking = TileUseChunking,
                 LodLevels = Math.Clamp(TileLodLevels, 1, 8),
-                AutoLoadOnStart = true,
+                AutoLoadOnStart = !streamClient,
                 AutoSaveOnChange = false
             };
 
@@ -227,7 +233,36 @@ namespace Game_Engine.Core.Component
             go.AddBehavior(terr);
 
             terr.NeedsAssetSave = false;
+            if (streamClient)
+                RequestTerrainTileFromServer(tx, tz, terr);
             return go;
+        }
+
+        void RequestTerrainTileFromServer(int tx, int tz, Terrain terr)
+        {
+            uint netId = TerrainTileSurfaceNetwork.GetStreamerNetId(this);
+            var key = TerrainTileSurfaceNetwork.EncodeKey(netId, tx, tz);
+            NetworkManager.RequestSurfaceChunk(NetworkManager.SurfaceKindTerrainTile, key, (_, _, payload) =>
+            {
+                if (!TerrainTileSurfaceNetwork.TryApplyPayloadToTerrain(terr, payload))
+                {
+                    Log.Warning($"[TerrainStreamer] Server tile payload failed for ({tx},{tz}); assign NetworkIdentity on the streamer for stable routing.");
+                }
+            });
+        }
+
+        /// <summary>Project-relative path for a tile (same layout as <see cref="CreateTile"/>).</summary>
+        public string BuildTileRelativePath(int tx, int tz)
+        {
+            float T = Math.Max(0.001f, TileWorldSize);
+            _ = T;
+            string ext = SaveTilesAsBinary ? ".terrain.bin" : ".terrain.json";
+            string folder = NormalizeSlashes(TilesSubfolder.Trim());
+            if (string.IsNullOrWhiteSpace(folder))
+                folder = "Assets/Terrain/StreamedWorld";
+            return string.IsNullOrEmpty(folder)
+                ? $"tile_{tx}_{tz}{ext}"
+                : Path.Combine(folder, $"tile_{tx}_{tz}{ext}").Replace('\\', '/');
         }
 
         static SN.Matrix4x4 WorldMatrixFromRoot(GameObject go)
@@ -272,5 +307,9 @@ namespace Game_Engine.Core.Component
             var sz = rest[(u + 1)..];
             return int.TryParse(sx, out tx) && int.TryParse(sz, out tz);
         }
+
+        /// <summary>Server: builds <see cref="NetworkManager.SurfaceKindTerrainTile"/> payloads (see <see cref="TerrainTileSurfaceNetwork"/>).</summary>
+        internal static byte[]? HandleTerrainTileRequestForServer(int peerId, byte[] key) =>
+            TerrainTileSurfaceNetwork.TryBuildTilePayload(peerId, key);
     }
 }

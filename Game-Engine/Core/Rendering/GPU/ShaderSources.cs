@@ -1486,6 +1486,24 @@ uniform sampler2D uLayer5; uniform float uTiling5;
 uniform sampler2D uLayer6; uniform float uTiling6;
 uniform sampler2D uLayer7; uniform float uTiling7;
 
+// Per-layer PBR scalars (blended by splat weights)
+uniform float uRough0; uniform float uRough1; uniform float uRough2; uniform float uRough3;
+uniform float uRough4; uniform float uRough5; uniform float uRough6; uniform float uRough7;
+uniform float uMetal0; uniform float uMetal1; uniform float uMetal2; uniform float uMetal3;
+uniform float uMetal4; uniform float uMetal5; uniform float uMetal6; uniform float uMetal7;
+
+// Normal maps: layers 0–4 only (texture unit budget); uHasNormal5–7 reserved / unused samplers
+uniform sampler2D uNormalLayer0;
+uniform sampler2D uNormalLayer1;
+uniform sampler2D uNormalLayer2;
+uniform sampler2D uNormalLayer3;
+uniform sampler2D uNormalLayer4;
+uniform int uHasNormal0; uniform int uHasNormal1; uniform int uHasNormal2;
+uniform int uHasNormal3; uniform int uHasNormal4;
+uniform int uHasNormal5; uniform int uHasNormal6; uniform int uHasNormal7;
+
+uniform float uParallaxStrength;
+
 // Shadow
 uniform sampler2D uShadowMap;
 uniform bool      uHasShadow;
@@ -1503,10 +1521,8 @@ uniform float uAmbient;
 // Camera
 uniform vec3  uCamPos;
 
-// Fallback (no layers defined)
+// Fallback (no layers defined) — no extra albedo sampler (keeps fragment stage ≤16 texture units on GLES/ANGLE)
 uniform vec4  uBaseColor;
-uniform sampler2D uAlbedoTex;
-uniform bool      uHasAlbedoTex;
 
 out vec4 FragColor;
 
@@ -1531,45 +1547,141 @@ float ShadowCalc(vec4 sc, vec3 N)
     return mix(1.0, shadow, fadeX * fadeY);
 }
 
+float layerW(int i, vec4 s0, vec4 s1)
+{
+    if (i == 0) return s0.r;
+    if (i == 1) return s0.g;
+    if (i == 2) return s0.b;
+    if (i == 3) return s0.a;
+    if (i == 4) return s1.r;
+    if (i == 5) return s1.g;
+    if (i == 6) return s1.b;
+    return s1.a;
+}
+
 void main()
 {
-    vec3 N = normalize(vWorldNormal);
+    vec3 Ngeom = normalize(vWorldNormal);
+    vec2 uvDetail = vUV;
 
-    // ── Splatmap blended albedo ──
-    // Uses simple UV-based sampling (no triplanar) for maximum performance.
-    vec4 albedo;
+    vec4 albedo = vec4(1.0);
+    float rough = 0.8;
+    float metal = 0.0;
+    vec3 N = Ngeom;
+
     if (uLayerCount > 0)
     {
         vec4 s0 = texture(uSplatmap0, vUV);
-        albedo = vec4(0.0);
+        vec4 s1 = (uLayerCount > 4) ? texture(uSplatmap1, vUV) : vec4(0.0);
 
-        // Layer 0
-        albedo += texture(uLayer0, vUV * uTiling0) * s0.r;
+        // Tangent frame for normal maps + parallax
+        vec3 up = abs(Ngeom.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 T = normalize(cross(up, Ngeom));
+        vec3 B = normalize(cross(Ngeom, T));
+        mat3 TBN = mat3(T, B, Ngeom);
 
-        // Layers 1-3 (still in splatmap0)
-        if (uLayerCount > 1) albedo += texture(uLayer1, vUV * uTiling1) * s0.g;
-        if (uLayerCount > 2) albedo += texture(uLayer2, vUV * uTiling2) * s0.b;
-        if (uLayerCount > 3) albedo += texture(uLayer3, vUV * uTiling3) * s0.a;
+        vec3 Vw = normalize(uCamPos - vWorldPos);
+        vec3 Vts = vec3(dot(Vw, T), dot(Vw, B), dot(Vw, Ngeom));
 
-        // Layers 4-7 only sampled if needed (avoids splatmap1 texture fetch when <= 4 layers)
-        if (uLayerCount > 4)
+        // Parallax from normal-map alpha (layers 0–4), weighted by splat
+        float hAcc = 0.0;
+        float hW = 0.0;
+        for (int i = 0; i < 5; i++)
         {
-            vec4 s1 = texture(uSplatmap1, vUV);
-            albedo += texture(uLayer4, vUV * uTiling4) * s1.r;
-            if (uLayerCount > 5) albedo += texture(uLayer5, vUV * uTiling5) * s1.g;
-            if (uLayerCount > 6) albedo += texture(uLayer6, vUV * uTiling6) * s1.b;
-            if (uLayerCount > 7) albedo += texture(uLayer7, vUV * uTiling7) * s1.a;
+            if (i >= uLayerCount) break;
+            int hasN = (i == 0) ? uHasNormal0 : (i == 1) ? uHasNormal1 : (i == 2) ? uHasNormal2 : (i == 3) ? uHasNormal3 : uHasNormal4;
+            if (hasN == 0) continue;
+            float wi = layerW(i, s0, s1);
+            if (wi < 1e-5) continue;
+            vec2 uvi = vUV * ((i == 0) ? uTiling0 : (i == 1) ? uTiling1 : (i == 2) ? uTiling2 : (i == 3) ? uTiling3 : uTiling4);
+            vec4 nsmpl = (i == 0) ? texture(uNormalLayer0, uvi)
+                : (i == 1) ? texture(uNormalLayer1, uvi)
+                : (i == 2) ? texture(uNormalLayer2, uvi)
+                : (i == 3) ? texture(uNormalLayer3, uvi)
+                : texture(uNormalLayer4, uvi);
+            hAcc += nsmpl.a * wi;
+            hW += wi;
+        }
+        if (hW > 1e-4 && uParallaxStrength > 0.0)
+        {
+            float h = hAcc / hW;
+            vec2 pdir = Vts.xy / max(abs(Vts.z), 0.15);
+            uvDetail = vUV - pdir * (h * uParallaxStrength);
         }
 
+        // Blended albedo (detail UV)
+        albedo = vec4(0.0);
+        albedo += texture(uLayer0, uvDetail * uTiling0) * s0.r;
+        if (uLayerCount > 1) albedo += texture(uLayer1, uvDetail * uTiling1) * s0.g;
+        if (uLayerCount > 2) albedo += texture(uLayer2, uvDetail * uTiling2) * s0.b;
+        if (uLayerCount > 3) albedo += texture(uLayer3, uvDetail * uTiling3) * s0.a;
+        if (uLayerCount > 4)
+        {
+            albedo += texture(uLayer4, uvDetail * uTiling4) * s1.r;
+            if (uLayerCount > 5) albedo += texture(uLayer5, uvDetail * uTiling5) * s1.g;
+            if (uLayerCount > 6) albedo += texture(uLayer6, uvDetail * uTiling6) * s1.b;
+            if (uLayerCount > 7) albedo += texture(uLayer7, uvDetail * uTiling7) * s1.a;
+        }
         albedo.a = 1.0;
+
+        // Roughness / metallic
+        float rw = 0.0;
+        rough = 0.0;
+        metal = 0.0;
+        for (int i = 0; i < 8; i++)
+        {
+            if (i >= uLayerCount) break;
+            float wi = layerW(i, s0, s1);
+            if (wi < 1e-6) continue;
+            float r = (i == 0) ? uRough0 : (i == 1) ? uRough1 : (i == 2) ? uRough2 : (i == 3) ? uRough3
+                : (i == 4) ? uRough4 : (i == 5) ? uRough5 : (i == 6) ? uRough6 : uRough7;
+            float m = (i == 0) ? uMetal0 : (i == 1) ? uMetal1 : (i == 2) ? uMetal2 : (i == 3) ? uMetal3
+                : (i == 4) ? uMetal4 : (i == 5) ? uMetal5 : (i == 6) ? uMetal6 : uMetal7;
+            rough += r * wi;
+            metal += m * wi;
+            rw += wi;
+        }
+        if (rw > 1e-5) { rough /= rw; metal /= rw; }
+
+        // Blended tangent-space normal (layers 0–4 have maps; 5–7 default to flat)
+        vec3 tSum = vec3(0.0);
+        float nW = 0.0;
+        for (int i = 0; i < 8; i++)
+        {
+            if (i >= uLayerCount) break;
+            float wi = layerW(i, s0, s1);
+            if (wi < 1e-6) continue;
+            vec3 tn = vec3(0.0, 0.0, 1.0);
+            if (i < 5)
+            {
+                int hasN = (i == 0) ? uHasNormal0 : (i == 1) ? uHasNormal1 : (i == 2) ? uHasNormal2 : (i == 3) ? uHasNormal3 : uHasNormal4;
+                if (hasN != 0)
+                {
+                    vec2 uvi = uvDetail * ((i == 0) ? uTiling0 : (i == 1) ? uTiling1 : (i == 2) ? uTiling2 : (i == 3) ? uTiling3 : uTiling4);
+                    vec3 samp = (i == 0) ? texture(uNormalLayer0, uvi).rgb
+                        : (i == 1) ? texture(uNormalLayer1, uvi).rgb
+                        : (i == 2) ? texture(uNormalLayer2, uvi).rgb
+                        : (i == 3) ? texture(uNormalLayer3, uvi).rgb
+                        : texture(uNormalLayer4, uvi).rgb;
+                    tn = samp * 2.0 - 1.0;
+                }
+            }
+            tSum += tn * wi;
+            nW += wi;
+        }
+        if (nW > 1e-5)
+        {
+            vec3 tN = normalize(tSum / nW);
+            N = normalize(TBN * tN);
+        }
+        else
+            N = Ngeom;
     }
     else
     {
         albedo = uBaseColor;
-        if (uHasAlbedoTex) albedo *= texture(uAlbedoTex, vUV);
     }
 
-    // ── Lighting ──
     vec3 L;
     float atten = 1.0;
     if (uLightIsPoint)
@@ -1593,15 +1705,16 @@ void main()
 
     float shadow = ShadowCalc(vShadowCoord, N);
 
-    // Specular (Blinn-Phong)
     float specular = 0.0;
     if (uDiffuseK > 0.0 && diffuse > 0.0)
     {
-        float shininess = 16.0;
+        float shininess = mix(4.0, 96.0, 1.0 - rough);
         vec3 V = normalize(uCamPos - vWorldPos);
         vec3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
-        specular = pow(NdotH, shininess) * 0.15 * diffuse;
+        vec3 F0 = mix(vec3(0.04), albedo.rgb, metal);
+        float specAmt = pow(NdotH, shininess) * (0.1 + 0.35 * (1.0 - rough)) * (1.0 - metal * 0.85);
+        specular = specAmt * diffuse * (F0.r + F0.g + F0.b) / 3.0;
     }
 
     float ambShadow = mix(0.35, 1.0, shadow);

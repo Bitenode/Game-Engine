@@ -74,5 +74,7 @@
     <None Remove="artifacts\**\*" />
     <!-- Local tool/test folders under the project must not be compiled (their obj/*.cs caused CS0579 duplicate assembly attributes). -->
     <Compile Remove="tools_euler_check\**\*" />
+    <!-- Template only: mirrored to output with Standard Assets; users copy into Assets/ and compile. -->
+    <Compile Remove="Standard Assets\Code Examples\Custom Menu's\MinimalEditorExtensionSample.cs" />
   </ItemGroup>
 </Project>

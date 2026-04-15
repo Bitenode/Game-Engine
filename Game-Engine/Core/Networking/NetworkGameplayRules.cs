@@ -5,8 +5,10 @@ namespace Game_Engine.Core.Networking
 {
     /// <summary>
     /// Helpers for deciding where authoritative simulation, input, and replication apply in multiplayer.
-    /// Terrain and planet data are file-backed; use the same assets on every peer. Use these rules for
-    /// players and other <see cref="NetworkIdentity"/> objects.
+    /// Terrain/planet can be file-backed (same assets on every peer) or <strong>server-streamed</strong> when
+    /// <see cref="PlanetTerrain.StreamSurfaceFromServerWhenClient"/> / <see cref="TerrainStreamer.StreamTilesFromServerWhenClient"/>
+    /// are used on clients — only the server runs procedural mesh/tile generation. Use these rules for players and other
+    /// <see cref="NetworkIdentity"/> objects.
     /// </summary>
     public static class NetworkGameplayRules
     {

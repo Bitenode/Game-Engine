@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Game_Engine.Core;
 using Game_Engine.Core.Biome;
+using Game_Engine.Core.Networking;
 using Game_Engine.Core.Planet;
+using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component;
@@ -17,6 +20,11 @@ namespace Game_Engine.Core.Component;
 public sealed class PlanetTerrain : Behavior
 {
     public static readonly List<PlanetTerrain> ActivePlanets = new();
+
+    static bool _registeredPlanetNetRpcs;
+
+    /// <summary>Called when <see cref="NetworkManager.Stop"/> tears down networking so RPC registration can run again on the next host.</summary>
+    public static void ResetPlanetNetworkStatics() => _registeredPlanetNetRpcs = false;
 
     [Persist] public float Radius { get; set; } = 1000f;
     [Persist] public float SeaLevelFraction { get; set; } = 0.25f;
@@ -51,6 +59,11 @@ public sealed class PlanetTerrain : Behavior
     [Persist] public float GlobalWindMultiplier { get; set; } = 1f;
     [Persist] public int MaxVegetationInstances { get; set; } = 20000;
     [Persist] public int MaxVegetationSpawnsPerUpdate { get; set; } = 256;
+
+    /// <summary>
+    /// When networking as a <see cref="NetworkManager.IsClient"/>, request planet meshes from the server instead of running local generation.
+    /// </summary>
+    [Persist] public bool StreamSurfaceFromServerWhenClient { get; set; } = true;
 
     [Persist] public string PlanetAssetPath { get; set; } = "";
     [Persist] public string BiomeGraphPath { get; set; } = "";
@@ -127,6 +140,7 @@ public sealed class PlanetTerrain : Behavior
     {
         if (!ActivePlanets.Contains(this))
             ActivePlanets.Add(this);
+        EnsurePlanetNetworkRpcsRegistered();
         EnsurePlanetAssetPath();
         Initialize();
     }
@@ -232,6 +246,85 @@ public sealed class PlanetTerrain : Behavior
             SetupWater();
 
         ApplyPendingVegetationAssetData();
+        WireSurfaceStreaming();
+    }
+
+    void WireSurfaceStreaming()
+    {
+        if (_chunkManager == null) return;
+        bool streamClient = NetworkManager.IsActive && NetworkManager.IsClient && StreamSurfaceFromServerWhenClient;
+        _chunkManager.SetClientStreamingMode(streamClient, streamClient ? OnClientChunkMeshRequested : null);
+    }
+
+    void OnClientChunkMeshRequested(QuadNode node)
+    {
+        if (_chunkManager == null)
+        {
+            node.IsGenerating = false;
+            return;
+        }
+
+        uint netId = GetPlanetNetworkId();
+        var key = PlanetSurfaceChunkKey.Encode(netId, node.Face, node.LodLevel, node.U0, node.V0, node.U1, node.V1);
+        NetworkManager.RequestSurfaceChunk(NetworkManager.SurfaceKindPlanetChunk, key, (_, _, payload) =>
+        {
+            if (_chunkManager == null)
+            {
+                node.IsGenerating = false;
+                return;
+            }
+
+            var data = TransvoxelMeshData.DeserializeFromBytes(payload);
+            if (data == null)
+            {
+                node.IsGenerating = false;
+                node.NeedsMeshRebuild = true;
+                return;
+            }
+
+            _chunkManager.ApplyNetworkMesh(node, data);
+        });
+    }
+
+    uint GetPlanetNetworkId()
+    {
+        if (gameObject == null) return 0;
+        foreach (var b in gameObject.Behaviors)
+        {
+            if (b is NetworkIdentity ni)
+                return ni.NetworkId;
+        }
+        return 0;
+    }
+
+    /// <summary>Server: build payload for a planet chunk request (used by <see cref="NetworkSurfaceDispatch"/>).</summary>
+    public static byte[]? HandlePlanetChunkRequestForServer(byte[] key)
+    {
+        if (!PlanetSurfaceChunkKey.TryDecode(key, out uint netId, out int face, out _, out float u0, out float v0, out float u1, out float v1))
+            return null;
+
+        foreach (var p in ActivePlanets)
+        {
+            if (!p.IsActiveAndEnabled) continue;
+            var cm = p.ChunkManager;
+            if (cm == null) continue;
+
+            uint pid = p.GetPlanetNetworkId();
+            if (netId != 0)
+            {
+                if (pid != netId) continue;
+            }
+            else
+            {
+                if (pid != 0) continue;
+            }
+
+            var data = cm.ServerGenerateMeshForBounds(face, u0, v0, u1, v1);
+            if (data == null || data.IsEmpty) return null;
+            return data.SerializeToBytes();
+        }
+
+        return null;
     }
 
     public void SavePlanetAsset()
@@ -560,6 +653,7 @@ public sealed class PlanetTerrain : Behavior
 
     public override void Update()
     {
+        WireSurfaceStreaming();
         ApplyPendingVegetationAssetData();
         if (_chunkManager == null || gameObject == null) return;
 
@@ -1173,7 +1267,128 @@ public sealed class PlanetTerrain : Behavior
     void QueueSphereEdit(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
     {
         if (_chunkManager == null) return;
-        _chunkManager.EnqueueSphereEdit(worldCenter, Math.Max(0.05f, radius), densityDelta, falloff);
+        float r = Math.Max(0.05f, radius);
+        if (NetworkManager.IsActive && NetworkManager.IsClient && StreamSurfaceFromServerWhenClient)
+        {
+            SendPlanetVoxelEditToServer(worldCenter, r, densityDelta, falloff);
+            return;
+        }
+
+        _chunkManager.EnqueueSphereEdit(worldCenter, r, densityDelta, falloff);
+        if (NetworkManager.IsActive && NetworkManager.IsServer)
+        {
+            float invalidateR = r + Math.Max(2f, MathF.Abs(densityDelta));
+            BroadcastPlanetInvalidateClients(GetPlanetNetworkId(), worldCenter, invalidateR);
+        }
+    }
+
+    void SendPlanetVoxelEditToServer(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
+    {
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, Encoding.UTF8);
+        bw.Write(GetPlanetNetworkId());
+        bw.Write(worldCenter.X);
+        bw.Write(worldCenter.Y);
+        bw.Write(worldCenter.Z);
+        bw.Write(radius);
+        bw.Write(densityDelta);
+        bw.Write(falloff);
+        NetworkManager.SendRPC(0, "PlanetVoxelEdit", ms.ToArray());
+    }
+
+    /// <summary>Registers planet RPC handlers. Called from <see cref="PlanetTerrain.Awake"/> and <see cref="NetworkManager.StartServer"/>.</summary>
+    public static void EnsurePlanetNetworkRpcsRegistered()
+    {
+        if (_registeredPlanetNetRpcs) return;
+        NetworkManager.RegisterRPC("PlanetVoxelEdit", OnPlanetVoxelEditRpc);
+        NetworkManager.RegisterRPC("PlanetVoxelInvalidate", OnPlanetVoxelInvalidateRpc);
+        _registeredPlanetNetRpcs = true;
+    }
+
+    static void BroadcastPlanetInvalidateClients(uint netId, SN.Vector3 worldCenter, float invalidateRadius)
+    {
+        if (!NetworkManager.IsActive || !NetworkManager.IsServer) return;
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, Encoding.UTF8);
+        bw.Write(netId);
+        bw.Write(worldCenter.X);
+        bw.Write(worldCenter.Y);
+        bw.Write(worldCenter.Z);
+        bw.Write(invalidateRadius);
+        NetworkManager.SendRPCAll("PlanetVoxelInvalidate", ms.ToArray());
+    }
+
+    static void OnPlanetVoxelInvalidateRpc(int peerId, byte[] data)
+    {
+        _ = peerId;
+        if (NetworkManager.IsServer) return;
+        try
+        {
+            using var ms = new MemoryStream(data);
+            using var br = new BinaryReader(ms, Encoding.UTF8);
+            uint netId = br.ReadUInt32();
+            float x = br.ReadSingle(), y = br.ReadSingle(), z = br.ReadSingle();
+            float invalidateR = br.ReadSingle();
+            var center = new SN.Vector3(x, y, z);
+
+            foreach (var p in ActivePlanets)
+            {
+                var cm = p.ChunkManager;
+                if (!p.IsActiveAndEnabled || cm == null) continue;
+                uint pid = p.GetPlanetNetworkId();
+                if (netId != 0)
+                {
+                    if (pid != netId) continue;
+                }
+                else if (pid != 0)
+                    continue;
+
+                cm.MarkLeavesDirtyNearWorldEdit(center, p.GetWorldCenter(), invalidateR);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[PlanetTerrain] PlanetVoxelInvalidate error: {ex.Message}");
+        }
+    }
+
+    static void OnPlanetVoxelEditRpc(int peerId, byte[] data)
+    {
+        _ = peerId;
+        try
+        {
+            using var ms = new MemoryStream(data);
+            using var br = new BinaryReader(ms, Encoding.UTF8);
+            uint netId = br.ReadUInt32();
+            float x = br.ReadSingle(), y = br.ReadSingle(), z = br.ReadSingle();
+            float radius = br.ReadSingle();
+            float densityDelta = br.ReadSingle();
+            float falloff = br.ReadSingle();
+            var center = new SN.Vector3(x, y, z);
+
+            foreach (var p in ActivePlanets)
+            {
+                var cm = p.ChunkManager;
+                if (!p.IsActiveAndEnabled || cm == null) continue;
+                uint pid = p.GetPlanetNetworkId();
+                if (netId != 0)
+                {
+                    if (pid != netId) continue;
+                }
+                else if (pid != 0)
+                    continue;
+
+                cm.EnqueueSphereEdit(center, radius, densityDelta, falloff);
+                float invalidateR = radius + Math.Max(2f, MathF.Abs(densityDelta));
+                BroadcastPlanetInvalidateClients(netId, center, invalidateR);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[PlanetTerrain] PlanetVoxelEdit RPC error: {ex.Message}");
+        }
     }
 
     float ResolveFalloff(float value) => value < 0f ? DefaultManipulationFalloff : Math.Clamp(value, 0f, 1f);

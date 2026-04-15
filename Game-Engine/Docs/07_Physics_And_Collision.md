@@ -324,6 +324,15 @@ The `RayAABB()` method uses the **slab method** for ray-box intersection:
 
 ---
 
+## Scene layers and masks
+
+Each `GameObject` has **`Layer`** (0–31), editable in the Inspector next to **Tag**. For physics:
+
+- **`Physics.Raycast`**, **`RaycastAll`**, **`OverlapSphere`**, and **`CollisionWorld.QueryAABB`** accept an optional **`layerMask`** (`int`). Set bit `1 << layer` to include that layer; **`-1`** means all layers (default). Use `PhysicsLayerMask.Includes(mask, layer)` if you build masks in code.
+- **`Rigidbody.CollisionLayerMask`** and **`CharacterController.CollisionLayerMask`** (default **`-1`**) restrict which layers that body collides against when resolving overlaps, mesh tests, and triggers.
+
+---
+
 ## Physics Static API
 
 The `Physics` class provides a Unity-style static convenience wrapper around `CollisionWorld`.
@@ -332,8 +341,9 @@ The `Physics` class provides a Unity-style static convenience wrapper around `Co
 // Gravity
 Vector3 gravity = Physics.Gravity;  // Default: (0, -9.81, 0)
 
-// Raycasting
-if (Physics.Raycast(origin, direction, out var hit, maxDistance))
+// Raycasting (optional layerMask; -1 = all layers)
+int mask = (1 << 0) | (1 << 8); // e.g. Default + Custom8
+if (Physics.Raycast(origin, direction, out var hit, maxDistance: 100f, layerMask: mask))
 {
     Vector3 point = hit.Point;
     Vector3 normal = hit.Normal;
@@ -342,11 +352,10 @@ if (Physics.Raycast(origin, direction, out var hit, maxDistance))
 }
 
 // All hits
-var hits = Physics.RaycastAll(origin, direction, maxDistance);
+var hits = Physics.RaycastAll(origin, direction, maxDistance, layerMask: -1);
 
 // Overlap queries
-var colliders = Physics.OverlapSphere(center, radius);
-bool any = Physics.AnyOverlap(aabb);
+var colliders = Physics.OverlapSphere(center, radius, layerMask: -1);
 ```
 
 ### PhysicsCache

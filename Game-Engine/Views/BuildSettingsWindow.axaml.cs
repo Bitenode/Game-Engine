@@ -55,6 +55,10 @@ namespace Game_Engine.Views
 
             // Update output path when platform changes
             PlatformBox.SelectionChanged += (_, __) => RefreshOutputPath();
+            ToolTip.SetTip(PlatformBox,
+                "Desktop: publish Engine.Player to the output folder below. " +
+                "Android: zips game Data as Data.zip in APK assets (first-launch extract). " +
+                "Xbox / Microsoft Store: uses net9.0-windows10 TFM and Package.appxmanifest (see Docs/12_Build_Settings.md).");
 
             ProjectRenderingSettings.Load(ProjectService.Current);
             DeferredRenderingCheck.IsChecked = ProjectRenderingSettings.UseDeferredRendering;

@@ -8,6 +8,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Game_Engine.Core;
+using Game_Engine.Core.Editor;
 
 namespace Game_Engine.Views;
 
@@ -192,6 +193,7 @@ public sealed class EditorCommandPaletteWindow : Window
 
     private static int MatchScore(CommandPaletteSource s, string[] tokens)
     {
+        // Subtitle includes command id (and "· extension" for add-ons) so typing ids finds commands reliably.
         var hay = ($"{s.Title} {s.Subtitle} {s.ShortcutHint}").ToLowerInvariant();
         int score = 0;
         foreach (var t in tokens)
@@ -219,7 +221,9 @@ public sealed class EditorCommandPaletteWindow : Window
         foreach (var cmd in CommandRegistry.GetAllCommands())
         {
             var c = cmd;
-            BuiltinShortcutHints.TryGetValue(c.Id, out var shortcut);
+            string? shortcut = null;
+            if (!BuiltinShortcutHints.TryGetValue(c.Id, out shortcut))
+                EditorShortcutBindings.CommandToGestureDisplay.TryGetValue(c.Id, out shortcut);
             list.Add(new CommandPaletteSource
             {
                 Title = c.DisplayName,

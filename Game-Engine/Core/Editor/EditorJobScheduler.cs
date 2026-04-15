@@ -115,4 +115,12 @@ public static class EditorJobs
 
     public static Task<T> RunOnUiAsync<T>(Func<T> work, EditorUiPostPriority priority = EditorUiPostPriority.Normal)
         => EditorJobScheduler.RunOnUiAsync(work, priority);
+
+    /// <summary>CPU phase then UI phase with a result payload (e.g. parsed file → apply to selection).</summary>
+    public static async Task<T> RunCpuThenUiAsync<T>(Func<CancellationToken, T> cpuWork, Action<T> onUi, CancellationToken cancellationToken = default)
+    {
+        var r = await RunCpuAsync(cpuWork, cancellationToken).ConfigureAwait(false);
+        await InvokeOnUiAsync(() => onUi(r)).ConfigureAwait(false);
+        return r;
+    }
 }

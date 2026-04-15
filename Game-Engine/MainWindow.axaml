@@ -66,6 +66,9 @@
 					<MenuItem Header="New Shader Editor Tab"  x:Name="NewShaderEditorTab"/>
 					<MenuItem Header="New Biome Graph Tab"    x:Name="NewBiomeGraphTab"/>
 					<MenuItem Header="New Blueprint Tab"      x:Name="NewBlueprintTab"/>
+					<MenuItem Header="New Extensions Status Tab" x:Name="NewExtensionsStatusTab"/>
+					<Separator/>
+					<MenuItem Header="Add-on panels" x:Name="MI_AddonPanelsRoot"/>
 				</MenuItem>
 			</MenuItem>
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
 using SN = System.Numerics;
 
@@ -33,6 +34,105 @@ public sealed class TransvoxelMeshData
         mesh.PlanetBlendIndices = BlendIndices.ToArray();
         mesh.PlanetBlendWeights = BlendWeights.ToArray();
         return mesh;
+    }
+
+    /// <summary>Binary format for network replication (server → client).</summary>
+    public byte[] SerializeToBytes()
+    {
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        WriteVec3List(w, Positions);
+        WriteVec3List(w, Normals);
+        WriteVec2List(w, UVs);
+        w.Write(Indices.Count);
+        for (int i = 0; i < Indices.Count; i++)
+            w.Write(Indices[i]);
+        WriteVec4List(w, BlendIndices);
+        WriteVec4List(w, BlendWeights);
+        return ms.ToArray();
+    }
+
+    public static TransvoxelMeshData? DeserializeFromBytes(byte[]? data)
+    {
+        if (data == null || data.Length < 8) return null;
+        try
+        {
+            using var ms = new MemoryStream(data);
+            using var r = new BinaryReader(ms);
+            var d = new TransvoxelMeshData();
+            ReadVec3List(r, d.Positions);
+            ReadVec3List(r, d.Normals);
+            ReadVec2List(r, d.UVs);
+            int nIdx = r.ReadInt32();
+            if (nIdx < 0 || nIdx > 10_000_000) return null;
+            var idx = d.Indices;
+            for (int i = 0; i < nIdx; i++)
+                idx.Add(r.ReadInt32());
+            ReadVec4List(r, d.BlendIndices);
+            ReadVec4List(r, d.BlendWeights);
+            return d;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    static void WriteVec3List(BinaryWriter w, List<SN.Vector3> list)
+    {
+        w.Write(list.Count);
+        for (int i = 0; i < list.Count; i++)
+        {
+            w.Write(list[i].X);
+            w.Write(list[i].Y);
+            w.Write(list[i].Z);
+        }
+    }
+
+    static void WriteVec2List(BinaryWriter w, List<SN.Vector2> list)
+    {
+        w.Write(list.Count);
+        for (int i = 0; i < list.Count; i++)
+        {
+            w.Write(list[i].X);
+            w.Write(list[i].Y);
+        }
+    }
+
+    static void WriteVec4List(BinaryWriter w, List<SN.Vector4> list)
+    {
+        w.Write(list.Count);
+        for (int i = 0; i < list.Count; i++)
+        {
+            w.Write(list[i].X);
+            w.Write(list[i].Y);
+            w.Write(list[i].Z);
+            w.Write(list[i].W);
+        }
+    }
+
+    static void ReadVec3List(BinaryReader r, List<SN.Vector3> list)
+    {
+        int n = r.ReadInt32();
+        if (n < 0 || n > 10_000_000) throw new InvalidDataException();
+        for (int i = 0; i < n; i++)
+            list.Add(new SN.Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+    }
+
+    static void ReadVec2List(BinaryReader r, List<SN.Vector2> list)
+    {
+        int n = r.ReadInt32();
+        if (n < 0 || n > 10_000_000) throw new InvalidDataException();
+        for (int i = 0; i < n; i++)
+            list.Add(new SN.Vector2(r.ReadSingle(), r.ReadSingle()));
+    }
+
+    static void ReadVec4List(BinaryReader r, List<SN.Vector4> list)
+    {
+        int n = r.ReadInt32();
+        if (n < 0 || n > 10_000_000) throw new InvalidDataException();
+        for (int i = 0; i < n; i++)
+            list.Add(new SN.Vector4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
     }
 }
 

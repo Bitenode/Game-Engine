@@ -79,7 +79,7 @@ public class GameObject : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Physics layer index 0–31. Used with layer masks on triggers and queries.</summary>
+    /// <summary>Scene layer index 0–31. Used with bitmasks on <c>Physics.Raycast</c> / <c>OverlapSphere</c> and on <c>Rigidbody</c> / <c>CharacterController</c> collision filtering.</summary>
     public int Layer
     {
         get => _layer;

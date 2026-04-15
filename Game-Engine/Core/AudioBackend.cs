@@ -175,10 +175,19 @@ namespace Game_Engine.Core
 
         public static void EnsureInit() { s_available = true; }
 
-        /// <summary>Update the 3D audio listener position and orientation.</summary>
+        /// <summary>Last listener transform passed from <see cref="AudioManager.UpdateListenerTransform"/> (NAudio playback uses <see cref="Component.AudioListener"/> via <see cref="AudioSource"/> for panning and attenuation).</summary>
+        public static System.Numerics.Vector3 LastListenerPosition { get; private set; }
+        public static System.Numerics.Vector3 LastListenerForward { get; private set; }
+        public static System.Numerics.Vector3 LastListenerUp { get; private set; }
+
+        /// <summary>Update the 3D audio listener position and orientation (cached for diagnostics and future spatial backends).</summary>
         public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up)
         {
-            // TODO: Forward to OpenAL listener when 3D audio is implemented
+            LastListenerPosition = pos;
+            var fl = forward.LengthSquared() > 1e-8f ? System.Numerics.Vector3.Normalize(forward) : new System.Numerics.Vector3(0, 0, -1);
+            var ul = up.LengthSquared() > 1e-8f ? System.Numerics.Vector3.Normalize(up) : System.Numerics.Vector3.UnitY;
+            LastListenerForward = fl;
+            LastListenerUp = ul;
         }
     }
 

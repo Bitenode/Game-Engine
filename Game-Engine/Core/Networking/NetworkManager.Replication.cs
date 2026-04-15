@@ -22,9 +22,9 @@ namespace Game_Engine.Core.Networking
         public const int MaxSpawnPrefabKeyChars = 128;
 
         // ── Rate limits (server inbound only) ──
-        static readonly Dictionary<int, (int Rpc, int Input)> _rateWindowCounts = new();
+        static readonly Dictionary<int, (int Rpc, int Input, int Surface)> _rateWindowCounts = new();
         static DateTime _rateWindowUtc = DateTime.UtcNow;
-        const double RateWindowSeconds = 1.0;
+        internal const double RateWindowSeconds = 1.0;
         /// <summary>Max inbound RPC messages per peer per second (server only).</summary>
         public static int MaxRpcMessagesPerPeerPerSecond { get; set; } = 200;
         /// <summary>Max inbound client input messages per peer per second (server only).</summary>
@@ -55,6 +55,7 @@ namespace Game_Engine.Core.Networking
             ShouldReplicateToPeer = null;
             OmitUnchangedStateInBroadcast = false;
             DespawnOwnedRuntimeSpawnsOnDisconnect = false;
+            ResetSurfaceStreamingState();
         }
 
         static bool TryConsumeInboundRate(int peerId, bool isClientInput)
@@ -68,7 +69,7 @@ namespace Game_Engine.Core.Networking
             }
 
             if (!_rateWindowCounts.TryGetValue(peerId, out var c))
-                c = (0, 0);
+                c = (0, 0, 0);
 
             if (isClientInput)
             {
@@ -77,7 +78,7 @@ namespace Game_Engine.Core.Networking
                     Log.Warning($"[Network] ClientInput rate limit peer {peerId}");
                     return false;
                 }
-                _rateWindowCounts[peerId] = (c.Rpc, c.Input + 1);
+                _rateWindowCounts[peerId] = (c.Rpc, c.Input + 1, c.Surface);
             }
             else
             {
@@ -86,9 +87,32 @@ namespace Game_Engine.Core.Networking
                     Log.Warning($"[Network] RPC rate limit peer {peerId}");
                     return false;
                 }
-                _rateWindowCounts[peerId] = (c.Rpc + 1, c.Input);
+                _rateWindowCounts[peerId] = (c.Rpc + 1, c.Input, c.Surface);
             }
 
+            return true;
+        }
+
+        static bool TryConsumeSurfaceChunkRequestRate(int peerId)
+        {
+            if (!IsServer) return true;
+            var now = DateTime.UtcNow;
+            if ((now - _rateWindowUtc).TotalSeconds >= RateWindowSeconds)
+            {
+                _rateWindowUtc = now;
+                _rateWindowCounts.Clear();
+            }
+
+            if (!_rateWindowCounts.TryGetValue(peerId, out var c))
+                c = (0, 0, 0);
+
+            if (c.Surface >= MaxSurfaceChunkRequestsPerPeerPerSecond)
+            {
+                Log.Warning($"[Network] SurfaceChunkRequest rate limit peer {peerId}");
+                return false;
+            }
+
+            _rateWindowCounts[peerId] = (c.Rpc, c.Input, c.Surface + 1);
             return true;
         }
 
@@ -113,7 +137,16 @@ namespace Game_Engine.Core.Networking
                     case NetMessageType.Despawn:
                         Log.Warning($"[Network] Ignoring {msgType} from peer {peer.PeerId} (server does not accept these from clients)");
                         return true;
+                    case NetMessageType.SurfaceChunkData:
+                        Log.Warning($"[Network] Ignoring SurfaceChunkData from peer {peer.PeerId} (only server sends surface payloads)");
+                        return true;
                 }
+            }
+
+            if (IsClient && msgType == NetMessageType.SurfaceChunkRequest)
+            {
+                Log.Warning($"[Network] Ignoring SurfaceChunkRequest (clients only send requests, not receive them)");
+                return true;
             }
 
             return false;

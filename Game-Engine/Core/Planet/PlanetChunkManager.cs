@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Game_Engine.Core.Biome;
+using Game_Engine.Core;
 using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
 
@@ -21,6 +22,8 @@ public sealed class PlanetChunkManager
 
     readonly PlanetMeshGenerator _meshGen;
     readonly PlanetVoxelEditStore? _editStore;
+    bool _clientStreaming;
+    Action<QuadNode>? _clientMeshRequested;
     readonly ConcurrentQueue<MeshJob> _completed = new();
     readonly ConcurrentQueue<EditCommand> _pendingEditCommands = new();
     int _activeJobs;
@@ -43,6 +46,36 @@ public sealed class PlanetChunkManager
 
         for (int f = 0; f < 6; f++)
             Faces[f] = new FaceQuadtree(f);
+    }
+
+    /// <summary>
+    /// When enabled, <see cref="ScheduleGeneration"/> does not run local jobs; it invokes <paramref name="onMeshRequested"/> instead (network client streaming).
+    /// </summary>
+    public void SetClientStreamingMode(bool enabled, Action<QuadNode>? onMeshRequested)
+    {
+        _clientStreaming = enabled;
+        _clientMeshRequested = onMeshRequested;
+    }
+
+    /// <summary>Server-only: generate mesh data for the given face/UV bounds (same resolution as <see cref="PlanetConfig.ChunkSize"/>).</summary>
+    public TransvoxelMeshData? ServerGenerateMeshForBounds(int face, float u0, float v0, float u1, float v1)
+    {
+        try
+        {
+            return _meshGen.Generate(face, u0, v0, u1, v1, Config.ChunkSize);
+        }
+        catch (Exception ex)
+        {
+            Log.Info($"[PlanetChunkManager] ServerGenerateMeshForBounds failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Apply mesh from the network and clear <see cref="QuadNode.IsGenerating"/>.</summary>
+    public void ApplyNetworkMesh(QuadNode node, TransvoxelMeshData meshData)
+    {
+        ApplyMesh(node, meshData);
+        node.IsGenerating = false;
     }
 
     struct MeshJob
@@ -254,6 +287,23 @@ public sealed class PlanetChunkManager
         _lastDirtyLeavesFromEdits = dirtied;
     }
 
+    /// <summary>Marks leaves overlapping a world-space edit region so clients can re-request streamed meshes after server edits.</summary>
+    public void MarkLeavesDirtyNearWorldEdit(SN.Vector3 worldCenter, SN.Vector3 planetCenter, float sphereRadius)
+    {
+        var localCenter = worldCenter - planetCenter;
+        var leaves = new List<QuadNode>(1024);
+        for (int f = 0; f < 6; f++)
+            leaves.AddRange(Faces[f].GetLeafNodes());
+
+        foreach (var leaf in leaves)
+        {
+            if (!IntersectsLeaf(leaf, localCenter, sphereRadius))
+                continue;
+            leaf.NeedsMeshRebuild = true;
+            leaf.IsGenerating = false;
+        }
+    }
+
     bool IntersectsLeaf(QuadNode leaf, SN.Vector3 localCenter, float sphereRadius)
     {
         float worldRadius = Config.EffectiveWorldRadius;
@@ -320,6 +370,21 @@ public sealed class PlanetChunkManager
 
     void ScheduleGeneration(QuadNode node)
     {
+        if (_clientStreaming && _clientMeshRequested != null)
+        {
+            try
+            {
+                _clientMeshRequested(node);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[PlanetChunkManager] Client streaming request failed: {ex.Message}");
+                node.IsGenerating = false;
+                node.NeedsMeshRebuild = true;
+            }
+            return;
+        }
+
         Interlocked.Increment(ref _activeJobs);
 
         int face = node.Face;

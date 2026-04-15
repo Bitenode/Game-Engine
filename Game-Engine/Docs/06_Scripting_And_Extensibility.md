@@ -261,34 +261,40 @@ The compiled scripts automatically have access to:
 
 Extensions add custom menus and commands to the editor without modifying engine source code.
 
+### Workflow
+
+1. Place a class that inherits `EditorExtension` in `Assets/` or `Packages/` (for example copy [`MinimalEditorExtensionSample.cs`](../Standard%20Assets/Code%20Examples/Custom%20Menu's/MinimalEditorExtensionSample.cs) from Standard Assets).
+2. **Compile** scripts (Script Editor **Compile** or **Ctrl+B**). Roslyn emits `Builds/EditorScripts/EditorScripts_<timestamp>.dll`.
+3. The editor loads the **newest** `EditorScripts_*.dll` from `Builds/EditorScripts/` and calls `Contribute` on each discovered `EditorExtension` (`ExtensionService.RefreshFromEditorScriptsFolder`).
+4. Register each action with **`CommandRegistry.Register`**, then wire menu items with **`MenuBuilder.Command(header, commandId)`** (menus invoke commands by ID).
+
 ### Creating an Extension
 
 ```csharp
+using Game_Engine.Core;
 using Game_Engine.Core.Extensibility;
 
 public class MyExtension : EditorExtension
 {
     public override void Contribute(EditorUI ui)
     {
-        var menu = ui.AddTopMenu("My Tools");
-
-        menu.AddItem("Say Hello", () =>
+        CommandRegistry.Register("myext.hello", "Say Hello", () =>
         {
-            Game_Engine.Core.Log.Info("Hello from extension!");
+            Log.Info("Hello from extension!");
         });
 
-        menu.AddSeparator();
-
-        menu.AddItem("Count Objects", () =>
+        CommandRegistry.Register("myext.count", "Count root objects", () =>
         {
-            int count = Game_Engine.Core.SceneService.Root.Count;
-            Game_Engine.Core.Log.Info($"Scene has {count} root objects");
+            int count = SceneService.Root?.Count ?? 0;
+            Log.Info($"Scene has {count} root objects");
         });
 
-        // Sub-menus
-        var sub = menu.AddSubMenu("Advanced");
-        sub.AddItem("Sub-option 1", () => { /* ... */ });
-        sub.AddItem("Sub-option 2", () => { /* ... */ });
+        ui.Menu("Tools")
+            .Submenu("My Tools")
+                .Command("Say Hello", "myext.hello")
+                .Separator()
+                .Command("Count root objects", "myext.count")
+            .EndSubmenu();
     }
 }
 ```
@@ -298,14 +304,17 @@ public class MyExtension : EditorExtension
 #### EditorUI
 | Method | Description |
 |--------|-------------|
-| `AddTopMenu(name)` | Add a top-level menu to the editor's menu bar |
+| `Menu(title)` | Start (or continue) a top-level menu with the given title (e.g. `"Tools"`) |
 
 #### MenuBuilder
 | Method | Description |
 |--------|-------------|
-| `AddItem(label, action)` | Add a clickable menu item with an action callback |
-| `AddSeparator()` | Add a visual separator line between items |
-| `AddSubMenu(label)` | Add a nested sub-menu (returns a new MenuBuilder) |
+| `Submenu(header)` | Open a nested sub-menu |
+| `EndSubmenu()` | Close the current sub-menu |
+| `Separator()` | Visual divider |
+| `Command(header, commandId)` | Leaf item; runs `CommandRegistry.TryGet(commandId)` on click |
+| `Toggle<TBehavior>(header, boolProperty)` | Toggle a bool on the selected behavior (reflection) |
+| `Invoke<TBehavior>(header, methodName)` | Call a parameterless method on the selected behavior |
 
 ### Menu Model
 Menus are represented as a tree structure using `MenuNode`:
@@ -322,23 +331,61 @@ Menus are represented as a tree structure using `MenuNode`:
 - **Invoke** — calls a method on the selected object's behavior (reflection-based)
 
 ### Extension Loading
-1. Extensions are discovered automatically when scripts are compiled
-2. Any class inheriting from `EditorExtension` in the compiled assembly is instantiated
-3. Its `Contribute()` method is called with an `EditorUI` instance
-4. Extension menus are appended to the main menu bar
-5. Menus are rebuilt on project open/close and recompilation
+1. When a project is open and **`Builds/EditorScripts/`** exists, the editor loads hot `EditorScripts_*.dll` files on **project open** and after **Scripts: Compile** (same code path via `ExtensionService.RefreshForCurrentProject()`). If that folder is missing, only extensions already in the **AppDomain** are used (for example Standard Assets types compiled into the editor).
+2. Any class inheriting from `EditorExtension` in each loaded assembly is instantiated (if the same full type name appears in more than one DLL, **the last loaded assembly wins**).
+3. Its `Contribute()` method is called with an `EditorUI` instance.
+4. Extension menus are appended to the main menu bar.
+5. Menus are rebuilt on project open/close and recompilation. When an extension instance is replaced, `EditorExtension.Dispose()` is called so you can unsubscribe from events.
+
+**Hot-loaded assemblies** live under **`Builds/EditorScripts/`** (or your project’s `BuildsPath` + `EditorScripts`). After **Scripts: Compile**, the editor rebuilds extensions from the **Game Engine assembly** (Standard Assets demos and reference add-ons such as **Batch tools**) **plus** every `EditorScripts_*.dll` in that folder (sorted by **filename**, case-insensitive), unless you add an optional manifest. Types with the same full name in a project DLL **override** the built-in copy.
+
+**Optional `editor-extensions.json`** (same folder):
+
+| Field | Purpose |
+|-------|--------|
+| `schemaVersion` | Must be `1`. Invalid JSON or wrong version yields a parse warning and the manifest is ignored. |
+| `minEngineVersion` | If set, assemblies are **not** loaded when the running editor version (see `ProjectService.EngineVersion`) is lower. |
+| `maxEngineVersion` | If set, assemblies are **not** loaded when the editor version is **greater** than this (inclusive cap). |
+| `assemblies` | Ordered list of **filenames** to load (e.g. Roslyn output plus a prebuilt `MyPack.dll`). Missing files are skipped with a warning. When omitted or empty, all `EditorScripts_*.dll` files are loaded as above. |
+| `displayName` | Optional label for **logs** and **Project → Validate Project** output. |
+| `version` | Optional version string for logs and validation. |
+| `author` | Optional author string for logs and validation. |
+| `description` | Optional short description for validation output. |
+| `homepageUrl` | Optional URL (documentation / source). |
+| `dependsOnFiles` | Filenames that **must** exist in `EditorScripts/` before any DLL load; otherwise the whole hot load is skipped. |
+| `trustedAssemblies` | Optional list of `{ "file": "Name.dll", "sha256": "HEX" }` entries. For each file that is part of the resolved load list, the on-disk SHA-256 must match or the whole hot load is skipped. |
+
+After loading, the editor logs one **summary line** per refresh (extension count, optional manifest fields, hot DLL count, and loaded type names).
+
+**Diagnostics:** The last load snapshot (DLL paths, manifest metadata, duplicate `EditorExtension` types, DLL load failures, `Contribute` errors, and command id collisions) is recorded for **Project → Validate Project**, which appends an **Extensions** section to the console. The built-in **Window → New Extensions Status Tab** (and command **Window: New Extensions Status Tab**) shows the same snapshot, optional `trustedAssemblies` details, and the last **Scripts: Compile** / **Compile** outcome from the script editor or command palette.
+
+**Trusted hot-loaded DLLs:** See [EditorScripts trust and SHA-256](EditorScripts_Trust.md) for how to pin assemblies with `trustedAssemblies` in `editor-extensions.json` and compute hashes in CI.
+
+**Editor shortcuts:** Create **`ProjectSettings/editor_shortcuts.json`** (see `Standard Assets/Code Examples/Add-on Template/editor_shortcuts.json.example`) mapping **command id** → gesture (`Ctrl+Alt+R`, `F5`, etc.). These run after built-in hardcoded shortcuts. The command palette shows the gesture when configured.
+
+**Add-on dock panels:** From `Contribute`, call `ExtensionPanelRegistry.Register<TPanel>(title, DockRegion)` where `TPanel` is an Avalonia `Control` with a parameterless constructor. Tabs appear under **Window → Add-on panels** and as **`Window: {title} (add-on)`** in the command palette. For a custom factory (no parameterless constructor or extra setup), use `ExtensionPanelRegistry.Register(title, region, () => new MyPanel(...), typeof(MyPanel))`. Use `ExtensionPanelRegistry.GetPanelCommandId(typeof(MyPanel))` when wiring **`MenuBuilder.Command`** to the same panel command.
+
+**Heavy work:** Use `EditorJobs.RunCpuThenUiAsync` to run CPU work off the UI thread and apply results on the UI thread (see `EditorJobs` in `EditorJobScheduler.cs`).
+
+**Dependency DLLs:** References between assemblies in `EditorScripts/` are resolved from that same folder automatically.
+
+See **`Standard Assets/Code Examples/Add-on Template/`** for a copy-paste manifest example and workflow notes.
 
 ### UIX Framework Integration
 Extensions can use the **UIX framework** to create custom tool windows with a declarative widget API (21 built-in widget types, standalone windows, and custom chrome). See the [UIX Framework](11_UIX_Framework.md) document for full details on building rich UI with `VNode` trees, `UIXRenderer`, and `WindowKit`.
 
 ### Code Examples
-The engine ships with example extensions in `Standard Assets/Code Examples/`:
+The engine ships with example extensions in `Standard Assets/Code Examples/Custom Menu's/`:
 
 | File | Description |
 |------|-------------|
+| `MinimalEditorExtensionSample.cs` | **Smallest** working add-on: two commands under **Tools → Minimal sample** |
 | `BigMenuExtension - No Middleware.cs` | Menu with many items (demonstrates basic menu building without UIX) |
 | `FullFeatureDemoExtension.cs` | Full demo of menus, sub-menus, separators, commands, and UIX widgets |
 | `ListAndPropsDemo.cs` | List and property editing using UIX `VMount` for custom Avalonia controls |
+| `Batch Tools/BatchToolsEditorExtension.cs` | Reference add-on: **Tools → Batch tools** — prefix/suffix rename, hierarchy count, log selection (menus + UIX + commands) |
+| `Scene Tools/SceneReportEditorExtension.cs` | Reference add-on: **Tools → Scene report** — selection stats, behavior types, copy hierarchy paths (commands + clipboard + sample **Add-on panels** tab via `ExtensionPanelRegistry`) |
+| `Project Tools/AssetLargestFilesEditorExtension.cs` | Reference add-on: **Tools → Project tools** — largest files under `Assets/` (CPU scan via `EditorJobs` + **Add-on panels** tab), preflight validation shortcut |
 
 ---
 
@@ -346,39 +393,40 @@ The engine ships with example extensions in `Standard Assets/Code Examples/`:
 
 Commands are named actions that can be invoked from menus, keyboard shortcuts, or code. They provide a centralized system for editor actions.
 
+**Command id convention:** Use a stable, dotted namespace to avoid collisions with built-ins and other add-ons, e.g. `yourname.project.feature.action`. Duplicate ids overwrite the previous registration; diagnostics and **Validate Project** report collisions.
+
 ### Registering a Command
 
 ```csharp
-CommandRegistry.Register(new CommandDef
-{
-    Id = "myext.doSomething",
-    DisplayName = "Do Something",
-    Execute = () =>
-    {
-        // Action to perform
-        Log.Info("Command executed!");
-    },
-    CanExecute = () => SelectionService.Current != null
-});
+CommandRegistry.Register(
+    id: "myext.doSomething",
+    displayName: "Do Something",
+    exec: () => { Log.Info("Command executed!"); },
+    canExec: () => SelectionService.Current != null);  // optional; default is always true
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `Id` | `string` | Unique command identifier (use namespace prefix) |
-| `DisplayName` | `string` | Human-readable name for menus |
-| `Execute` | `Action` | The action to perform |
-| `CanExecute` | `Func<bool>` | Optional predicate — disables the command when false |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Unique command identifier (use a prefix such as `myext.`) |
+| `displayName` | `string` | Human-readable name (used by command lists) |
+| `exec` | `Action` | The action to perform |
+| `canExec` | `Func<bool>` | Optional; when provided, should return whether the command is enabled |
 
 ### Invoking a Command
 
 ```csharp
-CommandRegistry.Execute("myext.doSomething");
+var cmd = CommandRegistry.TryGet("myext.doSomething");
+if (cmd != null && cmd.CanExecute()) cmd.Execute();
 ```
 
 Commands can be invoked from:
 - Extension menus (via `MenuNodeKind.Item` with a Command action)
 - Keyboard shortcuts
 - Other scripts and commands
+
+### Command Palette
+
+**Window → Command Palette** (default **Ctrl+Shift+P**) lists **every** registered command, including those registered by add-ons. Each row’s subtitle includes the command **id**, so you can filter by id or display name. Duplicate command ids are discouraged: the last registration wins and a **warning** is written to the log.
 
 ---
 

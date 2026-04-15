@@ -983,8 +983,9 @@ public partial class ScriptEditorWindow : Window
             var msg = $"Build OK — {typesLoaded} Behavior types loaded from {files} script file(s).";
             StatusText(msg);
             Game_Engine.Core.Log.Info(msg);
+            ExtensionDiagnostics.RecordCompileReload(true, msg);
 
-            ExtensionService.RefreshFromEditorScriptsFolder();
+            ExtensionService.RefreshForCurrentProject();
 
             Dispatcher.UIThread.Post(() =>
             {
@@ -999,6 +1000,7 @@ public partial class ScriptEditorWindow : Window
         catch (Exception ex)
         {
             StatusText("Build failed. See details.");
+            ExtensionDiagnostics.RecordCompileReload(false, ex.Message);
             ShowError("Build failed:\n\n" + ex.Message);
         }
     }

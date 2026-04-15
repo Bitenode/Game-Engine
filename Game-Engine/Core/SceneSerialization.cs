@@ -958,7 +958,11 @@ namespace Game_Engine.Core
             // DeclaredOnly + walk base types: Type.GetProperties(Public|Instance) without DeclaredOnly is
             // inconsistent for inherited members across runtimes; Behavior.Enabled must always be found
             // so CapsuleCollider, MeshRenderer, etc. round-trip Enabled in scene snapshots.
+            //
+            // Walk derived → base and skip duplicate property names (e.g. PlanetAtmosphere re-declares
+            // [Persist] Enabled alongside Behavior.Enabled) so ToDictionary in RestoreBehavior does not throw.
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (var cur = t; cur != null && typeof(Behavior).IsAssignableFrom(cur); cur = cur.BaseType)
             {
                 foreach (var p in cur.GetProperties(flags))
@@ -972,6 +976,7 @@ namespace Game_Engine.Core
 
                     if (hasPersist)
                     {
+                        if (!seen.Add(p.Name)) continue;
                         yield return p;
                         continue;
                     }
@@ -981,17 +986,20 @@ namespace Game_Engine.Core
                     {
                         if (p.Name == "Mesh" && p.PropertyType == typeof(Mesh))
                         {
+                            if (!seen.Add(p.Name)) continue;
                             yield return p;
                             continue;
                         }
 
                         if (p.Name == "ModelPath" && p.PropertyType == typeof(string))
                         {
+                            if (!seen.Add(p.Name)) continue;
                             yield return p;
                             continue;
                         }
                         if (p.Name == "ModelPartIndex" && (p.PropertyType == typeof(int) || p.PropertyType == typeof(string)))
                         {
+                            if (!seen.Add(p.Name)) continue;
                             yield return p;
                             continue;
                         }
