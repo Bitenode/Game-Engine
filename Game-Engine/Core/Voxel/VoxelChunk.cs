@@ -72,13 +72,24 @@ public sealed class VoxelChunk
     public void SetMaterial(int x, int y, int z, byte mat)
         => Material[Index(x, y, z)] = mat;
 
-    /// <summary>Convert grid coordinates to world position using the oriented basis.</summary>
-    public System.Numerics.Vector3 GridToWorld(int x, int y, int z)
-        => WorldOrigin + BasisX * (x * CellSize) + BasisY * (y * CellSize) + BasisZ * (z * EffectiveCellSizeZ);
+    /// <summary>
+    /// Optional spherical (or other non-linear) mapping. When set, both
+    /// <see cref="GridToWorld(int,int,int)"/> overloads use this instead of the planar basis.
+    /// Planet crust chunks use this to map (U, V, radial) to planet-local positions.
+    /// </summary>
+    public System.Func<float, float, float, System.Numerics.Vector3>? CustomGridToWorld { get; set; }
 
-    /// <summary>Convert grid coordinates to world position with fractional interpolation.</summary>
+    /// <summary>Convert grid coordinates to world (or planet-local) position using the oriented basis.</summary>
+    public System.Numerics.Vector3 GridToWorld(int x, int y, int z)
+        => GridToWorld((float)x, y, z);
+
+    /// <summary>Convert grid coordinates to world (or planet-local) position with fractional interpolation.</summary>
     public System.Numerics.Vector3 GridToWorld(float x, float y, float z)
-        => WorldOrigin + BasisX * (x * CellSize) + BasisY * (y * CellSize) + BasisZ * (z * EffectiveCellSizeZ);
+    {
+        if (CustomGridToWorld != null)
+            return CustomGridToWorld(x, y, z);
+        return WorldOrigin + BasisX * (x * CellSize) + BasisY * (y * CellSize) + BasisZ * (z * EffectiveCellSizeZ);
+    }
 
     /// <summary>Fill the chunk with a sphere density field for testing.</summary>
     public void FillSphere(System.Numerics.Vector3 center, float radius)

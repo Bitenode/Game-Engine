@@ -650,8 +650,21 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _collidersWarm = true;
     }
 
-    static void ForEachBehavior(Action<Behavior> a) { foreach (var r in SceneService.Root) Traverse(r, a); }
+    static void ForEachBehavior(Action<Behavior> a)
+    {
+        var roots = SceneService.Root.ToArray();
+        for (int i = 0; i < roots.Length; i++)
+            Traverse(roots[i], a);
+    }
+
     static void Traverse(GameObject go, Action<Behavior> a)
-    { foreach (var b in go.Behaviors) a(b); foreach (var c in go.Children) Traverse(c, a); }
+    {
+        var behaviors = go.Behaviors.ToArray();
+        for (int i = 0; i < behaviors.Length; i++)
+            a(behaviors[i]);
+        var children = go.Children.ToArray();
+        for (int i = 0; i < children.Length; i++)
+            Traverse(children[i], a);
+    }
     #endregion
 }

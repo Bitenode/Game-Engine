@@ -85,20 +85,54 @@ public static class TransformUtil
         return c;
     }
 
-    /// S * R(yaw,pitch,roll) * T (matches your SceneView order)
+    /// S * R * T (matches your SceneView order)
     public static SN.Matrix4x4 WorldFromTransform(Transform t)
     {
         var s = SN.Matrix4x4.CreateScale((float)t.Scale.X, (float)t.Scale.Y, (float)t.Scale.Z);
-        var r = SN.Matrix4x4.CreateFromYawPitchRoll(Deg2Rad(t.Rotation.Y), Deg2Rad(t.Rotation.X), Deg2Rad(t.Rotation.Z));
+        var r = t.TryGetExplicitRotationMatrix(out var explicitR)
+            ? explicitR
+            : SN.Matrix4x4.CreateFromQuaternion(t.GetRotationQuaternion());
         var tr = SN.Matrix4x4.CreateTranslation((float)t.Position.X, (float)t.Position.Y, (float)t.Position.Z);
         return s * r * tr;
     }
 
-    /// Forward (-Z) using the same yaw/pitch/roll convention as above.
+    /// <summary>
+    /// Sets transform euler so local +Y matches <paramref name="worldUp"/> and local -Z
+    /// matches the tangent of <paramref name="worldForwardHint"/>.
+    /// </summary>
+    public static void AlignLocalUp(Transform t, SN.Vector3 worldUp, SN.Vector3 worldForwardHint)
+    {
+        float upLen = worldUp.Length();
+        var up = upLen > 1e-8f ? worldUp / upLen : SN.Vector3.UnitY;
+
+        var fwd = worldForwardHint - up * SN.Vector3.Dot(worldForwardHint, up);
+        if (fwd.LengthSquared() <= 1e-8f)
+        {
+            var seed = MathF.Abs(up.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+            fwd = SN.Vector3.Cross(seed, up);
+        }
+        float fwdLen = fwd.Length();
+        fwd = fwdLen > 1e-8f ? fwd / fwdLen : SN.Vector3.UnitZ;
+
+        var right = SN.Vector3.Cross(fwd, up);
+        float rightLen = right.Length();
+        right = rightLen > 1e-8f ? right / rightLen : SN.Vector3.UnitX;
+        fwd = SN.Vector3.Normalize(SN.Vector3.Cross(up, right));
+
+        // Rows = images of local X,Y,Z. Local -Z is look forward.
+        var m = new SN.Matrix4x4(
+            right.X, right.Y, right.Z, 0f,
+            up.X, up.Y, up.Z, 0f,
+            -fwd.X, -fwd.Y, -fwd.Z, 0f,
+            0f, 0f, 0f, 1f);
+
+        t.SetExplicitRotationMatrix(m);
+    }
+
+    /// Forward (-Z) using the same rotation as the world matrix.
     public static SN.Vector3 ForwardFrom(Transform t)
     {
-        var r = SN.Matrix4x4.CreateFromYawPitchRoll(Deg2Rad(t.Rotation.Y), Deg2Rad(t.Rotation.X), Deg2Rad(t.Rotation.Z));
-        var f = SN.Vector3.TransformNormal(new SN.Vector3(0, 0, -1), r);
+        var f = SN.Vector3.TransformNormal(new SN.Vector3(0, 0, -1), SN.Matrix4x4.CreateFromQuaternion(t.GetRotationQuaternion()));
         return SN.Vector3.Normalize(f);
     }
 }

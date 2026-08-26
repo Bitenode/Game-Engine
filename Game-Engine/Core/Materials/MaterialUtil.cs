@@ -370,6 +370,129 @@ public static class MaterialUtil
         return TextureHasMeaningfulAlpha(tex);
     }
 
+    /// <summary>
+    /// Vegetation cards often ship as opaque RGB with black/beige backdrops. Build alpha from
+    /// backdrop distance + green chroma so alpha-test can cut the rectangle.
+    /// </summary>
+    public static void EnsureVegetationCardCutout(Material m)
+    {
+        if (m == null) return;
+
+        RuntimeTexSlot? albedo = null;
+        foreach (var texSlot in m.Textures)
+        {
+            if (texSlot is not RuntimeTexSlot rts || rts.Texture == null) continue;
+            string u = rts.Usage?.ToLowerInvariant() ?? "";
+            if (u.Contains("opacity") || u.Contains("transparency"))
+            {
+                if (m.AlphaCutoff < 0.05f) m.AlphaCutoff = 0.4f;
+                return;
+            }
+            bool albedoSlot = u.Contains("albedo") || u.Contains("diffuse") || u.Contains("base") || u == "";
+            if (albedoSlot && albedo == null)
+                albedo = rts;
+        }
+
+        if (albedo?.Texture == null)
+        {
+            if (m.AlphaCutoff < 0.05f) m.AlphaCutoff = 0.4f;
+            if (m.LumaClip < 0.05f) m.LumaClip = 0.14f;
+            return;
+        }
+
+        if (TextureHasMeaningfulAlpha(albedo.Texture))
+        {
+            if (m.AlphaCutoff < 0.05f) m.AlphaCutoff = 0.4f;
+            return;
+        }
+
+        var cut = BuildRgbBackdropAlphaTexture(albedo.Texture);
+        if (cut != null)
+        {
+            albedo.Texture = cut;
+            m.AlphaCutoff = 0.42f;
+            m.LumaClip = 0.08f;
+            return;
+        }
+
+        if (m.AlphaCutoff < 0.05f) m.AlphaCutoff = 0.4f;
+        if (m.LumaClip < 0.05f) m.LumaClip = 0.16f;
+    }
+
+    static Texture2D? BuildRgbBackdropAlphaTexture(Texture2D src)
+    {
+        if (src.Rgba == null || src.Width < 4 || src.Height < 4) return null;
+        int w = src.Width;
+        int h = src.Height;
+        var rgba = new byte[src.Rgba.Length];
+        Buffer.BlockCopy(src.Rgba, 0, rgba, 0, rgba.Length);
+
+        int bandX = Math.Max(2, w / 12);
+        int bandY = Math.Max(2, h / 12);
+        float bgR = 0f, bgG = 0f, bgB = 0f;
+        int bgCount = 0;
+        void Acc(int x0, int y0, int x1, int y1)
+        {
+            for (int y = y0; y < y1; y++)
+            {
+                int row = y * w * 4;
+                for (int x = x0; x < x1; x++)
+                {
+                    int i = row + x * 4;
+                    bgR += rgba[i + 0];
+                    bgG += rgba[i + 1];
+                    bgB += rgba[i + 2];
+                    bgCount++;
+                }
+            }
+        }
+        Acc(0, 0, bandX, bandY);
+        Acc(w - bandX, 0, w, bandY);
+        Acc(0, h - bandY, bandX, h);
+        Acc(w - bandX, h - bandY, w, h);
+        if (bgCount > 0)
+        {
+            bgR /= bgCount;
+            bgG /= bgCount;
+            bgB /= bgCount;
+        }
+
+        int kept = 0;
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * w * 4;
+            for (int x = 0; x < w; x++)
+            {
+                int i = row + x * 4;
+                float r = rgba[i + 0];
+                float g = rgba[i + 1];
+                float b = rgba[i + 2];
+                float dr = r - bgR, dg = g - bgG, db = b - bgB;
+                float dist = MathF.Sqrt(dr * dr + dg * dg + db * db) / 441.67294f;
+                float nr = r / 255f, ng = g / 255f, nb = b / 255f;
+                float luma = nr * 0.299f + ng * 0.587f + nb * 0.114f;
+                float greenScore = ng - MathF.Max(nr, nb);
+                float alpha = MathF.Max(Smooth01(0.05f, 0.22f, dist), Smooth01(0.01f, 0.14f, greenScore));
+                if (luma < 0.07f) alpha = 0f;
+                if (dist < 0.045f && greenScore < 0.04f) alpha = 0f;
+                byte outA = (byte)Math.Clamp((int)(alpha * 255f), 0, 255);
+                rgba[i + 3] = outA;
+                if (outA > 24) kept++;
+            }
+        }
+
+        float keepRatio = kept / (float)(w * h);
+        if (keepRatio < 0.03f || keepRatio > 0.97f)
+            return null;
+        return new Texture2D(w, h, rgba, src.SourcePath);
+    }
+
+    static float Smooth01(float edge0, float edge1, float x)
+    {
+        float t = Math.Clamp((x - edge0) / Math.Max(1e-5f, edge1 - edge0), 0f, 1f);
+        return t * t * (3f - 2f * t);
+    }
+
     /// <summary>True if CPU-side RGBA data has any clearly non-opaque pixels (import / cutout heuristics).</summary>
     public static bool TextureHasMeaningfulAlpha(Texture2D? tex)
     {

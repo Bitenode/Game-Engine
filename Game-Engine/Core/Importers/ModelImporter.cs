@@ -985,12 +985,15 @@ namespace Game_Engine.Core.Importers
             // Position
             t.Position = new Vector3(p.X, p.Y, p.Z);
 
-            // Rotation (Euler YXZ)
+            // Euler is inspector-only. YawPitchRoll from those angles does not match Assimp's
+            // quaternion (Unity vegetation nodes are often Rx(-90)). Keep the true rotation so
+            // planet bake + surface-align see the same local +Y as trees.
             ToEulerYXZ(r, out double rx, out double ry, out double rz);
             t.Rotation = new Vector3(rx, ry, rz);
-
-            // Scale
             t.Scale = new Vector3(s.X, s.Y, s.Z);
+            var q = new SN.Quaternion(r.X, r.Y, r.Z, r.W);
+            if (q.LengthSquared() > 1e-12f)
+                t.SetRotationQuaternion(SN.Quaternion.Normalize(q));
         }
 
         static void ToEulerYXZ(Assimp.Quaternion q, out double rx, out double ry, out double rz)

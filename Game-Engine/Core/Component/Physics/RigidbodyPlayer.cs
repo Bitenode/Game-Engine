@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Diagnostics;
 using System.Linq;
 using Game_Engine.Core;
 using Game_Engine.Core.Physics;
@@ -67,6 +68,11 @@ namespace Game_Engine.Core.Component
         float _jumpBuf;
         SN.Vector3 _cameraUp = SN.Vector3.UnitY;
         SN.Vector3 _lastMoveForward = new(0f, 0f, -1f);
+        bool _airborne;
+        float _verticalVel;
+        readonly Stopwatch _walkClock = new();
+        SN.Vector3 _lastAlignUp;
+        float _lastAlignYaw = float.NaN;
 
         public override void Awake()
         {
@@ -83,8 +89,25 @@ namespace Game_Engine.Core.Component
             {
                 _rb.FreezeRotation = true;
                 _rb.Drag = 0f;
-                _cameraUp = SN.Vector3.UnitY;
             }
+
+            var spawnPos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var spawnPlanet = Rigidbody.FindNearestPlanet(spawnPos, out var spawnCenter, out _);
+            if (spawnPlanet != null)
+            {
+                var radial = spawnPos - spawnCenter;
+                _cameraUp = radial.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(radial) : SN.Vector3.UnitY;
+                ApplyPlanetCamera(_cameraUp, true, 0f);
+            }
+            else
+                _cameraUp = SN.Vector3.UnitY;
+        }
+
+        public override void OnDisable()
+        {
+            if (_cam != null)
+                _cam.UseLookOverride = false;
+            base.OnDisable();
         }
 
         public override void OnEnable() => ResolveCamera();
@@ -122,10 +145,18 @@ namespace Game_Engine.Core.Component
             _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
 
             // ── Move intent ──
+            GEInput.PollHardwareHeldKeys();
             int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
                      - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.S) ? 1 : 0);
             int xRight = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.D) ? 1 : 0)
                        - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.A) ? 1 : 0);
+            if (zFwd == 0 && xRight == 0)
+            {
+                float axisV = GEInput.GetAxis("Vertical");
+                float axisH = GEInput.GetAxis("Horizontal");
+                if (MathF.Abs(axisV) > 0.15f) zFwd = axisV > 0f ? 1 : -1;
+                if (MathF.Abs(axisH) > 0.15f) xRight = axisH > 0f ? 1 : -1;
+            }
 
             var local = new SN.Vector2(xRight, -zFwd);
             float m2 = local.X * local.X + local.Y * local.Y;
@@ -136,149 +167,208 @@ namespace Game_Engine.Core.Component
             }
             _wishLocal = local;
 
-            _sprintHeld = GEInput.GetAction("Sprint");
+            _sprintHeld = GEInput.GetAction("Sprint")
+                || GEInput.GetKey(Game_Engine.Core.Input.KeyCode.LeftShift);
 
-            if (GEInput.GetActionDown("Jump"))
+            if (GEInput.GetActionDown("Jump") || GEInput.GetKeyDown(Game_Engine.Core.Input.KeyCode.Space))
                 _jumpBuf = JumpBufferSeconds;
-            else if (GEInput.GetAction("Jump"))
+            else if (GEInput.GetAction("Jump") || GEInput.GetKey(Game_Engine.Core.Input.KeyCode.Space))
                 _jumpBuf = Math.Max(_jumpBuf, 0.04f);
 
-            // ── Body rotation (yaw only, same as original) ──
-            if (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f))
+            var posNow = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var planet = Rigidbody.FindNearestPlanet(posNow, out var planetCenter, out _);
+            bool onPlanet = planet != null;
+            var planetUp = SN.Vector3.UnitY;
+            if (onPlanet)
             {
-                var rE = Transform.Rotation; rE.Y = _yawDeg; Transform.Rotation = rE;
+                var radial = posNow - planetCenter;
+                planetUp = radial.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(radial) : SN.Vector3.UnitY;
             }
 
-            // ── Camera ──
-            var desiredCameraUp = _rb != null ? SafeNormalize(_rb.LocalUp, SN.Vector3.UnitY) : SN.Vector3.UnitY;
-            float upLerp = 1f - MathF.Exp(-MathF.Max(0f, CameraUpSmoothing) * dt);
-            _cameraUp = SafeNormalize(SN.Vector3.Lerp(_cameraUp, desiredCameraUp, upLerp), desiredCameraUp);
-            if (_cam != null)
-                _cam.WorldUp = _cameraUp;
+            if (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f) || onPlanet)
+            {
+                if (onPlanet)
+                {
+                    bool yawMoved = float.IsNaN(_lastAlignYaw) || MathF.Abs(_yawDeg - _lastAlignYaw) > 0.2f;
+                    bool upMoved = _lastAlignUp.LengthSquared() < 1e-8f || SN.Vector3.Dot(_lastAlignUp, planetUp) < 0.9995f;
+                    if (yawMoved || upMoved)
+                    {
+                        float yawRad = Deg2Rad(_yawDeg);
+                        var yawForward = new SN.Vector3(-MathF.Sin(yawRad), 0f, -MathF.Cos(yawRad));
+                        TransformUtil.AlignLocalUp(Transform, planetUp, yawForward);
+                        _lastAlignYaw = _yawDeg;
+                        _lastAlignUp = planetUp;
+                    }
+                }
+                else
+                {
+                    var rE = Transform.Rotation; rE.Y = _yawDeg; Transform.Rotation = rE;
+                }
+            }
 
+            if (onPlanet)
+            {
+                float walkDt = _walkClock.IsRunning ? (float)_walkClock.Elapsed.TotalSeconds : dt;
+                _walkClock.Restart();
+                if (walkDt > 0.25f) walkDt = 0.25f;
+                if (walkDt < 0.0001f) walkDt = 0.0001f;
+                WalkOnPlanetSurface(walkDt, planetUp);
+            }
+
+            ApplyPlanetCamera(planetUp, onPlanet, dt);
+        }
+
+        void ApplyPlanetCamera(SN.Vector3 planetUp, bool onPlanet, float dt)
+        {
+            if (_cam == null)
+                ResolveCamera();
+            if (_cam == null) return;
+
+            if (onPlanet)
+                _cameraUp = planetUp;
+            else if (dt > 0f)
+            {
+                var desired = _rb != null ? SafeNormalize(_rb.LocalUp, SN.Vector3.UnitY) : SN.Vector3.UnitY;
+                float upLerp = 1f - MathF.Exp(-MathF.Max(0f, CameraUpSmoothing) * dt);
+                _cameraUp = SafeNormalize(SN.Vector3.Lerp(_cameraUp, desired, upLerp), desired);
+            }
+
+            _cam.WorldUp = _cameraUp;
             if (_camTr != null)
             {
                 if (FirstPerson) DriveCameraFirstPerson(_cameraUp);
-                else DriveCameraThirdPerson(dt, _cameraUp);
+                else DriveCameraThirdPerson(Math.Max(dt, 0.0001f), _cameraUp);
             }
+        }
+
+        void WalkOnPlanetSurface(float dt, SN.Vector3 planetUp)
+        {
+            _rb ??= GetComponent<Rigidbody>();
+
+            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var planet = Rigidbody.FindNearestPlanet(pos, out var center, out _);
+            if (planet == null) return;
+
+            var up = pos - center;
+            if (up.LengthSquared() < 1e-8f) up = planetUp;
+            else up = SN.Vector3.Normalize(up);
+
+            float yawRad = Deg2Rad(_yawDeg);
+            var yawForward = new SN.Vector3(-MathF.Sin(yawRad), 0f, -MathF.Cos(yawRad));
+            BuildTangentBasis(up, yawForward, out var fwd, out var right);
+
+            var wish = right * _wishLocal.X + fwd * (-_wishLocal.Y);
+            wish -= up * SN.Vector3.Dot(wish, up);
+            float speed = MathF.Max(1f, MaxSpeed) * (_sprintHeld ? MathF.Max(1f, SprintMultiplier) : 1f);
+            if (wish.LengthSquared() > 1e-8f)
+            {
+                wish = SN.Vector3.Normalize(wish);
+                pos += wish * speed * dt;
+                up = pos - center;
+                if (up.LengthSquared() > 1e-8f) up = SN.Vector3.Normalize(up);
+            }
+
+            float halfH = 1f;
+            var cap = GetComponent<CapsuleCollider>();
+            if (cap != null) halfH = MathF.Max(0.1f, cap.Height * 0.5f);
+            float stand = planet.SampleHeightfieldRadius(up) + halfH;
+            float dist = (pos - center).Length();
+            bool onCrust = dist <= stand + 0.08f;
+
+            if (!_airborne && _jumpBuf > 0f && onCrust)
+            {
+                _airborne = true;
+                _verticalVel = JumpImpulse;
+                _jumpBuf = 0f;
+            }
+
+            if (_airborne)
+            {
+                _verticalVel -= 9.81f * dt;
+                pos += up * (_verticalVel * dt);
+                up = pos - center;
+                if (up.LengthSquared() > 1e-8f) up = SN.Vector3.Normalize(up);
+                dist = (pos - center).Length();
+                stand = planet.SampleHeightfieldRadius(up) + halfH;
+                if (_verticalVel <= 0f && dist <= stand + 0.02f)
+                {
+                    pos = center + up * stand;
+                    _airborne = false;
+                    _verticalVel = 0f;
+                }
+            }
+            else
+            {
+                pos = center + up * stand;
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+            }
+
+            var tan = wish.LengthSquared() > 1e-8f ? wish * speed : SN.Vector3.Zero;
+            if (_rb != null)
+                _rb.Velocity = tan + up * _verticalVel;
+
+            Transform.Position = new Vector3(pos.X, pos.Y, pos.Z);
         }
 
         public override void FixedUpdate()
         {
+            _rb ??= GetComponent<Rigidbody>();
             if (_rb == null) return;
 
             float dt = Time.fixedDeltaTime;
-            bool grounded = _rb.IsGrounded;
-            bool underwater = _rb.IsUnderwater;
+            if (dt <= 0f) dt = 0.02f;
 
-            if (underwater)
+            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            if (Rigidbody.FindNearestPlanet(pos, out _, out _) != null)
+                return;
+
+            bool grounded = _rb.IsGrounded;
+            bool underwater = _rb.IsUnderwater && !grounded;
+
+            if (underwater && !_airborne)
             {
                 FixedUpdateSwimming(dt);
                 return;
             }
 
-            var localUp = SafeNormalize(_rb.LocalUp, SN.Vector3.UnitY);
-            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
-            bool onPlanet = Rigidbody.FindNearestPlanet(pos, out _, out _) != null;
-
-            // ── Convert local wish to world direction ──
+            // ── Flat-world physics ──
             float r = Deg2Rad(_yawDeg);
             float c = MathF.Cos(r), s = MathF.Sin(r);
-
-            SN.Vector3 wishWorld;
-            if (onPlanet)
-            {
-                var yawForward = new SN.Vector3(-s, 0f, -c);
-                BuildTangentBasis(localUp, yawForward, out var fwd, out var right);
-
-                wishWorld = right * _wishLocal.X + fwd * (-_wishLocal.Y);
-                wishWorld -= localUp * SN.Vector3.Dot(wishWorld, localUp);
-                if (wishWorld.LengthSquared() > 1e-6f)
-                    wishWorld = SN.Vector3.Normalize(wishWorld);
-            }
-            else
-            {
-                // Flat world: original formula
-                wishWorld = new SN.Vector3(
-                    _wishLocal.X * c + _wishLocal.Y * s,
-                    0f,
-                    -_wishLocal.X * s + _wishLocal.Y * c);
-            }
+            var wishWorld = new SN.Vector3(
+                _wishLocal.X * c + _wishLocal.Y * s,
+                0f,
+                -_wishLocal.X * s + _wishLocal.Y * c);
 
             float speed = MoveForce * (_sprintHeld ? SprintMultiplier : 1f);
             float control = grounded ? 1f : AirControlFactor;
+            var horizVel = new SN.Vector3(_rb.Velocity.X, 0, _rb.Velocity.Z);
+            float currentSpeed = SN.Vector3.Dot(horizVel, wishWorld);
+            float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
 
-            if (onPlanet)
+            if (wishWorld.LengthSquared() > 1e-6f)
             {
-                // Tangent velocity (remove component along local up)
-                var tangentVel = _rb.Velocity - localUp * SN.Vector3.Dot(_rb.Velocity, localUp);
-                float currentSpeed = SN.Vector3.Dot(tangentVel, wishWorld);
-                float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
-
-                if (wishWorld.LengthSquared() > 1e-6f)
+                float addSpeed = maxSpd - currentSpeed;
+                if (addSpeed > 0f)
                 {
-                    float addSpeed = maxSpd - currentSpeed;
-                    if (addSpeed > 0f)
-                    {
-                        float accel = MathF.Min(speed * control * dt, addSpeed);
-                        _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
-                    }
+                    float accel = MathF.Min(speed * control * dt, addSpeed);
+                    _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
                 }
+            }
 
-                // Drag (tangent plane only)
-                float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * dt);
+            float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * dt);
+            var vel = _rb.Velocity;
+            _rb.Velocity = new SN.Vector3(vel.X * dragFactor, vel.Y, vel.Z * dragFactor);
+
+            if (_jumpBuf > 0f && grounded)
+            {
                 var vel2 = _rb.Velocity;
-                float radialComp = SN.Vector3.Dot(vel2, localUp);
-                var tangent = vel2 - localUp * radialComp;
-                _rb.Velocity = tangent * dragFactor + (grounded ? SN.Vector3.Zero : localUp * radialComp);
-
-                // Jump (along local up)
-                if (_jumpBuf > 0f && grounded)
-                {
-                    var vel3 = _rb.Velocity;
-                    float upComp = SN.Vector3.Dot(vel3, localUp);
-                    if (upComp < 0f)
-                        _rb.Velocity = vel3 - localUp * upComp;
-                    _rb.AddImpulse(localUp * JumpImpulse);
-                    _jumpBuf = 0f;
-                }
-                else
-                {
-                    _jumpBuf = Math.Max(0f, _jumpBuf - dt);
-                }
+                _rb.Velocity = new SN.Vector3(vel2.X, MathF.Max(vel2.Y, 0f), vel2.Z);
+                _rb.AddImpulse(SN.Vector3.UnitY * JumpImpulse);
+                _jumpBuf = 0f;
             }
             else
             {
-                // ── Original flat-world physics ──
-                var horizVel = new SN.Vector3(_rb.Velocity.X, 0, _rb.Velocity.Z);
-                float currentSpeed = SN.Vector3.Dot(horizVel, wishWorld);
-                float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
-
-                if (wishWorld.LengthSquared() > 1e-6f)
-                {
-                    float addSpeed = maxSpd - currentSpeed;
-                    if (addSpeed > 0f)
-                    {
-                        float accel = MathF.Min(speed * control * dt, addSpeed);
-                        _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
-                    }
-                }
-
-                float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * dt);
-                var vel = _rb.Velocity;
-                _rb.Velocity = new SN.Vector3(vel.X * dragFactor, vel.Y, vel.Z * dragFactor);
-
-                if (_jumpBuf > 0f && grounded)
-                {
-                    var vel2 = _rb.Velocity;
-                    _rb.Velocity = new SN.Vector3(vel2.X, MathF.Max(vel2.Y, 0f), vel2.Z);
-                    _rb.AddImpulse(SN.Vector3.UnitY * JumpImpulse);
-                    _jumpBuf = 0f;
-                }
-                else
-                {
-                    _jumpBuf = Math.Max(0f, _jumpBuf - dt);
-                }
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
         }
 
@@ -321,19 +411,23 @@ namespace Game_Engine.Core.Component
             float swimSpeed = SwimForce * (_sprintHeld ? SprintMultiplier : 1f);
             float maxSwimSpd = SwimMaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
 
+            var vel = _rb.Velocity;
             if (wishDir.LengthSquared() > 1e-6f)
             {
-                float currentSpeed = SN.Vector3.Dot(_rb.Velocity, SN.Vector3.Normalize(wishDir));
+                wishDir = SN.Vector3.Normalize(wishDir);
+                float currentSpeed = SN.Vector3.Dot(vel, wishDir);
                 float addSpeed = maxSwimSpd - currentSpeed;
                 if (addSpeed > 0f)
-                {
-                    float accel = MathF.Min(swimSpeed * dt, addSpeed);
-                    _rb.AddForce(wishDir * accel / MathF.Max(dt, 0.001f));
-                }
+                    vel += wishDir * MathF.Min(swimSpeed * dt, addSpeed);
             }
 
             float dragFactor = MathF.Max(0f, 1f - SwimDrag * dt);
-            _rb.Velocity *= dragFactor;
+            vel *= dragFactor;
+
+            var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            pos += vel * dt;
+            _rb.Velocity = vel;
+            Transform.Position = new Vector3(pos.X, pos.Y, pos.Z);
 
             _jumpBuf = 0f;
         }
@@ -348,14 +442,38 @@ namespace Game_Engine.Core.Component
             BuildTangentBasis(localUp, yawForward, out var fwd, out var right);
 
             var off = new SN.Vector3((float)FirstPersonOffset.X, (float)FirstPersonOffset.Y, (float)FirstPersonOffset.Z);
-            var cameraPos = pos + right * off.X + localUp * off.Y + fwd * off.Z;
-            _camTr!.Position = new Vector3(cameraPos.X, cameraPos.Y, cameraPos.Z);
+            float pitchRad = Deg2Rad(_pitchDeg);
+            float cp = MathF.Cos(pitchRad), sp = MathF.Sin(pitchRad);
+            var lookFwd = fwd * cp + localUp * sp;
+            if (lookFwd.LengthSquared() > 1e-8f)
+                lookFwd = SN.Vector3.Normalize(lookFwd);
+            var eye = pos + right * off.X + localUp * off.Y + fwd * off.Z;
 
-            var cr = _camTr.Rotation;
-            cr.X = _pitchDeg;
-            cr.Y = _yawDeg;
-            cr.Z = 0;
-            _camTr.Rotation = cr;
+            bool nested = _cam.gameObject?.Parent == gameObject;
+            if (nested)
+            {
+                _camTr!.Position = new Vector3(off.X, off.Y, off.Z);
+                var cr = _camTr.Rotation;
+                cr.X = _pitchDeg;
+                cr.Y = 0;
+                cr.Z = 0;
+                _camTr.Rotation = cr;
+            }
+            else
+            {
+                _camTr!.Position = new Vector3(eye.X, eye.Y, eye.Z);
+                var cr = _camTr.Rotation;
+                cr.X = _pitchDeg;
+                cr.Y = _yawDeg;
+                cr.Z = 0;
+                _camTr.Rotation = cr;
+            }
+
+            _cam.WorldUp = localUp;
+            _cam.UseLookOverride = true;
+            _cam.LookEye = eye;
+            _cam.LookForward = lookFwd;
+            _cam.LookUp = localUp;
         }
 
         void DriveCameraThirdPerson(float dt, SN.Vector3 localUp)
@@ -387,13 +505,15 @@ namespace Game_Engine.Core.Component
 
             var dir = lookAt - new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
             if (dir.LengthSquared() > 1e-6f)
-            {
                 dir = SN.Vector3.Normalize(dir);
-                var yaw = (float)(Math.Atan2(dir.X, -dir.Z) * 180.0 / Math.PI);
-                var pitch = (float)(Math.Atan2(dir.Y, Math.Sqrt(dir.X * dir.X + dir.Z * dir.Z)) * 180.0 / Math.PI);
-                float maxPitch = Clamp(MaxLookPitch, 10f, 89f);
-                var cr = _camTr.Rotation; cr.X = Clamp(pitch, -maxPitch, maxPitch); cr.Y = yaw; cr.Z = 0; _camTr.Rotation = cr;
-            }
+            else
+                dir = fwd;
+
+            _cam.WorldUp = localUp;
+            _cam.UseLookOverride = true;
+            _cam.LookEye = new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
+            _cam.LookForward = dir;
+            _cam.LookUp = localUp;
         }
 
         // ── Helpers ──

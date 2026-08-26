@@ -1776,8 +1776,11 @@ void main()
 layout(location = 0) in vec2 aPosition;    // billboard quad corner (-0.5..0.5)
 
 // Per-instance data (passed as uniforms per batch)
-uniform vec4 uParticlePos[128];   // xyz = world position, w = size
+uniform vec4 uParticlePos[128];   // xyz = world position, w = size / streak width
 uniform vec4 uParticleCol[128];   // rgba color
+uniform int uAlignVelocity;
+uniform float uStretchLength;
+uniform vec3 uFallDir;
 
 uniform mat4 uView;
 uniform mat4 uProj;
@@ -1796,11 +1799,29 @@ void main()
     vColor = uParticleCol[id];
     vUV = aPosition + 0.5;
 
-    // Billboard: extract camera right and up from view matrix
     vec3 camRight = vec3(uView[0][0], uView[1][0], uView[2][0]);
     vec3 camUp    = vec3(uView[0][1], uView[1][1], uView[2][1]);
-
-    vec3 corner = worldPos + (aPosition.x * camRight + aPosition.y * camUp) * size;
+    vec3 corner;
+    if (uAlignVelocity != 0)
+    {
+        vec3 fall = uFallDir;
+        float fallLen = length(fall);
+        if (fallLen > 1e-5)
+            fall /= fallLen;
+        else
+            fall = vec3(0.0, -1.0, 0.0);
+        vec3 side = cross(fall, camRight);
+        if (dot(side, side) < 1e-6)
+            side = camRight;
+        else
+            side = normalize(side);
+        float len = max(0.08, uStretchLength);
+        corner = worldPos + (aPosition.x * side * size + aPosition.y * fall * len);
+    }
+    else
+    {
+        corner = worldPos + (aPosition.x * camRight + aPosition.y * camUp) * size;
+    }
     gl_Position = uProj * uView * vec4(corner, 1.0);
 }
 ";
@@ -1809,14 +1830,24 @@ void main()
 #version 330 core
 in vec4 vColor;
 in vec2 vUV;
+uniform int uAlignVelocity;
 
 out vec4 FragColor;
 
 void main()
 {
-    // Soft circular particle
-    float dist = length(vUV - vec2(0.5));
-    float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+    float alpha;
+    if (uAlignVelocity != 0)
+    {
+        float ax = abs(vUV.x - 0.5) * 2.0;
+        float ay = abs(vUV.y - 0.5) * 2.0;
+        alpha = (1.0 - smoothstep(0.25, 1.0, ax)) * (1.0 - smoothstep(0.82, 1.0, ay));
+    }
+    else
+    {
+        float dist = length(vUV - vec2(0.5));
+        alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+    }
 
     FragColor = vec4(vColor.rgb, vColor.a * alpha);
     if (FragColor.a < 0.01) discard;
@@ -2707,10 +2738,24 @@ uniform float uPlanetRadius;
 
 vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 ba, float t)
 {
-    vec3 p = worldPos * (t / uPlanetRadius);
-    return texture(tex, p.yz).rgb * ba.x
-         + texture(tex, p.xz).rgb * ba.y
-         + texture(tex, p.xy).rgb * ba.z;
+    // Tile in meters: tiling 12 on a radius-1000 planet => ~83m repeats, not UV*worldPos sparkle.
+    float meters = max(uPlanetRadius, 1.0) / max(t, 0.25);
+    vec3 local = worldPos - uPlanetCenter;
+    vec3 p = local / meters;
+    vec3 cyz = texture(tex, p.yz).rgb;
+    vec3 cxz = texture(tex, p.xz).rgb;
+    vec3 cxy = texture(tex, p.xy).rgb;
+
+    // abs(radial) weights zero the only valid projection on the XYZ planes, which
+    // draws a plus of stretched texels through each cube-face pole. Weight by UV
+    // area (|y|*|z| for the YZ plane, etc.) and fall back to facing at the poles.
+    vec3 mag = abs(local);
+    vec3 q = vec3(mag.y * mag.z, mag.x * mag.z, mag.x * mag.y);
+    float qsum = q.x + q.y + q.z;
+    vec3 w = qsum < 1e-4 ? abs(ba) : q / qsum;
+    w = pow(max(w, vec3(0.0)), vec3(1.6));
+    w /= (w.x + w.y + w.z + 0.001);
+    return cyz * w.x + cxz * w.y + cxy * w.z;
 }
 
 vec3 sampleBiome(int idx, vec3 wp, vec3 ba, float t)
@@ -2730,9 +2775,11 @@ float shadowFactor(vec4 sc)
     if (uHasShadow == 0) return 1.0;
     vec3 projCoords = sc.xyz / sc.w;
     projCoords = projCoords * 0.5 + 0.5;
-    if (projCoords.z > 1.0) return 1.0;
+    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+        return 1.0;
     float closestDepth = texture(uShadowMap, projCoords.xy).r;
-    return (projCoords.z - 0.005 > closestDepth) ? 0.3 : 1.0;
+    float bias = 0.004 + (1.0 - max(dot(normalize(vWorldNormal), normalize(-uLightDir)), 0.0)) * 0.02;
+    return (projCoords.z - bias > closestDepth) ? 0.55 : 1.0;
 }
 
 vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend)
@@ -2778,11 +2825,13 @@ void main()
     vec3 N = normalize(vWorldNormal);
     vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
 
-    float slope = max(dot(N, radialDir), 0.0);
-    float slopeBlend = smoothstep(0.2, 0.55, slope);
+    float slope = abs(dot(N, radialDir));
+    float slopeBlend = smoothstep(0.15, 0.55, slope);
 
-    vec3 blendAxes = abs(N);
-    blendAxes = pow(blendAxes, vec3(4.0));
+    // Voxel/transvoxel normals are noisy; project textures along the sphere or the
+    // surface looks like sparkly grass even when the albedo is rock/dirt.
+    vec3 blendAxes = abs(radialDir);
+    blendAxes = pow(blendAxes, vec3(3.0));
     blendAxes = blendAxes / (blendAxes.x + blendAxes.y + blendAxes.z + 0.001);
 
     vec3 finalColor = vec3(0.0);
@@ -2809,7 +2858,7 @@ void main()
 
     vec3 V = normalize(uCamPos - vWorldPos);
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 64.0) * 0.3;
+    float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
 
     float shadow = shadowFactor(vShadowCoord);
     vec3 lit = finalColor * (uAmbient + diffuse * shadow) + vec3(spec * shadow);

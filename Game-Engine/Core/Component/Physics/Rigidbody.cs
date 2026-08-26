@@ -104,6 +104,9 @@ namespace Game_Engine.Core.Component
             float dt = (float)Time.fixedDeltaTime;
             if (dt <= 0f) return;
 
+            if (GetComponent<RigidbodyPlayer>() != null)
+                IsSleeping = false;
+
             // Refresh shared physics cache (only rebuilds once per tick)
             PhysicsCache.RefreshFrame();
 
@@ -136,6 +139,25 @@ namespace Game_Engine.Core.Component
                 var toBody = pos0 - planetCenter;
                 float dist = toBody.Length();
                 LocalUp = dist > 1e-6f ? toBody / dist : SN.Vector3.UnitY;
+
+                // Islands sit inside the water sphere. Treat crust as land so
+                // buoyancy/swim do not fight gravity and cancel WASD.
+                float halfH = GetColliderHalfHeight();
+                float crustR = planet!.SampleHeightfieldRadius(LocalUp);
+                if (dist - halfH <= crustR + 0.45f)
+                    IsUnderwater = false;
+
+                // RigidbodyPlayer writes planet position itself. Integrating here
+                // (gravity / mesh triangles / radial snap) cancels tangent WASD.
+                if (GetComponent<RigidbodyPlayer>() != null)
+                {
+                    IsGrounded = dist - halfH <= crustR + 0.08f;
+                    GroundNormal = LocalUp;
+                    _forceAccum = SN.Vector3.Zero;
+                    _impulseAccum = SN.Vector3.Zero;
+                    CheckTriggersOnly();
+                    return;
+                }
             }
             else
             {
@@ -151,7 +173,7 @@ namespace Game_Engine.Core.Component
             }
 
             // Buoyancy: upward force when underwater, stronger the deeper you go
-            if (underwaterState.HasValue)
+            if (IsUnderwater && underwaterState.HasValue)
             {
                 var uw = underwaterState.Value;
                 float buoyancy = uw.Buoyancy;
@@ -193,18 +215,19 @@ namespace Game_Engine.Core.Component
 
             if (onPlanet)
             {
+                // Last-push contact: feet vs crust radius. Density resolve + a
+                // sticky radial band cancelled tangent velocity (WASD looked dead).
                 float halfHeight = GetColliderHalfHeight();
                 var toNew = newPos - planetCenter;
                 float distFromCenter = toNew.Length();
                 var surfNorm = distFromCenter > 1e-6f ? toNew / distFromCenter : LocalUp;
+                LocalUp = surfNorm;
 
-                float actualSurfaceR = planet!.SampleSurfaceRadius(surfNorm);
+                float actualSurfaceR = planet!.SampleHeightfieldRadius(surfNorm);
                 float feetDist = distFromCenter - halfHeight;
 
                 if (feetDist < actualSurfaceR)
                 {
-                    // Planet surface = ground. Strip the velocity component going
-                    // into the ground and keep only the tangent (no bounce).
                     float vDotN = SN.Vector3.Dot(Velocity, surfNorm);
                     if (vDotN < 0f)
                         Velocity -= surfNorm * vDotN;
@@ -279,8 +302,10 @@ namespace Game_Engine.Core.Component
                 for (int i = 0; i < PhysicsCache.NonMeshColliders.Count; i++)
                 {
                     var other = PhysicsCache.NonMeshColliders[i];
+                    if (other is PlanetCollider) continue;
                     if (ReferenceEquals(other, myCollider) || !other.IsActiveAndEnabled) continue;
                     if (other.gameObject == gameObject) continue; // skip own colliders
+                    if (IsOwnedCollider(other.gameObject)) continue;
                     if (!PhysicsLayerMask.Includes(CollisionLayerMask, other.gameObject.Layer)) continue;
 
                     var otherAABB = other.GetWorldAABB();
@@ -315,6 +340,7 @@ namespace Game_Engine.Core.Component
                 {
                     var mc = PhysicsCache.MeshColliders[mi];
                     if (mc.gameObject == gameObject) continue;
+                    if (IsOwnedCollider(mc.gameObject)) continue;
                     if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
 
                     // First, rough AABB check to skip distant MeshColliders
@@ -516,6 +542,17 @@ namespace Game_Engine.Core.Component
         {
             IsSleeping = false;
             _sleepTimer = 0f;
+        }
+
+        bool IsOwnedCollider(GameObject? go)
+        {
+            if (go == null || gameObject == null) return false;
+            for (GameObject? cur = go; cur != null; cur = cur.Parent)
+            {
+                if (ReferenceEquals(cur, gameObject))
+                    return true;
+            }
+            return false;
         }
 
         // ── Collider size helpers ──

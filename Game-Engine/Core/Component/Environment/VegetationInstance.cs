@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Game_Engine.Core;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -580,6 +581,17 @@ namespace Game_Engine.Core.Component
         /// </summary>
         public int BuildOnTerrain()
         {
+            if (gameObject != null)
+            {
+                for (var n = gameObject; n != null; n = n.Parent)
+                {
+                    foreach (var b in n.Behaviors)
+                    {
+                        if (b is PlanetTerrain)
+                            return 0;
+                    }
+                }
+            }
             ClearAll();
             if (gameObject == null) return 0;
 
@@ -802,23 +814,33 @@ namespace Game_Engine.Core.Component
 
             ClearAll();
 
-            // Resolve mesh/texture for this painter's current asset setup.
-            var grassMesh = ResolvedMesh ?? CreateGrassBladeMesh();
-            var grassTex = PrepareGrassTextureForCutout(ResolvedTexture);
-            string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) ? ToRelativePath(TexturePath) : "";
+            // Texture grass = standing cross-blades. Lawn photos have no blade alpha, so use a
+            // cutout blade texture instead of painting the photo on a flat ground quad.
+            var grassMesh = CreateGrassBladeMesh();
+            var srcTex = ResolvedTexture;
+            var grassTex = (srcTex != null && MaterialUtil.TextureHasMeaningfulAlpha(srcTex))
+                ? PrepareGrassTextureForCutout(srcTex)
+                : CreateFallbackGrassCutoutTexture();
+            string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) && grassTex == srcTex
+                ? ToRelativePath(TexturePath)
+                : "";
             var grassMat = BuildGrassMaterial(grassTex, relTexPath);
+            grassMat.AlphaCutoff = 0.38f;
 
             // Use a non-"chunk_" name so renderer fast-paths meant for flat-terrain grass tiles
             // don't treat planet patches like axis-aligned terrain chunks.
             var chunkGO = new GameObject("planet_grass_0");
             gameObject.AddChild(chunkGO);
 
-            var rng = new Random(42 + bladeCount);
-            var center = SceneGraphUtil.AccumulateWorld(planet.gameObject);
-            var planetCenter = new SN.Vector3(center.M41, center.M42, center.M43);
-            var selfWorld = SceneGraphUtil.AccumulateWorld(gameObject!);
-            SN.Matrix4x4.Invert(selfWorld, out var selfWorldInv);
+            // Same space as planet chunk meshes: planet-local verts, identity parent.
+            if (gameObject != null)
+            {
+                gameObject.Transform.Position = new Vector3(0, 0, 0);
+                gameObject.Transform.Rotation = new Vector3(0, 0, 0);
+                gameObject.Transform.Scale = new Vector3(1, 1, 1);
+            }
 
+            var rng = new Random(42 + bladeCount);
             var n = SN.Vector3.Normalize(centerDir);
             var t = SN.Vector3.Cross(MathF.Abs(n.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, n);
             if (t.LengthSquared() < 1e-8f) t = SN.Vector3.UnitX;
@@ -844,21 +866,31 @@ namespace Game_Engine.Core.Component
             var mergedTris = new int[totalT];
 
             SN.Vector3 centerAccum = SN.Vector3.Zero;
+            float localPatch = Math.Max(0.05f, planet.WorldToLocalLength(Math.Max(0.05f, patchRadius)));
+            float localH = planet.WorldToLocalLength(Math.Clamp(GrassHeight, 0.35f, 1.6f));
             for (int bi = 0; bi < bladeCount; bi++)
             {
                 float ang = (float)rng.NextDouble() * MathF.Tau;
-                float rad = MathF.Sqrt((float)rng.NextDouble()) * Math.Max(0.05f, patchRadius);
+                float rad = MathF.Sqrt((float)rng.NextDouble()) * localPatch;
                 var offset = t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
-                var approx = planetCenter + n * planet.SampleSurfaceRadius(n) + offset;
-                var dir = SN.Vector3.Normalize(approx - planetCenter);
-                float surf = planet.SampleSurfaceRadius(dir);
-                var basePos = planetCenter + dir * surf;
-                var surfN = SamplePlanetSurfaceNormal(planet, planetCenter, dir);
-                // Use radial-up as the contact anchor and blend in slope normal for visual tilt.
-                // This prevents floating caused by aggressive normal deviations on steep relief.
-                var placeUp = SafeNormalize(SN.Vector3.Lerp(dir, surfN, 0.45f), dir);
+                var approx = planet.SampleLocalCrustPoint(n) + offset;
+                var dir = SN.Vector3.Normalize(approx);
+                var baseLocal = planet.SampleLocalCrustPoint(dir);
 
-                // Build local basis where Y aligns to sampled terrain surface normal.
+                var dirT = SN.Vector3.Normalize(dir + t * 0.0018f);
+                var dirB = SN.Vector3.Normalize(dir + b * 0.0018f);
+                var lp0 = baseLocal;
+                var lpT = planet.SampleLocalCrustPoint(dirT);
+                var lpB = planet.SampleLocalCrustPoint(dirB);
+                var surfN = SN.Vector3.Cross(lpT - lp0, lpB - lp0);
+                if (surfN.LengthSquared() < 1e-8f)
+                    surfN = dir;
+                else
+                    surfN = SN.Vector3.Normalize(surfN);
+                if (SN.Vector3.Dot(surfN, dir) < 0f)
+                    surfN = -surfN;
+                var placeUp = SafeNormalize(SN.Vector3.Lerp(dir, surfN, 0.55f), dir);
+
                 var side = SN.Vector3.Cross(MathF.Abs(placeUp.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, placeUp);
                 if (side.LengthSquared() < 1e-8f) side = SN.Vector3.UnitX;
                 side = SN.Vector3.Normalize(side);
@@ -869,28 +901,26 @@ namespace Game_Engine.Core.Component
                 var zAxis = -side * sy + fwd * cy;
 
                 float scale = MinScale + (float)rng.NextDouble() * (MaxScale - MinScale);
-                float rootEmbed = Math.Clamp(Math.Max(0.10f, GrassHeight * 0.28f) * Math.Max(0.6f, scale), 0.10f, 0.65f);
+                float rootEmbed = planet.WorldToLocalLength(0.08f);
                 int vOff = bi * vPerBlade;
                 int triOff = bi * tPerBlade;
+                float srcH = MathF.Max(1e-4f, GrassHeight);
+                float hMul = (localH * scale) / srcH;
 
                 for (int vi = 0; vi < vPerBlade; vi++)
                 {
-                    // Anchor to mesh bottom so imported meshes whose pivot is centered
-                    // still sit on the terrain surface correctly.
                     var sv = srcVerts[vi];
-                    var lv = new SN.Vector3(sv.X * scale, (sv.Y - srcMinY) * scale, sv.Z * scale);
-                    var wp = (basePos - dir * rootEmbed) + xAxis * lv.X + placeUp * lv.Y + zAxis * lv.Z;
-                    mergedVerts[vOff + vi] = SN.Vector3.Transform(wp, selfWorldInv);
+                    var lv = new SN.Vector3(sv.X * hMul, (sv.Y - srcMinY) * hMul, sv.Z * hMul);
+                    mergedVerts[vOff + vi] = (baseLocal - dir * rootEmbed) + xAxis * lv.X + placeUp * lv.Y + zAxis * lv.Z;
 
                     var ln = vi < srcNorms.Length ? srcNorms[vi] : SN.Vector3.UnitY;
                     var wn = xAxis * ln.X + placeUp * ln.Y + zAxis * ln.Z;
                     if (wn.LengthSquared() <= 1e-8f) wn = placeUp;
-                    wn = SN.Vector3.Normalize(wn);
-                    mergedNorms[vOff + vi] = SN.Vector3.Normalize(SN.Vector3.TransformNormal(wn, selfWorldInv));
+                    mergedNorms[vOff + vi] = SN.Vector3.Normalize(wn);
                     mergedUVs[vOff + vi] = vi < srcUVs.Length ? srcUVs[vi] : SN.Vector2.Zero;
                 }
 
-                centerAccum += basePos;
+                centerAccum += baseLocal;
 
                 for (int ti = 0; ti < tPerBlade; ti++)
                     mergedTris[triOff + ti] = srcTris[ti] + vOff;
@@ -906,12 +936,13 @@ namespace Game_Engine.Core.Component
             chunkGO.AddBehavior(mf);
             var mr = new MeshRenderer { Material = grassMat, DoubleSided = true };
             chunkGO.AddBehavior(mr);
+            var worldCenter = planet.LocalToWorld(centerAccum / Math.Max(1, bladeCount));
             _chunks.Add(new ChunkInfo
             {
                 ChunkGO = chunkGO,
-                CenterX = (centerAccum / bladeCount).X,
-                CenterY = (centerAccum / bladeCount).Y,
-                CenterZ = (centerAccum / bladeCount).Z
+                CenterX = worldCenter.X,
+                CenterY = worldCenter.Y,
+                CenterZ = worldCenter.Z
             });
 
             GrassBuilt = true;
@@ -921,8 +952,7 @@ namespace Game_Engine.Core.Component
 
         static SN.Vector3 SamplePlanetSurfaceNormal(PlanetTerrain planet, SN.Vector3 planetCenter, SN.Vector3 dir)
         {
-            if (dir.LengthSquared() < 1e-8f)
-                return SN.Vector3.UnitY;
+            _ = planetCenter;
             dir = SN.Vector3.Normalize(dir);
 
             var t = SN.Vector3.Cross(MathF.Abs(dir.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, dir);
@@ -931,14 +961,17 @@ namespace Game_Engine.Core.Component
             t = SN.Vector3.Normalize(t);
             var b = SN.Vector3.Normalize(SN.Vector3.Cross(dir, t));
 
-            // Small angular offset to estimate local slope from neighboring samples.
             const float eps = 0.0018f;
             var dirT = SN.Vector3.Normalize(dir + t * eps);
             var dirB = SN.Vector3.Normalize(dir + b * eps);
 
-            var p0 = planetCenter + dir * planet.SampleSurfaceRadius(dir);
-            var pT = planetCenter + dirT * planet.SampleSurfaceRadius(dirT);
-            var pB = planetCenter + dirB * planet.SampleSurfaceRadius(dirB);
+            var lp0 = planet.SampleLocalCrustPoint(dir);
+            var lpT = planet.SampleLocalCrustPoint(dirT);
+            var lpB = planet.SampleLocalCrustPoint(dirB);
+
+            var p0 = planet.LocalToWorld(lp0);
+            var pT = planet.LocalToWorld(lpT);
+            var pB = planet.LocalToWorld(lpB);
 
             var n = SN.Vector3.Cross(pT - p0, pB - p0);
             if (n.LengthSquared() < 1e-8f)

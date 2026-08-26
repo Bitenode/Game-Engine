@@ -2,13 +2,15 @@
 
 ## Overview
 
-The planet system provides a cube-sphere, transvoxel terrain pipeline with biome-driven surface generation, optional caves, water shell rendering, and planet-relative physics. It is centered on the `PlanetTerrain` component and integrates directly with `Rigidbody`, `RigidbodyPlayer`, and `Camera`.
+The planet system provides a cube-sphere world with a **solid voxel-filled interior** and procedural **multi-scale caves** carved through it. Each quadtree leaf owns one or more radial `VoxelChunk` shells (U/V on the cube face, Z radial). `DensityGenerator` fills 3D density (surface + interior rock + worm/cavern noise), `PlanetVoxelEditStore` applies dig/build strokes in planet-local space, and `TransvoxelMesher` builds the mesh (regular cells plus LOD transition cells from `TransitionMask`). Water, atmosphere, biome graphs, and radial gravity stay as companion systems.
+
+This is **not** a hollow shell with a fake floor. Land biomes fill rock from near the core (~4% of radius) to slightly above the authored surface. Caves are 3D voids inside that volume; they are not height-subtracted pits on the outer shell.
 
 Core goals:
-- Stream chunks around the camera with bounded runtime cost
+- Stream chunks around the camera with bounded runtime cost and parent-hold LOD (no holes while children generate)
 - Author biome rules visually with the Biome Graph editor
-- Keep movement and camera behavior stable on curved planetary surfaces
-- Reuse the same biome/noise pipeline for both rendering and physics queries
+- Query the **same density field** for meshing, editor picking, and cave-aware contact
+- Keep movement and camera behavior stable on curved surfaces (gravity still radial)
 
 ---
 
@@ -16,14 +18,19 @@ Core goals:
 
 | Type | Role |
 |------|------|
-| `PlanetTerrain` | User-facing component that owns config, biome map, chunk manager, and water shell |
-| `PlanetChunkManager` | Updates 6 face quadtrees, schedules async mesh generation, applies completed meshes on main thread |
+| `PlanetTerrain` | User-facing component: config, biome map, chunk manager, density queries, voxel edits, water shell |
+| `PlanetChunkManager` | Six face quadtrees, prefetch/split, parent-hold apply, transvoxel remesh, edit commands |
+| `PlanetSpace` | World ↔ planet-local unscaled conversion (center subtract, then unscale) |
+| `PlanetNoiseCache` | Shared fractal-noise instances per planet (biome, erosion, cave layers) — reused across chunk jobs |
+| `PlanetDensitySampler` | Samples crust density + multi-scale caves + edit overlay in local space |
+| `PlanetDensityRaycast` | Sphere-marches that field; fills `PlanetDensityHit` |
 | `BiomeMap` | Resolves biome blends per sphere direction |
 | `BiomeGraph` | Node graph that compiles into biome generation parameters |
-| `PlanetAssetIO` | Reads/writes `.planet` assets (config + graph path + water settings) |
-| `PlanetCollider` | Planet collider shell used for broad-phase AABB and gizmo bounds |
-| `Rigidbody` | Planet-aware gravity, grounding, and collision response |
+| `PlanetAssetIO` | `.planet` JSON plus `.planetvox` sidecar load/save |
+| `PlanetCollider` | Broad-phase AABB and gizmo shell (not triangle contact) |
+| `Rigidbody` / `CharacterController` | Radial gravity + density ray/spherecast contact |
 | `RigidbodyPlayer` | Tangent-plane movement + camera alignment for planets |
+| `PlanetPlayerSpawner` | Play-mode spawner: RigidbodyPlayer + capsule + camera on the crust |
 | `Camera` | Supports custom `WorldUp` so horizon follows local surface normal |
 
 ---
@@ -54,24 +61,52 @@ Core goals:
 - Loads `.planet` data first (if `PlanetAssetPath` is set), then loads/compiles `BiomeGraphPath`
 - Rebuilds biome map, noise caches, chunk manager, and water after graph apply
 - Updates chunk streaming on interval and movement threshold (not every frame)
-- Exposes `SampleSurfaceRadius(sphereDir)` for accurate physics grounding
 - Tracks effective world radius from transform scale so LOD, water, and physics stay in sync on scaled planets
+- Converts world brushes/queries through `WorldToLocal` / `LocalToWorld` (`PlanetSpace`) so a planet off the origin still edits and hits correctly
+
+### Density queries vs `SampleSurfaceRadius`
+
+Use the **density field** for anything that must hit caves, walls, ceilings, or painted holes on any hemisphere:
+
+| API | What it is |
+|-----|------------|
+| `RaycastDensity(worldOrigin, worldDirection, maxDistance, out PlanetDensityHit hit)` | Ray-march crust density (caves included) |
+| `Raycast(...)` | Alias of `RaycastDensity` (Scene View brushes) |
+| `Spherecast(worldOrigin, worldDirection, worldRadius, maxDistance, out hit)` | Thick query for capsule/rigidbody contact |
+| `TrySampleLocalIsosurface(sphereDir, out localPoint, out localNormal)` | First air→solid crossing inward along a cube-sphere direction (pits, cave mouths) |
+| `ResolveDensityPenetration(ref worldPos, worldClearance)` | Push a point out of solid density |
+
+`PlanetDensityHit` fields: `Point`, `Normal`, `Distance`, `StartedInside`.
+
+`SampleSurfaceRadius(sphereDir)` is the **outermost** crust crossing (air→solid walking inward from outside the shell). It is for water, orbit LOD, atmosphere, vegetation radial estimates, and collider gizmos. It is **not** cave-floor contact. Physics grounding uses `Spherecast` / `RaycastDensity` along `-LocalUp`.
+
+### Voxel edits and `.planetvox`
+
+`DigSphere` / `BuildSphere` take a **world** brush center and radius. Internally they store strokes in **planet-local unscaled** space (`PlanetVoxelEditStore`). Positive density delta removes solid (dig); negative adds solid (build). Fast path: if the leaf already has a `VoxelChunk`, the stroke is splatted into the grid and remeshed; otherwise the leaf is marked dirty.
+
+Persistence:
+
+- `SavePlanetAsset()` writes `.planet` JSON (`PlanetAssetData.Version` = 2) and then `SaveVoxelEdits()`.
+- `SaveVoxelEdits()` / `LoadVoxelEdits()` read/write a sidecar named `<planet>.planetvox` next to the `.planet` (or `PlanetAssetData.VoxelEditsPath` if set). Strokes may be baked into sparse `BakedCells` when the list grows.
+- Only the offline editor or a network **server** writes those files (`OwnsPlanetAssetForPersist`). Clients send `PlanetVoxelEdit` RPCs; the server broadcasts `PlanetVoxelInvalidate`.
+
+`ClearVoxelEdits(rebuildNow)` clears the live overlay; the sidecar updates on the next save.
 
 ---
 
 ## Planet Asset Workflow (`.planet`)
 
-Planet state can now be stored in a dedicated `.planet` file:
+Planet state is stored in a dedicated `.planet` file plus an optional voxel sidecar:
 
-- Includes `PlanetConfig`, `SeaLevelFraction`, `EnableWater`, and `BiomeGraphPath`
-- Supports project-relative paths and absolute paths
-- Uses `PlanetAssetIO` for normalized load/save behavior
-- Keeps planet setup portable across scenes while preserving graph-driven generation style
+- `.planet`: `PlanetConfig`, `SeaLevelFraction`, `EnableWater`, `BiomeGraphPath`, vegetation placements, `VoxelEditsPath`
+- `.planetvox`: sphere strokes and optional baked cell deltas in planet-local unscaled space
+- Project-relative or absolute paths; `PlanetAssetIO` normalizes load/save
 
 Recommended order:
 1. Save/load `.planet` for structural planet settings
 2. Save/load `.biomegraph` for biome style authoring
 3. Apply/compile graph to rebuild runtime terrain and water
+4. Keep `.planetvox` next to the asset so painted caves survive reload
 
 ---
 
@@ -134,12 +169,51 @@ Key limits from `PlanetConfig`:
 - Internal `MaxConcurrentJobs` - async mesh worker limit
 
 High-level update sequence:
-1. Update all face quadtrees
+1. Update all face quadtrees (prefetch children before committing a split)
 2. Enforce leaf budget (merges far leaves first)
 3. Apply completed meshes (bounded)
 4. Sort leaves by camera distance
 5. Unload far leaves beyond active cap
 6. Schedule new mesh generation for nearest dirty leaves (bounded)
+
+**Parent-hold LOD:** a node stays a visible leaf (`IsLeaf`) until `TryCommitSplit` succeeds — all four children already have `GeneratedMesh`. Prefetch allocates children and generates their meshes while the parent mesh still renders (`CollectRenderable` keeps the parent if children are incomplete). On merge, the parent mesh is kept when it still exists; only dirty parents rebuild. This avoids missing-face holes while LOD refines.
+
+### Interior fill and stacked voxel shells
+
+`DensityGenerator.ComputeInteriorBounds` defines solid fill from `radialMin` (~4% of `Radius`, minimum 16) out to `radialMax` (surface + amplitude/brush padding).
+
+Fine leaves do **not** stretch one 32³ grid across the entire radius (that would make 20 m+ cells and shred caves). Instead `PlanetMeshGenerator` stacks **1–4 radial shells** per leaf (`DensityGenerator.RadialLayerCount`), each ~320 m thick with 32³ samples, then merges the transvoxel meshes with `TransvoxelMeshData.Append`.
+
+| Leaf tangential cell | Mesh mode |
+|----------------------|-----------|
+| `> VolumetricMaxCellSize` | Smooth **heightfield shell** (orbit / coarse Scene View) |
+| `≤ VolumetricMaxCellSize` | **Stacked transvoxel** shells (caves + interior rock) |
+
+`VolumetricMaxCellSize` defaults to **3.5** at orbit. When the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`), `PlanetTerrain.ApplyChunkBudgets` raises it to **11**, increases leaf/chunk caps, and boosts mesh job budgets so interior cave walls refine while you fly around.
+
+### Multi-scale cave carving
+
+When `EnableCaves` is on, `PlanetDensitySampler.ApplyCaveCarve` runs only on biomes with `CavesEnabled` (ocean/beach presets default to **off**). Carving:
+
+- Starts **12 m** below the local surface (thin roof so caves do not punch through the crust)
+- Continues through the **full interior** (no 280 m depth cap)
+- Stops at a tiny solid core (`r < max(16, 0.035 × Radius)`) so cube-sphere samples never collapse at the origin
+- Blends four noise scales:
+  - **Small tunnels** — high-frequency worm noise at every depth
+  - **Medium passages** — mid-scale worm corridors
+  - **Large caverns** — low-frequency FBM, slightly more open toward the core
+  - **Huge chambers** — sparse inner-half mega-rooms
+
+Cave density and biome `CaveDensity` scale how aggressively each scale opens rock.
+
+### Interior LOD and rendering
+
+When the camera is inside or just under the crust:
+
+- `QuadNode.CameraPriorityDistance` samples the patch at the camera radius (not only outer-surface corners), so Scene View fly-cam refines walls you are looking at
+- `FaceQuadtree` splits **2.3×** more aggressively near the crust
+- `SceneRenderer` disables backface culling and frustum culling in the crust band (`camRadial < 1.08 × radius`)
+- Planet terrain shader uses `slope = abs(dot(N, radialDir))` so steep cave walls still get rock textures, not grey undersides
 
 Hierarchy/runtime note:
 - Chunk `GameObject` children are no longer created (no `PlanetChunk_*` scene hierarchy spam)
@@ -154,15 +228,21 @@ Hierarchy/runtime note:
 
 | File | Purpose |
 |------|---------|
-| `PlanetConfig.cs` | Planet generation settings and runtime chunk/job budgets |
-| `PlanetChunkManager.cs` | Face quadtree updates, job scheduling, mesh apply/unload |
-| `FaceQuadtree.cs` | Per-face split/merge logic and neighbor lookup |
-| `QuadNode.cs` | Quadtree node state (`NeedsMeshRebuild`, `TransitionMask`, generated mesh cache) |
+| `PlanetConfig.cs` | Planet generation settings and runtime chunk/job budgets (`VolumetricMaxCellSize`, cave globals, vegetation caps) |
+| `PlanetSpace.cs` | World ↔ planet-local unscaled transforms |
+| `PlanetNoiseCache.cs` | Shared per-planet noise instances (biome, erosion, cave worm/cavern/detail) |
+| `PlanetChunkManager.cs` | Face quadtree updates, job scheduling, parent-hold apply, sphere edits |
+| `FaceQuadtree.cs` | Per-face split/merge/prefetch and neighbor lookup |
+| `QuadNode.cs` | Leaf/`VoxelChunk`/`GeneratedMesh`, `TransitionMask`, interior-aware camera priority |
 | `CubeSphereMath.cs` | Cube-face UV <-> sphere direction conversions |
-| `DensityGenerator.cs` | Voxel density/material generation for spherical terrain fields |
-| `PlanetMeshGenerator.cs` | Surface mesh generation with biome blends/erosion/caves |
+| `DensityGenerator.cs` | Fills radial `VoxelChunk` shells; `ComputeInteriorBounds`, `RadialLayerCount` |
+| `PlanetDensitySampler.cs` | Density at a local point (procedural + multi-scale caves + edits) |
+| `PlanetDensityRaycast.cs` | `Raycast` / `Spherecast` / local isosurface / penetration |
+| `PlanetMeshGenerator.cs` | Heightfield shell (coarse) or stacked `VoxelChunk` → transvoxel (fine) |
+| `PlanetVoxelEditStore.cs` / `PlanetVoxelEditAsset.cs` | Live strokes + sidecar DTO |
+| `PlanetManipulationApi.cs` | Static `DigSphere` / `BuildSphere` helpers |
 | `PlanetWater.cs` | Planet ocean shell mesh generation |
-| `PlanetAssetIO.cs` | `.planet` DTO + load/save + path normalization |
+| `PlanetAssetIO.cs` | `.planet` DTO + `.planetvox` sidecar + path normalization |
 | `PlanetWaterSimulation.cs` | Runtime water simulation state for planet rendering integration |
 | `PlanetWaterVoxelGenerator.cs` | Water-related voxel contribution utilities |
 
@@ -178,7 +258,7 @@ Hierarchy/runtime note:
 | File | Purpose |
 |------|---------|
 | `VoxelChunk.cs` | Density/material grid + oriented basis/world mapping |
-| `TransvoxelMesher.cs` | Regular + transition-cell meshing, outputs engine mesh data |
+| `TransvoxelMesher.cs` | Regular + transition-cell meshing; `TransvoxelMeshData.Append` merges radial shells |
 | `MarchingCubesTables.cs` | Lookup tables for marching cubes/transvoxel topology |
 
 ---
@@ -192,7 +272,7 @@ Hierarchy/runtime note:
 - Finds nearest active planet each fixed tick
 - Computes `LocalUp` from planet center to body position
 - Applies gravity along `-LocalUp` when on a planet (fallback: world `-Y`)
-- Grounds against sampled planet surface radius (`PlanetTerrain.SampleSurfaceRadius`)
+- Grounds with `Spherecast` / `RaycastDensity` along `-LocalUp` and `ResolveDensityPenetration` (cave floors, walls, ceilings)
 - Keeps tangent velocity when grounded (removes into-surface component)
 - Preserves existing non-planet collision paths (terrain, mesh, AABB, triggers)
 - Resolves underwater state against world-space sea level (including planet transform scale)
@@ -208,8 +288,8 @@ Additional runtime state:
 
 - Computes planet world AABB from max radius (`base radius + biome max amplitude`) with world-scale awareness
 - Exposes `BaseRadius`, `MaxRadius`, and optional `RadiusOverride`
-- Provides debug shell bounds for collider visualization
-- Defers exact terrain-conforming contact to `PlanetTerrain.SampleSurfaceRadius(...)`
+- Provides debug shell bounds for collider visualization (gizmos still sample `SampleSurfaceRadius` for the outer shell)
+- Exact player/body contact is density ray/spherecast on `PlanetTerrain`, not the AABB shell
 
 ### RigidbodyPlayer
 
@@ -240,7 +320,7 @@ For planet traversal:
 ## Editor and Data Notes
 
 - Biome graphs are saved as `.biomegraph` JSON files
-- Planet assets are saved as `.planet` JSON files
+- Planet assets are saved as `.planet` JSON files; voxel strokes as `.planetvox` sidecars
 - Graph paths are stored as project-relative paths when possible
 - `PlanetTerrain.TryLoadBiomeGraph()` resolves both relative and absolute paths
 - `PlanetTerrain` normalizes and persists `PlanetAssetPath`/`BiomeGraphPath` project-relative when possible
@@ -248,19 +328,33 @@ For planet traversal:
 
 Recommended setup:
 1. Add `PlanetTerrain` to a root GameObject
-2. Add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`
+2. Add `PlanetPlayerSpawner` to the planet (or any scene object) **or** manually add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`
 3. Ensure there is a `Camera` for the player/controller
 4. Author and compile a biome graph, then assign/verify `BiomeGraphPath`
+5. On land biomes, enable `CavesEnabled` in the Biome Graph layer properties (ocean/beach default off)
 
 ---
 
-## Scene View LOD Behavior
+## Scene View LOD and editor brushes
 
-Scene View uses an orbit-aware profile so whole-planet visibility is stable while orbiting:
+Scene View runs the real quadtree LOD every editor frame (`PlanetTerrain.UpdateSceneViewLod` / `RefreshLodAroundCamera`):
 
-- Near-orbit to far-orbit range scales LOD depth/split aggressiveness smoothly
-- Fill/apply budgets increase when farther out to populate full-planet coverage quickly
-- Close-range no longer forces always-loaded safety locks; normal streaming can merge/unload near-camera chunks
+- Authored `MaxLodDepth` is kept; active-chunk / leaf / apply budgets are raised for editor orbit
+- When the fly camera is **inside** the planet, interior chunk budgets apply (higher `VolumetricMaxCellSize`, more leaves, faster mesh apply)
+- Parent-hold LOD still applies while orbiting or underground
+
+**Scene View planet brushes** (Inspector **Planet brushes (Scene View)** when a GameObject with `PlanetTerrain` is selected):
+
+- Tools: **Dig**, **Build**, **Smooth**, **Flatten**, plus **Radius** / **Strength** / **Falloff** sliders
+- Hover shows a ring gizmo on the density surface
+- Left-drag paints; right-drag or **Shift** inverts Dig/Build
+- Picking: camera ray → `PlanetTerrain.Raycast` (density). Hits the side you clicked, including cave walls — not an XZ heightmap and not player-underfoot radial projection
+- Dig/Build call `DigSphere` / `BuildSphere`; Smooth/Flatten call `SmoothSphere` / `FlattenSphere`
+- Mouse-up runs `SaveVoxelEdits()` to the `.planetvox` sidecar
+
+Play-mode **PlanetTool** (Standard Assets) uses the same look-ray path: LMB dig / RMB build along the camera look-ray (`Raycast`), `[` `]` radius, `-` `=` strength. On mouse-up it also calls `SaveVoxelEdits()`.
+
+`PlanetManipulator.AutoApply` rays from the manipulator GameObject toward the planet center, then away if needed, and paints the **surface hit** (not the planet pivot).
 
 ---
 
@@ -347,7 +441,7 @@ Notes:
 
 `PlanetTerrain` writes a `Vegetation` block into the planet asset JSON (see `PlanetVegetationAssetData` / `PlanetVegetationPlacement`).
 
-- **`DirX` / `DirY` / `DirZ`**: unit direction from the **planet pivot** toward the instance. World position is reconstructed with `SampleSurfaceRadius(dir)` (not raw `PosX/Y/Z` in the file).
+- **`DirX` / `DirY` / `DirZ`**: unit direction from the **planet pivot** toward the instance. World position is reconstructed with `SampleSurfaceRadius(dir)` (outer crust; not raw `PosX/Y/Z` in the file). For a painted pit or cave mouth, prefer `TrySampleLocalIsosurface` at runtime.
 - **`ModelPath` / `PrefabPath` / `TexturePath`**: project-relative asset references. **Imported trees** often store `MeshFilter.ModelPath` only on **child** objects (multi-part FBX); export walks the hierarchy so the `.planet` file still gets the correct model path.
 - **`UseStoredPlacements`**: mirrors `PlanetVegetationSystem.UsePlanetAssetPlacements`. Enable **Use .planet Vegetation Placements** in the inspector if you want spawn logic to prefer saved rows; `AutoUseSavedPlacementsWhenPresent` can still opt in when the flag was off but the file contains placements.
 - **Spawn budget**: `MaxAssetSpawnsPerUpdate` limits how many saved placements materialize per tick. Grass is spawned **before** trees in that tick so grass is not starved when the budget is small. After scene load, a **one-shot warmup** applies a larger budget so grass and trees both appear quickly.
@@ -355,14 +449,15 @@ Notes:
 
 ### Planet Grass Attachment and Rendering Notes
 
-Planet grass spawned through `VegetationPainter.BuildOnPlanetPatch(...)` includes
-planet-specific grounding and rendering protections:
+Planet grass spawned through `VegetationPainter.BuildOnPlanetPatch(...)` and biome/asset grass include planet-specific grounding:
 
-- blade placement blends local slope normal with radial-up for stable terrain contact
+- blade placement blends local slope normal with radial-up (`ResolvePlanetGrassWorldUp`, `SeatGrassOnSurface`) for stable terrain contact
 - roots are embedded into the sampled surface to reduce floating on steep relief
+- trees sink along radial AABB (`TreeRadialSurfaceBias`) so trunks seat into the rendered shell
 - planet grass chunk culling uses 3D world distance (X/Y/Z), not flat XZ distance
 - grass materials are forced to alpha-cutout behavior to avoid opaque card fallback
 - if external texture decode fails, a generated cutout fallback blade texture is used
+- `MaxVegetationSpawnsPerUpdate` is capped during play (32) to keep frame time stable
 
 ### Planet Precipitation Notes
 
@@ -374,6 +469,8 @@ Planet weather precipitation uses layered particle emitters around the camera:
 - by default, weather uses a performance budget profile (layer cap + particle cap + emission cap)
 - optional planet surface-hit termination can be disabled for weather emitters to reduce script cost
 - emitters support planet gravity alignment (nearest active planet center)
+
+**Underwater on planets:** `UnderwaterQuery` treats deep interior and caves as **dry** unless the point is below sea level **and** inside an ocean column (between crust and sea sphere) or clipped into the sea mesh. Caves under land stay walkable without swim physics.
 
 Recommended runtime tuning for weak CPUs:
 

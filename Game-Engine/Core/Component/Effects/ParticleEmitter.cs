@@ -42,6 +42,9 @@ namespace Game_Engine.Core.Component
         [Persist] public bool AlignEmissionToGravity { get; set; } = false;
         [Persist] public bool UsePlanetGravity { get; set; } = false;
         [Persist] public bool StopOnPlanetSurfaceHit { get; set; } = false;
+        /// <summary>When true, quads stretch along velocity (rain streaks) instead of circular camera billboards.</summary>
+        [Persist] public bool StretchAlongVelocity { get; set; } = false;
+        [Persist] public float StretchLength { get; set; } = 0.8f;
 
         // ── Color (start → end gradient) ──
         [Persist] public SN.Vector4 StartColor { get; set; } = new SN.Vector4(1f, 0.8f, 0.2f, 1f);
@@ -203,10 +206,21 @@ namespace Game_Engine.Core.Component
                         MathF.Sin(phi) * MathF.Sin(theta));
                     break;
                 case EmitterShape.Box:
-                    pos += new SN.Vector3(
+                    var localBox = new SN.Vector3(
                         (float)(_rng.NextDouble() - 0.5) * BoxSize.X,
                         (float)(_rng.NextDouble() - 0.5) * BoxSize.Y,
                         (float)(_rng.NextDouble() - 0.5) * BoxSize.Z);
+                    if (UsePlanetGravity)
+                    {
+                        // BoxSize is (tangent, up, bitangent) so rain/snow sheets follow the globe.
+                        var up = -ResolveGravityDirection(pos);
+                        BuildTangentFrame(up, out var tangent, out var bitangent);
+                        pos += tangent * localBox.X + up * localBox.Y + bitangent * localBox.Z;
+                    }
+                    else
+                    {
+                        pos += localBox;
+                    }
                     break;
             }
             if (AlignEmissionToGravity)
@@ -251,6 +265,8 @@ namespace Game_Engine.Core.Component
         /// <summary>Apply a built-in preset configuration.</summary>
         public void ApplyPreset(ParticlePreset preset)
         {
+            StretchAlongVelocity = false;
+            StretchLength = 0.8f;
             switch (preset)
             {
                 case ParticlePreset.Fire:
@@ -278,29 +294,31 @@ namespace Game_Engine.Core.Component
                     SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Rain:
-                    EmissionRate = 1300f; MaxParticles = 18000; Lifetime = 35f; StartSpeed = 14f; SpeedVariation = 3f;
-                    StartSize = 0.040f; EndSize = 0.026f; GravityMultiplier = 0.70f; Drag = 0.01f;
-                    // Slight neutral-gray tint with high alpha for readability in motion.
-                    StartColor = new SN.Vector4(0.82f, 0.84f, 0.86f, 0.92f);
-                    EndColor = new SN.Vector4(0.76f, 0.79f, 0.82f, 0.76f);
-                    // Vertical thickness is critical so rain doesn't appear as a single popping sheet.
-                    Shape = EmitterShape.Box; BoxSize = new SN.Vector3(42f, 80f, 42f);
+                    EmissionRate = 520f; MaxParticles = 2500; Lifetime = 2.4f; StartSpeed = 22f; SpeedVariation = 4f;
+                    StartSize = 0.055f; EndSize = 0.045f; GravityMultiplier = 1.15f; Drag = 0.0f;
+                    StartColor = new SN.Vector4(0.78f, 0.84f, 0.92f, 0.95f);
+                    EndColor = new SN.Vector4(0.70f, 0.78f, 0.88f, 0.55f);
+                    Shape = EmitterShape.Box; BoxSize = new SN.Vector3(22f, 16f, 22f);
                     EmissionDirection = -SN.Vector3.UnitY;
                     AlignEmissionToGravity = true;
                     UsePlanetGravity = true;
                     StopOnPlanetSurfaceHit = true;
+                    StretchAlongVelocity = true;
+                    StretchLength = 1.15f;
                     SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Snow:
-                    EmissionRate = 80f; MaxParticles = 1000; Lifetime = 60f; StartSpeed = 0.5f; SpeedVariation = 0.3f;
-                    StartSize = 0.08f; EndSize = 0.04f; GravityMultiplier = 0.2f; Drag = 0.5f;
-                    StartColor = new SN.Vector4(1f, 1f, 1f, 0.9f);
-                    EndColor = new SN.Vector4(1f, 1f, 1f, 0.9f);
-                    Shape = EmitterShape.Box; BoxSize = new SN.Vector3(20f, 0f, 20f);
+                    EmissionRate = 160f; MaxParticles = 1400; Lifetime = 9f; StartSpeed = 1.4f; SpeedVariation = 0.6f;
+                    StartSize = 0.16f; EndSize = 0.12f; GravityMultiplier = 0.12f; Drag = 0.35f;
+                    StartColor = new SN.Vector4(0.97f, 0.98f, 1f, 0.95f);
+                    EndColor = new SN.Vector4(0.92f, 0.95f, 1f, 0.55f);
+                    Shape = EmitterShape.Box; BoxSize = new SN.Vector3(24f, 14f, 24f);
                     EmissionDirection = -SN.Vector3.UnitY;
                     AlignEmissionToGravity = true;
                     UsePlanetGravity = true;
                     StopOnPlanetSurfaceHit = true;
+                    StretchAlongVelocity = false;
+                    StretchLength = 0.8f;
                     SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Dust:
@@ -391,17 +409,43 @@ namespace Game_Engine.Core.Component
             return v / MathF.Sqrt(lsq);
         }
 
+        static void BuildTangentFrame(SN.Vector3 up, out SN.Vector3 tangent, out SN.Vector3 bitangent)
+        {
+            up = SafeNormalize(up, SN.Vector3.UnitY);
+            var hint = MathF.Abs(up.Y) > 0.9f ? SN.Vector3.UnitX : SN.Vector3.UnitY;
+            tangent = SafeNormalize(SN.Vector3.Cross(hint, up), SN.Vector3.UnitX);
+            bitangent = SafeNormalize(SN.Vector3.Cross(up, tangent), SN.Vector3.UnitZ);
+        }
+
+        public SN.Vector3 GetRenderFallDirection()
+        {
+            for (int i = 0; i < Particles.Length; i++)
+            {
+                ref var p = ref Particles[i];
+                if (!p.Active) continue;
+                if (p.Velocity.LengthSquared() > 1e-8f)
+                    return SafeNormalize(p.Velocity, -SN.Vector3.UnitY);
+            }
+            return ResolveGravityDirection(new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z));
+        }
+
         /// <summary>
         /// Get particle instance data for rendering (position, color, size).
         /// Called by the renderer each frame.
         /// </summary>
-        public int FillRenderData(SN.Vector4[] positions, SN.Vector4[] colors, int maxCount)
+        public int FillRenderData(SN.Vector4[] positions, SN.Vector4[] colors, int maxCount, int skipActive = 0, SN.Vector4[]? stretch = null)
         {
+            int skipped = 0;
             int count = 0;
             for (int i = 0; i < Particles.Length && count < maxCount; i++)
             {
                 ref var p = ref Particles[i];
                 if (!p.Active) continue;
+                if (skipped < skipActive)
+                {
+                    skipped++;
+                    continue;
+                }
 
                 float t = 1f - (p.Life / p.MaxLife); // 0 at spawn, 1 at death
                 float size = StartSize + (EndSize - StartSize) * t;
@@ -409,6 +453,12 @@ namespace Game_Engine.Core.Component
 
                 positions[count] = new SN.Vector4(p.Position, size);
                 colors[count] = color;
+                if (stretch != null)
+                {
+                    var vel = p.Velocity;
+                    float len = StretchAlongVelocity ? Math.Max(0.12f, StretchLength) : size;
+                    stretch[count] = new SN.Vector4(vel.X, vel.Y, vel.Z, len);
+                }
                 count++;
             }
             return count;

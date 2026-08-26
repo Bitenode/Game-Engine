@@ -22,6 +22,57 @@ public sealed class TransvoxelMeshData
 
     public bool IsEmpty => Positions.Count == 0;
 
+    /// <summary>Append another mesh, shifting indices so both stay valid.</summary>
+    public void Append(TransvoxelMeshData other)
+    {
+        if (other == null || other.IsEmpty)
+            return;
+
+        int origin = Positions.Count;
+        Positions.AddRange(other.Positions);
+        Normals.AddRange(other.Normals);
+        UVs.AddRange(other.UVs);
+        BlendIndices.AddRange(other.BlendIndices);
+        BlendWeights.AddRange(other.BlendWeights);
+        for (int i = 0; i < other.Indices.Count; i++)
+            Indices.Add(other.Indices[i] + origin);
+    }
+
+    /// <summary>Replace stored normals with area-weighted face normals.</summary>
+    public void RecalculateNormals()
+    {
+        int vertCount = Positions.Count;
+        if (vertCount == 0) return;
+
+        var normals = new SN.Vector3[vertCount];
+        for (int i = 0; i < Indices.Count; i += 3)
+        {
+            int ia = Indices[i], ib = Indices[i + 1], ic = Indices[i + 2];
+            if ((uint)ia >= (uint)vertCount || (uint)ib >= (uint)vertCount || (uint)ic >= (uint)vertCount)
+                continue;
+
+            var e1 = Positions[ib] - Positions[ia];
+            var e2 = Positions[ic] - Positions[ia];
+            var fn = SN.Vector3.Cross(e1, e2);
+            normals[ia] += fn;
+            normals[ib] += fn;
+            normals[ic] += fn;
+        }
+
+        if (Normals.Count != vertCount)
+        {
+            Normals.Clear();
+            for (int i = 0; i < vertCount; i++)
+                Normals.Add(SN.Vector3.UnitY);
+        }
+
+        for (int i = 0; i < vertCount; i++)
+        {
+            float len = normals[i].Length();
+            Normals[i] = len > 1e-8f ? normals[i] / len : SN.Vector3.UnitY;
+        }
+    }
+
     public Game_Engine.Core.Mesh ToEngineMesh()
     {
         var mesh = new Game_Engine.Core.Mesh(
@@ -151,11 +202,15 @@ public static class TransvoxelMesher
         var data = new TransvoxelMeshData();
         int size = chunk.Size;
 
-        var reuseCache = new int[size + 1, size + 1, 4];
+        // [z, y, x, edge] — must include X. A 2D (z,y) cache is overwritten by the
+        // last X in the row, then -Y reuse pulls those verts and rips horizontal fans
+        // across the whole leaf (the shredded rectangle on the facing cube face).
+        var reuseCache = new int[size + 1, size + 1, size + 1, 4];
         for (int z = 0; z < size + 1; z++)
             for (int y = 0; y < size + 1; y++)
-                for (int r = 0; r < 4; r++)
-                    reuseCache[z, y, r] = -1;
+                for (int x = 0; x < size + 1; x++)
+                    for (int r = 0; r < 4; r++)
+                        reuseCache[z, y, x, r] = -1;
 
         for (int z = 0; z < size; z++)
         {
@@ -168,14 +223,19 @@ public static class TransvoxelMesher
             }
         }
 
+        // Transition tables are not wired to real edge pairs yet (verts were
+        // interpolated around a 9-sample ring). That fans extra shredded tris
+        // on the facing leaf. Regular cells stitch enough once reuse includes X.
         if (transitionMask != 0)
-            GenerateTransitionCells(chunk, transitionMask, data);
+        {
+            // Intentionally skipped until GenerateTransitionEdge uses Transvoxel vertex data.
+        }
 
         return data;
     }
 
     static void ProcessRegularCell(VoxelChunk chunk, int x, int y, int z,
-        TransvoxelMeshData data, int[,,] reuseCache)
+        TransvoxelMeshData data, int[,,,] reuseCache)
     {
         Span<float> cornerDensity = stackalloc float[8];
         Span<byte> cornerMat = stackalloc byte[8];
@@ -214,16 +274,12 @@ public static class TransvoxelMesher
             int reuseDir = (vd >> 12) & 0x0F;
             int reuseIdx = (vd >> 8) & 0x0F;
 
-            int reusedVertex = TryReuseVertex(reuseDir, reuseIdx, x, y, z, reuseCache, chunk.Size);
-            if (reusedVertex >= 0)
-            {
-                localToGlobal[i] = reusedVertex;
-                continue;
-            }
+            // Skip transvoxel vertex reuse on spherical chunks: the Lengyel reuse
+            // cache still fans triangles across a leaf even with an XYZ key.
 
             float dA = cornerDensity[cornerA];
             float dB = cornerDensity[cornerB];
-            float t = dA / (dA - dB);
+            float t = (MathF.Abs(dA - dB) > 1e-6f) ? dA / (dA - dB) : 0.5f;
             t = Math.Clamp(t, 0f, 1f);
 
             var offA = MarchingCubesTables.CornerOffset[cornerA];
@@ -266,7 +322,7 @@ public static class TransvoxelMesher
     }
 
     static int TryReuseVertex(int reuseDir, int reuseIdx, int x, int y, int z,
-        int[,,] cache, int size)
+        int[,,,] cache, int size)
     {
         if (reuseDir == 0) return -1;
 
@@ -279,17 +335,19 @@ public static class TransvoxelMesher
         int nz = z + dz;
 
         if (nx < 0 || ny < 0 || nz < 0) return -1;
+        if (nx > size || ny > size || nz > size) return -1;
         if (reuseIdx >= 4) return -1;
 
-        return cache[nz, ny, reuseIdx];
+        return cache[nz, ny, nx, reuseIdx];
     }
 
     static void StoreReuseVertex(int reuseDir, int reuseIdx, int x, int y, int z,
-        int globalIdx, int[,,] cache, int size)
+        int globalIdx, int[,,,] cache, int size)
     {
         if (reuseIdx >= 4) return;
-        if (y < size + 1 && z < size + 1)
-            cache[z, y, reuseIdx] = globalIdx;
+        if ((uint)x > (uint)size || (uint)y > (uint)size || (uint)z > (uint)size)
+            return;
+        cache[z, y, x, reuseIdx] = globalIdx;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

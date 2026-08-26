@@ -94,7 +94,7 @@ Planet broad-phase collider shell for planetary worlds.
 
 **Purpose:** Supplies a stable world-space AABB and visual shell bounds for planets.
 
-**Important:** Final terrain-conforming contact still comes from per-point `PlanetTerrain.SampleSurfaceRadius(...)` queries used by planet-aware physics (`Rigidbody` / `RigidbodyPlayer`).
+**Important:** `PlanetCollider` is **broad-phase only**. Exact contact on a planet uses the volumetric density field: `PlanetTerrain.Spherecast` / `RaycastDensity` (and `ResolveDensityPenetration`) so bodies can stand on cave floors and hit walls/ceilings. `SampleSurfaceRadius` is the outermost crust only (water, orbit, gizmos) — not interior contact. See [Planet System](13_Planet_System.md).
 
 ---
 
@@ -438,9 +438,12 @@ The `BVH` class provides spatial acceleration for collision queries. Instead of 
 
 An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-based feel. Features include:
 - **Force-based movement** with configurable ground/air drag
-- **Swimming physics** — automatic 3D underwater movement
+- **Swimming physics** — automatic 3D underwater movement (`UnderwaterQuery`; planet caves and deep interior stay dry on land)
 - **Jump impulse** — physics-driven jumping with buffered input
 - **Natural push interactions** — momentum transfer between objects
+- **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing
+
+Pair with **`PlanetPlayerSpawner`** for quick play-mode setup, or add manually with `Rigidbody` + `CapsuleCollider`.
 
 See the [Components Reference](03_Components_Reference.md) for full property details.
 
@@ -448,20 +451,23 @@ See the [Components Reference](03_Components_Reference.md) for full property det
 
 ## Planet Physics Integration
 
-The planet pipeline integrates directly with runtime rigidbody physics:
+The planet pipeline integrates directly with runtime rigidbody and character physics:
 
-1. `Rigidbody` finds the nearest active `PlanetTerrain` each fixed tick
-2. `LocalUp` is computed from planet center to body position
+1. `Rigidbody` / `CharacterController` find the nearest active `PlanetTerrain` each tick
+2. `LocalUp` is computed from planet center to body position (radial gravity)
 3. Gravity is applied along `-LocalUp` (fallback is world `-Y` when no planet is active)
-4. Grounding is resolved against `PlanetTerrain.SampleSurfaceRadius(...)`
+4. Grounding and walls use `Spherecast` / `RaycastDensity` along `-LocalUp` against the **same density field as meshing** (multi-scale caves, overhangs, full interior). `ResolveDensityPenetration` pushes the body out of solid
 5. On contact, the into-surface velocity component is removed and tangent motion is preserved
+6. **Underwater:** `UnderwaterQuery` only applies below sea level in ocean columns or when clipped into the sea mesh — not in land caves
+
+`SampleSurfaceRadius` is **not** used for this contact; it remains the outer-crust radius for water/orbit/atmosphere/vegetation estimates.
 
 `RigidbodyPlayer` uses `Rigidbody.LocalUp` for movement and jumping:
 - Movement direction is projected onto the local tangent plane
 - Jump impulse is applied along local up
 - Camera controllers set `Camera.WorldUp` from smoothed local up to keep horizon alignment stable while traversing curved surfaces
 
-See [Planet System](13_Planet_System.md) for full biome graph and chunk-streaming details.
+See [Planet System](13_Planet_System.md) for interior fill, stacked voxel shells, cave scales, chunk streaming, and `.planetvox` edits.
 
 ---
 

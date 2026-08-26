@@ -19,6 +19,12 @@ namespace Game_Engine.Core
     {
         private static int s_viewRenderActive;
 
+        /// <summary>
+        /// Scene View sets this while Play is running so weather particles are not drawn twice.
+        /// Game View leaves it false. Trees/grass stay visible in both views.
+        /// </summary>
+        [ThreadStatic] public static bool SkipPlanetVegetationDraws;
+
         public static bool TryBeginViewRender()
             => Interlocked.CompareExchange(ref s_viewRenderActive, 1, 0) == 0;
 
@@ -214,38 +220,55 @@ namespace Game_Engine.Core
         {
             if (!go.Enabled) return;
 
+            if (SkipPlanetVegetationDraws && IsPlanetVegetationDrawName(go.Name))
+                return;
+
             foreach (var b in go.Behaviors)
             {
                 if (b is ParticleEmitter pe && pe.IsActiveAndEnabled && pe.ActiveParticleCount > 0)
                 {
-                    int count = pe.FillRenderData(positions, colors, 128);
-                    if (count <= 0) continue;
-
                     shader.Use();
                     shader.SetMatrix4("uView", view);
                     shader.SetMatrix4("uProj", proj);
+                    shader.SetInt("uAlignVelocity", pe.StretchAlongVelocity ? 1 : 0);
+                    shader.SetFloat("uStretchLength", Math.Max(0.08f, pe.StretchLength));
+                    var fall = pe.GetRenderFallDirection();
+                    shader.SetVector3("uFallDir", fall);
 
-                    // Upload particle data as uniform arrays
-                    for (int i = 0; i < count; i++)
-                    {
-                        shader.SetVector4($"uParticlePos[{i}]", positions[i].X, positions[i].Y, positions[i].Z, positions[i].W);
-                        shader.SetVector4($"uParticleCol[{i}]", colors[i].X, colors[i].Y, colors[i].Z, colors[i].W);
-                    }
-
-                    // Draw instanced billboard quads
                     gl.Enable(EnableCap.Blend);
                     gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                     gl.DepthMask(false);
 
-                    DrawBillboardQuads(gl, count);
+                    int skip = 0;
+                    while (true)
+                    {
+                        int count = pe.FillRenderData(positions, colors, 128, skip);
+                        if (count <= 0) break;
+
+                        for (int i = 0; i < count; i++)
+                        {
+                            shader.SetVector4($"uParticlePos[{i}]", positions[i].X, positions[i].Y, positions[i].Z, positions[i].W);
+                            shader.SetVector4($"uParticleCol[{i}]", colors[i].X, colors[i].Y, colors[i].Z, colors[i].W);
+                        }
+
+                        DrawBillboardQuads(gl, count);
+                        skip += count;
+                        if (count < 128 || skip >= 1024) break;
+                    }
 
                     gl.DepthMask(true);
                     gl.Disable(EnableCap.Blend);
                 }
             }
 
-            foreach (var child in go.Children)
-                RenderParticlesRecursive(gl, shader, cache, child, view, proj, positions, colors);
+            foreach (var c in go.Children)
+                RenderParticlesRecursive(gl, shader, cache, c, view, proj, positions, colors);
+        }
+
+        static bool IsPlanetVegetationDrawName(string? name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return name.StartsWith("BiomeWeatherPrecipitation", StringComparison.Ordinal);
         }
 
         // Billboard quad VAO (lazy init)
@@ -791,6 +814,9 @@ namespace Game_Engine.Core
 
             // Skip planet chunks and water — they're rendered by the dedicated planet pipeline.
             if (go.Name != null && (go.Name.StartsWith("PlanetChunk_") || go.Name == "PlanetWater"))
+                return;
+
+            if (SkipPlanetVegetationDraws && IsPlanetVegetationDrawName(go.Name))
                 return;
 
             // Fast skip for vegetation chunks whose MeshRenderer was disabled by distance culling.
@@ -2657,7 +2683,10 @@ namespace Game_Engine.Core
             planetShader.SetFloat("uAmbient", atmo.Ambient);
             planetShader.SetFloat("uDiffuseK", diffuseK);
             planetShader.SetVector3("uPlanetCenter", planetCenter);
-            planetShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
+            float radiusWorld = MathF.Max(1f, planet.Config.EffectiveWorldRadius);
+            if (radiusWorld < 2f)
+                radiusWorld = MathF.Max(1f, atmo.GroundRadius);
+            planetShader.SetFloat("uPlanetRadius", radiusWorld);
 
             planetShader.SetInt("uAtmoEnabled", atmo.Enabled ? 1 : 0);
             planetShader.SetVector3("uAtmoSunDir", atmo.SunDir);
@@ -2689,13 +2718,20 @@ namespace Game_Engine.Core
 
             BindBiomeTextures(gl, planetShader, cache, planet.Config.Biomes);
 
-            gl.Enable(EnableCap.CullFace);
-            gl.CullFace(TriangleFace.Back);
-
             var go = planet.gameObject;
             var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
             var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
             if (renderableLeaves == null) return;
+
+            float camRadial = (camPos - planetCenter).Length();
+            bool cameraInCrustBand = camRadial < radiusWorld * 1.08f;
+            if (cameraInCrustBand)
+                gl.Disable(EnableCap.CullFace);
+            else
+            {
+                gl.Enable(EnableCap.CullFace);
+                gl.CullFace(TriangleFace.Back);
+            }
 
             for (int i = 0; i < renderableLeaves.Count; i++)
             {
@@ -2704,15 +2740,17 @@ namespace Game_Engine.Core
                 if (mesh == null) continue;
 
                 var world = parentWorld;
-                var chunkSphere = GetMeshSphere(mesh);
-                // Frustum test in world space (center transformed by model matrix).
-                var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
-                var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
-                var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
-                var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
-                float worldRadius = chunkSphere.Radius * MathF.Max(sx, MathF.Max(sy, sz));
-                if (!SphereInFrustum(frustumPlanes, worldCenter, worldRadius))
-                    continue;
+                if (!cameraInCrustBand)
+                {
+                    var chunkSphere = GetMeshSphere(mesh);
+                    var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
+                    var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                    var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                    var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                    float leafRadius = chunkSphere.Radius * MathF.Max(sx, MathF.Max(sy, sz));
+                    if (!SphereInFrustum(frustumPlanes, worldCenter, leafRadius))
+                        continue;
+                }
 
                 planetShader.SetMatrix4("uModel", world);
                 SN.Matrix4x4.Invert(world, out var invWorld);
@@ -2721,6 +2759,9 @@ namespace Game_Engine.Core
                 var gpuMesh = cache.GetMesh(mesh);
                 gpuMesh.Draw();
             }
+
+            gl.Enable(EnableCap.CullFace);
+            gl.CullFace(TriangleFace.Back);
         }
 
         private static void ExtractFrustumPlanes(in SN.Matrix4x4 vp, out SN.Vector4[] planes)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SN = System.Numerics;
@@ -142,6 +143,35 @@ namespace Game_Engine.Core.Input
           //  if (key == KeyCode.Space)
            //     Debug.WriteLine($"[Input] FeedKeyUp   Space  upEdge={(sUpKeys.Contains(key))}");
         }
+
+        /// <summary>
+        /// Read WASD / arrows / Space / Shift from the OS even if Hierarchy has keyboard focus.
+        /// Call after <see cref="NewFrame"/> so down-edges land in the same Update.
+        /// </summary>
+        public static void PollHardwareHeldKeys()
+        {
+            if (!OperatingSystem.IsWindows()) return;
+            SyncHardwareKey(0x57, KeyCode.W);
+            SyncHardwareKey(0x41, KeyCode.A);
+            SyncHardwareKey(0x53, KeyCode.S);
+            SyncHardwareKey(0x44, KeyCode.D);
+            SyncHardwareKey(0x20, KeyCode.Space);
+            SyncHardwareKey(0x10, KeyCode.LeftShift);
+            SyncHardwareKey(0x25, KeyCode.LeftArrow);
+            SyncHardwareKey(0x26, KeyCode.UpArrow);
+            SyncHardwareKey(0x27, KeyCode.RightArrow);
+            SyncHardwareKey(0x28, KeyCode.DownArrow);
+        }
+
+        static void SyncHardwareKey(int vk, KeyCode code)
+        {
+            bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            if (down) FeedKeyDown(code);
+            else if (sHeldKeys.Contains(code)) FeedKeyUp(code);
+        }
+
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vKey);
 
         public static void FeedMouseButtonDown(MouseButton btn)
         {

@@ -1,73 +1,109 @@
 using System;
 using Game_Engine.Core.Biome;
-using Game_Engine.Core.Noise;
 using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Planet;
 
 /// <summary>
-/// Fills a VoxelChunk with density values on a spherical shell.
-/// Each (x,y) grid cell maps to a UV position on the cube-sphere face,
-/// and z maps to a radial distance from the planet center.
+/// Fills a VoxelChunk with density on one radial shell of a cube-sphere cone.
+/// Each (x,y) maps to UV on the cube-sphere face; z maps to radius.
 /// Density &lt; 0 = solid, &gt; 0 = air.  The isosurface is density == 0.
 /// </summary>
 public sealed class DensityGenerator
 {
-    readonly FractalNoise _heightNoise;
-    readonly FractalNoise _caveNoise;
-    readonly FractalNoise _caveWormNoise;
+    /// <summary>Minimum brush radius reserved in the crust so the first paint stroke has volume.</summary>
+    public const float DefaultBrushReserve = 16f;
+
     readonly BiomeMap _biomeMap;
     readonly PlanetConfig _config;
+    readonly PlanetNoiseCache _noise;
 
-    public DensityGenerator(PlanetConfig config, BiomeMap biomeMap)
+    public DensityGenerator(PlanetConfig config, BiomeMap biomeMap, PlanetNoiseCache? noise = null)
     {
         _config = config;
         _biomeMap = biomeMap;
-
-        _heightNoise = new FractalNoise(config.Seed)
-        {
-            Octaves = 6,
-            Lacunarity = 2.0f,
-            Persistence = 0.5f,
-            Mode = FractalMode.FBM,
-        };
-
-        _caveNoise = new FractalNoise(config.Seed + 1000)
-        {
-            Octaves = 3,
-            Lacunarity = 2.0f,
-            Persistence = 0.5f,
-            Mode = FractalMode.Ridged,
-        };
-
-        _caveWormNoise = new FractalNoise(config.Seed + 2000)
-        {
-            Octaves = 2,
-            Lacunarity = 2.5f,
-            Persistence = 0.45f,
-            Mode = FractalMode.Ridged,
-        };
+        _noise = noise ?? PlanetNoiseCache.Create(config);
     }
 
-    /// <summary>Max height displacement across all biomes.</summary>
-    float MaxAmplitude()
+    public static float MaxAmplitude(PlanetConfig config)
     {
         float max = 0f;
-        foreach (var b in _config.Biomes)
+        foreach (var b in config.Biomes)
             max = MathF.Max(max, b.HeightAmplitude);
         return max;
     }
 
-    public void Generate(VoxelChunk chunk, int face, float u0, float v0, float u1, float v1, int lodLevel)
+    public static float MaxCaveDepth(PlanetConfig config)
+    {
+        float max = MathF.Max(280f, MathF.Max(0f, config.CaveDepth));
+        if (config.Biomes == null) return max;
+        foreach (var b in config.Biomes)
+        {
+            if (config.EnableCaves && b.CavesEnabled && b.CaveDensity > 0.01f)
+                max = MathF.Max(max, b.CaveDepth);
+        }
+        return max;
+    }
+
+    /// <summary>
+    /// Solid fill from near the core out past the surface. Keep a small hollow
+    /// at r=0 so cube-sphere samples do not collapse.
+    /// </summary>
+    public static void ComputeInteriorBounds(
+        PlanetConfig config,
+        PlanetVoxelEditStore? edits,
+        out float radialMin,
+        out float radialMax)
+    {
+        float maxAmp = MaxAmplitude(config);
+        float brush = MathF.Max(edits?.MaxRadius ?? 0f, DefaultBrushReserve);
+        float outward = maxAmp * 0.85f + brush * 0.35f + 12f;
+        radialMax = config.Radius + outward;
+        radialMin = MathF.Max(16f, config.Radius * 0.04f);
+    }
+
+    public static void ComputeCrustBounds(
+        PlanetConfig config,
+        PlanetVoxelEditStore? edits,
+        out float radialBase,
+        out float radialSpan)
+    {
+        ComputeInteriorBounds(config, edits, out radialBase, out float radialMax);
+        radialSpan = MathF.Max(8f, radialMax - radialBase);
+    }
+
+    /// <summary>
+    /// How many radial voxel shells to stack so each shell keeps ~10 m cells
+    /// instead of stretching one 32³ grid from the core to the surface.
+    /// </summary>
+    public static int RadialLayerCount(float radialMin, float radialMax, int voxelSize)
+    {
+        float span = MathF.Max(8f, radialMax - radialMin);
+        float layerSpan = MathF.Max(48f, voxelSize * 10f);
+        return Math.Clamp((int)MathF.Ceiling(span / layerSpan), 1, 4);
+    }
+
+    public void Generate(
+        VoxelChunk chunk,
+        int face,
+        float u0,
+        float v0,
+        float u1,
+        float v1,
+        int lodLevel,
+        PlanetVoxelEditStore? edits = null,
+        PlanetDensitySampler? sampler = null,
+        float? radialBaseOverride = null,
+        float? radialSpanOverride = null)
     {
         int n = chunk.SamplesPerAxis;
         int size = chunk.Size;
         float radius = _config.Radius;
 
-        float maxAmp = MaxAmplitude();
-        float radialSpan = maxAmp * 2.5f + 20f;
-        float radialBase = radius - maxAmp * 1.3f - 10f;
+        ComputeInteriorBounds(_config, edits, out float radialMin, out float radialMax);
+        float radialBase = radialBaseOverride ?? radialMin;
+        float radialSpan = radialSpanOverride ?? MathF.Max(8f, radialMax - radialBase);
 
         float uStep = (u1 - u0) / size;
         float vStep = (v1 - v0) / size;
@@ -85,6 +121,14 @@ public sealed class DensityGenerator
             - tangent * (size * 0.5f * chunk.CellSize)
             - bitangent * (size * 0.5f * chunk.CellSize);
         chunk.LodLevel = lodLevel;
+        chunk.CustomGridToWorld = (x, y, z) =>
+        {
+            float inv = 1f / size;
+            float u = u0 + x * inv * (u1 - u0);
+            float v = v0 + y * inv * (v1 - v0);
+            float r = radialBase + z * inv * radialSpan;
+            return CubeSphereMath.FaceUVToDirection(face, u, v) * r;
+        };
 
         for (int z = 0; z < n; z++)
         {
@@ -102,10 +146,17 @@ public sealed class DensityGenerator
 
                     BiomeBlend[] blends = _biomeMap.GetBiomes(sphereDir);
 
-                    float blendedHeight = 0f;
-                    float blendedCaveFreq = 0f;
-                    float blendedCaveDensity = 0f;
-                    bool anyCaves = false;
+                    SN.Vector3 localPos = sphereDir * rDist;
+                    float density = sampler != null
+                        ? sampler.SampleProceduralDensity(localPos)
+                        : localPos.Length() - (radius + PlanetSurfaceUtility.SampleHeight(
+                            _config,
+                            _biomeMap,
+                            _noise.BiomeNoises,
+                            _noise.ErosionNoise,
+                            _noise.RidgeNoise,
+                            _noise.BasinNoise,
+                            sphereDir));
                     byte dominantMat = 0;
                     float dominantWeight = 0f;
 
@@ -113,22 +164,6 @@ public sealed class DensityGenerator
                     {
                         var biome = blends[b].Biome;
                         float w = blends[b].Weight;
-
-                        _heightNoise.Frequency = biome.NoiseFrequency;
-                        _heightNoise.Lacunarity = biome.NoiseLacunarity;
-                        float heightSample = _heightNoise.Sample3D(
-                            sphereDir.X * radius,
-                            sphereDir.Y * radius,
-                            sphereDir.Z * radius);
-                        blendedHeight += (biome.HeightAmplitude * heightSample) * w;
-
-                        if (_config.EnableCaves && biome.CaveDensity > 0)
-                        {
-                            blendedCaveFreq += biome.CaveFrequency * w;
-                            blendedCaveDensity += biome.CaveDensity * w;
-                            anyCaves = true;
-                        }
-
                         if (w > dominantWeight)
                         {
                             dominantWeight = w;
@@ -136,26 +171,8 @@ public sealed class DensityGenerator
                         }
                     }
 
-                    float surfaceRadius = radius + blendedHeight;
-                    float density = rDist - surfaceRadius;
-
-                    if (anyCaves && blendedCaveDensity > 0.01f)
-                    {
-                        SN.Vector3 worldPos = sphereDir * rDist;
-                        float cx = worldPos.X * blendedCaveFreq;
-                        float cy = worldPos.Y * blendedCaveFreq;
-                        float cz = worldPos.Z * blendedCaveFreq;
-
-                        float cave1 = _caveNoise.Sample3D(cx, cy, cz);
-                        float cave2 = _caveWormNoise.Sample3D(cx * 1.5f, cy * 1.5f, cz * 1.5f);
-                        float caveMask = cave1 * cave2;
-
-                        float depthFactor = Math.Clamp((surfaceRadius - rDist) / (radius * 0.05f), 0f, 1f);
-                        float caveCarve = caveMask * blendedCaveDensity * depthFactor;
-
-                        if (caveCarve > 0.35f)
-                            density = Math.Max(density, caveCarve - 0.35f);
-                    }
+                    if (sampler != null)
+                        density = sampler.ApplyCaveCarve(localPos, density);
 
                     chunk.Set(x, y, z, density);
                     chunk.SetMaterial(x, y, z, dominantMat);

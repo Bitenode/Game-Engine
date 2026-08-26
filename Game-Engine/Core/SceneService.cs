@@ -44,6 +44,9 @@ namespace Game_Engine.Core
         /// <summary>Replace the current root collection (e.g. when loading a scene).</summary>
         public static void AttachRoot(ObservableCollection<GameObject> root) => Root = root;
 
+        /// <summary>True while Game view is in Play. Transform motion must not fire <see cref="Changed"/>.</summary>
+        public static bool PlayMode { get; set; }
+
         /// <summary>Signal listeners that something in the scene changed.</summary>
         public static void NotifyChanged() => RaiseChanged(markDirty: true);
 
@@ -172,6 +175,8 @@ namespace Game_Engine.Core
 
         private static void RaiseChanged(bool markDirty)
         {
+            if (PlayMode)
+                return;
             if (markDirty && !_suppressDirtyTracking)
                 SetDirty(true);
             Changed?.Invoke();

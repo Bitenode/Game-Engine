@@ -43,7 +43,7 @@ public sealed class BiomeDefinition
 
     public float CaveFrequency { get; set; } = 0.02f;
     public float CaveDensity { get; set; } = 0.7f;
-    public float CaveDepth { get; set; } = 10f;
+    public float CaveDepth { get; set; } = 280f;
 
     public float MinTemperature { get; set; } = 0f;
     public float MaxTemperature { get; set; } = 1f;

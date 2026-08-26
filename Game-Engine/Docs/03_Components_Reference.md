@@ -4,7 +4,7 @@ Every component inherits from `Behavior` and attaches to a `GameObject`. Propert
 
 A component's `IsActiveAndEnabled` property is `true` only when both its own `Enabled` flag and the owning GameObject's `IsActiveInHierarchy` are `true`. All engine systems (game loop, rendering, physics queries, scene queries) use `IsActiveAndEnabled` to skip components on disabled GameObjects. Disabling a GameObject effectively silences all its components without changing their individual `Enabled` flags.
 
-The engine includes **36+ built-in component types** organized by category below.
+The engine includes **37+ built-in component types** organized by category below.
 
 ### Component Categories
 
@@ -18,6 +18,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
 | **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Gameplay** | PlanetPlayerSpawner | `Core/Component/Gameplay/` |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
 | **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
@@ -45,6 +46,7 @@ Custom script components compiled from `Assets/` or `Packages/` appear in a sepa
 - Each `Vector3` sub-property (X, Y, Z) fires individual change notifications for fine-grained UI binding
 - The `Enabled` property always returns `true` and the setter is ignored
 - Children inherit parent transforms for hierarchical positioning
+- **Planet standing:** `SetRotationQuaternion` / `SetExplicitRotationMatrix` store an explicit orientation when Euler angles cannot represent feet-toward-center alignment. `GetRotationQuaternion()` prefers that value over Euler-derived rotation for the world matrix.
 
 ---
 
@@ -282,7 +284,7 @@ Planet-specific collider shell used for broad-phase queries and debug visualizat
 
 **Behavior:**
 - Provides world AABB for broad-phase collision systems
-- Actual surface-conforming collision uses `PlanetTerrain.SampleSurfaceRadius(...)` inside physics components (same analytical pipeline as placement). **Rendered** transvoxel chunk meshes can sit slightly in/out versus that sample at a given direction (LOD, isosurface), so vegetation aligned to `SampleSurfaceRadius` may look a hair floated or sunk vs the **visible** rock—not a `PlanetCollider` “wrong radius” bug.
+- Actual surface-conforming collision uses `PlanetTerrain.Spherecast` / `RaycastDensity` (cave-aware). `SampleSurfaceRadius` is outermost crust for water, orbit, gizmos, and vegetation radial estimates. **Rendered** transvoxel meshes can sit slightly in/out versus that outer sample at a given direction (LOD, isosurface), so vegetation aligned to `SampleSurfaceRadius` may look a hair floated or sunk vs the **visible** rock—not a `PlanetCollider` “wrong radius” bug.
 - Gizmo drawing uses base/max radii to show inner/outer collision shell bounds
 
 ---
@@ -411,8 +413,8 @@ Physics body component with force/impulse integration, trigger events, collider 
 **Planet integration:**
 - Finds nearest active `PlanetTerrain`
 - Applies gravity along `-LocalUp`
-- Grounds against `PlanetTerrain.SampleSurfaceRadius(...)`
-- Uses scale-aware planet radius/sea-level queries for grounding and underwater state
+- Grounds with `Spherecast` / `RaycastDensity` along `-LocalUp` and `ResolveDensityPenetration` (floors, walls, ceilings throughout the interior)
+- Uses scale-aware planet radius/sea-level queries for underwater state (`UnderwaterQuery` — caves and deep interior stay dry on land)
 
 **Events:**
 - `OnTriggerEnter(Collider)`, `OnTriggerStay(Collider)`, `OnTriggerExit(Collider)`
@@ -441,7 +443,7 @@ Inspector-driven trigger presets and filters. Add to the **same GameObject** as 
 
 ## PlanetTerrain
 
-Planet terrain component for cube-sphere planetary worlds with transvoxel chunking and biome graph-driven generation.
+Planet terrain component for cube-sphere worlds with stacked transvoxel interiors, biome graph-driven generation, and multi-scale caves.
 
 | Property                | Type    | Default | Description |
 |-------------------------|---------|---------|-------------|
@@ -451,7 +453,7 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 | `ChunkSize`             | `int`   | `32`    | Chunk mesh/voxel resolution |
 | `LodDistanceMultiplier` | `float` | `5.0`   | LOD split tuning |
 | `Seed`                  | `int`   | `42`    | Planet generation seed |
-| `EnableCaves`           | `bool`  | `true`  | Enable cave carving |
+| `EnableCaves`           | `bool`  | `true`  | Enable interior cave carving (per-biome `CavesEnabled` still applies) |
 | `EnableWater`           | `bool`  | `true`  | Spawn ocean shell mesh |
 | `MaxActiveChunks`       | `int`   | `120`   | Hard cap of active runtime chunk meshes |
 | `PlanetAssetPath`       | `string`| `""`    | `.planet` path for loading/saving planet config + style references |
@@ -463,17 +465,31 @@ Planet terrain component for cube-sphere planetary worlds with transvoxel chunki
 | `DefaultManipulationStrength` | `float` | `10` | Default density delta when dig/build strength is omitted |
 | `DefaultManipulationFalloff` | `float` | `0.6` | Default brush falloff used by dig/build APIs |
 
+**Runtime config (via `PlanetConfig`, adjusted by `ApplyChunkBudgets`):**
+- `VolumetricMaxCellSize` — **3.5** at orbit; **11** when the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`)
+- Coarse leaves above that cell size use a smooth heightfield shell; finer leaves stack 1–4 radial transvoxel shells from near the core to the surface
+
 **Key methods:**
-- `SavePlanetAsset()` / `TryLoadPlanetAsset()` — persist/load `.planet` data
+- `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON (`PlanetAssetData` version 2) and the `.planetvox` sidecar
+- `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read planet-local strokes (and optional baked cells). Sidecar path defaults to `<name>.planetvox` beside the `.planet`
+- `WorldToLocal` / `LocalToWorld` / `WorldToLocalLength` / `LocalToWorldLength` — `PlanetSpace` conversion (density, edits, and meshes use local unscaled space)
+- `RaycastDensity` / `Raycast` — density ray-march; fills `PlanetDensityHit` (`Point`, `Normal`, `Distance`, `StartedInside`)
+- `Spherecast(worldOrigin, worldDirection, worldRadius, maxDistance, out hit)` — thick density query
+- `TrySampleLocalIsosurface(sphereDir, ...)` — first inward isosurface (pits / cave mouths), not outer crust
+- `ResolveDensityPenetration(ref worldPos, worldClearance)`
 - `TryLoadBiomeGraph()` — load, compile, and apply graph data
 - `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
-- `SampleSurfaceRadius(sphereDir)` — sample runtime surface radius for physics grounding
-- `SampleWaterMask(sphereDir)` — sample biome/river water coverage mask used by planet water shading
-- `UpdateLOD(cameraPos)` — updates camera position used by chunk streamer
-- `DigSphere(worldCenter, radius, strength, falloff)` — subtract density in a spherical brush (dig)
-- `BuildSphere(worldCenter, radius, strength, falloff)` — add density in a spherical brush (build)
-- `SetVoxelDensity(worldPos, targetDensity)` — advanced direct density set for one local region
-- `ClearVoxelEdits(rebuildNow)` — clears runtime edit overlay (v1 runtime-only)
+- `SampleSurfaceRadius(sphereDir)` — **outermost** crust radius (water, orbit, atmosphere, vegetation estimates). Not cave contact
+- `SampleWaterMask(sphereDir)` — biome/river water coverage mask used by planet water shading
+- `UpdateLOD(cameraPos)` — camera position for the chunk streamer
+- `RefreshLodAroundCamera(cameraPos)` — editor/play LOD refresh with interior chunk budgets
+- `UpdateSceneViewLod(cameraPos)` — Scene View always runs real quadtree LOD
+- `DigSphere(worldCenter, radius, strength, falloff)` — subtract density (world brush; stored local)
+- `BuildSphere(worldCenter, radius, strength, falloff)` — add density
+- `SmoothSphere(worldCenter, radius, strength, falloff)` — blend neighborhood density toward a local average
+- `FlattenSphere(worldCenter, radius, strength, falloff, targetDensity)` — pull density toward a target iso
+- `SetVoxelDensity(worldPos, targetDensity)` — small sphere that matches current density to a target
+- `ClearVoxelEdits(rebuildNow)` — clears the live overlay; sidecar updates on the next save
 
 **Runtime rendering note:**
 - Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches.
@@ -494,7 +510,7 @@ Convenience runtime brush component for calling `PlanetTerrain` voxel manipulati
 | `Strength` | `float` | `10` | Density delta magnitude per apply |
 | `Falloff` | `float` | `0.6` | Edge softness (0 hard, 1 soft) |
 | `MaxRatePerSecond` | `float` | `8` | Max automatic apply rate |
-| `AutoApply` | `bool` | `false` | If enabled, applies every update at the nearest planet center |
+| `AutoApply` | `bool` | `false` | If enabled, rays from this GameObject toward (then away from) the planet center and paints the **surface hit**, not the pivot |
 
 **Key methods:**
 - `ApplyAt(worldPos)` — apply using current `Mode`
@@ -1324,6 +1340,36 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 - **Jump buffering** — responsive jump input
 
 **Requires:** Rigidbody, CapsuleCollider (auto-added via `[Require]`)
+
+---
+
+## PlanetPlayerSpawner
+
+Play-mode helper that creates or reuses a `RigidbodyPlayer` on `PlanetTerrain` at press-Play.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PlayerObjectName` | `string` | `"Player"` | Name of the spawned/reused player GameObject |
+| `SpawnOnStart` | `bool` | `true` | Spawn when Play begins |
+| `ReuseExistingPlayer` | `bool` | `true` | Reuse a scene object with the same name if present |
+| `CreateBodyMesh` | `bool` | `true` | Add a simple capsule body mesh for debugging |
+| `CreateCameraChild` | `bool` | `true` | Add a child Camera if none exists |
+| `EnsurePlanetCollider` | `bool` | `true` | Add `PlanetCollider` to the planet if missing |
+| `EnsureSunLight` | `bool` | `true` | Create a directional light if the scene has none |
+| `UseLatitudeLongitude` | `bool` | `true` | Spawn at `LatitudeDegrees` / `LongitudeDegrees` |
+| `LatitudeDegrees` | `float` | `18` | Spawn latitude when using lat/lon |
+| `LongitudeDegrees` | `float` | `12` | Spawn longitude when using lat/lon |
+| `SpawnDirection` | `Vector3` | `(0,1,0)` | Unit direction from planet center when lat/lon is off |
+| `ExtraHeight` | `float` | `0.25` | Lift above the sampled surface |
+| `CapsuleHeight` / `CapsuleRadius` | `float` | `2` / `0.4` | Player capsule dimensions |
+| `FirstPerson` | `bool` | `true` | Passed to `RigidbodyPlayer` |
+
+**Behavior:**
+- Resolves the nearest/active `PlanetTerrain`, samples the outer crust with density raycast, and places the player feet-down using explicit quaternion alignment
+- Retries spawn for ~48 frames if the planet mesh is still generating
+- Adds `Rigidbody`, `CapsuleCollider`, and `RigidbodyPlayer` if missing
+
+Attach to the planet root or any scene object. See [Planet System](13_Planet_System.md).
 
 ---
 

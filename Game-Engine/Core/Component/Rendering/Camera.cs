@@ -1,5 +1,6 @@
 using SN = System.Numerics;
 using Avalonia.Media;
+using Game_Engine.Core;
 
 namespace Game_Engine.Core.Component
 {
@@ -37,23 +38,48 @@ namespace Game_Engine.Core.Component
         /// </summary>
         public SN.Vector3 WorldUp { get; set; } = SN.Vector3.UnitY;
 
+        /// <summary>When true, <see cref="GetViewMatrix"/> uses the look vectors below instead of the transform.</summary>
+        public bool UseLookOverride { get; set; }
+        public SN.Vector3 LookEye { get; set; }
+        public SN.Vector3 LookForward { get; set; } = -SN.Vector3.UnitZ;
+        public SN.Vector3 LookUp { get; set; } = SN.Vector3.UnitY;
+
         public SN.Matrix4x4 GetViewMatrix()
         {
-            static float Deg2Rad(double d) => (float)(Math.PI / 180.0 * d);
             var go = gameObject;
             if (go is null) return SN.Matrix4x4.Identity;
-            var tr = go.Transform;
 
-            var r = SN.Matrix4x4.CreateFromYawPitchRoll(
-                Deg2Rad(tr.Rotation.Y), Deg2Rad(tr.Rotation.X), Deg2Rad(tr.Rotation.Z));
+            if (UseLookOverride)
+            {
+                var eyeO = LookEye;
+                var fwdO = LookForward.LengthSquared() > 1e-10f ? SN.Vector3.Normalize(LookForward) : new SN.Vector3(0f, 0f, -1f);
+                var upO = LookUp.LengthSquared() > 1e-10f ? SN.Vector3.Normalize(LookUp) : SN.Vector3.UnitY;
+                upO -= fwdO * SN.Vector3.Dot(upO, fwdO);
+                if (upO.LengthSquared() <= 1e-8f)
+                {
+                    var seed = MathF.Abs(fwdO.Y) < 0.99f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+                    upO = SN.Vector3.Normalize(seed - fwdO * SN.Vector3.Dot(seed, fwdO));
+                }
+                else
+                    upO = SN.Vector3.Normalize(upO);
+                return SN.Matrix4x4.CreateLookAt(eyeO, eyeO + fwdO, upO);
+            }
 
-            var forward = SN.Vector3.TransformNormal(new SN.Vector3(0, 0, -1), r);
+            // Child cameras (Player/PlayerCamera) store a local offset. Using
+            // Transform.Position as the eye put the Game view at ~ (0,1.7,0)
+            // — inside the planet water sphere.
+            var world = SceneGraphUtil.AccumulateWorld(go);
+            var eye = new SN.Vector3(world.M41, world.M42, world.M43);
+
+            var forward = SN.Vector3.TransformNormal(new SN.Vector3(0f, 0f, -1f), world);
             if (forward.LengthSquared() <= 1e-10f)
-                forward = new SN.Vector3(0, 0, -1);
+                forward = new SN.Vector3(0f, 0f, -1f);
             else
                 forward = SN.Vector3.Normalize(forward);
 
-            var up = WorldUp;
+            var up = WorldUp.LengthSquared() > 1e-8f
+                ? SN.Vector3.Normalize(WorldUp)
+                : SN.Vector3.TransformNormal(new SN.Vector3(0f, 1f, 0f), world);
             if (up.LengthSquared() <= 1e-10f)
                 up = SN.Vector3.UnitY;
             else
@@ -71,7 +97,6 @@ namespace Game_Engine.Core.Component
                 up = SN.Vector3.Normalize(up);
             }
 
-            var eye = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
             return SN.Matrix4x4.CreateLookAt(eye, eye + forward, up);
         }
 

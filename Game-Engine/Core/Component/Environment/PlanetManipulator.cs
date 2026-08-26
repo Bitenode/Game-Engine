@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component;
@@ -32,9 +33,30 @@ public sealed class PlanetManipulator : Behavior
         var target = ResolveTargetPlanet();
         if (target == null) return;
 
-        var pos = target.gameObject?.Transform?.Position;
-        if (pos == null) return;
-        ApplyAt(new SN.Vector3((float)pos.X, (float)pos.Y, (float)pos.Z), target);
+        var p = gameObject?.Transform?.Position;
+        if (p == null) return;
+        var origin = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+        var center = target.GetWorldCenter();
+        var toCenter = center - origin;
+        float maxDist = toCenter.Length() + Math.Max(target.Radius, 1f) * 4f;
+        if (maxDist < 1f) maxDist = Math.Max(target.Radius, 1f) * 8f;
+
+        PlanetDensityHit hit;
+        bool gotHit = false;
+        if (toCenter.LengthSquared() > 1e-6f)
+        {
+            var inward = SN.Vector3.Normalize(toCenter);
+            gotHit = target.Raycast(origin, inward, maxDist, out hit)
+                     || target.Raycast(origin, -inward, maxDist, out hit);
+        }
+        else
+        {
+            gotHit = target.Raycast(origin, SN.Vector3.UnitY, maxDist, out hit)
+                     || target.Raycast(origin, -SN.Vector3.UnitY, maxDist, out hit);
+        }
+
+        if (!gotHit) return;
+        ApplyAt(hit.Point, target);
     }
 
     public void ApplyAt(SN.Vector3 worldPos)

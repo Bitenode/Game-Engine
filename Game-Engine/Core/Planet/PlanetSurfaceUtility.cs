@@ -12,7 +12,6 @@ public static class PlanetSurfaceUtility
         BiomeMap biomeMap,
         FractalNoise[] biomeNoises,
         FractalNoise? erosionNoise,
-        FractalNoise? caveNoise,
         FractalNoise? ridgeNoise,
         FractalNoise? basinNoise,
         SN.Vector3 sphereDir)
@@ -42,8 +41,9 @@ public static class PlanetSurfaceUtility
             {
                 var biome = blends[b].Biome;
                 if (biome.ErosionStrength <= 0f) continue;
-                erosionNoise.Frequency = biome.ErosionFrequency;
-                float e = Math.Clamp(erosionNoise.Sample3D(nx, ny, nz), 0f, 1f);
+                // Scale coordinates instead of mutating Frequency so shared caches are thread-safe.
+                float freq = biome.ErosionFrequency;
+                float e = Math.Clamp(erosionNoise.Sample3D(nx * freq, ny * freq, nz * freq), 0f, 1f);
                 totalErosion += e * biome.ErosionStrength * 5f * blends[b].Weight;
             }
             height -= totalErosion;
@@ -60,20 +60,6 @@ public static class PlanetSurfaceUtility
             float basin = 1f - Math.Clamp(basinNoise.Sample3D(nx, ny, nz), 0f, 1f);
             basin *= basin;
             height -= basin * config.BasinStrength * 18f;
-        }
-
-        if (caveNoise != null && blends.Length > 0)
-        {
-            var dominant = blends[0].Biome;
-            if (dominant.CavesEnabled)
-            {
-                float caveSample = Math.Clamp(caveNoise.Sample3D(nx, ny, nz), 0f, 1f);
-                if (caveSample > config.CaveThreshold)
-                {
-                    float caveIntensity = (caveSample - config.CaveThreshold) / (1f - config.CaveThreshold);
-                    height -= caveIntensity * Math.Min(dominant.CaveDepth, 8f);
-                }
-            }
         }
 
         return height;

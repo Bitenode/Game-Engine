@@ -25,8 +25,8 @@ public sealed class PlanetWeatherController : Behavior
     [Persist] public bool EnableWeather { get; set; } = false;
     [Persist] public float UpdateIntervalSeconds { get; set; } = 0.3f;
     [Persist] public float StateBlendSpeed { get; set; } = 0.65f;
-    [Persist] public float PrecipitationHeight { get; set; } = 20f;
-    [Persist] public float PrecipitationArea { get; set; } = 36f;
+    [Persist] public float PrecipitationHeight { get; set; } = 12f;
+    [Persist] public float PrecipitationArea { get; set; } = 20f;
     [Persist] public int PrecipitationLayers { get; set; } = 3;
     [Persist] public float PrecipitationLayerSpacing { get; set; } = 22f;
     [Persist] public bool EnablePrecipitationVisibilityPolling { get; set; } = true;
@@ -36,17 +36,17 @@ public sealed class PlanetWeatherController : Behavior
     [Persist] public float PrecipitationHiddenClearDelaySeconds { get; set; } = 0.8f;
     [Persist] public bool UsePrecipitationPerformanceBudget { get; set; } = true;
     [Persist] public int MaxActivePrecipitationLayers { get; set; } = 1;
-    [Persist] public int RainMaxParticlesPerLayer { get; set; } = 1800;
-    [Persist] public int SnowMaxParticlesPerLayer { get; set; } = 900;
-    [Persist] public float RainEmissionRatePerLayer { get; set; } = 220f;
-    [Persist] public float SnowEmissionRatePerLayer { get; set; } = 85f;
-    [Persist] public float RainLifetimeSeconds { get; set; } = 4.5f;
-    [Persist] public float SnowLifetimeSeconds { get; set; } = 10f;
+    [Persist] public int RainMaxParticlesPerLayer { get; set; } = 2200;
+    [Persist] public int SnowMaxParticlesPerLayer { get; set; } = 1100;
+    [Persist] public float RainEmissionRatePerLayer { get; set; } = 480f;
+    [Persist] public float SnowEmissionRatePerLayer { get; set; } = 140f;
+    [Persist] public float RainLifetimeSeconds { get; set; } = 2.2f;
+    [Persist] public float SnowLifetimeSeconds { get; set; } = 8f;
     [Persist] public bool DisableSurfaceHitForWeatherPrecipitation { get; set; } = true;
     [Persist] public bool OverrideEmitterParams { get; set; } = false;
-    [Persist] public float MinStateHoldSeconds { get; set; } = 18f;
-    [Persist] public float RainStateHoldSeconds { get; set; } = 28f;
-    [Persist] public float SnowStateHoldSeconds { get; set; } = 30f;
+    [Persist] public float MinStateHoldSeconds { get; set; } = 6f;
+    [Persist] public float RainStateHoldSeconds { get; set; } = 16f;
+    [Persist] public float SnowStateHoldSeconds { get; set; } = 10f;
     [Persist] public float StormWindBoost { get; set; } = 1.65f;
     [Persist] public bool DriveAtmosphere { get; set; } = true;
     [Persist] public bool DriveAtmosphereLighting { get; set; } = false;
@@ -128,6 +128,8 @@ public sealed class PlanetWeatherController : Behavior
     public override void Update()
     {
         float frameDt = Math.Max(0f, (float)Time.deltaTime);
+        if (frameDt <= 1e-6f)
+            frameDt = 1f / 60f;
         if (!EnableWeather || _terrain == null || _terrain.Config == null || !_terrain.IsActiveAndEnabled)
         {
             if (_effectsApplied)
@@ -186,24 +188,28 @@ public sealed class PlanetWeatherController : Behavior
         DominantBiomeWeight = blends[0].Weight;
         ValidateBoundaryTransition();
 
-        _seasonT += (float)Time.deltaTime / Math.Max(60f, cfg.SeasonLengthMinutes * 60f);
+        _seasonT += Math.Max(0.05f, UpdateIntervalSeconds) / Math.Max(60f, cfg.SeasonLengthMinutes * 60f);
         if (_seasonT > 1f) _seasonT -= 1f;
         float seasonal = 0.5f + 0.5f * MathF.Sin(_seasonT * MathF.Tau);
 
         float climateWet = Math.Clamp((avgRain + avgSnow * 0.5f + avgStorm) * cfg.GlobalWeatherIntensity, 0f, 1f);
         float coldness = Math.Clamp(1f - avgTempCenter, 0f, 1f);
-        float snowPreference = Math.Clamp(avgSnow + coldness * 0.25f, 0f, 1f);
-        float stormPreference = Math.Clamp(avgStorm * (0.6f + climateWet), 0f, 1f);
+        float stormPreference = Math.Clamp(avgStorm * (0.55f + climateWet * 0.5f), 0f, 0.35f);
+        float rainWindow = Math.Clamp(avgRain * Math.Clamp(0.55f + climateWet * 0.5f, 0.5f, 1f), 0.12f, 0.7f);
+        // Snow only in actually snowy + cold biomes. Adding coldness onto temperate rain was locking Play into snow.
+        float snowWindow = (avgSnow > 0.08f && coldness > 0.55f)
+            ? Math.Clamp(avgSnow * coldness * Math.Max(0.35f, climateWet), 0f, 0.4f)
+            : 0f;
 
         float choice = Noise01(cfg.WeatherSeed, Time.time * 0.12f + avgTempCenter * 2.2f + seasonal * 1.1f);
         PlanetWeatherState target = PlanetWeatherState.Clear;
         if (choice < stormPreference)
             target = PlanetWeatherState.Storm;
-        else if (choice < stormPreference + snowPreference * climateWet)
-            target = PlanetWeatherState.Snow;
-        else if (choice < stormPreference + snowPreference * climateWet + avgRain * climateWet)
+        else if (choice < stormPreference + rainWindow)
             target = PlanetWeatherState.Rain;
-        else if (choice < 0.55f + avgCloudBias * 0.15f)
+        else if (choice < stormPreference + rainWindow + snowWindow)
+            target = PlanetWeatherState.Snow;
+        else if (choice < 0.58f + avgCloudBias * 0.14f)
             target = PlanetWeatherState.Cloudy;
 
         float dt = Math.Max(UpdateIntervalSeconds, 0.05f);
@@ -320,12 +326,16 @@ public sealed class PlanetWeatherController : Behavior
 
         int layerCount = Math.Min(_precipObjects.Count, _precipEmitters.Count);
         int activeLayerCap = Math.Max(1, MaxActivePrecipitationLayers);
+        var planetUp = ResolvePlanetUp(cameraPos);
         for (int i = 0; i < layerCount; i++)
         {
             var go = _precipObjects[i];
             var emitter = _precipEmitters[i];
             float layerH = PrecipitationHeight + i * Math.Max(4f, PrecipitationLayerSpacing);
-            go.Transform.Position = new Vector3(cameraPos.X, cameraPos.Y + layerH, cameraPos.Z);
+            go.Transform.Position = new Vector3(
+                cameraPos.X + planetUp.X * layerH,
+                cameraPos.Y + planetUp.Y * layerH,
+                cameraPos.Z + planetUp.Z * layerH);
 
             float layerFactor = 1f - (i / Math.Max(1f, layerCount - 1f)) * 0.28f;
             bool layerActive = i < activeLayerCap;
@@ -348,7 +358,7 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.MaxParticles = Math.Max(250, (int)(RainSafeInt(SnowMaxParticlesPerLayer) * layerFactor));
                     emitter.EmissionRate = Math.Max(5f, SnowEmissionRatePerLayer * (0.35f + effectiveSnow * 0.9f) * layerFactor);
                     emitter.Lifetime = Math.Max(1.2f, SnowLifetimeSeconds);
-                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 0.95f, 0f, PrecipitationArea * 0.95f);
+                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 0.7f, Math.Max(10f, PrecipitationHeight * 0.55f), PrecipitationArea * 0.7f);
                     if (DisableSurfaceHitForWeatherPrecipitation)
                         emitter.StopOnPlanetSurfaceHit = false;
                 }
@@ -370,7 +380,9 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.MaxParticles = Math.Max(350, (int)(RainSafeInt(RainMaxParticlesPerLayer) * layerFactor));
                     emitter.EmissionRate = Math.Max(10f, RainEmissionRatePerLayer * (0.35f + effectiveRain * 0.9f) * layerFactor);
                     emitter.Lifetime = Math.Max(0.8f, RainLifetimeSeconds);
-                    emitter.BoxSize = new SN.Vector3(PrecipitationArea, Math.Max(24f, PrecipitationHeight * 0.7f), PrecipitationArea);
+                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 0.55f, Math.Max(10f, PrecipitationHeight * 0.6f), PrecipitationArea * 0.55f);
+                    emitter.StretchAlongVelocity = true;
+                    emitter.StretchLength = 1.15f;
                     if (DisableSurfaceHitForWeatherPrecipitation)
                         emitter.StopOnPlanetSurfaceHit = false;
                 }
@@ -417,9 +429,7 @@ public sealed class PlanetWeatherController : Behavior
             return true;
 
         var camPos = new SN.Vector3((float)camera.Transform.Position.X, (float)camera.Transform.Position.Y, (float)camera.Transform.Position.Z);
-        var up = camera.WorldUp;
-        if (up.LengthSquared() <= 1e-8f) up = SN.Vector3.UnitY;
-        else up = SN.Vector3.Normalize(up);
+        var up = ResolvePlanetUp(camPos);
 
         int layerCount = Math.Max(1, PrecipitationLayers);
         float layerStride = Math.Max(4f, PrecipitationLayerSpacing);
@@ -534,12 +544,42 @@ public sealed class PlanetWeatherController : Behavior
 
     SN.Vector3 ResolveCameraPosition()
     {
-        if (_terrain != null && _terrain.LastCameraPosition.LengthSquared() > 1e-6f)
-            return _terrain.LastCameraPosition;
         var cam = ResolveActiveCamera();
-        return cam != null
+        var live = cam != null
             ? new SN.Vector3((float)cam.Transform.Position.X, (float)cam.Transform.Position.Y, (float)cam.Transform.Position.Z)
             : SN.Vector3.Zero;
+
+        if (_terrain == null)
+            return live;
+
+        var last = _terrain.LastCameraPosition;
+        var center = _terrain.GetWorldCenter();
+        float radius = Math.Max(1f, _terrain.Config?.EffectiveWorldRadius ?? 1f);
+        // LastCamera can be (0,0,0) before the first LOD tick — that is inside the planet, not the player.
+        if ((last - center).LengthSquared() > (radius * 0.45f) * (radius * 0.45f))
+            return last;
+        return live.LengthSquared() > 1e-6f ? live : last;
+    }
+
+    SN.Vector3 ResolvePlanetUp(SN.Vector3 worldPos)
+    {
+        if (_terrain?.gameObject != null)
+        {
+            var center = _terrain.GetWorldCenter();
+            var radial = worldPos - center;
+            if (radial.LengthSquared() > 1e-4f)
+                return SN.Vector3.Normalize(radial);
+        }
+
+        var cam = ResolveActiveCamera();
+        if (cam != null)
+        {
+            var up = cam.WorldUp;
+            if (up.LengthSquared() > 1e-8f)
+                return SN.Vector3.Normalize(up);
+        }
+
+        return SN.Vector3.UnitY;
     }
 
     Camera? ResolveActiveCamera()

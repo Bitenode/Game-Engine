@@ -37,7 +37,7 @@ The solution contains two projects: **Game_Engine** (the editor) and **Engine.Pl
 ```
 Game-Engine/
 ├── Core/                        # Engine runtime (non-UI)
-│   ├── Component/               # All attachable components (36+ types, organized by category)
+│   ├── Component/               # All attachable components (37+ types, organized by category)
 │   │   ├── Transform.cs         # Position, rotation, scale (mandatory, always present)
 │   │   ├── Rendering/           # [ComponentCategory("Rendering")]
 │   │   │   ├── Camera.cs        # Perspective/orthographic camera
@@ -73,11 +73,15 @@ Game-Engine/
 │   │   │   ├── Skybox.cs        # Sky gradient + equirectangular texture
 │   │   │   ├── Terrain.cs       # Heightmap terrain with splatmaps
 │   │   │   ├── TerrainStreamer.cs # Camera-centered terrain tile streaming
-│   │   │   ├── PlanetTerrain.cs # Cube-sphere planet terrain with biome graph integration
+│   │   │   ├── PlanetTerrain.cs # Cube-sphere planet with stacked voxel interior + caves
+│   │   │   ├── PlanetVegetationSystem.cs # Biome vegetation streaming
+│   │   │   ├── PlanetWeatherController.cs # Biome-blended weather
 │   │   │   ├── Tree.cs          # Procedural/imported trees with wind
 │   │   │   ├── TreeLOD.cs       # Tree level-of-detail management
 │   │   │   ├── VegetationPainter.cs # GPU-instanced vegetation
 │   │   │   └── Water.cs         # Gerstner wave water rendering
+│   │   ├── Gameplay/            # [ComponentCategory("Gameplay")]
+│   │   │   └── PlanetPlayerSpawner.cs # Play-mode player spawn on PlanetTerrain
 │   │   ├── Navigation/          # [ComponentCategory("Navigation")]
 │   │   │   └── NavMeshAgent.cs  # Navigation agent
 │   │   ├── Networking/          # [ComponentCategory("Networking")] — only these 3 are Inspector behaviors
@@ -138,13 +142,17 @@ Game-Engine/
 │   │   └── MeshUtil.cs          # Bounding radius, dimension estimation
 │   ├── Planet/                  # Planet terrain generation + chunk streaming
 │   │   ├── CubeSphereMath.cs    # Cube<->sphere mapping utilities
-│   │   ├── DensityGenerator.cs  # Voxel density generation from biome/noise
+│   │   ├── DensityGenerator.cs  # Stacked radial voxel shells + interior bounds
 │   │   ├── FaceQuadtree.cs      # Per-face quadtree LOD manager
 │   │   ├── PlanetChunkManager.cs# Async chunk generation/apply scheduler
 │   │   ├── PlanetConfig.cs      # Planet generation/runtime budgets config
-│   │   ├── PlanetMeshGenerator.cs # Planet surface mesh generation
+│   │   ├── PlanetDensitySampler.cs # Procedural density + multi-scale caves
+│   │   ├── PlanetDensityRaycast.cs # Density ray/spherecast queries
+│   │   ├── PlanetMeshGenerator.cs # Heightfield shell + stacked transvoxel
+│   │   ├── PlanetNoiseCache.cs  # Shared per-planet noise instances
+│   │   ├── PlanetSpace.cs       # World ↔ local unscaled transforms
 │   │   ├── PlanetWater.cs       # Planet water shell mesh
-│   │   └── QuadNode.cs          # Quadtree node state
+│   │   └── QuadNode.cs          # Quadtree node state + interior LOD priority
 │   ├── Noise/                   # Procedural noise utilities
 │   │   ├── SimplexNoise.cs      # Base 2D/3D simplex noise
 │   │   └── FractalNoise.cs      # FBM/ridged/billow noise wrapper

@@ -19,6 +19,7 @@ using System.Text.Json;
 using Avalonia.Threading;
 using static Game_Engine.Core.TransformUtil;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Input;
 using Silk.NET.OpenGL;
 
 
@@ -86,6 +87,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     #region Camera & selection
     float _yaw = -30f * MathF.PI / 180f;
     float _pitch = -20f * MathF.PI / 180f;
+    float _roll = 0f;
     float _distance = 8f;
     SN.Vector3 _target = SN.Vector3.Zero;
 
@@ -141,22 +143,25 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     }
 
     private DispatcherTimer? _fpsTimer;
-    private readonly DispatcherTimer _playModePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(16.666) };
+    private readonly DispatcherTimer _playModePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    private long _lastPlayPreviewTicks;
     private volatile bool _renderInFlight;
 
     private readonly struct CameraBookmark
     {
-        public CameraBookmark(SN.Vector3 target, float yaw, float pitch, float distance)
+        public CameraBookmark(SN.Vector3 target, float yaw, float pitch, float roll, float distance)
         {
             Target = target;
             Yaw = yaw;
             Pitch = pitch;
+            Roll = roll;
             Distance = distance;
         }
 
         public SN.Vector3 Target { get; }
         public float Yaw { get; }
         public float Pitch { get; }
+        public float Roll { get; }
         public float Distance { get; }
     }
 
@@ -164,14 +169,27 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     SN.Vector3 _hoverPointW;
     bool _hasHover;
 
+    PlanetTerrain? _hoverPlanet;
+    SN.Vector3 _hoverPlanetPointW;
+    bool _hasPlanetHover;
+
     const int TerrainToolNone = -1;
+    const int PlanetToolNone = -1;
     public static Func<Terrain, int>? TerrainToolIndexProvider;
     public static Func<Terrain, float> TerrainBrushRadiusProvider = _ => 8f;
     public static Func<Terrain, float> TerrainBrushStrengthProvider = _ => 0.5f;
     public static Func<Terrain, float> TerrainBrushFalloffProvider = _ => 0.5f;
 
+    public static Func<PlanetTerrain, int>? PlanetToolIndexProvider;
+    public static Func<PlanetTerrain, float> PlanetBrushRadiusProvider = _ => 12f;
+    public static Func<PlanetTerrain, float> PlanetBrushStrengthProvider = _ => 0.5f;
+    public static Func<PlanetTerrain, float> PlanetBrushFalloffProvider = _ => 0.6f;
+
     int GetTerrainToolIndex(Terrain t)
     => TerrainToolIndexProvider?.Invoke(t) ?? TerrainToolNone;
+
+    int GetPlanetToolIndex(PlanetTerrain p)
+    => PlanetToolIndexProvider?.Invoke(p) ?? PlanetToolNone;
 
     Terrain? _terrHover;
     SN.Vector3 _terrHoverHitW;
@@ -183,6 +201,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     float _paintSign;
     int _paintToolIndex;
     float _flattenTargetHeight;  // sampled on mouse-down for Flatten tool
+
+    bool _paintingPlanet;
+    PlanetTerrain? _planetPaintTarget;
+    int _planetPaintToolIndex;
+    float _planetPaintSign;
+    float _planetFlattenTargetRadius;
+    bool _planetStrokeDirty;
+    SN.Vector3 _planetPaintLastHit;
+    bool _planetPaintHasLastHit;
     public static Func<Terrain, int>? TerrainActivePaintLayerProvider; // active splatmap layer for Paint Layers tool
 
     private (SN.Matrix4x4 View, SN.Matrix4x4 Proj, Camera? Cam, bool UsingComponent)
@@ -445,7 +472,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     bool HandleFlyKeyDown(Key k)
     {
-        if (k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E
+        if (k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E or Key.R or Key.F
               or Key.LeftShift or Key.RightShift or Key.LeftCtrl or Key.RightCtrl)
         {
             if (_keysDown.Add(k))
@@ -467,29 +494,60 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         return false;
     }
 
+    void GetCameraAxes(out SN.Vector3 forward, out SN.Vector3 right, out SN.Vector3 up)
+    {
+        forward = new SN.Vector3(
+            MathF.Cos(_pitch) * MathF.Cos(_yaw),
+            MathF.Sin(_pitch),
+            MathF.Cos(_pitch) * MathF.Sin(_yaw));
+        var worldUp = SN.Vector3.UnitY;
+        right = SN.Vector3.Cross(forward, worldUp);
+        if (right.LengthSquared() < 1e-8f)
+            right = SN.Vector3.Cross(forward, SN.Vector3.UnitZ);
+        right = SN.Vector3.Normalize(right);
+        up = SN.Vector3.Normalize(SN.Vector3.Cross(right, forward));
+        float c = MathF.Cos(_roll);
+        float s = MathF.Sin(_roll);
+        var rolledRight = right * c + up * s;
+        var rolledUp = -right * s + up * c;
+        right = rolledRight;
+        up = rolledUp;
+    }
+
     void StepFly()
     {
         if (_isDragging) return;
         double dt = _flyWatch.Elapsed.TotalSeconds; _flyWatch.Restart();
         if (dt <= 0) return;
-        var dir = new SN.Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Sin(_pitch), MathF.Cos(_pitch) * MathF.Sin(_yaw));
-        var up = SN.Vector3.UnitY;
-        var right = SN.Vector3.Normalize(SN.Vector3.Cross(dir, up));
+
+        GetCameraAxes(out var dir, out var right, out var up);
+        float mul = 1f;
+        if (_keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift)) mul *= _flyBoostMul;
+        if (_keysDown.Contains(Key.LeftCtrl) || _keysDown.Contains(Key.RightCtrl)) mul *= _flySlowMul;
+
+        bool rolled = false;
+        const float rollSpeed = 1.6f;
+        if (_keysDown.Contains(Key.Q)) { _roll -= rollSpeed * (float)dt * mul; rolled = true; }
+        if (_keysDown.Contains(Key.E)) { _roll += rollSpeed * (float)dt * mul; rolled = true; }
+        if (_roll > MathF.PI) _roll -= MathF.Tau;
+        if (_roll < -MathF.PI) _roll += MathF.Tau;
+
         SN.Vector3 move = SN.Vector3.Zero;
         if (_keysDown.Contains(Key.W)) move += dir;
         if (_keysDown.Contains(Key.S)) move -= dir;
         if (_keysDown.Contains(Key.A)) move -= right;
         if (_keysDown.Contains(Key.D)) move += right;
-        if (_keysDown.Contains(Key.E)) move += up;
-        if (_keysDown.Contains(Key.Q)) move -= up;
-        if (move.LengthSquared() < 1e-8f) return;
-        move = SN.Vector3.Normalize(move);
-        float distScale = Math.Clamp(_distance * 0.35f, 0.5f, 20f);
-        float mul = 1f;
-        if (_keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift)) mul *= _flyBoostMul;
-        if (_keysDown.Contains(Key.LeftCtrl) || _keysDown.Contains(Key.RightCtrl)) mul *= _flySlowMul;
-        _target += move * (_flyBaseSpeed * distScale * (float)dt * mul);
-        InvalidateVisual();
+        if (_keysDown.Contains(Key.R)) move += up;
+        if (_keysDown.Contains(Key.F)) move -= up;
+        if (move.LengthSquared() >= 1e-8f)
+        {
+            move = SN.Vector3.Normalize(move);
+            float distScale = Math.Clamp(_distance * 0.35f, 0.5f, 20f);
+            _target += move * (_flyBaseSpeed * distScale * (float)dt * mul);
+            rolled = true;
+        }
+        if (rolled)
+            InvalidateVisual();
     }
 
     // Height clamp range: allows digging below the initial flatland
@@ -1022,40 +1080,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         foreach (var planet in PlanetTerrain.ActivePlanets)
         {
             if (planet == null) continue;
-            var cfg = planet.Config;
-            if (cfg != null && planet.gameObject != null)
-            {
-                var p = planet.gameObject.Transform.Position;
-                var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
-                float radius = Math.Max(1f, cfg.Radius);
-                float dist = (camPos - center).Length();
-
-                // Orbit-aware LOD profile:
-                // far away -> fewer splits + shallower depth so the whole planet remains visible.
-                // close in -> normal LOD so planet can unload when camera gets too close.
-                float orbitStart = radius * 1.02f;
-                float orbitFull = radius * 1.35f;
-                float t = 0f;
-                if (orbitFull > orbitStart)
-                    t = Math.Clamp((dist - orbitStart) / (orbitFull - orbitStart), 0f, 1f);
-
-                int baseDepth = Math.Clamp(planet.MaxLodDepth, 2, 4);
-                int orbitDepth = 2;
-                cfg.MaxLodDepth = (int)MathF.Round(baseDepth + (orbitDepth - baseDepth) * t);
-                cfg.SplitDistanceScale = 0.60f + (0.04f - 0.60f) * t;
-                cfg.MaxLeafNodes = (int)MathF.Round(2048f + (8192f - 2048f) * t);
-
-                int baseActive = Math.Max(1024, planet.MaxActiveChunks);
-                cfg.MaxActiveChunks = (int)MathF.Round(baseActive + (4096 - baseActive) * t);
-
-                // Speed up fill when entering orbit so full-planet coverage appears quickly.
-                int baseSched = Math.Max(160, cfg.MaxGenerationSchedulesPerUpdate);
-                cfg.MaxGenerationSchedulesPerUpdate = (int)MathF.Round(baseSched + (512 - baseSched) * t);
-                int baseApply = Math.Max(160, cfg.MaxMeshAppliesPerUpdate);
-                cfg.MaxMeshAppliesPerUpdate = (int)MathF.Round(baseApply + (512 - baseApply) * t);
-            }
-
-            planet.UpdateLOD(camPos);
+            planet.RefreshLodAroundCamera(camPos);
             planet.Update();
         }
     }
@@ -1079,6 +1104,77 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         var (view, proj, _, _) = GetActiveViewProj(size);
         Picking.BuildPickRay(mouse, view, proj, size, out var ro, out var rd);
         _hasHover = TryFindClosestTerrainHit(ro, rd, out _hoverTerrain, out _hoverPointW);
+        _hasPlanetHover = TryFindClosestPlanetHit(ro, rd, out _hoverPlanet, out _hoverPlanetPointW);
+    }
+
+    bool TryFindClosestPlanetHit(in SN.Vector3 ro, in SN.Vector3 rd, out PlanetTerrain? planet, out SN.Vector3 hitW)
+    {
+        planet = null;
+        hitW = default;
+        float bestD = float.PositiveInfinity;
+        var planets = PlanetTerrain.ActivePlanets;
+        for (int i = 0; i < planets.Count; i++)
+        {
+            var p = planets[i];
+            if (p == null || !p.IsActiveAndEnabled) continue;
+            float maxDist = Math.Max(50000f, p.Radius * 8f);
+            if (!p.Raycast(ro, rd, maxDist, out var hit)) continue;
+            if (hit.Distance < bestD)
+            {
+                bestD = hit.Distance;
+                planet = p;
+                hitW = hit.Point;
+            }
+        }
+        return planet != null;
+    }
+
+    float MapPlanetBrushStrength(PlanetTerrain p, float ui01)
+    {
+        float s = Math.Clamp(ui01, 0f, 1f);
+        float def = Math.Max(0.01f, p.DefaultManipulationStrength);
+        return Math.Max(0.01f, s * def);
+    }
+
+    void ApplyPlanetToolUnified(PlanetTerrain planet, SN.Vector3 hitW, int toolIndex, float sign)
+    {
+        if (toolIndex == PlanetToolNone) return;
+        var localHit = planet.WorldToLocal(hitW);
+        float hitR = localHit.Length();
+        if (hitR < planet.Radius * 0.45f)
+            return;
+
+        float radius = Math.Max(0.05f, PlanetBrushRadiusProvider(planet));
+        radius = Math.Min(radius, Math.Max(8f, planet.Radius * 0.08f));
+        if (_planetPaintHasLastHit)
+        {
+            float minStep = radius * 0.28f;
+            if (SN.Vector3.DistanceSquared(hitW, _planetPaintLastHit) < minStep * minStep)
+                return;
+        }
+        _planetPaintLastHit = hitW;
+        _planetPaintHasLastHit = true;
+        float strength = MapPlanetBrushStrength(planet, PlanetBrushStrengthProvider(planet));
+        strength = Math.Min(strength, 6f);
+        float falloff = Math.Clamp(PlanetBrushFalloffProvider(planet), 0.35f, 1f);
+        switch (toolIndex)
+        {
+            case 0: // Dig (right-click / shift → build)
+                if (sign < 0f) planet.BuildSphere(hitW, radius, strength, falloff);
+                else planet.DigSphere(hitW, radius, strength, falloff);
+                break;
+            case 1: // Build (right-click / shift → dig)
+                if (sign < 0f) planet.DigSphere(hitW, radius, strength, falloff);
+                else planet.BuildSphere(hitW, radius, strength, falloff);
+                break;
+            case 2:
+                planet.SmoothSphere(hitW, radius, strength, falloff);
+                break;
+            case 3:
+                planet.FlattenSphere(hitW, radius, strength, falloff, _planetFlattenTargetRadius);
+                break;
+        }
+        _planetStrokeDirty = true;
     }
 
     bool TryFindClosestTerrainHit(in SN.Vector3 ro, in SN.Vector3 rd, out Terrain? terrain, out SN.Vector3 hitW)
@@ -1170,7 +1266,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _selected = go;
             FrameSelected(go);
         };
-        SceneService.Changed += () => { _cache?.InvalidateAll(); _sceneQueryDirty = true; InvalidateVisual(); };
+        SceneService.Changed += () =>
+        {
+            _sceneQueryDirty = true;
+            if (GameView.IsAnyViewPlaying)
+                return;
+            _cache?.InvalidateAll();
+            InvalidateVisual();
+        };
 
         // Full scene replacement (e.g. File > Load Scene) needs a heavier reset
         // than the incremental Changed handler above.
@@ -1238,7 +1341,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     private void OnAnyPlayingStateChanged()
     {
-        if (!GameView.IsAnyViewPlaying || _renderInFlight) return;
+        if (!GameView.IsAnyViewPlaying)
+        {
+            InvalidateVisual();
+            return;
+        }
+
+        // Let Game view take the shared GL lock for the first frames of Play.
+        _lastPlayPreviewTicks = Stopwatch.GetTimestamp();
+        if (_renderInFlight) return;
         _renderInFlight = true;
         Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
             Avalonia.Threading.DispatcherPriority.Render);
@@ -1449,15 +1560,32 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             return;
         }
 
+        if (GameView.IsAnyViewPlaying)
+        {
+            long now = Stopwatch.GetTimestamp();
+            double since = (now - _lastPlayPreviewTicks) / (double)Stopwatch.Frequency;
+            if (since < 0.18)
+            {
+                _renderInFlight = false;
+                return;
+            }
+        }
+
         if (!SceneRenderer.TryBeginViewRender())
         {
             _renderInFlight = false;
-            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
-                Avalonia.Threading.DispatcherPriority.Render);
+            if (!GameView.IsAnyViewPlaying)
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+                    Avalonia.Threading.DispatcherPriority.Render);
+            }
             return;
         }
+        _lastPlayPreviewTicks = Stopwatch.GetTimestamp();
         try
         {
+            // Skip only weather particles during Play; trees/grass stay visible in Scene View.
+            SceneRenderer.SkipPlanetVegetationDraws = GameView.IsAnyViewPlaying;
             var g = _glCtx.GL;
 
         // Flush any GL errors accumulated by the other view's rendering.
@@ -1685,7 +1813,6 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             // Update tree LOD per frame
             UpdateTreeLOD(camPos);
             UpdateMeshLodGroups(camPos);
-            // Update planet LOD per frame
             UpdatePlanetLOD(camPos);
 
             SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
@@ -1882,6 +2009,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
         finally
         {
+            SceneRenderer.SkipPlanetVegetationDraws = false;
             SceneRenderer.EndViewRender();
             _renderInFlight = false;
         }
@@ -2030,7 +2158,11 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             e.Handled = true;
         }
 
-        if (HandleFlyKeyDown(e.Key)) { e.Handled = true; return; }
+        if (GameView.IsAnyViewPlaying)
+        {
+            Input.FeedKeyDown(KeyMap.FromAvalonia(e.Key));
+        }
+        else if (HandleFlyKeyDown(e.Key)) { e.Handled = true; return; }
 
         // C = toggle camera preview (only when NOT using Ctrl+C for copy)
         if (e.Key == Key.C && !e.KeyModifiers.HasFlag(KeyModifiers.Control))
@@ -2156,12 +2288,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
-        if (HandleFlyKeyUp(e.Key)) e.Handled = true;
+        if (GameView.IsAnyViewPlaying)
+            Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));
+        else if (HandleFlyKeyUp(e.Key)) e.Handled = true;
     }
 
     private void SaveCameraBookmark(int slot)
     {
-        _cameraBookmarks[slot] = new CameraBookmark(_target, _yaw, _pitch, _distance);
+        _cameraBookmarks[slot] = new CameraBookmark(_target, _yaw, _pitch, _roll, _distance);
         Log.Info($"[SceneView] Saved camera bookmark {slot + 1}");
     }
 
@@ -2173,6 +2307,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _target = bookmark.Value.Target;
         _yaw = bookmark.Value.Yaw;
         _pitch = bookmark.Value.Pitch;
+        _roll = bookmark.Value.Roll;
         _distance = bookmark.Value.Distance;
         InvalidateVisual();
         Log.Info($"[SceneView] Recalled camera bookmark {slot + 1}");
@@ -2310,6 +2445,24 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Focus(); _last = e.GetPosition(this);
         UpdateTerrainHover(_last);
         var props = e.GetCurrentPoint(this).Properties;
+        if (ShowTerrainGizmos && _hasPlanetHover && _hoverPlanet != null && (props.IsLeftButtonPressed || props.IsRightButtonPressed))
+        {
+            int planetTool = GetPlanetToolIndex(_hoverPlanet);
+            if (planetTool != PlanetToolNone)
+            {
+                _paintingPlanet = true;
+                _planetPaintTarget = _hoverPlanet;
+                _planetPaintToolIndex = planetTool;
+                _planetPaintSign = (props.IsRightButtonPressed || e.KeyModifiers.HasFlag(KeyModifiers.Shift)) ? -1f : +1f;
+                _planetFlattenTargetRadius = _hoverPlanetPointW.Length() > 0.01f
+                    ? _hoverPlanet.WorldToLocal(_hoverPlanetPointW).Length()
+                    : _hoverPlanet.Radius;
+                _planetPaintHasLastHit = false;
+                ApplyPlanetToolUnified(_planetPaintTarget, _hoverPlanetPointW, _planetPaintToolIndex, _planetPaintSign);
+                InvalidateVisual();
+                e.Pointer.Capture(this); e.Handled = true; return;
+            }
+        }
         if (ShowTerrainGizmos && _hasHover && _hoverTerrain != null && (props.IsLeftButtonPressed || props.IsRightButtonPressed))
         {
             int toolIndex = GetTerrainToolIndex(_hoverTerrain);
@@ -2544,6 +2697,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         var pos = e.GetPosition(this);
         UpdateTerrainHover(pos);
+        if (_paintingPlanet && _planetPaintTarget != null && _hasPlanetHover && ReferenceEquals(_hoverPlanet, _planetPaintTarget))
+        { ApplyPlanetToolUnified(_planetPaintTarget, _hoverPlanetPointW, _planetPaintToolIndex, _planetPaintSign); InvalidateVisual(); e.Handled = true; return; }
         if (_paintingTerrain && _paintTarget != null && _hasHover && ReferenceEquals(_hoverTerrain, _paintTarget))
         { ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign); InvalidateVisual(); e.Handled = true; return; }
         if (_isDragging && _dragAxis != Axis.None && _selected != null)
@@ -2574,6 +2729,19 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     void OnPointerReleased(object? s, PointerReleasedEventArgs e)
     {
+        if (_paintingPlanet)
+        {
+            _paintingPlanet = false;
+            if (_planetStrokeDirty && _planetPaintTarget != null)
+            {
+                _planetPaintTarget.SaveVoxelEdits();
+                _planetStrokeDirty = false;
+                SceneService.NotifyChanged();
+            }
+            _planetPaintTarget = null;
+            _planetPaintHasLastHit = false;
+            if (e.Pointer.Captured == this) e.Pointer.Capture(null); e.Handled = true; return;
+        }
         if (_paintingTerrain)
         {
             _paintingTerrain = false;
@@ -2715,9 +2883,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     #region Projection helper
     (SN.Matrix4x4 View, SN.Matrix4x4 Proj) GetViewProj(Size size)
     {
-        var dir = new SN.Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Sin(_pitch), MathF.Cos(_pitch) * MathF.Sin(_yaw));
+        GetCameraAxes(out var dir, out _, out var up);
         var eye = _target - dir * _distance;
-        var view = SN.Matrix4x4.CreateLookAt(eye, _target, SN.Vector3.UnitY);
+        var view = SN.Matrix4x4.CreateLookAt(eye, _target, up);
         float aspect = size.Width <= 0 || size.Height <= 0 ? 1f : (float)(size.Width / size.Height);
         float farPlane = PlanetTerrain.ActivePlanets.Count > 0 ? 50000f : 1000f;
         SN.Matrix4x4 proj = Is2D
@@ -3077,19 +3245,34 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     /// </summary>
     unsafe void RenderTerrainGizmosGL(GL g, SN.Matrix4x4 view, SN.Matrix4x4 proj)
     {
-        if (!_hasHover || _hoverTerrain == null || _wireShader == null || _colliderVao == 0) return;
+        bool planetBrush = _hasPlanetHover && _hoverPlanet != null && GetPlanetToolIndex(_hoverPlanet) != PlanetToolNone;
+        bool terrainBrush = _hasHover && _hoverTerrain != null;
+        if ((!planetBrush && !terrainBrush) || _wireShader == null || _colliderVao == 0) return;
 
         _terrainOuter.Clear();
         _terrainInner.Clear();
         _terrainCross.Clear();
 
-        float radius = TerrainBrushRadiusProvider(_hoverTerrain);
-        float falloff = Clamp01(TerrainBrushFalloffProvider(_hoverTerrain));
-        float strength = Clamp01(TerrainBrushStrengthProvider(_hoverTerrain));
+        SN.Vector3 gizmoCenter;
+        float radius, falloff, strength;
+        if (planetBrush)
+        {
+            gizmoCenter = _hoverPlanetPointW;
+            radius = PlanetBrushRadiusProvider(_hoverPlanet!);
+            falloff = Clamp01(PlanetBrushFalloffProvider(_hoverPlanet!));
+            strength = Clamp01(PlanetBrushStrengthProvider(_hoverPlanet!));
+        }
+        else
+        {
+            gizmoCenter = _hoverPointW;
+            radius = TerrainBrushRadiusProvider(_hoverTerrain!);
+            falloff = Clamp01(TerrainBrushFalloffProvider(_hoverTerrain!));
+            strength = Clamp01(TerrainBrushStrengthProvider(_hoverTerrain!));
+        }
 
         TerrainGizmos.CollectBrushWithFalloff(
             _terrainOuter, _terrainInner, _terrainCross,
-            _hoverPointW, radius, falloff, 64);
+            gizmoCenter, radius, falloff, 64);
 
         if (_terrainOuter.Count == 0 && _terrainInner.Count == 0 && _terrainCross.Count == 0) return;
 

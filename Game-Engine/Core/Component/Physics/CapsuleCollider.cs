@@ -14,7 +14,7 @@ namespace Game_Engine.Core.Component
     {
         public enum Axis { X, Y, Z }
 
-        [Persist] public CoreVec3 Center { get; set; } = new CoreVec3(0, 1, 0);
+        [Persist] public CoreVec3 Center { get; set; } = new CoreVec3(0, 0, 0);
         [Persist] public float Height { get; set; } = 2.0f;
         [Persist] public float Radius { get; set; } = 0.4f;
         [Persist] public Axis Direction { get; set; } = Axis.Y;

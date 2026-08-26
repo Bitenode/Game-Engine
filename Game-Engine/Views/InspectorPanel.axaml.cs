@@ -2718,6 +2718,9 @@ public partial class InspectorPanel : UserControl
             outer.Children.Add(TerrainLayersUI(owner, terr));
         }
 
+        if (b is PlanetTerrain planetTerr)
+            outer.Children.Add(PlanetToolsRow(owner, planetTerr));
+
         // Tree extra UI (procedural / import settings)
         if (b is Tree treeComp)
         {
@@ -5155,6 +5158,125 @@ public partial class InspectorPanel : UserControl
 
     static TerrainEditorState GetTerrainState(Terrain t)
         => _terrainUi.GetOrCreateValue(t);
+
+    static readonly ConditionalWeakTable<PlanetTerrain, PlanetEditorState> _planetUi
+        = new ConditionalWeakTable<PlanetTerrain, PlanetEditorState>();
+
+    sealed class PlanetEditorState
+    {
+        public int ToolIndex = -1;
+        public double BrushSize = 8;
+        public double Strength = 0.5;
+        public double Falloff = 0.6;
+    }
+
+    static PlanetEditorState GetPlanetState(PlanetTerrain p)
+        => _planetUi.GetOrCreateValue(p);
+
+    Control PlanetToolsRow(GameObject owner, PlanetTerrain planet)
+    {
+        var state = GetPlanetState(planet);
+
+        SceneView.PlanetToolIndexProvider = pt => GetPlanetState(pt).ToolIndex;
+        SceneView.PlanetBrushRadiusProvider = pt => (float)GetPlanetState(pt).BrushSize;
+        SceneView.PlanetBrushStrengthProvider = pt => (float)GetPlanetState(pt).Strength;
+        SceneView.PlanetBrushFalloffProvider = pt => (float)GetPlanetState(pt).Falloff;
+
+        var tools = new (int id, string tip, int iconId)[]
+        {
+            (0, "Dig", 1),
+            (1, "Build", 0),
+            (2, "Smooth", 8),
+            (3, "Flatten", 5),
+        };
+
+        var bar = new WrapPanel { Orientation = Orientation.Horizontal };
+
+        void SetTool(int id)
+        {
+            state.ToolIndex = id;
+            foreach (var tb in bar.Children.OfType<ToggleButton>())
+                tb.IsChecked = (id >= 0) && (int)tb.Tag! == id;
+            Game_Engine.Core.SceneService.NotifyChanged();
+        }
+
+        foreach (var tool in tools)
+        {
+            var b = new ToggleButton
+            {
+                Content = TerrainInspectorIcons.TerrainToolContent(tool.iconId),
+                MinWidth = 32,
+                MinHeight = 28,
+                Margin = new Thickness(3, 0, 3, 0),
+                Tag = tool.id,
+                IsChecked = (tool.id == state.ToolIndex)
+            };
+            ToolTip.SetTip(b, tool.tip);
+            b.Checked += (_, __) => SetTool(tool.id);
+            b.Unchecked += (_, __) =>
+            {
+                if (!bar.Children.OfType<ToggleButton>().Any(x => x.IsChecked == true))
+                    SetTool(-1);
+            };
+            bar.Children.Add(b);
+        }
+
+        Control SliderRow(string label, double min, double max, Func<double> getter, Action<double> setter)
+        {
+            var grid = new Avalonia.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+
+            var lb = new TextBlock { Text = label, Width = 80, VerticalAlignment = VerticalAlignment.Center, Opacity = .8 };
+            Avalonia.Controls.Grid.SetColumn(lb, 0);
+
+            var sl = new Slider { Minimum = min, Maximum = max, Value = getter() };
+            Avalonia.Controls.Grid.SetColumn(sl, 1);
+
+            var val = new TextBlock { Text = getter().ToString(max <= 1.0 ? "0.00" : "0"), Width = 44, HorizontalAlignment = HorizontalAlignment.Right };
+            Avalonia.Controls.Grid.SetColumn(val, 2);
+
+            sl.PropertyChanged += (_, e) =>
+            {
+                if (e.Property == RangeBase.ValueProperty)
+                {
+                    var v = (double)sl.Value;
+                    setter(v);
+                    val.Text = v.ToString(max <= 1.0 ? "0.00" : "0");
+                    Game_Engine.Core.SceneService.NotifyChanged();
+                }
+            };
+
+            grid.Children.Add(lb);
+            grid.Children.Add(sl);
+            grid.Children.Add(val);
+            return grid;
+        }
+
+        var content = new StackPanel { Spacing = 6 };
+        content.Children.Add(new TextBlock
+        {
+            Text = "Planet brushes (Scene View)",
+            FontWeight = FontWeight.Bold,
+            Opacity = 0.9
+        });
+        content.Children.Add(bar);
+        var sliders = new StackPanel { Spacing = 4, Margin = new Thickness(2, 4, 2, 0) };
+        sliders.Children.Add(SliderRow("Radius", 1, 48, () => state.BrushSize, v => state.BrushSize = v));
+        sliders.Children.Add(SliderRow("Strength", 0, 1, () => state.Strength, v => state.Strength = v));
+        sliders.Children.Add(SliderRow("Falloff", 0, 1, () => state.Falloff, v => state.Falloff = v));
+        content.Children.Add(sliders);
+        content.Children.Add(new TextBlock
+        {
+            Text = "Click the planet in Scene View. Dig/Build use the camera pick ray. Mouse-up saves .planetvox.",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.7,
+            FontSize = 11
+        });
+
+        return ToolbarShell(content);
+    }
 
     // Small styled label for section titles
     TextBlock SectionTitle(string text) =>

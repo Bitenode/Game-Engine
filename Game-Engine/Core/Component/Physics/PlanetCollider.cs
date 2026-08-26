@@ -6,10 +6,8 @@ using SN = System.Numerics;
 namespace Game_Engine.Core.Component
 {
     /// <summary>
-    /// Planet collider that uses per-point terrain height sampling for actual
-    /// mesh-conforming collision. The gizmo draws at min/max terrain radii
-    /// to show the collision shell. Actual collision is handled by
-    /// <see cref="PlanetTerrain.SampleSurfaceRadius"/> in the physics components.
+    /// Broad-phase AABB for the planet. Contact is handled by density
+    /// raycast/spherecast on <see cref="PlanetTerrain"/> (caves and outer crust).
     /// </summary>
     [ComponentCategory("Physics")]
     public sealed class PlanetCollider : Collider

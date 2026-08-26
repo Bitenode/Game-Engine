@@ -53,8 +53,15 @@ namespace Game_Engine.Core
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();
 
-            if (ext == ".tga")
-                return DecodeTga(File.ReadAllBytes(path), path);
+            if (ext is ".tga" or ".targa" or ".tif" or ".tiff")
+            {
+#if !ANDROID
+                try { return DecodeWithMagick(path); }
+                catch { /* custom TGA/TIFF fallbacks below */ }
+#endif
+                if (ext is ".tga" or ".targa")
+                    return DecodeTga(File.ReadAllBytes(path), path);
+            }
 
             try
             {
@@ -88,7 +95,9 @@ namespace Game_Engine.Core
         }
 
 #if !ANDROID
-        static Texture2D DecodePsdWithMagick(string path)
+        static Texture2D DecodePsdWithMagick(string path) => DecodeWithMagick(path);
+
+        static Texture2D DecodeWithMagick(string path)
         {
             using var img = new MagickImage(path);
             img.ColorSpace = ColorSpace.sRGB;
@@ -100,7 +109,10 @@ namespace Game_Engine.Core
             // Ensure 8-bit RGBA output expected by renderer.
             img.Depth = 8;
             var pixels = img.GetPixels();
-            var rgba = pixels.ToByteArray(PixelMapping.RGBA);
+            var rgba = pixels.ToByteArray(PixelMapping.RGBA)
+                ?? throw new Exception("Magick returned no pixels: " + path);
+            if (rgba.Length < img.Width * img.Height * 4)
+                throw new Exception("Magick pixel size mismatch: " + path);
             return new Texture2D((int)img.Width, (int)img.Height, rgba, Path.GetFullPath(path));
         }
 #endif

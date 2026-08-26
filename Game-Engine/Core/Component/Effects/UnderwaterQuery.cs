@@ -54,20 +54,28 @@ namespace Game_Engine.Core.Component
                 if (planet?.gameObject == null || !planet.IsActiveAndEnabled || !planet.EnableWater || planet.Config == null)
                     continue;
 
-                var world = SceneGraphUtil.AccumulateWorld(planet.gameObject);
-                var center = new SN.Vector3(world.M41, world.M42, world.M43);
+                var center = planet.GetWorldCenter();
                 var toPos = worldPos - center;
                 float distToCenter = toPos.Length();
                 if (distToCenter <= 1e-5f)
                     continue;
 
-                float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
-                float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
-                float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
-                float radiusScale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+                float radiusScale = planet.GetWorldRadiusScale();
                 float seaLevelWorld = planet.Config.SeaLevel * radiusScale;
                 float depth = seaLevelWorld - distToCenter;
                 if (depth <= bestDepth)
+                    continue;
+
+                var dir = toPos / distToCenter;
+                float crustWorld = planet.SampleHeightfieldRadius(dir);
+                // Flooded column: between the visible crust and the sea sphere.
+                bool inOceanColumn = distToCenter >= crustWorld - 2f;
+                // Sea often sits a little inside the heightfield (this planet ~16m).
+                // Crossing that water mesh with the fly camera is still ocean;
+                // deep interior / caves are not.
+                bool clippedIntoSeaSphere = crustWorld > seaLevelWorld + 1f
+                                            && distToCenter > seaLevelWorld - 32f;
+                if (!inOceanColumn && !clippedIntoSeaSphere)
                     continue;
 
                 var ocean = planet.OceanBiome;

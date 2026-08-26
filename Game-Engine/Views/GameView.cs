@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
 using Avalonia.OpenGL;
 using Avalonia.OpenGL.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
@@ -145,11 +146,16 @@ namespace Game_Engine.Views
 
         // LOD throttling: updating all terrain/tree/planet LOD every rendered frame is expensive.
         // We update at a fixed cadence or when the camera moves enough.
-        const double LOD_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz
+        const double LOD_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz (flat terrain / trees)
+        const double PLANET_LOD_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz planet streaming
         const float LOD_UPDATE_MOVE_THRESHOLD = 2.0f;
+        const float PLANET_LOD_MOVE_THRESHOLD = 2.0f;
+        const float PLANET_FAST_APPROACH_SPEED = 40f;
         const int PLAYMODE_MAX_PLANET_LOD_DEPTH = 5;
         double _lodAccumSec;
+        double _planetLodAccumSec;
         SN.Vector3 _lastLodCamPos = new(float.NaN);
+        SN.Vector3 _lastPlanetLodCamPos = new(float.NaN);
 
         // Shadow throttling: render shadow map less frequently and reuse cached map.
         const double SHADOW_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz
@@ -163,6 +169,7 @@ namespace Game_Engine.Views
         // Avalonia's OpenGlControlBase compositing is very expensive (~500ms on some systems).
         // We only request a new render after OnOpenGlRender has completed the previous one.
         private volatile bool _renderInFlight;
+        TopLevel? _playKeyHost;
 
         public GameView()
         {
@@ -185,6 +192,8 @@ namespace Game_Engine.Views
 
             SceneService.Changed += () =>
             {
+                if (State == GamePanel.GameState.Playing)
+                    return;
                 RebuildSceneCaches();
                 _needsWarm = true;
                 _cache?.InvalidateAll();
@@ -218,8 +227,8 @@ namespace Game_Engine.Views
             };
             fpsDisplayTimer.Start();
 
-            KeyDown += OnKeyDown;
-            KeyUp += OnKeyUp;
+            AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+            AddHandler(InputElement.KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
             // Use Tunnel routing to guarantee events arrive even if the OpenGL base
             // class marks them as handled during the bubble phase.
             AddHandler(Avalonia.Input.InputElement.PointerPressedEvent, OnPointerPressed, Avalonia.Interactivity.RoutingStrategies.Tunnel);
@@ -430,6 +439,7 @@ namespace Game_Engine.Views
             }
             try
             {
+                SceneRenderer.SkipPlanetVegetationDraws = false;
                 var g = _glCtx.GL;
 
             // Flush any GL errors accumulated by the other view's rendering.
@@ -547,7 +557,14 @@ namespace Game_Engine.Views
 
             // Camera
             var cams = _cams;
-            Camera? cam = cams.Count > 0 ? cams[0] : null;
+            Camera? cam = CameraService.MainOrFirst();
+            if (cam == null || !cam.Enabled)
+            {
+                for (int i = 0; i < cams.Count; i++)
+                {
+                    if (cams[i] != null && cams[i].Enabled) { cam = cams[i]; break; }
+                }
+            }
 
             SN.Matrix4x4 view, proj;
             if (cam != null)
@@ -678,6 +695,25 @@ namespace Game_Engine.Views
                 shouldUpdateLod = true;
             }
 
+            bool shouldUpdatePlanetLod = false;
+            _planetLodAccumSec += Math.Max(0.0, dt);
+            if (_planetLodAccumSec >= PLANET_LOD_UPDATE_INTERVAL_SEC)
+                shouldUpdatePlanetLod = true;
+            if (!float.IsNaN(_lastPlanetLodCamPos.X))
+            {
+                var pd = camPos - _lastPlanetLodCamPos;
+                float pDist = pd.Length();
+                if (pDist >= PLANET_LOD_MOVE_THRESHOLD)
+                    shouldUpdatePlanetLod = true;
+                float elapsed = Math.Max(1e-3f, (float)_planetLodAccumSec);
+                if (pDist / elapsed >= PLANET_FAST_APPROACH_SPEED)
+                    shouldUpdatePlanetLod = true;
+            }
+            else
+            {
+                shouldUpdatePlanetLod = true;
+            }
+
             TerrainStreamer.SyncAll(camPos);
 
             if (shouldUpdateLod)
@@ -689,14 +725,20 @@ namespace Game_Engine.Views
                 foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
                 foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
                 foreach (var root in SceneService.Root) WalkMeshLodGroup(root, camPos);
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config != null && planet.Config.MaxLodDepth > PLAYMODE_MAX_PLANET_LOD_DEPTH)
-                        planet.Config.MaxLodDepth = PLAYMODE_MAX_PLANET_LOD_DEPTH;
-                    planet?.UpdateLOD(camPos);
-                }
                 lodSw.Stop();
                 planetLodMs = lodSw.Elapsed.TotalMilliseconds;
+            }
+
+            if (shouldUpdatePlanetLod)
+            {
+                _planetLodAccumSec = 0.0;
+                _lastPlanetLodCamPos = camPos;
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config != null)
+                        planet.Config.MaxLodDepth = Math.Clamp(planet.Config.MaxLodDepth, 4, PLAYMODE_MAX_PLANET_LOD_DEPTH);
+                    planet?.RefreshLodAroundCamera(camPos);
+                }
             }
 
             var sunSD = fallbackPlanetSunDir;
@@ -1270,13 +1312,40 @@ namespace Game_Engine.Views
         void OnKeyDown(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
-            var code = KeyMap.FromAvalonia(e.Key); Input.FeedKeyDown(code);
+            var code = KeyMap.FromAvalonia(e.Key);
+            Input.FeedKeyDown(code);
+            if (IsGameplayKey(e.Key))
+                e.Handled = true;
         }
 
         void OnKeyUp(object? s, KeyEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
             Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));
+            if (IsGameplayKey(e.Key))
+                e.Handled = true;
+        }
+
+        static bool IsGameplayKey(Key key) =>
+            key is Key.W or Key.A or Key.S or Key.D
+                or Key.Up or Key.Down or Key.Left or Key.Right
+                or Key.Space or Key.LeftShift or Key.RightShift;
+
+        void BindPlayKeyboard()
+        {
+            UnbindPlayKeyboard();
+            _playKeyHost = TopLevel.GetTopLevel(this);
+            if (_playKeyHost == null) return;
+            _playKeyHost.AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+            _playKeyHost.AddHandler(InputElement.KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
+        }
+
+        void UnbindPlayKeyboard()
+        {
+            if (_playKeyHost == null) return;
+            _playKeyHost.RemoveHandler(InputElement.KeyDownEvent, OnKeyDown);
+            _playKeyHost.RemoveHandler(InputElement.KeyUpEvent, OnKeyUp);
+            _playKeyHost = null;
         }
 
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
@@ -1335,8 +1404,12 @@ namespace Game_Engine.Views
             switch (State)
             {
                 case GamePanel.GameState.Playing:
-                    EnsurePlaySnapshot(); EnsureAwakeStart();
+                    SceneService.PlayMode = true;
+                    EnsurePlaySnapshot();
+                    PlanetPlayerSpawner.EnsurePlayModeControllers();
+                    EnsureAwakeStart();
                     _needsWarm = true; Focus();
+                    BindPlayKeyboard();
                     SceneRenderer.ResetBiomeTexDebug();
                     Core.Time.Reset();
                     _updateWatch.Restart(); _fixedWatch.Restart();
@@ -1346,9 +1419,13 @@ namespace Game_Engine.Views
                     RebuildSceneCaches();
                     break;
                 case GamePanel.GameState.Paused:
+                    SceneService.PlayMode = false;
+                    UnbindPlayKeyboard();
                     _fixedTimer.Stop(); _updateTimer.Stop(); break;
                 case GamePanel.GameState.Stopped:
                 {
+                    SceneService.PlayMode = false;
+                    UnbindPlayKeyboard();
                     // Capture selection before LoadFromFile: SceneService.SceneReplaced (e.g. SceneView)
                     // clears SelectionService, so ReSelectAfterRestore cannot read the old Current afterward.
                     string? restoreSelName = SelectionService.Current?.Name;
@@ -1583,6 +1660,7 @@ namespace Game_Engine.Views
             if (dt > 0.05) dt = 0.05;
             Core.Time.BeginUpdate(dt);
             Input.NewFrame((float)dt);
+            Input.PollHardwareHeldKeys();
 
             // Feed viewport size in DIP space (matches MousePosition coordinate space)
             Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
@@ -1630,9 +1708,25 @@ namespace Game_Engine.Views
         }
 
         void CallOnDestroyAll() => ForEachBehavior(b => b.__OnDestroy());
-        static void ForEachBehavior(Action<Behavior> a) { foreach (var r in SceneService.Root) Traverse(r, a); }
+
+        // Snapshot lists: Awake/Start (Require, spawners) add/remove behaviors and children.
+        static void ForEachBehavior(Action<Behavior> a)
+        {
+            var roots = SceneService.Root.ToArray();
+            for (int i = 0; i < roots.Length; i++)
+                Traverse(roots[i], a);
+        }
+
         static void Traverse(GameObject go, Action<Behavior> a)
-        { if (!go.Enabled) return; foreach (var b in go.Behaviors) a(b); foreach (var c in go.Children) Traverse(c, a); }
+        {
+            if (!go.Enabled) return;
+            var behaviors = go.Behaviors.ToArray();
+            for (int i = 0; i < behaviors.Length; i++)
+                a(behaviors[i]);
+            var children = go.Children.ToArray();
+            for (int i = 0; i < children.Length; i++)
+                Traverse(children[i], a);
+        }
         #endregion
     }
 }

@@ -25,7 +25,7 @@ public sealed class PlanetConfig
     /// Global cap for total quadtree leaves across all 6 faces.
     /// Reduces worst-case chunk explosion near the camera.
     /// </summary>
-    public int MaxLeafNodes { get; set; } = 640;
+    public int MaxLeafNodes { get; set; } = 128;
 
     /// <summary>
     /// Hard cap for active chunk GameObjects kept around the player.
@@ -41,7 +41,7 @@ public sealed class PlanetConfig
 
     public float CaveFrequency { get; set; } = 0.02f;
     public float CaveThreshold { get; set; } = 0.18f;
-    public float CaveDepth { get; set; } = 10f;
+    public float CaveDepth { get; set; } = 280f;
 
     public float TemperatureLatWeight { get; set; } = 1f;
     public float TemperatureNoiseWeight { get; set; } = 0.15f;
@@ -69,6 +69,13 @@ public sealed class PlanetConfig
     public float RiverFrequency { get; set; } = 0.003f;
     public float RiverMeander { get; set; } = 0.5f;
     public string[] RiverAllowedBiomes { get; set; } = System.Array.Empty<string>();
+
+    /// <summary>
+    /// Transvoxel crust is used when a leaf's tangential cell size is at or below this
+    /// (planet-local units). Coarser leaves use a smooth spherical heightfield shell so
+    /// orbit / default Scene View does not look like marching-cubes shards.
+    /// </summary>
+    public float VolumetricMaxCellSize { get; set; } = 3.5f;
 
     /// <summary>Signed-density iso-surface search range around the procedural surface radius.</summary>
     public float VoxelIsoSearchRange { get; set; } = 96f;

@@ -1500,6 +1500,7 @@ namespace Game_Engine.Core
             // geometry (present for generic/explicit meshes)
             public float[]? v { get; set; }   // x,y,z,...
             public float[]? n { get; set; }   // x,y,z,...
+            public float[]? uv { get; set; }  // u,v,...
             public int[]? tri { get; set; }
             public int[]? line { get; set; }
         }
@@ -1576,11 +1577,24 @@ namespace Game_Engine.Core
                 }
             }
 
+            float[]? flatUv = null;
+            if (m.UVs != null && m.UVs.Length > 0)
+            {
+                flatUv = new float[m.UVs.Length * 2];
+                for (int i = 0, j = 0; i < m.UVs.Length; i++)
+                {
+                    var uv = m.UVs[i];
+                    flatUv[j++] = uv.X;
+                    flatUv[j++] = uv.Y;
+                }
+            }
+
             return new MeshDTO
             {
                 kind = MeshKind.Generic.ToString(),
                 v = flatV,
                 n = flatN,
+                uv = flatUv,
                 tri = m.TriIndices ?? Array.Empty<int>(),
                 line = m.LineIndices ?? Array.Empty<int>()
             };
@@ -1625,10 +1639,19 @@ namespace Game_Engine.Core
                     norms[i] = new SN.Vector3(d.n[j++], d.n[j++], d.n[j++]);
             }
 
+            SN.Vector2[]? uvs = null;
+            if (d.uv != null && d.uv.Length >= 2)
+            {
+                uvs = new SN.Vector2[d.uv.Length / 2];
+                for (int i = 0, j = 0; i < uvs.Length; i++)
+                    uvs[i] = new SN.Vector2(d.uv[j++], d.uv[j++]);
+            }
+
             var mesh = new Mesh(verts, d.line ?? Array.Empty<int>(), d.tri)
             {
                 Kind = MeshKind.Generic,
-                Normals = norms
+                Normals = norms,
+                UVs = uvs
             };
             return mesh;
         }

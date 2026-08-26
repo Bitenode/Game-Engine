@@ -2,6 +2,7 @@
 using System;
 using Silk.NET.OpenGL;
 using SN = System.Numerics;
+using Profiler = Game_Engine.Core.Profiler;
 
 namespace Game_Engine.Core.Rendering.GPU;
 
@@ -323,6 +324,8 @@ public sealed class GPUMesh : IDisposable
         if (IndexCount <= 0) return;
         _gl.BindVertexArray(VAO);
         _gl.DrawElements(PrimitiveType.Triangles, (uint)IndexCount, DrawElementsType.UnsignedInt, null);
+        Profiler.CountDrawCall();
+        Profiler.CountTriangles(IndexCount / 3);
     }
 
     /// <summary>Draw wireframe lines.</summary>

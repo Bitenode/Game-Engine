@@ -129,14 +129,12 @@ namespace Game_Engine.Core.Component
             // ---------- Ground probe ----------
             if (onPlanet)
             {
-                float surfR = planet!.SampleSurfaceRadius(LocalUp);
-                float feetDist = (pos - planetCenter).Length() - capsuleH;
-                float diff = feetDist - surfR;
-                bool groundHit = diff < GroundSnapDistance + StepUpMax + 0.75f;
-
+                ProbePlanetGround(planet!, planetCenter, pos, capsuleH, minSlopeUpDot,
+                    GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
+                    out bool groundHit, out float diff, out var hitN);
                 IsGrounded = groundHit && diff >= -0.02f && diff <= StepUpMax + 0.02f;
-                GroundNormal = IsGrounded ? LocalUp : LocalUp;
-                if (groundHit) { _lastHitDist = surfR; _lastHitN = LocalUp; }
+                GroundNormal = IsGrounded ? hitN : LocalUp;
+                if (groundHit) { _lastHitDist = (pos - planetCenter).Length() - diff - capsuleH; _lastHitN = hitN; }
             }
             else
             {
@@ -204,12 +202,13 @@ namespace Game_Engine.Core.Component
             if (onPlanet)
             {
                 LocalUp = SN.Vector3.Normalize(pos - planetCenter);
-                float surfR2 = planet!.SampleSurfaceRadius(LocalUp);
-                float feetDist2 = (pos - planetCenter).Length() - capsuleH;
-                float diff2 = feetDist2 - surfR2;
+                planet!.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                ProbePlanetGround(planet, planetCenter, pos, capsuleH, minSlopeUpDot,
+                    GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
+                    out _, out float diff2, out var hitN2);
                 IsGrounded = diff2 >= -0.02f && diff2 <= StepUpMax + 0.02f;
-                GroundNormal = LocalUp;
-                if (IsGrounded) _lastHitDist = surfR2;
+                GroundNormal = IsGrounded ? hitN2 : LocalUp;
+                if (IsGrounded) _lastHitN = hitN2;
             }
             else
             {
@@ -227,8 +226,6 @@ namespace Game_Engine.Core.Component
             // ---------- Gravity / Jump ----------
             if (UseGravity)
             {
-                float curSurfR = onPlanet ? planet!.SampleSurfaceRadius(LocalUp) : 0f;
-
                 if (jump && _coyoteTimer > 0f)
                 {
                     float g = Math.Max(0.0001f, Gravity);
@@ -236,12 +233,7 @@ namespace Game_Engine.Core.Component
                     VerticalVelocity = MathF.Sqrt(2f * g * h);
 
                     if (onPlanet)
-                    {
-                        float targetDist = curSurfR + capsuleH + 0.002f;
-                        float curDist = (pos - planetCenter).Length();
-                        if (curDist < targetDist)
-                            pos = planetCenter + LocalUp * targetDist;
-                    }
+                        planet!.ResolveDensityPenetration(ref pos, CapsuleRadius);
                     else if (_lastHitDist > float.NegativeInfinity)
                     {
                         pos.Y = Math.Max(pos.Y, _lastHitDist + capsuleH + 0.002f);
@@ -253,7 +245,12 @@ namespace Game_Engine.Core.Component
                 else if (IsGrounded && VerticalVelocity <= 0f)
                 {
                     if (onPlanet)
-                        pos = planetCenter + LocalUp * (curSurfR + capsuleH);
+                    {
+                        var rayStart = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
+                        if (planet!.RaycastDensity(rayStart, -LocalUp, capsuleH + StepUpMax + GroundSnapDistance, out var snapHit))
+                            pos = snapHit.Point + LocalUp * capsuleH;
+                        planet.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                    }
                     else if (_lastHitDist > float.NegativeInfinity)
                         pos.Y = _lastHitDist + capsuleH;
 
@@ -265,19 +262,25 @@ namespace Game_Engine.Core.Component
                 // Apply vertical displacement along local up
                 pos += LocalUp * (VerticalVelocity * dt);
 
-                // Prevent sinking below surface
+                // Prevent sinking below surface (and into cave walls/ceilings)
                 if (onPlanet)
                 {
-                    // Re-sample after vertical move since LocalUp direction may have shifted
-                    var newUp = SN.Vector3.Normalize(pos - planetCenter);
-                    float snapSurfR = planet!.SampleSurfaceRadius(newUp);
-                    float curDist = (pos - planetCenter).Length();
-                    float minDist = snapSurfR + capsuleH;
-                    if (curDist < minDist)
+                    LocalUp = SN.Vector3.Normalize(pos - planetCenter);
+                    bool wasInside = planet!.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                    var rayStart = pos + LocalUp * 0.02f;
+                    float probe = capsuleH + 0.05f;
+                    if (!wasInside &&
+                        (planet.Spherecast(rayStart, -LocalUp, CapsuleRadius * 0.25f, probe, out var hit) ||
+                         planet.RaycastDensity(rayStart, -LocalUp, probe, out hit)))
                     {
-                        pos = planetCenter + newUp * minDist;
-                        if (VerticalVelocity < 0f) VerticalVelocity = 0f;
-                        IsGrounded = true;
+                        if (!hit.StartedInside && hit.Distance < capsuleH)
+                        {
+                            pos = hit.Point + LocalUp * capsuleH;
+                            if (VerticalVelocity < 0f) VerticalVelocity = 0f;
+                            IsGrounded = true;
+                            GroundNormal = hit.Normal;
+                            _lastHitN = hit.Normal;
+                        }
                     }
                 }
                 else if (_lastHitDist > float.NegativeInfinity)
@@ -294,7 +297,8 @@ namespace Game_Engine.Core.Component
 
             // ---------- write back ----------
             tr.Position = new Vector3(pos.X, pos.Y, pos.Z);
-            GroundNormal = IsGrounded ? LocalUp : LocalUp;
+            if (IsGrounded && _lastHitN.LengthSquared() > 1e-8f)
+                GroundNormal = _lastHitN;
 
             CheckTriggers(pos);
         }
@@ -409,6 +413,34 @@ namespace Game_Engine.Core.Component
                (aMin.Z <= bMax.Z && aMax.Z >= bMin.Z);
 
         // ================= Grounding / collision helpers =================
+
+        void ProbePlanetGround(
+            PlanetTerrain planet,
+            SN.Vector3 planetCenter,
+            SN.Vector3 pos,
+            float capsuleH,
+            float minSlopeUpDot,
+            float maxDist,
+            out bool groundHit,
+            out float diff,
+            out SN.Vector3 hitN)
+        {
+            hitN = LocalUp;
+            diff = float.PositiveInfinity;
+            groundHit = false;
+
+            var rayStart = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
+            if (!planet.Spherecast(rayStart, -LocalUp, CapsuleRadius * 0.2f, maxDist, out var hit) &&
+                !planet.RaycastDensity(rayStart, -LocalUp, maxDist, out hit))
+                return;
+
+            var feet = pos - LocalUp * capsuleH;
+            diff = SN.Vector3.Dot(feet - hit.Point, LocalUp);
+            hitN = hit.Normal.LengthSquared() > 1e-8f ? hit.Normal : LocalUp;
+            bool slopeOk = SN.Vector3.Dot(hitN, LocalUp) >= minSlopeUpDot * 0.5f;
+            groundHit = slopeOk || hit.StartedInside;
+            _ = planetCenter;
+        }
 
         bool RaycastGround(SN.Vector3 start, SN.Vector3 dir, float maxDist, out float groundY, out SN.Vector3 groundN)
         {

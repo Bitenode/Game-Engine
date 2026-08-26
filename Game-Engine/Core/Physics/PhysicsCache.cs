@@ -60,6 +60,13 @@ namespace Game_Engine.Core.Physics
                     _terrainGOs.Add(t.gameObject.Children[i]);
             }
 
+            // Planet shell / water / LOD chunks — contact is heightfield, not triangles.
+            foreach (var p in PlanetTerrain.ActivePlanets)
+            {
+                if (p?.gameObject == null) continue;
+                CollectHierarchy(p.gameObject, _terrainGOs);
+            }
+
             // All colliders in one pass
             foreach (var c in SceneQuery.FindBehaviors<Collider>())
             {
@@ -76,6 +83,12 @@ namespace Game_Engine.Core.Physics
                     // Skip MeshColliders on terrain GameObjects — use heightmap instead
                     if (mc.gameObject != null && _terrainGOs.Contains(mc.gameObject)) continue;
                     _meshColliders.Add(mc);
+                }
+                else if (c is PlanetCollider)
+                {
+                    // Density raycasts own the planet. The AABB is the whole globe and
+                    // would trap a player standing on the surface.
+                    continue;
                 }
                 else
                 {
@@ -119,5 +132,12 @@ namespace Game_Engine.Core.Physics
 
         /// <summary>Force a cache rebuild on next access.</summary>
         public static void Invalidate() => _lastFrame = -1;
+
+        static void CollectHierarchy(GameObject go, HashSet<GameObject> into)
+        {
+            if (!into.Add(go)) return;
+            for (int i = 0; i < go.Children.Count; i++)
+                CollectHierarchy(go.Children[i], into);
+        }
     }
 }

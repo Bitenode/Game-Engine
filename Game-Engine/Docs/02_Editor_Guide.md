@@ -140,6 +140,17 @@ When a Terrain is selected, the Scene View enters terrain editing mode:
 - Left-click applies the tool, right-click applies the inverse
 - Brush strokes auto-save terrain data on mouse release (to the terrain’s `.terrain.json` / `.terrain.bin` asset path)
 
+### Planet Terrain Editing
+When a GameObject with `PlanetTerrain` is selected and a planet brush is active, Scene View paints density (not an XZ heightmap):
+- Inspector **Planet brushes (Scene View)**: **Dig**, **Build**, **Smooth**, **Flatten**, plus **Radius**, **Strength**, and **Falloff**
+- A ring gizmo follows the mouse on the density surface (camera pick ray → `PlanetTerrain.Raycast`)
+- Left-drag applies the tool; right-drag or **Shift** inverts Dig/Build
+- Mouse-up saves voxel strokes via `SaveVoxelEdits()` to the `.planetvox` sidecar next to the `.planet`
+
+**Interior fly-cam:** Scene View runs real planet LOD every frame. When the camera is inside the crust, chunk budgets rise so cave walls refine around you (not only when orbiting the outer surface). Give chunks a few seconds to rebuild after flying underground on land biomes.
+
+Play-mode **PlanetTool** (Standard Assets): LMB dig / RMB build along the camera look-ray; `[` `]` radius; `-` `=` strength.
+
 ---
 
 ## Game View
@@ -333,6 +344,9 @@ When a Terrain is selected, the Inspector shows specialized sections:
 3. **Terrain Layers** — multi-material layer management (up to 8 layers) with texture selection and tiling sliders
 4. **Tree Painting Settings** — density, scale range, rotation, and a tree asset list for switching between procedural and imported tree models
 
+### Planet Terrain Inspector
+When a `PlanetTerrain` is selected, the Inspector includes **Planet brushes (Scene View)** above the usual component properties: tool toggles (**Dig**, **Build**, **Smooth**, **Flatten**) and **Radius** / **Strength** / **Falloff** sliders. Scene View uses those settings for density painting (see Planet Terrain Editing above).
+
 ### Custom Inspectors
 Components can implement `ICustomInspector` to provide custom Avalonia UI in the Inspector panel, or use `[CustomInspector(typeof(TargetComponent))]` on a separate class.
 
@@ -341,6 +355,7 @@ Several built-in components have dedicated custom inspectors:
 | Component | Inspector Features |
 |-----------|-------------------|
 | **PlanetVegetationSystem** | Planet Vegetation runtime controls — live `Leaf Groups` / `Instances` stats, `Full Biome Populate` mode toggle, and one-click `Spawn Vegetation (Scene View)` / `Respawn (Clear + Spawn)` actions |
+| **PlanetPlayerSpawner** | Gameplay — one-click play-mode player spawn on the crust (`RigidbodyPlayer` + capsule + camera) |
 | **ReflectionProbe** | **GpuCubemap** — explains runtime GPU cubemap allocation (not an importable 2D texture); **Request recapture** sets `NeedsCapture` |
 | **TriggerVolume** | **On enter** / **On exit** reaction rows (`LoadScene`, `SetObjectEnabled`, `PublishChannel`) with parallel list persistence |
 | **DialogueRunner** | Dialogue tree editor — node list with type/speaker/text, choice linking, variable store, voice clip paths per node, dialogue mode selector (Text / Voice / Both) |

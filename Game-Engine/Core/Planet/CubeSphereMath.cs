@@ -23,12 +23,11 @@ public static class CubeSphereMath
         );
     }
 
-    public static SN.Vector3 FaceUVToDirection(int face, float u, float v)
+    public static SN.Vector3 FaceUVToCube(int face, float u, float v)
     {
         float a = u * 2f - 1f;
         float b = v * 2f - 1f;
-
-        SN.Vector3 cubePoint = face switch
+        return face switch
         {
             0 => new SN.Vector3(1f, b, -a),
             1 => new SN.Vector3(-1f, b, a),
@@ -38,8 +37,37 @@ public static class CubeSphereMath
             5 => new SN.Vector3(-a, b, -1f),
             _ => new SN.Vector3(0f, 1f, 0f),
         };
+    }
 
+    public static SN.Vector3 FaceUVToDirection(int face, float u, float v)
+    {
+        var cubePoint = FaceUVToCube(face, u, v);
+        cubePoint = SnapCubePoint(cubePoint);
         return CubeToSphere(cubePoint);
+    }
+
+    /// <summary>Snap axes that sit on a cube face so shared edges match exactly.</summary>
+    public static SN.Vector3 SnapCubePoint(SN.Vector3 p)
+    {
+        const float e = 1e-5f;
+        if (MathF.Abs(MathF.Abs(p.X) - 1f) <= e) p.X = MathF.Sign(p.X);
+        if (MathF.Abs(MathF.Abs(p.Y) - 1f) <= e) p.Y = MathF.Sign(p.Y);
+        if (MathF.Abs(MathF.Abs(p.Z) - 1f) <= e) p.Z = MathF.Sign(p.Z);
+        return p;
+    }
+
+    /// <summary>Map a UV that walked off a face onto the adjacent cube face.</summary>
+    public static (int Face, float U, float V) WrapFaceUV(int face, float u, float v)
+    {
+        if (u >= 0f && u <= 1f && v >= 0f && v <= 1f)
+            return (face, u, v);
+
+        var p = FaceUVToCube(face, u, v);
+        float m = MathF.Max(MathF.Abs(p.X), MathF.Max(MathF.Abs(p.Y), MathF.Abs(p.Z)));
+        if (m > 1e-8f) p /= m;
+        float len = p.Length();
+        if (len < 1e-8f) return (face, Math.Clamp(u, 0f, 1f), Math.Clamp(v, 0f, 1f));
+        return SphereToCube(p / len);
     }
 
     public static (SN.Vector3 Tangent, SN.Vector3 Bitangent, SN.Vector3 Normal) GetFaceBasis(int face)

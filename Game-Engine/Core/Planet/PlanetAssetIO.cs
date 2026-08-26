@@ -7,12 +7,20 @@ namespace Game_Engine.Core.Planet;
 
 public sealed class PlanetAssetData
 {
-    public int Version { get; set; } = 1;
+    public const int CurrentVersion = 2;
+
+    public int Version { get; set; } = CurrentVersion;
     public string BiomeGraphPath { get; set; } = "";
     public float SeaLevelFraction { get; set; } = 0.25f;
     public bool EnableWater { get; set; } = true;
     public PlanetConfig Config { get; set; } = new();
     public PlanetVegetationAssetData Vegetation { get; set; } = new();
+
+    /// <summary>
+    /// Project-relative path to the <c>.planetvox</c> sidecar. Empty means derive from the <c>.planet</c> path.
+    /// Voxel payloads stay out of the main JSON.
+    /// </summary>
+    public string VoxelEditsPath { get; set; } = "";
 }
 
 public sealed class PlanetVegetationAssetData
@@ -93,6 +101,7 @@ public static class PlanetAssetIO
             }
 
             data.BiomeGraphPath = NormalizeProjectRelative(data.BiomeGraphPath);
+            data.VoxelEditsPath = NormalizeProjectRelative(data.VoxelEditsPath ?? "");
             if (data.Config == null)
                 data.Config = new PlanetConfig();
             data.Config.Biomes ??= BiomeDefinition.AllPresets;
@@ -129,6 +138,7 @@ public static class PlanetAssetIO
                 Directory.CreateDirectory(dir);
 
             data.BiomeGraphPath = NormalizeProjectRelative(data.BiomeGraphPath);
+            data.VoxelEditsPath = NormalizeProjectRelative(data.VoxelEditsPath ?? "");
             data.Config ??= new PlanetConfig();
             data.Config.Biomes ??= BiomeDefinition.AllPresets;
             data.Config.RiverAllowedBiomes ??= Array.Empty<string>();
@@ -150,6 +160,88 @@ public static class PlanetAssetIO
         catch (Exception ex)
         {
             error = $"Planet asset save failed: {ex.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>Absolute path of the <c>.planetvox</c> sidecar next to <paramref name="planetAssetPath"/>.</summary>
+    public static string GetVoxelEditsSidecarAbsolutePath(string planetAssetPath)
+    {
+        string abs = ToAbsolutePath(planetAssetPath);
+        if (string.IsNullOrWhiteSpace(abs))
+            return abs;
+        string dir = Path.GetDirectoryName(abs) ?? "";
+        string name = Path.GetFileNameWithoutExtension(abs);
+        return Path.Combine(dir, name + PlanetVoxelEditAsset.SidecarExtension);
+    }
+
+    public static string GetVoxelEditsSidecarProjectRelative(string planetAssetPath)
+        => NormalizeProjectRelative(GetVoxelEditsSidecarAbsolutePath(planetAssetPath));
+
+    public static string ResolveVoxelEditsAbsolutePath(string planetAssetPath, string? voxelEditsPath)
+    {
+        if (!string.IsNullOrWhiteSpace(voxelEditsPath))
+            return ToAbsolutePath(voxelEditsPath);
+        return GetVoxelEditsSidecarAbsolutePath(planetAssetPath);
+    }
+
+    public static bool TryLoadVoxelEdits(string planetAssetPath, string? voxelEditsPath, out PlanetVoxelEditAsset? data, out string? error)
+    {
+        data = null;
+        error = null;
+        try
+        {
+            string abs = ResolveVoxelEditsAbsolutePath(planetAssetPath, voxelEditsPath);
+            if (!File.Exists(abs))
+            {
+                data = null;
+                return true;
+            }
+
+            var json = File.ReadAllText(abs);
+            data = JsonSerializer.Deserialize<PlanetVoxelEditAsset>(json, _json);
+            if (data == null)
+            {
+                error = $"Planet voxel sidecar is empty or invalid JSON: {abs}";
+                return false;
+            }
+
+            data.Strokes ??= Array.Empty<PlanetVoxelSphereStroke>();
+            data.BakedCells ??= Array.Empty<PlanetVoxelBakedCell>();
+            if (string.IsNullOrWhiteSpace(data.Space))
+                data.Space = PlanetVoxelEditAsset.PlanetLocalUnscaledSpace;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Planet voxel sidecar load failed: {ex.Message}";
+            return false;
+        }
+    }
+
+    public static bool TrySaveVoxelEdits(string planetAssetPath, PlanetVoxelEditAsset data, out string? error, string? voxelEditsPath = null)
+    {
+        error = null;
+        try
+        {
+            data ??= new PlanetVoxelEditAsset();
+            data.Version = PlanetVoxelEditAsset.CurrentVersion;
+            data.Space = PlanetVoxelEditAsset.PlanetLocalUnscaledSpace;
+            data.Strokes ??= Array.Empty<PlanetVoxelSphereStroke>();
+            data.BakedCells ??= Array.Empty<PlanetVoxelBakedCell>();
+
+            string abs = ResolveVoxelEditsAbsolutePath(planetAssetPath, voxelEditsPath);
+            string? dir = Path.GetDirectoryName(abs);
+            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            var json = JsonSerializer.Serialize(data, _json);
+            File.WriteAllText(abs, json);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Planet voxel sidecar save failed: {ex.Message}";
             return false;
         }
     }

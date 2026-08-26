@@ -628,17 +628,20 @@ See the [Components Reference](03_Components_Reference.md) for full UI component
 
 ## Runtime Planet Manipulation API
 
-Planet voxel edits are available at runtime through both `PlanetTerrain` and `PlanetManipulator`.
-In v1, edits are runtime-only (not serialized into scene/project assets).
+Planet voxel edits are available at runtime through `PlanetTerrain` and `PlanetManipulator`.
+Brush centers you pass are **world** positions; the engine converts them with `WorldToLocal` (`PlanetSpace`: subtract planet center, then unscale). Live strokes persist in a `.planetvox` sidecar next to the `.planet` (`SaveVoxelEdits` / `SavePlanetAsset`). Network RPCs stay world-space on the wire.
+
+Do not hardcode `new Vector3(0, Radius + 5, 0)` (that is only the +Y pole). Cast from the camera or tool look ray:
 
 ```csharp
+using System;
 using System.Linq;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
 using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
-public sealed class PlanetTool : Behavior
+public sealed class PlanetLookDig : Behavior
 {
     PlanetTerrain? _planet;
 
@@ -649,22 +652,37 @@ public sealed class PlanetTool : Behavior
 
     public override void Update()
     {
-        if (_planet == null) return;
+        if (_planet == null || gameObject == null) return;
 
-        // Sample position in front of player/camera.
-        var center = new SN.Vector3(0f, _planet.Radius + 5f, 0f);
+        var tr = gameObject.Transform;
+        var origin = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
 
-        // Direct API on PlanetTerrain
-        if (Input.GetMouse(Input.MouseButton.Left))
-            _planet.DigSphere(center, radius: 8f, strength: 12f, falloff: 0.55f);
-        if (Input.GetMouse(Input.MouseButton.Right))
-            _planet.BuildSphere(center, radius: 8f, strength: 10f, falloff: 0.55f);
+        // Same look convention as Camera.GetViewMatrix (local -Z). Works on the equator / -Y, not only +Y.
+        float Deg2Rad(double d) => (float)(Math.PI / 180.0 * d);
+        var rot = SN.Matrix4x4.CreateFromYawPitchRoll(
+            Deg2Rad(tr.Rotation.Y), Deg2Rad(tr.Rotation.X), Deg2Rad(tr.Rotation.Z));
+        var forward = SN.Vector3.TransformNormal(new SN.Vector3(0f, 0f, -1f), rot);
+        if (forward.LengthSquared() < 1e-10f) return;
+        forward = SN.Vector3.Normalize(forward);
 
-        // Convenience static API (auto-select nearest planet)
-        if (Input.GetKeyDown(Input.KeyCode.R))
-            PlanetManipulationApi.DigSphere(center, radius: 14f, strength: 8f);
+        if (!_planet.Raycast(origin, forward, maxDistance: 400f, out PlanetDensityHit hit))
+            return;
+
+        var local = _planet.WorldToLocal(hit.Point); // planet-local unscaled (same as .planetvox)
+
+        if (Input.GetMouse(MouseButton.Left))
+            _planet.DigSphere(hit.Point, radius: 8f, strength: 12f, falloff: 0.55f);
+        if (Input.GetMouse(MouseButton.Right))
+            _planet.BuildSphere(hit.Point, radius: 8f, strength: 10f, falloff: 0.55f);
+
+        if (Input.GetKeyDown(KeyCode.R))
+            PlanetManipulationApi.DigSphere(hit.Point, radius: 14f, strength: 8f, planet: _planet);
     }
 }
 ```
 
-`PlanetManipulator` is a reusable brush behavior with persisted settings (`Mode`, `Radius`, `Strength`, `Falloff`, `MaxRatePerSecond`) and helper methods (`ApplyAt`, `DigAt`, `BuildAt`) for tool-style scripts.
+`Raycast` is an alias of `RaycastDensity`. `Spherecast` is the thick query used by `Rigidbody` / `CharacterController`. `SampleSurfaceRadius` is outer crust only (water, orbit, vegetation estimates — not cave-floor contact).
+
+Edits mark affected leaves dirty for a full remesh (stacked interior shells regenerate together). Interior cave walls use the same density field the ray hits.
+
+`PlanetManipulator` is a reusable brush with persisted `Mode`, `Radius`, `Strength`, `Falloff`, `MaxRatePerSecond`, and `ApplyAt` / `DigAt` / `BuildAt`. If `AutoApply` is on, it rays from the manipulator GameObject toward the planet center (then away if needed) and paints the **surface hit**, not the planet pivot. Gameplay tools can still call `ApplyAt` with an explicit world point.
