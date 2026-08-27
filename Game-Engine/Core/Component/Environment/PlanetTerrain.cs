@@ -141,6 +141,10 @@ public sealed class PlanetTerrain : Behavior
     SN.Vector3 _lastChunkUpdateCamPos = new(float.NaN);
     bool _skipLodChunkUpdate;
 
+    // Per-frame cache for expensive rendered-crust samples (grass batches call this thousands of times).
+    int _vegCrustCacheFrame = -1;
+    readonly Dictionary<long, SN.Vector3> _vegCrustCache = new(256);
+
     public override void Awake()
     {
         if (!ActivePlanets.Contains(this))
@@ -454,6 +458,117 @@ public sealed class PlanetTerrain : Behavior
         return sphereDir * SampleLocalCrustRadius(sphereDir);
     }
 
+    /// <summary>
+    /// Vegetation anchor in planet-local space. Prefers the outermost generated chunk vertex
+    /// along <paramref name="sphereDir"/> so plants sit on the visible transvoxel/shell mesh,
+    /// not only the analytical heightfield sample (which can sit inside after cave meshing).
+    /// </summary>
+    public SN.Vector3 SampleVegetationAnchorLocal(SN.Vector3 sphereDir)
+    {
+        int frame = Time.frameCount;
+        if (frame != _vegCrustCacheFrame)
+        {
+            _vegCrustCache.Clear();
+            _vegCrustCacheFrame = frame;
+        }
+
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        long key = QuantizeSphereDir(sphereDir);
+        if (_vegCrustCache.TryGetValue(key, out var cached))
+            return cached;
+
+        SN.Vector3 local;
+        if (TrySampleRenderedCrustPoint(sphereDir, out local))
+        {
+            _vegCrustCache[key] = local;
+            return local;
+        }
+
+        local = SampleLocalCrustPoint(sphereDir);
+        _vegCrustCache[key] = local;
+        return local;
+    }
+
+    static long QuantizeSphereDir(SN.Vector3 d)
+    {
+        const float scale = 384f;
+        int x = (int)MathF.Round(d.X * scale);
+        int y = (int)MathF.Round(d.Y * scale);
+        int z = (int)MathF.Round(d.Z * scale);
+        return ((long)(x & 0x1FFFFF) << 42) | ((long)(y & 0x1FFFFF) << 21) | (long)(z & 0x1FFFFF);
+    }
+
+    /// <summary>
+    /// Outermost visible crust point along a cube-sphere direction from live chunk meshes.
+    /// </summary>
+    public bool TrySampleRenderedCrustPoint(SN.Vector3 sphereDir, out SN.Vector3 localPoint, QuadNode? preferLeaf = null)
+    {
+        localPoint = SampleLocalCrustPoint(sphereDir);
+        if (_chunkManager == null)
+            return false;
+
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        float bestR = 0f;
+        bool found = false;
+        if (preferLeaf != null)
+            return TrySampleRenderedCrustPointFromLeaf(sphereDir, preferLeaf, ref localPoint, ref bestR);
+
+        var leaves = _chunkManager.GetRenderableLeaves();
+        for (int li = 0; li < leaves.Count; li++)
+        {
+            if (TrySampleRenderedCrustPointFromLeaf(sphereDir, leaves[li], ref localPoint, ref bestR))
+                found = true;
+        }
+
+        return found;
+    }
+
+    static bool TrySampleRenderedCrustPointFromLeaf(
+        SN.Vector3 sphereDir,
+        QuadNode leaf,
+        ref SN.Vector3 localPoint,
+        ref float bestR)
+    {
+        var verts = leaf.GeneratedMesh?.Vertices;
+        if (verts == null || verts.Length == 0)
+            return false;
+
+        bool found = false;
+        for (int i = 0; i < verts.Length; i++)
+        {
+            var v = verts[i];
+            float axial = SN.Vector3.Dot(v, sphereDir);
+            if (axial <= 0f)
+                continue;
+
+            var onAxis = sphereDir * axial;
+            float perp = SN.Vector3.Distance(v, onAxis);
+            float tol = MathF.Max(1.25f, axial * 0.0075f);
+            if (perp > tol)
+                continue;
+
+            if (axial <= bestR)
+                continue;
+
+            bestR = axial;
+            localPoint = v;
+            found = true;
+        }
+
+        return found;
+    }
+
+    static bool TrySampleRenderedCrustPointFromLeaf(SN.Vector3 sphereDir, QuadNode leaf, ref SN.Vector3 localPoint)
+    {
+        float bestR = 0f;
+        return TrySampleRenderedCrustPointFromLeaf(sphereDir, leaf, ref localPoint, ref bestR);
+    }
+
     PlanetDensitySampler? CreateDensitySampler()
     {
         if (_densitySampler != null)
@@ -679,9 +794,7 @@ public sealed class PlanetTerrain : Behavior
 
         _chunkUpdateAccumSec += dt;
         bool shouldUpdateChunks = _chunkUpdateAccumSec >= ChunkUpdateIntervalSec;
-        // Scene View often reports deltaTime = 0. Still refine LOD when the camera moves
-        // or when brush strokes are waiting.
-        if (dt <= 1e-6f && !SceneService.PlayMode)
+        if (dt <= 1e-6f && !SceneService.PlayMode && _chunkManager.PendingEditCommands > 0)
             shouldUpdateChunks = true;
 
         if (!float.IsNaN(_lastChunkUpdateCamPos.X))
@@ -776,7 +889,7 @@ public sealed class PlanetTerrain : Behavior
             _config.MergeDistanceScale = Math.Max(MergeDistanceScale, 1.8f);
             _config.MaxGenerationSchedulesPerUpdate = 6;
             _config.MaxMeshAppliesPerUpdate = 12;
-            _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 32);
+            _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 4);
         }
         else
         {

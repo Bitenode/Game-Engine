@@ -184,7 +184,11 @@ namespace Game_Engine.Core
         /// <summary>Children to skip during serialization (generated at runtime, e.g. grass chunks).</summary>
         static bool IsGeneratedChild(GameObject child)
             => child.Name == "Grass" || child.Name.StartsWith("grass_") || child.Name.StartsWith("chunk_")
-            || child.Name.StartsWith("PlanetChunk_") || child.Name == "PlanetWater";
+            || child.Name.StartsWith("PlanetChunk_") || child.Name == "PlanetWater"
+            || child.Name == PlanetVegetationSystem.RuntimeRootName
+            || child.Name.StartsWith("BiomeGrass") || child.Name.StartsWith("BiomeTree")
+            || child.Name.StartsWith("AssetGrass") || child.Name.StartsWith("AssetTree")
+            || child.Name.StartsWith("planet_grass_");
 
         /// <summary>Serialize a single GameObject hierarchy to JSON (via the DTO pipeline).
         /// When <paramref name="includeAll"/> is true, no children are filtered (use for prefabs).</summary>

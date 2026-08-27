@@ -118,6 +118,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private readonly Stopwatch _windWatch = Stopwatch.StartNew();
     private double _windPrev = 0.0;
 
+    const double SceneLodIntervalSec = 0.12;
+    const double ScenePlanetLodIntervalSec = 0.12;
+    const float SceneLodMoveThreshold = 2.5f;
+    const float ScenePlanetLodMoveThreshold = 3.5f;
+    double _sceneLodAccumSec;
+    double _scenePlanetLodAccumSec;
+    SN.Vector3 _lastSceneLodCamPos = new(float.NaN);
+    SN.Vector3 _lastScenePlanetLodCamPos = new(float.NaN);
+
     // Cached scene query results (refreshed on SceneService.Changed, not per-frame)
     private Skybox? _cachedSkybox;
     private Light? _cachedLight;
@@ -1057,6 +1066,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         static void WalkTreeLOD(GameObject go, SN.Vector3 cam)
         {
             if (!go.Enabled) return;
+            if (go.HideInHierarchy) return;
             foreach (var b in go.Behaviors)
                 if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
             foreach (var c in go.Children) WalkTreeLOD(c, cam);
@@ -1077,7 +1087,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     }
 
     // ────────────── Planet LOD Update ──────────────
-    static void UpdatePlanetLOD(SN.Vector3 camPos)
+    static void UpdatePlanetLOD(SN.Vector3 camPos, bool force = false)
     {
         if (GameView.IsAnyViewPlaying)
         {
@@ -1089,19 +1099,75 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         foreach (var planet in PlanetTerrain.ActivePlanets)
         {
             if (planet == null) continue;
+            var cm = planet.ChunkManager;
+            bool pending = cm != null && (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0);
+            if (!force && GameView.IsAnyViewPlaying && !pending)
+                continue;
+
+            planet.LastCameraPosition = camPos;
             if (GameView.IsAnyViewPlaying)
             {
-                planet.LastCameraPosition = camPos;
-                var cm = planet.ChunkManager;
-                if (cm != null && (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0))
+                if (pending || force)
                     planet.RefreshLodAroundCamera(camPos);
             }
-            else
+            else if (force || pending)
             {
                 planet.RefreshLodAroundCamera(camPos);
-                planet.Update();
             }
         }
+    }
+
+    bool ShouldRefreshScenePlanetLod(SN.Vector3 camPos, float dt)
+    {
+        _scenePlanetLodAccumSec += Math.Max(0.0, dt);
+        bool refresh = _scenePlanetLodAccumSec >= ScenePlanetLodIntervalSec;
+        if (!float.IsNaN(_lastScenePlanetLodCamPos.X))
+        {
+            var d = camPos - _lastScenePlanetLodCamPos;
+            if (d.LengthSquared() >= ScenePlanetLodMoveThreshold * ScenePlanetLodMoveThreshold)
+                refresh = true;
+        }
+        else
+        {
+            refresh = true;
+        }
+
+        foreach (var planet in PlanetTerrain.ActivePlanets)
+        {
+            var cm = planet?.ChunkManager;
+            if (cm != null && (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0))
+                refresh = true;
+        }
+
+        if (!refresh)
+            return false;
+
+        _scenePlanetLodAccumSec = 0.0;
+        _lastScenePlanetLodCamPos = camPos;
+        return true;
+    }
+
+    bool ShouldRefreshSceneMeshLod(SN.Vector3 camPos, float dt)
+    {
+        _sceneLodAccumSec += Math.Max(0.0, dt);
+        bool refresh = _sceneLodAccumSec >= SceneLodIntervalSec;
+        if (!float.IsNaN(_lastSceneLodCamPos.X))
+        {
+            var d = camPos - _lastSceneLodCamPos;
+            if (d.LengthSquared() >= SceneLodMoveThreshold * SceneLodMoveThreshold)
+                refresh = true;
+        }
+        else
+        {
+            refresh = true;
+        }
+
+        if (!refresh)
+            return false;
+
+        _sceneLodAccumSec = 0.0;
+        _lastSceneLodCamPos = camPos;
+        return true;
     }
 
     static SN.Vector3 GetPlayCameraWorldPosition()
@@ -1857,13 +1923,16 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             // sunShineDir was computed for the shadow pass; fall back to a default if not set
             var sunSD = fallbackPlanetSunDir;
+            float sceneDt = (float)dt;
             TerrainStreamer.SyncAll(camPos);
-            // Update terrain LOD per frame
-            UpdateTerrainLOD(camPos);
-            // Update tree LOD per frame
-            UpdateTreeLOD(camPos);
-            UpdateMeshLodGroups(camPos);
-            UpdatePlanetLOD(camPos);
+            if (ShouldRefreshSceneMeshLod(camPos, sceneDt))
+            {
+                UpdateTerrainLOD(camPos);
+                UpdateTreeLOD(camPos);
+                UpdateMeshLodGroups(camPos);
+            }
+            if (ShouldRefreshScenePlanetLod(camPos, sceneDt))
+                UpdatePlanetLOD(camPos, force: true);
 
             SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
                 view, proj,

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Game_Engine.Core;
+using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -807,25 +808,34 @@ namespace Game_Engine.Core.Component
         /// Build a single grass patch on a planet surface around a sphere direction.
         /// Keeps Terrain workflow untouched; this is planet-only authoring support.
         /// </summary>
-        public int BuildOnPlanetPatch(PlanetTerrain planet, SN.Vector3 centerDir, float patchRadius, int bladeCount)
+        public int BuildOnPlanetPatch(PlanetTerrain planet, SN.Vector3 centerDir, float patchRadius, int bladeCount, QuadNode? sourceLeaf = null, bool notifyScene = true)
         {
             if (planet == null || planet.gameObject == null) return 0;
             if (bladeCount <= 0) return 0;
 
             ClearAll();
 
-            // Texture grass = standing cross-blades. Lawn photos have no blade alpha, so use a
-            // cutout blade texture instead of painting the photo on a flat ground quad.
-            var grassMesh = CreateGrassBladeMesh();
-            var srcTex = ResolvedTexture;
-            var grassTex = (srcTex != null && MaterialUtil.TextureHasMeaningfulAlpha(srcTex))
-                ? PrepareGrassTextureForCutout(srcTex)
-                : CreateFallbackGrassCutoutTexture();
-            string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) && grassTex == srcTex
-                ? ToRelativePath(TexturePath)
-                : "";
-            var grassMat = BuildGrassMaterial(grassTex, relTexPath);
-            grassMat.AlphaCutoff = 0.38f;
+            var grassMesh = ResolvedMesh ?? CreateGrassBladeMesh();
+            Material grassMat;
+            if (ResolvedMesh != null && ResolvedMaterial != null)
+            {
+                grassMat = ResolvedMaterial;
+                try { MaterialUtil.EnsureVegetationCardCutout(grassMat); } catch { }
+            }
+            else
+            {
+                // Texture grass = standing cross-blades. Lawn photos have no blade alpha, so use a
+                // cutout blade texture instead of painting the photo on a flat ground quad.
+                var srcTex = ResolvedTexture;
+                var grassTex = (srcTex != null && MaterialUtil.TextureHasMeaningfulAlpha(srcTex))
+                    ? PrepareGrassTextureForCutout(srcTex)
+                    : CreateFallbackGrassCutoutTexture();
+                string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) && grassTex == srcTex
+                    ? ToRelativePath(TexturePath)
+                    : "";
+                grassMat = BuildGrassMaterial(grassTex, relTexPath);
+                grassMat.AlphaCutoff = 0.38f;
+            }
 
             // Use a non-"chunk_" name so renderer fast-paths meant for flat-terrain grass tiles
             // don't treat planet patches like axis-aligned terrain chunks.
@@ -868,28 +878,18 @@ namespace Game_Engine.Core.Component
             SN.Vector3 centerAccum = SN.Vector3.Zero;
             float localPatch = Math.Max(0.05f, planet.WorldToLocalLength(Math.Max(0.05f, patchRadius)));
             float localH = planet.WorldToLocalLength(Math.Clamp(GrassHeight, 0.35f, 1.6f));
+            SN.Vector3 centerBase = planet.SampleVegetationAnchorLocal(n);
+            if (sourceLeaf != null && planet.TrySampleRenderedCrustPoint(n, out var leafBase, sourceLeaf))
+                centerBase = leafBase;
+            float rootEmbed = planet.WorldToLocalLength(0.08f);
             for (int bi = 0; bi < bladeCount; bi++)
             {
                 float ang = (float)rng.NextDouble() * MathF.Tau;
                 float rad = MathF.Sqrt((float)rng.NextDouble()) * localPatch;
                 var offset = t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
-                var approx = planet.SampleLocalCrustPoint(n) + offset;
-                var dir = SN.Vector3.Normalize(approx);
+                var dir = SN.Vector3.Normalize(centerBase + offset);
                 var baseLocal = planet.SampleLocalCrustPoint(dir);
-
-                var dirT = SN.Vector3.Normalize(dir + t * 0.0018f);
-                var dirB = SN.Vector3.Normalize(dir + b * 0.0018f);
-                var lp0 = baseLocal;
-                var lpT = planet.SampleLocalCrustPoint(dirT);
-                var lpB = planet.SampleLocalCrustPoint(dirB);
-                var surfN = SN.Vector3.Cross(lpT - lp0, lpB - lp0);
-                if (surfN.LengthSquared() < 1e-8f)
-                    surfN = dir;
-                else
-                    surfN = SN.Vector3.Normalize(surfN);
-                if (SN.Vector3.Dot(surfN, dir) < 0f)
-                    surfN = -surfN;
-                var placeUp = SafeNormalize(SN.Vector3.Lerp(dir, surfN, 0.55f), dir);
+                var placeUp = dir;
 
                 var side = SN.Vector3.Cross(MathF.Abs(placeUp.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, placeUp);
                 if (side.LengthSquared() < 1e-8f) side = SN.Vector3.UnitX;
@@ -901,7 +901,6 @@ namespace Game_Engine.Core.Component
                 var zAxis = -side * sy + fwd * cy;
 
                 float scale = MinScale + (float)rng.NextDouble() * (MaxScale - MinScale);
-                float rootEmbed = planet.WorldToLocalLength(0.08f);
                 int vOff = bi * vPerBlade;
                 int triOff = bi * tPerBlade;
                 float srcH = MathF.Max(1e-4f, GrassHeight);
@@ -946,7 +945,8 @@ namespace Game_Engine.Core.Component
             });
 
             GrassBuilt = true;
-            SceneService.NotifyChanged();
+            if (notifyScene)
+                SceneService.NotifyChanged();
             return bladeCount;
         }
 
@@ -1234,6 +1234,10 @@ namespace Game_Engine.Core.Component
         public override void Update()
         {
             if (_chunks.Count == 0) return;
+            if (gameObject?.Name?.StartsWith("BiomeGrassBatch", StringComparison.Ordinal) == true)
+                return;
+            if (_chunks.Count == 1 && _chunks[0].ChunkGO?.Name?.StartsWith("planet_grass_", StringComparison.Ordinal) == true)
+                return;
 
             var cam = CameraService.MainOrFirst();
             if (cam?.gameObject == null) return;

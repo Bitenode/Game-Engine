@@ -381,6 +381,7 @@ namespace Game_Engine.Views
         static void WalkTreeLOD(GameObject go, SN.Vector3 cam)
         {
             if (!go.Enabled) return;
+            if (go.HideInHierarchy) return;
             foreach (var b in go.Behaviors)
                 if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
             foreach (var c in go.Children) WalkTreeLOD(c, cam);
@@ -1817,6 +1818,7 @@ namespace Game_Engine.Views
         static void Traverse(GameObject go, Action<Behavior> a)
         {
             if (!go.Enabled) return;
+            if (go.HideInHierarchy) return;
             var behaviors = go.Behaviors.ToArray();
             for (int i = 0; i < behaviors.Length; i++)
                 a(behaviors[i]);

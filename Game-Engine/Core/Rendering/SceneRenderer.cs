@@ -268,7 +268,13 @@ namespace Game_Engine.Core
         static bool IsPlanetVegetationDrawName(string? name)
         {
             if (string.IsNullOrEmpty(name)) return false;
-            return name.StartsWith("BiomeWeatherPrecipitation", StringComparison.Ordinal);
+            return name.StartsWith("BiomeWeatherPrecipitation", StringComparison.Ordinal)
+                || name.StartsWith("BiomeGrass", StringComparison.Ordinal)
+                || name.StartsWith("BiomeTree", StringComparison.Ordinal)
+                || name.StartsWith("AssetGrass", StringComparison.Ordinal)
+                || name.StartsWith("AssetTree", StringComparison.Ordinal)
+                || name.StartsWith("planet_grass_", StringComparison.Ordinal)
+                || name == PlanetVegetationSystem.RuntimeRootName;
         }
 
         // Billboard quad VAO (lazy init)
@@ -551,10 +557,16 @@ namespace Game_Engine.Core
             opaqueItems.Clear();
             transparentItems.Clear();
 
+            bool skipPlanetVegInSceneGraph = PlanetVegetationSystem.AnyUseDedicatedRenderPass;
+            var prevSkip = SkipPlanetVegetationDraws;
+            SkipPlanetVegetationDraws = skipPlanetVegInSceneGraph || prevSkip;
+
             foreach (var root in SceneService.Root)
             {
                 GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
             }
+
+            SkipPlanetVegetationDraws = prevSkip;
 
             // --- OPAQUE PASS ---
             gl.Enable(EnableCap.DepthTest);
@@ -668,6 +680,11 @@ namespace Game_Engine.Core
                 }
             }
 
+            RenderPlanetVegetation(
+                gl, standardShader, cache, view, proj, planes, camPos,
+                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunShineDir, in renderCtx);
+
             // --- TRANSPARENT PASS (back-to-front) ---
             if (transparentItems.Count > 0)
             {
@@ -742,6 +759,31 @@ namespace Game_Engine.Core
             foreach (var root in SceneService.Root)
             {
                 RenderShadowNode(gl, depthShader, cache, root, SN.Matrix4x4.Identity, lightVP, planes);
+            }
+
+            if (PlanetVegetationSystem.AnyUseDedicatedRenderPass)
+            {
+                var systems = PlanetVegetationSystem.ActiveSystems;
+                bool prevSkip = SkipPlanetVegetationDraws;
+                SkipPlanetVegetationDraws = false;
+                try
+                {
+                    for (int s = 0; s < systems.Count; s++)
+                    {
+                        var sys = systems[s];
+                        if (sys == null || !sys.IsActiveAndEnabled || !sys.UseDedicatedRenderPass)
+                            continue;
+                        var root = sys.RuntimeDrawRoot;
+                        if (root == null || sys.TerrainGameObject == null)
+                            continue;
+                        var planetWorld = TransformUtil.WorldFromTransform(sys.TerrainGameObject.Transform);
+                        RenderShadowNode(gl, depthShader, cache, root, planetWorld, lightVP, planes);
+                    }
+                }
+                finally
+                {
+                    SkipPlanetVegetationDraws = prevSkip;
+                }
             }
 
             // Restore default back-face culling after shadow pass
@@ -1698,8 +1740,12 @@ namespace Game_Engine.Core
             opaqueItems.Clear();
             transparentItems.Clear();
 
+            bool skipPlanetVegInSceneGraph = PlanetVegetationSystem.AnyUseDedicatedRenderPass;
+            var prevSkipG = SkipPlanetVegetationDraws;
+            SkipPlanetVegetationDraws = skipPlanetVegInSceneGraph || prevSkipG;
             foreach (var root in SceneService.Root)
                 GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
+            SkipPlanetVegetationDraws = prevSkipG;
 
             gl.Enable(EnableCap.DepthTest);
             gl.DepthFunc(DepthFunction.Less);
@@ -1968,8 +2014,12 @@ namespace Game_Engine.Core
             var transparentItems = s_transparentItems ??= new List<DrawItem>(64);
             opaqueItems.Clear();
             transparentItems.Clear();
+            bool skipPlanetVegInSceneGraph = PlanetVegetationSystem.AnyUseDedicatedRenderPass;
+            var prevSkipF = SkipPlanetVegetationDraws;
+            SkipPlanetVegetationDraws = skipPlanetVegInSceneGraph || prevSkipF;
             foreach (var root in SceneService.Root)
                 GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
+            SkipPlanetVegetationDraws = prevSkipF;
 
             var renderCtx = new RenderContext
             {
@@ -2037,6 +2087,11 @@ namespace Game_Engine.Core
                 gl.Disable(EnableCap.PolygonOffsetFill);
                 gl.PolygonOffset(0f, 0f);
             }
+
+            RenderPlanetVegetation(
+                gl, standardShader, cache, view, proj, planes, camPos,
+                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunShineDir, in renderCtx);
 
             // CUSTOM SHADER FORWARD PASS — re-render items that have custom shaders
             // with their actual shaders. They were already written to the G-buffer (for
@@ -2381,6 +2436,9 @@ namespace Game_Engine.Core
             if (go.Name != null && (go.Name.StartsWith("PlanetChunk_") || go.Name == "PlanetWater"))
                 return;
 
+            if (PlanetVegetationSystem.AnyUseDedicatedRenderPass && IsPlanetVegetationDrawName(go.Name))
+                return;
+
             // Fast skip for culled vegetation chunks
             if (go.Name.StartsWith("chunk_"))
             {
@@ -2653,6 +2711,102 @@ namespace Game_Engine.Core
                 cloudSilverLining: Math.Max(0f, atmo?.CloudSilverLining ?? 0.65f),
                 cloudStepCount: Math.Clamp(atmo?.CloudStepCount ?? 16, 4, 64));
         }
+
+        static void RenderPlanetVegetation(
+            GL gl,
+            ShaderProgram standardShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            Plane[] planes,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float diffuseK,
+            float ambient,
+            bool lightIsPoint,
+            SN.Vector3 lightPosW,
+            float lightRange,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            in RenderContext renderCtx)
+        {
+            if (!PlanetVegetationSystem.AnyUseDedicatedRenderPass)
+                return;
+
+            var vegOpaque = s_planetVegOpaque ??= new List<DrawItem>(512);
+            var vegTransparent = s_planetVegTransparent ??= new List<DrawItem>(64);
+            vegOpaque.Clear();
+            vegTransparent.Clear();
+
+            var systems = PlanetVegetationSystem.ActiveSystems;
+            bool prevSkip = SkipPlanetVegetationDraws;
+            SkipPlanetVegetationDraws = false;
+            try
+            {
+                for (int s = 0; s < systems.Count; s++)
+                {
+                    var sys = systems[s];
+                    if (sys == null || !sys.IsActiveAndEnabled || !sys.UseDedicatedRenderPass)
+                        continue;
+
+                    var root = sys.RuntimeDrawRoot;
+                    if (root == null || sys.TerrainGameObject == null)
+                        continue;
+
+                    var planetWorld = TransformUtil.WorldFromTransform(sys.TerrainGameObject.Transform);
+                    GatherDrawItems(root, planetWorld, view, proj, planes, vegOpaque, vegTransparent);
+                }
+            }
+            finally
+            {
+                SkipPlanetVegetationDraws = prevSkip;
+            }
+
+            if (vegOpaque.Count == 0 && vegTransparent.Count == 0)
+                return;
+
+            standardShader.Use();
+            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
+            standardShader.SetMatrix4("uView", view);
+            standardShader.SetMatrix4("uProj", proj);
+            standardShader.SetVector3("uCamPos", camPos);
+            if (shadowFBO?.DepthTexture != null)
+            {
+                standardShader.SetInt("uHasShadow", 1);
+                standardShader.SetMatrix4("uShadowVP", shadowVP);
+                standardShader.SetFloat("uShadowBias", 0.008f);
+                standardShader.SetVector3("uSunDir", sunShineDir);
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                standardShader.SetTexture("uShadowMap", 7);
+            }
+            else
+            {
+                standardShader.SetInt("uHasShadow", 0);
+            }
+
+            gl.Enable(EnableCap.DepthTest);
+            gl.DepthMask(true);
+            gl.Disable(EnableCap.Blend);
+
+            for (int i = 0; i < vegOpaque.Count; i++)
+                DrawMeshItem(gl, standardShader, cache, vegOpaque[i], in renderCtx);
+
+            if (vegTransparent.Count > 0)
+            {
+                vegTransparent.Sort((a, b) => b.SortZ.CompareTo(a.SortZ));
+                gl.Enable(EnableCap.Blend);
+                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                gl.DepthMask(false);
+                for (int i = 0; i < vegTransparent.Count; i++)
+                    DrawMeshItem(gl, standardShader, cache, vegTransparent[i], in renderCtx);
+                gl.DepthMask(true);
+                gl.Disable(EnableCap.Blend);
+            }
+        }
+
+        [ThreadStatic] private static List<DrawItem>? s_planetVegOpaque;
+        [ThreadStatic] private static List<DrawItem>? s_planetVegTransparent;
 
         public static void RenderPlanetTerrain(
             GL gl,
