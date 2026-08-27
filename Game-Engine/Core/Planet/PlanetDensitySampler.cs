@@ -1,4 +1,5 @@
 using System;
+using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Noise;
 using SN = System.Numerics;
@@ -125,11 +126,17 @@ public sealed class PlanetDensitySampler
         if (_editStore == null || (_editStore.SphereEditCount == 0 && _editStore.BakedCellCount == 0))
             return r0;
 
-        // Widen the footprint to the local vertex spacing so a 8–12 m brush still
-        // hits Scene View verts (often 40–90 m apart). Do not scale the height.
+        // Coarse play-mode shells need a wider footprint than the brush radius so grid
+        // verts (often 4–12 m apart) actually move; cap keeps small brushes from becoming craters.
         var surfacePos = dir * r0;
-        float delta = _editStore.SampleHeightDelta(surfacePos, 0f);
-        float maxDisp = MathF.Min(_config.Radius * 0.05f, 32f);
+        float brushReach = MathF.Max(_editStore.MaxRadius * 1.5f, 1.25f);
+        float influence = MathF.Max(vertexSpacing, 0f);
+        if (SceneService.PlayMode)
+            influence = MathF.Min(MathF.Max(influence * 0.5f, brushReach), 12f);
+        else
+            influence = MathF.Min(influence, MathF.Max(_editStore.MaxRadius * 1.35f, 1f));
+        float delta = _editStore.SampleHeightDelta(surfacePos, influence);
+        float maxDisp = MathF.Min(_config.Radius * 0.05f, MathF.Max(2f, brushReach * 1.25f));
         delta = Math.Clamp(delta, -maxDisp, maxDisp);
         return MathF.Max(_config.Radius * 0.5f, r0 - delta);
     }

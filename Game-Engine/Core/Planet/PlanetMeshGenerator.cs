@@ -1,4 +1,5 @@
 using System;
+using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
@@ -148,12 +149,31 @@ public sealed class PlanetMeshGenerator
     bool ShouldUseVolumetric(int face, float u0, float v0, float u1, float v1, int resolution, int lodLevel)
     {
         _ = lodLevel;
-        // Orbit / coarse leaves stay a smooth heightfield. Refined leaves
-        // use stacked transvoxel shells from the core to the surface.
-        if (!_config.EnableCaves)
-            return false;
         float cell = EstimateCell(face, u0, v0, u1, v1, resolution);
         float maxCell = MathF.Max(8f, _config.VolumetricMaxCellSize);
+
+        if (SceneService.PlayMode && _editStore != null && (_editStore.SphereEditCount > 0 || _editStore.BakedCellCount > 0))
+            return false;
+
+        if (_editStore != null && (_editStore.SphereEditCount > 0 || _editStore.BakedCellCount > 0))
+        {
+            var dir = CubeSphereMath.FaceUVToDirection(face, (u0 + u1) * 0.5f, (v0 + v1) * 0.5f);
+            var a = CubeSphereMath.FaceUVToDirection(face, u0, v0) * _config.Radius;
+            var b = CubeSphereMath.FaceUVToDirection(face, u1, v0) * _config.Radius;
+            var c = CubeSphereMath.FaceUVToDirection(face, u0, v1) * _config.Radius;
+            float leafR = MathF.Max(MathF.Max(SN.Vector3.Distance(a, b), SN.Vector3.Distance(a, c)) * 0.75f, _config.Radius * 0.01f);
+            if (_editStore.OverlapsSphere(dir * _config.Radius, leafR + _editStore.MaxRadius + 8f))
+            {
+                // Foot-scale play digs on coarse leaves: shell-only remesh is much faster.
+                if (SceneService.PlayMode && _editStore.MaxRadius <= 2.5f && cell > maxCell)
+                    return false;
+                return true;
+            }
+        }
+
+        if (!_config.EnableCaves)
+            return false;
+
         return cell <= maxCell;
     }
 
@@ -173,6 +193,7 @@ public sealed class PlanetMeshGenerator
         var data = new TransvoxelMeshData();
         int n = resolution + 1;
         int size = Math.Max(1, resolution);
+        float vertexSpacing = EstimateCell(face, u0, v0, u1, v1, resolution);
 
         for (int iy = 0; iy < n; iy++)
         {
@@ -195,9 +216,9 @@ public sealed class PlanetMeshGenerator
                 var blends = _biomeMap.GetBiomes(sphereDir);
                 // Always sample the authored surface (no LOD-scaled brush). Adjacent
                 // chunks then agree on shared cube-sphere edges.
-                float surfaceR = _sampler.SampleEditedSurfaceRadius(sphereDir, 0f);
+                float surfaceR = _sampler.SampleEditedSurfaceRadius(sphereDir, vertexSpacing);
                 var pos = sphereDir * surfaceR;
-                var normal = EstimateShellNormal(sphereDir);
+                var normal = EstimateShellNormal(sphereDir, vertexSpacing);
 
                 var blendIdx = new SN.Vector4(0, 0, 0, 0);
                 var blendWt = new SN.Vector4(0, 0, 0, 0);
@@ -389,7 +410,7 @@ public sealed class PlanetMeshGenerator
         AddStrip(top, topS);
     }
 
-    SN.Vector3 EstimateShellNormal(SN.Vector3 sphereDir)
+    SN.Vector3 EstimateShellNormal(SN.Vector3 sphereDir, float vertexSpacing = 0f)
     {
         const float eps = 0.0025f;
         var t = SN.Vector3.Normalize(SN.Vector3.Cross(sphereDir, MathF.Abs(sphereDir.Y) > 0.9f ? SN.Vector3.UnitX : SN.Vector3.UnitY));
@@ -397,9 +418,9 @@ public sealed class PlanetMeshGenerator
         var d0 = SN.Vector3.Normalize(sphereDir);
         var dT = SN.Vector3.Normalize(sphereDir + t * eps);
         var dB = SN.Vector3.Normalize(sphereDir + b * eps);
-        float r0 = _sampler.SampleEditedSurfaceRadius(d0, 0f);
-        float rT = _sampler.SampleEditedSurfaceRadius(dT, 0f);
-        float rB = _sampler.SampleEditedSurfaceRadius(dB, 0f);
+        float r0 = _sampler.SampleEditedSurfaceRadius(d0, vertexSpacing);
+        float rT = _sampler.SampleEditedSurfaceRadius(dT, vertexSpacing);
+        float rB = _sampler.SampleEditedSurfaceRadius(dB, vertexSpacing);
         var p0 = d0 * r0;
         var pT = dT * rT;
         var pB = dB * rB;

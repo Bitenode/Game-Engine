@@ -58,6 +58,8 @@ namespace Game_Engine.Core.Input
         static float sDt;                  // this frame dt (seconds)
         static int sFrameId;             // increments each NewFrame
         static int sAxesUpdatedInFrame;  // to update axes once per frame on demand
+        /// <summary>True while the Game view holds pointer capture (LMB/RMB sculpting).</summary>
+        public static bool PlayViewportCaptureActive;
 
         static readonly Dictionary<string, AxisBinding> sAxes = new Dictionary<string, AxisBinding>(StringComparer.Ordinal);
         static readonly Dictionary<string, ActionBinding> sActions = new Dictionary<string, ActionBinding>(StringComparer.Ordinal);
@@ -122,6 +124,7 @@ namespace Game_Engine.Core.Input
             sHeldKeys.Clear(); sDownKeys.Clear(); sUpKeys.Clear();
             sHeldMouse.Clear(); sDownMouse.Clear(); sUpMouse.Clear();
             sMouseDX = sMouseDY = 0f;
+            PlayViewportCaptureActive = false;
             foreach (var kv in sAxes) kv.Value.Value = 0f;
         }
 
@@ -161,6 +164,8 @@ namespace Game_Engine.Core.Input
             SyncHardwareKey(0x26, KeyCode.UpArrow);
             SyncHardwareKey(0x27, KeyCode.RightArrow);
             SyncHardwareKey(0x28, KeyCode.DownArrow);
+            SyncHardwareKey(0x46, KeyCode.F);
+            SyncHardwareKey(0x47, KeyCode.G);
         }
 
         static void SyncHardwareKey(int vk, KeyCode code)
@@ -168,6 +173,18 @@ namespace Game_Engine.Core.Input
             bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
             if (down) FeedKeyDown(code);
             else if (sHeldKeys.Contains(code)) FeedKeyUp(code);
+        }
+
+        /// <summary>
+        /// Detect held mouse buttons from the OS when the cursor is over the Game view.
+        /// Never releases buttons — PointerReleased remains authoritative.
+        /// </summary>
+        public static void PollPlayMouseButtons(bool cursorOverGameView)
+        {
+            if (!OperatingSystem.IsWindows() || !cursorOverGameView) return;
+            if ((GetAsyncKeyState(0x01) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Left);
+            if ((GetAsyncKeyState(0x02) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Right);
+            if ((GetAsyncKeyState(0x04) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Middle);
         }
 
         [DllImport("user32.dll")]

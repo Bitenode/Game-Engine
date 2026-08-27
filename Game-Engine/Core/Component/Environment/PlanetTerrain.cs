@@ -136,6 +136,8 @@ public sealed class PlanetTerrain : Behavior
     const float ChunkUpdateMoveThreshold = 1.0f;
     const float FastApproachSpeed = 40f;
     float _chunkUpdateAccumSec;
+    float _playEditLodCooldown;
+    bool _playEditRefreshQueued;
     SN.Vector3 _lastChunkUpdateCamPos = new(float.NaN);
     bool _skipLodChunkUpdate;
 
@@ -660,7 +662,20 @@ public sealed class PlanetTerrain : Behavior
         float dt = Math.Max(0f, (float)Time.deltaTime);
         WaterAnimTime += dt;
         if (SceneService.PlayMode)
+        {
+            _playEditLodCooldown -= dt;
+            bool pendingEdits = _chunkManager.PendingEditCommands > 0;
+            bool pendingMeshes = _chunkManager.PendingCompletedJobs > 0 || _chunkManager.ActiveJobs > 0;
+            if ((_playEditRefreshQueued || pendingEdits || pendingMeshes)
+                && LastCameraPosition.LengthSquared() > 1e-6f
+                && (_playEditLodCooldown <= 0f || pendingMeshes || _playEditRefreshQueued))
+            {
+                RefreshLodAroundCamera(LastCameraPosition);
+                _playEditRefreshQueued = false;
+                _playEditLodCooldown = pendingEdits ? 0.12f : 0.05f;
+            }
             return;
+        }
 
         _chunkUpdateAccumSec += dt;
         bool shouldUpdateChunks = _chunkUpdateAccumSec >= ChunkUpdateIntervalSec;
@@ -722,6 +737,13 @@ public sealed class PlanetTerrain : Behavior
         WaterAnimTime += dt;
     }
 
+    /// <summary>Queue mesh refresh after edits; throttled LOD runs from GameView.</summary>
+    public void NotifyEdited(SN.Vector3 cameraPos)
+    {
+        LastCameraPosition = cameraPos;
+        _playEditLodCooldown = 0f;
+    }
+
     /// <summary>Refine chunks around a world-space camera (editor or play).</summary>
     public void RefreshLodAroundCamera(SN.Vector3 cameraPos)
     {
@@ -752,8 +774,8 @@ public sealed class PlanetTerrain : Behavior
             _config.LodDistanceMultiplier = Math.Min(LodDistanceMultiplier, 1.85f);
             _config.SplitDistanceScale = 0.55f;
             _config.MergeDistanceScale = Math.Max(MergeDistanceScale, 1.8f);
-            _config.MaxGenerationSchedulesPerUpdate = 4;
-            _config.MaxMeshAppliesPerUpdate = 4;
+            _config.MaxGenerationSchedulesPerUpdate = 6;
+            _config.MaxMeshAppliesPerUpdate = 12;
             _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 32);
         }
         else
@@ -769,7 +791,7 @@ public sealed class PlanetTerrain : Behavior
         }
 
         _config.VolumetricMaxCellSize = 3.5f;
-        if (cameraInside)
+        if (cameraInside && !play)
         {
             _config.VolumetricMaxCellSize = 11f;
             _config.MaxLodDepth = Math.Max(_config.MaxLodDepth, 6);
@@ -847,6 +869,61 @@ public sealed class PlanetTerrain : Behavior
     /// <summary>Same as <see cref="RaycastDensity"/> — alias for Scene View brushes (Phase 5).</summary>
     public bool Raycast(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
         => RaycastDensity(worldOrigin, worldDirection, maxDistance, out hit);
+
+    /// <summary>Play-mode tool picking: iso crossing, then geometric fallback.</summary>
+    public bool RaycastPaintSurface(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
+    {
+        hit = default;
+        var sampler = CreateDensitySampler();
+        if (sampler != null && _config != null)
+        {
+            if (PlanetDensityRaycast.RaycastIsoCrossing(
+                    sampler, GetWorldCenter(), GetWorldRadiusScale(),
+                    worldOrigin, worldDirection, maxDistance, out hit))
+                return true;
+        }
+
+        float lenSq = worldDirection.LengthSquared();
+        if (lenSq < 1e-12f)
+            return false;
+        var dir = worldDirection / MathF.Sqrt(lenSq);
+        var center = GetWorldCenter();
+        float scale = GetWorldRadiusScale();
+        float outerR = (Radius + 80f) * scale;
+        float t = Picking.RayIntersectSphere(worldOrigin, dir, center, outerR);
+        if (t >= float.MaxValue * 0.5f || t > maxDistance)
+            return false;
+
+        var approx = worldOrigin + dir * t;
+        var local = WorldToLocal(approx);
+        float localLen = local.Length();
+        var sphereDir = localLen > 1e-5f ? local / localLen : SN.Vector3.UnitY;
+
+        if (TrySampleLocalIsosurface(sphereDir, out var localPt, out var localN))
+        {
+            var worldPt = LocalToWorld(localPt);
+            var nWorld = LocalToWorld(localPt + localN) - worldPt;
+            hit = new PlanetDensityHit
+            {
+                Point = worldPt,
+                Normal = nWorld.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(nWorld) : sphereDir,
+                Distance = SN.Vector3.Distance(worldOrigin, worldPt),
+                StartedInside = false
+            };
+            return true;
+        }
+
+        float surfaceR = SampleSurfaceRadius(sphereDir);
+        var worldHit = center + sphereDir * surfaceR;
+        hit = new PlanetDensityHit
+        {
+            Point = worldHit,
+            Normal = sphereDir,
+            Distance = SN.Vector3.Distance(worldOrigin, worldHit),
+            StartedInside = false
+        };
+        return true;
+    }
 
     /// <summary>
     /// Sphere-march the density field. <paramref name="worldRadius"/> is the query sphere
@@ -1449,12 +1526,47 @@ public sealed class PlanetTerrain : Behavior
 
     public void DigSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)
     {
-        QueueSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff));
+        if (SceneService.PlayMode)
+            ApplyPlayModeSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff));
+        else
+            QueueSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff));
     }
 
     public void BuildSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)
     {
-        QueueSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff));
+        if (SceneService.PlayMode)
+            ApplyPlayModeSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff));
+        else
+            QueueSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff));
+    }
+
+    /// <summary>
+    /// Play-mode sculpting: store stroke and queue async remesh (never block the UI thread).
+    /// </summary>
+    void ApplyPlayModeSphereEdit(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
+    {
+        if (_chunkManager == null || _voxelEditStore == null)
+            return;
+
+        float r = Math.Clamp(radius, 0.2f, 2.5f);
+        if (NetworkManager.IsActive && NetworkManager.IsClient && StreamSurfaceFromServerWhenClient)
+        {
+            SendPlanetVoxelEditToServer(worldCenter, r, densityDelta, falloff);
+            return;
+        }
+
+        var localCenter = WorldToLocal(worldCenter);
+        float localRadius = WorldToLocalLength(r);
+        float cap = MathF.Min(1.5f, MathF.Max(0.35f, localRadius * 0.65f));
+        densityDelta = Math.Clamp(densityDelta, -cap, cap);
+        falloff = ResolveFalloff(falloff);
+
+        _voxelEditStore.AddSphere(localCenter, localRadius, densityDelta, falloff);
+        float invalidateR = localRadius + MathF.Max(0.75f, MathF.Abs(densityDelta));
+        _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
+
+        if (NetworkManager.IsActive && NetworkManager.IsServer)
+            BroadcastPlanetInvalidateClients(GetPlanetNetworkId(), worldCenter, r + MathF.Max(0.5f, MathF.Abs(densityDelta)));
     }
 
     /// <summary>Pull the crust toward the average nearby surface radius.</summary>

@@ -41,6 +41,15 @@ public sealed class Mesh
     /// <summary>True if this mesh carries planet biome blend data.</summary>
     public bool IsPlanetMesh => PlanetBlendIndices != null;
 
+    /// <summary>Bumped when vertex data changes in place (planet sculpting).</summary>
+    public int GeometryVersion { get; private set; }
+
+    public void NotifyVerticesChanged()
+    {
+        GeometryVersion++;
+        RecalculateNormalsSmooth();
+    }
+
     public Mesh(SN.Vector3[] v, int[] lines, int[] tris)
     {
         Vertices = v;

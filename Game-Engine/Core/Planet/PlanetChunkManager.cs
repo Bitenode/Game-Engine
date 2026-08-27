@@ -208,6 +208,25 @@ public sealed class PlanetChunkManager
         int scheduleBudget = Math.Max(1, Config.MaxGenerationSchedulesPerUpdate);
         int scheduled = 0;
 
+        if (SceneService.PlayMode)
+        {
+            var renderable = new List<QuadNode>(64);
+            for (int f = 0; f < 6; f++)
+                Faces[f].CollectRenderableNodes(renderable);
+            for (int i = 0; i < renderable.Count; i++)
+            {
+                var node = renderable[i];
+                if (!node.NeedsMeshRebuild || node.IsGenerating)
+                    continue;
+                if (scheduled >= scheduleBudget || _activeJobs >= MaxConcurrentJobs)
+                    break;
+                node.NeedsMeshRebuild = false;
+                node.IsGenerating = true;
+                ScheduleGeneration(node);
+                scheduled++;
+            }
+        }
+
         bool TrySchedule(QuadNode node)
         {
             if (scheduled >= scheduleBudget || _activeJobs >= MaxConcurrentJobs)
@@ -342,19 +361,136 @@ public sealed class PlanetChunkManager
                 if (!IntersectsLeaf(leaf, cmd.Center, sphereRadius, crustPad))
                     continue;
 
-                if (leaf.Parent != null)
-                    leaf.Parent.NeedsMeshRebuild = true;
-
-                if (!leaf.NeedsMeshRebuild)
-                {
-                    leaf.NeedsMeshRebuild = true;
-                    dirtied++;
-                }
+                MarkNodeAndAncestorsDirty(leaf, ref dirtied, dirtyBudget);
             }
+
+            if (SceneService.PlayMode)
+                ApplyPlayModeEditVisual(cmd.Center, sphereRadius);
         }
 
         _lastAppliedEditCommands = processed;
         _lastDirtyLeavesFromEdits = dirtied;
+        if (processed > 0)
+            _renderableDirty = true;
+    }
+
+    void MarkNodeAndAncestorsDirty(QuadNode node, ref int dirtied, int dirtyBudget)
+    {
+        for (var cur = node; cur != null; cur = cur.Parent)
+        {
+            cur.IsGenerating = false;
+            if (cur.NeedsMeshRebuild)
+                continue;
+            if (dirtied >= dirtyBudget)
+                return;
+            cur.NeedsMeshRebuild = true;
+            dirtied++;
+        }
+    }
+
+    /// <summary>
+    /// Play-mode: deform visible mesh vertices in place (instant), no main-thread rebuild.
+    /// </summary>
+    public void ApplyPlayModeEditVisual(SN.Vector3 localCenter, float sphereRadius)
+    {
+        if (_editStore == null)
+            return;
+
+        if (TryDeformVisibleMeshes(localCenter, sphereRadius))
+        {
+            _renderableDirty = true;
+            return;
+        }
+
+        ScheduleRenderablesNearEdit(localCenter, sphereRadius, maxNodes: 1);
+    }
+
+    bool TryDeformVisibleMeshes(SN.Vector3 localCenter, float sphereRadius)
+    {
+        DensityGenerator.ComputeCrustBounds(Config, _editStore!, out _, out float radialSpan);
+        float crustPad = radialSpan * 0.35f;
+
+        var renderable = new List<QuadNode>(64);
+        for (int f = 0; f < 6; f++)
+            Faces[f].CollectRenderableNodes(renderable);
+
+        renderable.Sort((a, b) =>
+        {
+            float da = SN.Vector3.DistanceSquared(localCenter, a.WorldCentre(Config.Radius));
+            float db = SN.Vector3.DistanceSquared(localCenter, b.WorldCentre(Config.Radius));
+            return da.CompareTo(db);
+        });
+
+        var sampler = _meshGen.Sampler;
+        bool any = false;
+        int touched = 0;
+        for (int i = 0; i < renderable.Count && touched < 2; i++)
+        {
+            var node = renderable[i];
+            if (!IntersectsLeaf(node, localCenter, sphereRadius, crustPad))
+                continue;
+
+            var mesh = node.GeneratedMesh;
+            if (mesh == null)
+                continue;
+
+            float spacing = PlanetShellDeformer.EstimateVertexSpacing(node, Config.Radius, Config.ChunkSize);
+            if (PlanetShellDeformer.TryDeformMesh(mesh, sampler, localCenter, sphereRadius, spacing))
+            {
+                any = true;
+                touched++;
+            }
+        }
+
+        return any;
+    }
+
+    /// <summary>
+    /// Queue async remesh for the visible chunk(s) overlapping a play-mode edit.
+    /// </summary>
+    public void ScheduleRenderablesNearEdit(SN.Vector3 localCenter, float sphereRadius, int maxNodes = 1)
+    {
+        if (_editStore == null || maxNodes <= 0)
+            return;
+
+        DensityGenerator.ComputeCrustBounds(Config, _editStore, out _, out float radialSpan);
+        float crustPad = radialSpan * 0.35f;
+
+        var renderable = new List<QuadNode>(64);
+        for (int f = 0; f < 6; f++)
+            Faces[f].CollectRenderableNodes(renderable);
+
+        renderable.Sort((a, b) =>
+        {
+            float da = SN.Vector3.DistanceSquared(localCenter, a.WorldCentre(Config.Radius));
+            float db = SN.Vector3.DistanceSquared(localCenter, b.WorldCentre(Config.Radius));
+            return da.CompareTo(db);
+        });
+
+        int queued = 0;
+        for (int i = 0; i < renderable.Count && queued < maxNodes; i++)
+        {
+            var node = renderable[i];
+            if (!IntersectsLeaf(node, localCenter, sphereRadius, crustPad))
+                continue;
+
+            for (var cur = node; cur != null; cur = cur.Parent)
+            {
+                cur.IsGenerating = false;
+                cur.NeedsMeshRebuild = true;
+            }
+
+            if (_activeJobs >= MaxConcurrentJobs || node.IsGenerating)
+                continue;
+
+            node.NeedsMeshRebuild = false;
+            node.IsGenerating = true;
+            ScheduleGeneration(node);
+            queued++;
+        }
+
+        if (queued > 0)
+            _renderableDirty = true;
     }
 
     /// <summary>Marks leaves overlapping a world-space edit region so clients can re-request streamed meshes after server edits.</summary>

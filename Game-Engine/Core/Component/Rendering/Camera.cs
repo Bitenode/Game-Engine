@@ -120,6 +120,33 @@ namespace Game_Engine.Core.Component
             return GetProjectionMatrix(aspect);
         }
 
+        /// <summary>World-space eye and forward used for rendering and gameplay rays.</summary>
+        public bool TryGetWorldLookRay(out SN.Vector3 origin, out SN.Vector3 forward)
+        {
+            origin = default;
+            forward = default;
+            if (gameObject == null)
+                return false;
+
+            if (UseLookOverride)
+            {
+                origin = LookEye;
+                forward = LookForward.LengthSquared() > 1e-10f
+                    ? SN.Vector3.Normalize(LookForward)
+                    : new SN.Vector3(0f, 0f, -1f);
+                return true;
+            }
+
+            var world = SceneGraphUtil.AccumulateWorld(gameObject);
+            origin = new SN.Vector3(world.M41, world.M42, world.M43);
+            forward = SN.Vector3.TransformNormal(new SN.Vector3(0f, 0f, -1f), world);
+            if (forward.LengthSquared() <= 1e-10f)
+                forward = new SN.Vector3(0f, 0f, -1f);
+            else
+                forward = SN.Vector3.Normalize(forward);
+            return true;
+        }
+
         public override void OnEnable() => CameraService.Register(this);
         public override void OnDisable() => CameraService.Unregister(this);
     }

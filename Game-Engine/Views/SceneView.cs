@@ -210,6 +210,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     bool _planetStrokeDirty;
     SN.Vector3 _planetPaintLastHit;
     bool _planetPaintHasLastHit;
+    bool _playModePlanetPaint;
+    bool _playModePlanetBuild;
     public static Func<Terrain, int>? TerrainActivePaintLayerProvider; // active splatmap layer for Paint Layers tool
 
     private (SN.Matrix4x4 View, SN.Matrix4x4 Proj, Camera? Cam, bool UsingComponent)
@@ -1077,12 +1079,38 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     // ────────────── Planet LOD Update ──────────────
     static void UpdatePlanetLOD(SN.Vector3 camPos)
     {
+        if (GameView.IsAnyViewPlaying)
+        {
+            camPos = GetPlayCameraWorldPosition();
+            if (camPos.LengthSquared() <= 1e-6f)
+                return;
+        }
+
         foreach (var planet in PlanetTerrain.ActivePlanets)
         {
             if (planet == null) continue;
-            planet.RefreshLodAroundCamera(camPos);
-            planet.Update();
+            if (GameView.IsAnyViewPlaying)
+            {
+                planet.LastCameraPosition = camPos;
+                var cm = planet.ChunkManager;
+                if (cm != null && (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0))
+                    planet.RefreshLodAroundCamera(camPos);
+            }
+            else
+            {
+                planet.RefreshLodAroundCamera(camPos);
+                planet.Update();
+            }
         }
+    }
+
+    static SN.Vector3 GetPlayCameraWorldPosition()
+    {
+        var cam = SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled && c.IsMain)
+                  ?? SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled);
+        if (cam == null)
+            return default;
+        return cam.TryGetWorldLookRay(out var origin, out _) ? origin : default;
     }
 
     // ────────────── Cached Scene Queries ──────────────
@@ -1136,12 +1164,34 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         return Math.Max(0.01f, s * def);
     }
 
+    bool IsPlanetBrushActive()
+        => _hasPlanetHover && _hoverPlanet != null && GetPlanetToolIndex(_hoverPlanet) != PlanetToolNone;
+
+    bool TryBeginPlayModePlanetPaint(PointerPressedEventArgs e, PointerPointProperties props)
+    {
+        if (!GameView.IsAnyViewPlaying || Tool != ToolMode.Hand || IsPlanetBrushActive()) return false;
+        if (!_hasPlanetHover || _hoverPlanet == null) return false;
+
+        bool dig = props.IsLeftButtonPressed && !e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        bool build = props.IsRightButtonPressed
+                     || (props.IsLeftButtonPressed && e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+        if (!dig && !build) return false;
+
+        _playModePlanetPaint = true;
+        _playModePlanetBuild = build && !dig;
+        PlanetTool.ApplyStrokeAt(_hoverPlanetPointW, dig, build);
+        e.Pointer.Capture(this);
+        e.Handled = true;
+        InvalidateVisual();
+        return true;
+    }
+
     void ApplyPlanetToolUnified(PlanetTerrain planet, SN.Vector3 hitW, int toolIndex, float sign)
     {
         if (toolIndex == PlanetToolNone) return;
         var localHit = planet.WorldToLocal(hitW);
         float hitR = localHit.Length();
-        if (hitR < planet.Radius * 0.45f)
+        if (!GameView.IsAnyViewPlaying && hitR < planet.Radius * 0.45f)
             return;
 
         float radius = Math.Max(0.05f, PlanetBrushRadiusProvider(planet));
@@ -2445,6 +2495,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Focus(); _last = e.GetPosition(this);
         UpdateTerrainHover(_last);
         var props = e.GetCurrentPoint(this).Properties;
+        if (TryBeginPlayModePlanetPaint(e, props))
+            return;
         if (ShowTerrainGizmos && _hasPlanetHover && _hoverPlanet != null && (props.IsLeftButtonPressed || props.IsRightButtonPressed))
         {
             int planetTool = GetPlanetToolIndex(_hoverPlanet);
@@ -2697,6 +2749,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         var pos = e.GetPosition(this);
         UpdateTerrainHover(pos);
+        if (_playModePlanetPaint && _hasPlanetHover)
+        {
+            PlanetTool.ApplyStrokeAt(_hoverPlanetPointW, !_playModePlanetBuild, _playModePlanetBuild);
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
         if (_paintingPlanet && _planetPaintTarget != null && _hasPlanetHover && ReferenceEquals(_hoverPlanet, _planetPaintTarget))
         { ApplyPlanetToolUnified(_planetPaintTarget, _hoverPlanetPointW, _planetPaintToolIndex, _planetPaintSign); InvalidateVisual(); e.Handled = true; return; }
         if (_paintingTerrain && _paintTarget != null && _hasHover && ReferenceEquals(_hoverTerrain, _paintTarget))
@@ -2729,6 +2788,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     void OnPointerReleased(object? s, PointerReleasedEventArgs e)
     {
+        if (_playModePlanetPaint)
+        {
+            _playModePlanetPaint = false;
+            if (e.Pointer.Captured == this) e.Pointer.Capture(null);
+            e.Handled = true;
+            return;
+        }
         if (_paintingPlanet)
         {
             _paintingPlanet = false;

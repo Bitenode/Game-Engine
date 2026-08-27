@@ -31,6 +31,7 @@ namespace Game_Engine.Core.Component
         [Persist] public float CapsuleHeight { get; set; } = 2f;
         [Persist] public float CapsuleRadius { get; set; } = 0.4f;
         [Persist] public bool FirstPerson { get; set; } = true;
+        [Persist] public bool AttachPlanetTool { get; set; } = true;
 
         GameObject? _spawned;
         int _retryFrames;
@@ -302,6 +303,48 @@ namespace Game_Engine.Core.Component
                     cam.Near = MathF.Min(cam.Near, 0.08f);
                 }
             }
+
+            EnsurePlanetToolsOnPlayers();
+        }
+
+        /// <summary>Attach <see cref="PlanetTool"/> to every playable body.</summary>
+        public static void EnsurePlanetToolsOnPlayers()
+        {
+            var seen = new HashSet<GameObject>();
+            foreach (var motor in SceneQuery.FindBehaviors<RigidbodyPlayer>().ToList())
+            {
+                var go = motor.gameObject;
+                if (go == null || !go.Enabled || !seen.Add(go)) continue;
+                var planet = Rigidbody.FindNearestPlanet(
+                    new SN.Vector3((float)go.Transform.Position.X, (float)go.Transform.Position.Y, (float)go.Transform.Position.Z),
+                    out _, out _);
+                EnsurePlanetTool(go, planet);
+            }
+
+            var named = SceneQuery.FindByName("Player");
+            if (named != null && named.Enabled && seen.Add(named))
+            {
+                var planet = Rigidbody.FindNearestPlanet(
+                    new SN.Vector3((float)named.Transform.Position.X, (float)named.Transform.Position.Y, (float)named.Transform.Position.Z),
+                    out _, out _);
+                EnsurePlanetTool(named, planet);
+            }
+        }
+
+        static void EnsurePlanetTool(GameObject player, PlanetTerrain? planet)
+        {
+            var tool = player.Behaviors.OfType<PlanetTool>().FirstOrDefault();
+            if (tool == null)
+            {
+                tool = player.AddBehavior<PlanetTool>();
+                if (SceneService.PlayMode)
+                {
+                    tool.__Awake();
+                    tool.__Start();
+                }
+            }
+            if (planet != null)
+                tool.BindPlanet(planet);
         }
 
         static void FlattenCapsuleCenter(GameObject player)
@@ -352,6 +395,9 @@ namespace Game_Engine.Core.Component
                 if (player.Children.Any(c => c.Behaviors.OfType<Camera>().Contains(other))) continue;
                 other.IsMain = false;
             }
+
+            if (AttachPlanetTool)
+                EnsurePlanetTool(player, planet);
         }
 
         GameObject BuildPlayer()

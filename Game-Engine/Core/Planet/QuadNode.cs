@@ -206,8 +206,8 @@ public sealed class QuadNode
         }
         Children = null;
         _splitCommitted = false;
-        if (GeneratedMesh == null)
-            NeedsMeshRebuild = true;
+        // Parent mesh was built from children; after merge it must be rebuilt to reflect edits.
+        NeedsMeshRebuild = true;
     }
 
     void AllocateChildren()

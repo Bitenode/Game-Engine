@@ -148,8 +148,10 @@ namespace Game_Engine.Views
         // We update at a fixed cadence or when the camera moves enough.
         const double LOD_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz (flat terrain / trees)
         const double PLANET_LOD_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz planet streaming
+        const double PLAY_PLANET_LOD_UPDATE_INTERVAL_SEC = 0.40;
         const float LOD_UPDATE_MOVE_THRESHOLD = 2.0f;
         const float PLANET_LOD_MOVE_THRESHOLD = 2.0f;
+        const float PLAY_PLANET_LOD_MOVE_THRESHOLD = 18f;
         const float PLANET_FAST_APPROACH_SPEED = 40f;
         const int PLAYMODE_MAX_PLANET_LOD_DEPTH = 5;
         double _lodAccumSec;
@@ -170,6 +172,7 @@ namespace Game_Engine.Views
         // We only request a new render after OnOpenGlRender has completed the previous one.
         private volatile bool _renderInFlight;
         TopLevel? _playKeyHost;
+        TopLevel? _playPointerHost;
 
         public GameView()
         {
@@ -697,13 +700,19 @@ namespace Game_Engine.Views
 
             bool shouldUpdatePlanetLod = false;
             _planetLodAccumSec += Math.Max(0.0, dt);
-            if (_planetLodAccumSec >= PLANET_LOD_UPDATE_INTERVAL_SEC)
+            double planetLodInterval = State == GamePanel.GameState.Playing
+                ? PLAY_PLANET_LOD_UPDATE_INTERVAL_SEC
+                : PLANET_LOD_UPDATE_INTERVAL_SEC;
+            float planetLodMove = State == GamePanel.GameState.Playing
+                ? PLAY_PLANET_LOD_MOVE_THRESHOLD
+                : PLANET_LOD_MOVE_THRESHOLD;
+            if (_planetLodAccumSec >= planetLodInterval)
                 shouldUpdatePlanetLod = true;
             if (!float.IsNaN(_lastPlanetLodCamPos.X))
             {
                 var pd = camPos - _lastPlanetLodCamPos;
                 float pDist = pd.Length();
-                if (pDist >= PLANET_LOD_MOVE_THRESHOLD)
+                if (pDist >= planetLodMove)
                     shouldUpdatePlanetLod = true;
                 float elapsed = Math.Max(1e-3f, (float)_planetLodAccumSec);
                 if (pDist / elapsed >= PLANET_FAST_APPROACH_SPEED)
@@ -1307,6 +1316,7 @@ namespace Game_Engine.Views
             if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
             _mouseLook = false; _hasLastMouse = false;
             Input.ClearAll(); Input.FeedMouseDelta(0, 0);
+            Input.PlayViewportCaptureActive = false;
         }
 
         void OnKeyDown(object? s, KeyEventArgs e)
@@ -1340,6 +1350,72 @@ namespace Game_Engine.Views
             _playKeyHost.AddHandler(InputElement.KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
         }
 
+        void BindPlayPointer()
+        {
+            UnbindPlayPointer();
+            _playPointerHost = TopLevel.GetTopLevel(this);
+            if (_playPointerHost == null) return;
+            _playPointerHost.AddHandler(InputElement.PointerPressedEvent, OnHostPointerPressed, RoutingStrategies.Tunnel);
+            _playPointerHost.AddHandler(InputElement.PointerReleasedEvent, OnHostPointerReleased, RoutingStrategies.Tunnel);
+            _playPointerHost.AddHandler(InputElement.PointerMovedEvent, OnHostPointerMoved, RoutingStrategies.Tunnel);
+        }
+
+        void UnbindPlayPointer()
+        {
+            if (_playPointerHost == null) return;
+            _playPointerHost.RemoveHandler(InputElement.PointerPressedEvent, OnHostPointerPressed);
+            _playPointerHost.RemoveHandler(InputElement.PointerReleasedEvent, OnHostPointerReleased);
+            _playPointerHost.RemoveHandler(InputElement.PointerMovedEvent, OnHostPointerMoved);
+            _playPointerHost = null;
+        }
+
+        bool IsPointerOverGameView(PointerEventArgs e)
+        {
+            if (Bounds.Width <= 0 || Bounds.Height <= 0) return false;
+            var pos = e.GetPosition(this);
+            return pos.X >= 0 && pos.Y >= 0 && pos.X <= Bounds.Width && pos.Y <= Bounds.Height;
+        }
+
+        bool IsCursorOverGameView() => IsPointerOver && Bounds.Width > 0 && Bounds.Height > 0;
+
+        void FeedPlayPointerButtons(PointerPoint pt)
+        {
+            if (pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Left);
+            if (pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Middle);
+            if (pt.Properties.IsRightButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Right);
+        }
+
+        void TryPlayPlanetSculpt(PointerPoint pt)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            var props = pt.Properties;
+            bool shift = Input.GetKey(KeyCode.LeftShift);
+            bool dig = props.IsLeftButtonPressed && !shift;
+            bool build = props.IsRightButtonPressed || (props.IsLeftButtonPressed && shift);
+            if (!dig && !build) return;
+            PlanetTool.ApplyLookStroke(dig, build);
+        }
+
+        void OnHostPointerPressed(object? s, PointerPressedEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing || !IsPointerOverGameView(e)) return;
+            OnPointerPressed(this, e);
+        }
+
+        void OnHostPointerReleased(object? s, PointerReleasedEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            if (!ReferenceEquals(_capturedPointer, e.Pointer) && !IsPointerOverGameView(e)) return;
+            OnPointerReleased(this, e);
+        }
+
+        void OnHostPointerMoved(object? s, PointerEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            if (!ReferenceEquals(_capturedPointer, e.Pointer) && !IsPointerOverGameView(e)) return;
+            OnPointerMoved(this, e);
+        }
+
         void UnbindPlayKeyboard()
         {
             if (_playKeyHost == null) return;
@@ -1353,9 +1429,11 @@ namespace Game_Engine.Views
             if (State != GamePanel.GameState.Playing) return;
             Focus();
             var pt = e.GetCurrentPoint(this);
-            if (pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Left);
-            if (pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Middle);
-            if (pt.Properties.IsRightButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Right);
+            FeedPlayPointerButtons(pt);
+            TryPlayPlanetSculpt(pt);
+            e.Pointer.Capture(this);
+            _capturedPointer = e.Pointer;
+            Input.PlayViewportCaptureActive = true;
         }
 
         void OnPointerReleased(object? s, PointerReleasedEventArgs e)
@@ -1365,6 +1443,12 @@ namespace Game_Engine.Views
             if (!pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Left);
             if (!pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Middle);
             if (!pt.Properties.IsRightButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Right);
+            if (ReferenceEquals(_capturedPointer, e.Pointer))
+            {
+                try { e.Pointer.Capture(null); } catch { }
+                _capturedPointer = null;
+                Input.PlayViewportCaptureActive = false;
+            }
         }
 
         void OnPointerMoved(object? s, PointerEventArgs e)
@@ -1377,6 +1461,10 @@ namespace Game_Engine.Views
             _lastMouse = cur;
             _hasLastMouse = true;
             Input.FeedMousePosition(cur.X, cur.Y);
+
+            var pt = e.GetCurrentPoint(this);
+            FeedPlayPointerButtons(pt);
+            TryPlayPlanetSculpt(pt);
         }
         #endregion
 
@@ -1408,8 +1496,10 @@ namespace Game_Engine.Views
                     EnsurePlaySnapshot();
                     PlanetPlayerSpawner.EnsurePlayModeControllers();
                     EnsureAwakeStart();
+                    PlanetPlayerSpawner.EnsurePlanetToolsOnPlayers();
                     _needsWarm = true; Focus();
                     BindPlayKeyboard();
+                    BindPlayPointer();
                     SceneRenderer.ResetBiomeTexDebug();
                     Core.Time.Reset();
                     _updateWatch.Restart(); _fixedWatch.Restart();
@@ -1421,11 +1511,13 @@ namespace Game_Engine.Views
                 case GamePanel.GameState.Paused:
                     SceneService.PlayMode = false;
                     UnbindPlayKeyboard();
+                    UnbindPlayPointer();
                     _fixedTimer.Stop(); _updateTimer.Stop(); break;
                 case GamePanel.GameState.Stopped:
                 {
                     SceneService.PlayMode = false;
                     UnbindPlayKeyboard();
+                    UnbindPlayPointer();
                     // Capture selection before LoadFromFile: SceneService.SceneReplaced (e.g. SceneView)
                     // clears SelectionService, so ReSelectAfterRestore cannot read the old Current afterward.
                     string? restoreSelName = SelectionService.Current?.Name;
@@ -1661,6 +1753,11 @@ namespace Game_Engine.Views
             Core.Time.BeginUpdate(dt);
             Input.NewFrame((float)dt);
             Input.PollHardwareHeldKeys();
+            if (State == GamePanel.GameState.Playing)
+            {
+                bool pollMouse = _capturedPointer != null || IsCursorOverGameView();
+                Input.PollPlayMouseButtons(pollMouse);
+            }
 
             // Feed viewport size in DIP space (matches MousePosition coordinate space)
             Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);

@@ -104,6 +104,117 @@ public static class PlanetDensityRaycast
         return true;
     }
 
+    /// <summary>
+    /// First density zero-crossing along the ray. Unlike <see cref="Raycast"/>,
+    /// does not treat "origin already in rock" as a hit at t=0.
+    /// </summary>
+    public static bool RaycastIsoCrossing(
+        PlanetDensitySampler sampler,
+        SN.Vector3 planetCenter,
+        float worldScale,
+        SN.Vector3 worldOrigin,
+        SN.Vector3 worldDirection,
+        float maxWorldDistance,
+        out PlanetDensityHit hit)
+    {
+        hit = default;
+        float lenSq = worldDirection.LengthSquared();
+        if (lenSq < 1e-12f)
+            return false;
+
+        float scale = PlanetSpace.SanitizeScale(worldScale);
+        var localOrigin = PlanetSpace.WorldToLocal(worldOrigin, planetCenter, scale);
+        var localDir = worldDirection / MathF.Sqrt(lenSq);
+        float maxLocal = PlanetSpace.WorldToLocalLength(MathF.Max(0f, maxWorldDistance), scale);
+
+        float d0 = sampler.SampleDensity(localOrigin);
+        bool inside = d0 <= 0f;
+        if (!MarchIso(sampler, localOrigin, localDir, maxLocal, out float tLocal))
+            return false;
+
+        var localPoint = localOrigin + localDir * tLocal;
+        var localNormal = sampler.SampleDensityGradient(localPoint);
+        if (SN.Vector3.Dot(localNormal, localDir) > 0f)
+            localNormal = -localNormal;
+
+        hit = new PlanetDensityHit
+        {
+            Point = PlanetSpace.LocalToWorld(localPoint, planetCenter, scale),
+            Normal = localNormal,
+            Distance = PlanetSpace.LocalToWorldLength(tLocal, scale),
+            StartedInside = inside
+        };
+        return true;
+    }
+
+    static bool MarchIso(
+        PlanetDensitySampler sampler,
+        SN.Vector3 origin,
+        SN.Vector3 dir,
+        float maxDist,
+        out float hitT)
+    {
+        hitT = 0f;
+        if (maxDist <= 1e-8f)
+            return false;
+
+        float d0 = sampler.SampleDensity(origin);
+        float minStep = 0.08f;
+        float maxStep = MathF.Max(1.5f, maxDist / 32f);
+        float t = 0f;
+        float prevD = d0;
+        float prevT = 0f;
+
+        for (int i = 0; i < MaxSteps && t < maxDist; i++)
+        {
+            float step = Math.Clamp(MathF.Abs(prevD) * 0.35f + 0.05f, minStep, maxStep);
+            float nextT = MathF.Min(maxDist, t + step);
+            var p = origin + dir * nextT;
+            float d = sampler.SampleDensity(p);
+
+            if ((prevD > 0f && d <= 0f) || (prevD <= 0f && d > 0f))
+            {
+                hitT = RefineIso(sampler, origin, dir, prevT, nextT, prevD > 0f);
+                return true;
+            }
+
+            prevD = d;
+            prevT = nextT;
+            t = nextT;
+        }
+
+        return false;
+    }
+
+    static float RefineIso(
+        PlanetDensitySampler sampler,
+        SN.Vector3 origin,
+        SN.Vector3 dir,
+        float t0,
+        float t1,
+        bool airToSolid)
+    {
+        float lo = t0;
+        float hi = t1;
+        for (int i = 0; i < RefineIters; i++)
+        {
+            float mid = (lo + hi) * 0.5f;
+            float d = sampler.SampleDensity(origin + dir * mid);
+            bool solid = d <= 0f;
+            if (airToSolid)
+            {
+                if (solid) hi = mid;
+                else lo = mid;
+            }
+            else
+            {
+                if (solid) lo = mid;
+                else hi = mid;
+            }
+        }
+        return (lo + hi) * 0.5f;
+    }
+
     public static bool ResolvePenetration(
         PlanetDensitySampler sampler,
         SN.Vector3 planetCenter,

@@ -112,12 +112,18 @@ public sealed class ResourceCache : IDisposable
     {
         if (_meshes.TryGetValue(mesh, out var entry))
         {
+            if (entry.Version != mesh.GeometryVersion)
+            {
+                entry.GPU.Upload(mesh);
+                entry.Version = mesh.GeometryVersion;
+                _meshes[mesh] = entry;
+            }
             return entry.GPU;
         }
 
         var gpuMesh = new GPUMesh(_gl);
         gpuMesh.Upload(mesh);
-        _meshes[mesh] = new GPUMeshEntry { GPU = gpuMesh, Version = _globalVersion };
+        _meshes[mesh] = new GPUMeshEntry { GPU = gpuMesh, Version = mesh.GeometryVersion };
         return gpuMesh;
     }
 
@@ -129,7 +135,7 @@ public sealed class ResourceCache : IDisposable
         if (_meshes.TryGetValue(mesh, out var entry))
         {
             entry.GPU.Upload(mesh);
-            entry.Version = _globalVersion;
+            entry.Version = mesh.GeometryVersion;
             _meshes[mesh] = entry;
         }
     }
