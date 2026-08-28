@@ -2828,11 +2828,17 @@ void main()
     float slope = abs(dot(N, radialDir));
     float slopeBlend = smoothstep(0.15, 0.55, slope);
 
-    // Voxel/transvoxel normals are noisy; project textures along the sphere or the
-    // surface looks like sparkly grass even when the albedo is rock/dirt.
-    vec3 blendAxes = abs(radialDir);
-    blendAxes = pow(blendAxes, vec3(3.0));
-    blendAxes = blendAxes / (blendAxes.x + blendAxes.y + blendAxes.z + 0.001);
+    vec3 radialAxes = abs(radialDir);
+    radialAxes = pow(radialAxes, vec3(3.0));
+    radialAxes = radialAxes / (radialAxes.x + radialAxes.y + radialAxes.z + 0.001);
+
+    vec3 normalAxes = abs(N);
+    normalAxes = pow(normalAxes, vec3(1.8));
+    normalAxes = normalAxes / (normalAxes.x + normalAxes.y + normalAxes.z + 0.001);
+
+    // Flat ground: radial projection (stable at cube-face poles). Steep slopes: surface normal
+    // so triplanar does not smear the albedo along cliff faces.
+    vec3 blendAxes = mix(normalAxes, radialAxes, slopeBlend);
 
     vec3 finalColor = vec3(0.0);
     float totalWeight = 0.0;

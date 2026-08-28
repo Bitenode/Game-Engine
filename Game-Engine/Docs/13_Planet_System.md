@@ -458,6 +458,27 @@ Planet grass spawned through `VegetationPainter.BuildOnPlanetPatch(...)` and bio
 - grass materials are forced to alpha-cutout behavior to avoid opaque card fallback
 - if external texture decode fails, a generated cutout fallback blade texture is used
 - `MaxVegetationSpawnsPerUpdate` is capped during play (32) to keep frame time stable
+- **Default fallbacks** when a profile item has no texture/model: `Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd` and `Meadow_Grass_01_Var4.FBX`
+- **Grass scale/height**: planet batches clamp `GrassHeight` to roughly **2.0–4.5 m** (via `GrassBaseHeight` and per-item min/max scale) so imported tufts read at landscape scale instead of lawn scale
+- **Multi-type grass per leaf**: when `BatchGrassPerLeaf` is on, up to **4** weighted grass items from the profile can spawn as separate patches in the same leaf (offset patch directions), improving variety without extra draw-call churn per blade
+
+### Streaming Stability (LOD-Safe Keys)
+
+Vegetation streaming keys are **not** tied to quadtree leaf IDs (which change on every LOD split/merge). Instead, each plant group is keyed by a fixed **18×18 UV grid per cube face** (`face:iu:iv`). That keeps grass and trees in place when the planet refines or coarsens around the camera.
+
+Near-camera culling uses **hysteresis**: despawn distance is ~**1.45×** the spawn distance so instances do not flicker in/out at the stream boundary. Leave `CullVegetationWhenLeafNotActive = false` unless you explicitly want leaf-key-based culling (it will fight LOD).
+
+### Imported Tree / Grass FBX Pipeline
+
+Imported biome and asset vegetation goes through a bake step before spawn:
+
+1. **`LooksLikeImportedGrassModel`** — classifies grass by **filename** (`grass`, `meadow`, `fern`, …) and **excludes** trees (`pine`, `tree`, `oak`, …). Folder names like `new trees and grass` must not treat pines as grass.
+2. **`ReorientImportedTreeMeshesToYUp`** — for non-grass FBX, measures AABB and applies a single 90° rotation so the tallest axis is local **+Y** (Z-up → Rx(-90°), X-up → Rz(+90°)). Planet spawn assumes +Y is the trunk.
+3. **`TransformUtil.AlignLocalUp`** — after import bake, tree spawn rotation uses the same surface-alignment path as the player capsule on planets (stable on slopes, parent-space aware).
+4. **Spawn order** — align rotation to surface normal first, then **`SinkTreeRootsToSurface`** along trunk-up and radial so feet seat into the rendered crust.
+5. **Template cache** — imported tree templates are cached by absolute model path + suffix (`|hier_v25_filename`). Bump the suffix when import/orientation logic changes so old wrongly-baked meshes are not reused.
+
+Use **`ImportedTreeMeshEulerCorrection`** only for one-off asset fixes (e.g. trunk authored along `-Y`); most Unity/Megascans Z-up trees should need `(0,0,0)` after the stand-up step.
 
 ### Planet Precipitation Notes
 

@@ -1998,7 +1998,11 @@ Key runtime controls:
 | `TreeRadialSurfaceBias` | `float` | `0.48` | Extra meters along radial when placing tree anchors so feet clear the rendered shell vs analytical `SampleSurfaceRadius` (plus a small scale-based bump) |
 | `ImportedTreeMeshEulerCorrection` | `Vector3` | `(0,0,0)` | Degrees added after alignment for **imported** biome/asset trees only (e.g. `(180,0,0)` if the FBX trunk grows along `-Y`). Prefabs: bake into the prefab. |
 
-Root sinking uses trunk-up **and** radial passes so tilted trees don’t “pick” the wrong vertex along radial alone. Tree spawn rotation uses the same **row-vector** matrix convention as `TransformUtil` (transpose of an orthonormal column basis) so local **+Y** truly follows planet trunk-up everywhere on the sphere—not world Y.
+Root sinking uses trunk-up **and** radial passes so tilted trees don’t “pick” the wrong vertex along radial alone. Tree spawn rotation calls **`TransformUtil.AlignLocalUp`** (same path as the planet player capsule) so local **+Y** follows blended trunk-up on slopes everywhere on the sphere—not world Y.
+
+**Imported FBX orientation:** before spawn, non-grass models are reoriented so the tallest AABB axis is **+Y** (common Z-up Unity exports get Rx(-90°)). Grass is detected by **filename** (`grass`, `meadow`, `fern`, …), not folder path—pines in a `new trees and grass` pack must not be classified as grass. Cached import templates key off model path + `|hier_v25_filename`; restart the editor after engine updates so stale sideways bakes are dropped.
+
+**Streaming keys:** vegetation groups use a fixed **18×18 face/UV cell** (`face:iu:iv`), not quadtree leaf IDs, so LOD split/merge does not pop plants. Despawn radius uses ~**1.45×** spawn radius hysteresis. With `BatchGrassPerLeaf`, up to **4** profile grass types can share one leaf as separate patches.
 
 **Scene / `.scene` load:** `SceneService.LoadFromFile` defers embedding vegetation from the synchronous `.planet` read. `PlanetVegetationSceneLoader` then reads + deserializes each planet asset on a **thread-pool** thread and applies `vegetation` on the **Avalonia UI thread** (spawn still uses existing per-update budgets).
 

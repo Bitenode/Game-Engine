@@ -93,7 +93,10 @@ public static class VegetationProfileLibrary
     {
         if (!map.ContainsKey("Default"))
             map["Default"] = new VegetationProfile();
-        EnsureLegacyCompatibility(map["Default"]);
+        var d = map["Default"];
+        if (string.IsNullOrWhiteSpace(d.GrassModelPath))
+            d.GrassModelPath = "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX";
+        EnsureLegacyCompatibility(d);
     }
 
     static VegetationProfile Sanitize(VegetationProfile p)

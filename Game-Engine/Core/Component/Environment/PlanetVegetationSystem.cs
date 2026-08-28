@@ -39,7 +39,7 @@ public sealed class PlanetVegetationSystem : Behavior
     [Persist] public int MaxTreesPerLeaf { get; set; } = 4;
     [Persist] public int MaxGrassClumpsPerLeaf { get; set; } = 6;
     [Persist] public float TreeBaseHeight { get; set; } = 7f;
-    [Persist] public float GrassBaseHeight { get; set; } = 0.85f;
+    [Persist] public float GrassBaseHeight { get; set; } = 1.05f;
     [Persist] public bool FullBiomePopulate { get; set; } = true;
     [Persist] public bool UsePlanetAssetPlacements { get; set; } = false;
 
@@ -121,8 +121,12 @@ public sealed class PlanetVegetationSystem : Behavior
     public int LastSpawnedThisUpdate { get; private set; }
     public int LastDespawnedThisUpdate { get; private set; }
 
-    const int MaxDespawnsPerRefresh = 10;
+    const int MaxDespawnsPerRefresh = 32;
     const float VegRefreshMoveThresholdSq = 100f; // 10 m
+    /// <summary>Fixed grid per cube face — vegetation keys ignore LOD splits so plants do not pop when chunks refine.</summary>
+    const int VegetationCellsPerFaceEdge = 18;
+    /// <summary>Despawn farther out than spawn so nearby grass/trees do not flicker at the stream boundary.</summary>
+    const float VegetationCullDistanceHysteresis = 1.45f;
 
     readonly Dictionary<string, List<Entry>> _leafEntries = new();
     Dictionary<string, VegetationProfile> _vegProfiles = new(StringComparer.OrdinalIgnoreCase);
@@ -167,9 +171,9 @@ public sealed class PlanetVegetationSystem : Behavior
     static readonly Dictionary<string, ImportedTreeTemplate> s_treeTemplateCache = new(StringComparer.OrdinalIgnoreCase);
     static readonly object s_treeTemplateLock = new();
     /// <summary>Suffix so template cache invalidates when import/spawn pipeline changes.</summary>
-    const string TreeTemplateCacheKeySuffix = "|hier_v19_grasstuft";
-    const string DefaultPlanetGrassTexturePath = "Assets/textures/Grass/Simple Grass_01.psd";
-    const string DefaultPlanetGrassModelPath = "Assets/fbx/textures/Grass/Meadow_Grass_01_Var4.FBX";
+    const string TreeTemplateCacheKeySuffix = "|hier_v25_filename";
+    const string DefaultPlanetGrassTexturePath = "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd";
+    const string DefaultPlanetGrassModelPath = "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX";
     const int MaxImportedTreeTriangles = 48000;
     const long MaxImportedTreeSourceBytes = 1_800_000;
 
@@ -410,8 +414,9 @@ public sealed class PlanetVegetationSystem : Behavior
         var center = GetWorldCenter();
         var camPos = ResolveCameraPosition();
         float worldRadius = Math.Max(1f, cfg.EffectiveWorldRadius);
-        float maxDist = worldRadius * Math.Max(0.5f, ActiveDistanceMultiplier);
-        float maxDistSq = maxDist * maxDist;
+        float spawnDist = worldRadius * Math.Max(0.5f, ActiveDistanceMultiplier);
+        float spawnDistSq = spawnDist * spawnDist;
+        float cullDistSq = spawnDistSq * VegetationCullDistanceHysteresis * VegetationCullDistanceHysteresis;
 
         leaves.Sort((a, b) =>
         {
@@ -421,23 +426,42 @@ public sealed class PlanetVegetationSystem : Behavior
         });
 
         bool fullPopulate = _manualSpawnPass && FullBiomePopulate;
-        int maxLeaves = fullPopulate ? leaves.Count : Math.Max(16, MaxTrackedLeaves);
-        var activeKeys = new HashSet<string>(StringComparer.Ordinal);
+        int maxCells = fullPopulate ? leaves.Count : Math.Max(16, MaxTrackedLeaves);
         int spawnTickCap = ResolveSpawnTickCap(fullPopulate);
-        for (int i = 0; i < leaves.Count && activeKeys.Count < maxLeaves; i++)
+
+        // Map each terrain leaf to a stable face/UV cell (not LOD-specific) so split/merge does not despawn plants.
+        var cellBestLeaf = new Dictionary<string, (QuadNode leaf, int lod)>(StringComparer.Ordinal);
+        var cellDistSq = new Dictionary<string, float>(StringComparer.Ordinal);
+        for (int i = 0; i < leaves.Count; i++)
+        {
+            var leaf = leaves[i];
+            var leafCenter = LocalSpherePointToWorld(planetW, leaf.WorldCentre(worldRadius));
+            float d2 = SN.Vector3.DistanceSquared(camPos, leafCenter);
+            if (!fullPopulate && d2 > spawnDistSq)
+                continue;
+
+            string cellKey = BuildStableVegetationCellKey(leaf);
+            if (!cellBestLeaf.TryGetValue(cellKey, out var prev) || leaf.LodLevel > prev.lod)
+                cellBestLeaf[cellKey] = (leaf, leaf.LodLevel);
+            if (!cellDistSq.TryGetValue(cellKey, out var bestD2) || d2 < bestD2)
+                cellDistSq[cellKey] = d2;
+        }
+
+        var activeCells = cellBestLeaf.Keys
+            .OrderBy(k => cellDistSq.TryGetValue(k, out var d) ? d : float.MaxValue)
+            .Take(maxCells)
+            .ToList();
+
+        for (int i = 0; i < activeCells.Count; i++)
         {
             if (!fullPopulate && LastSpawnedThisUpdate >= spawnTickCap)
                 break;
 
-            var leaf = leaves[i];
-            var leafCenter = LocalSpherePointToWorld(planetW, leaf.WorldCentre(worldRadius));
-            if (!fullPopulate && SN.Vector3.DistanceSquared(camPos, leafCenter) > maxDistSq)
+            string cellKey = activeCells[i];
+            if (!cellBestLeaf.TryGetValue(cellKey, out var picked))
                 continue;
-
-            string key = $"{leaf.Face}:{leaf.LodLevel}:{leaf.U0:F4}:{leaf.V0:F4}:{leaf.U1:F4}:{leaf.V1:F4}";
-            activeKeys.Add(key);
-            EnsureLeafEntries(leaf, key);
-            UpdateLeafVitality(key);
+            EnsureLeafEntries(picked.leaf, cellKey);
+            UpdateLeafVitality(cellKey);
             if (!fullPopulate && LastSpawnedThisUpdate >= spawnTickCap)
                 break;
         }
@@ -446,8 +470,18 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             var stale = new List<string>();
             foreach (var k in _leafEntries.Keys)
-                if (!activeKeys.Contains(k))
-                    stale.Add(k);
+            {
+                if (string.Equals(k, "asset", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (TryParseStableVegetationCellKey(k, out int face, out int iu, out int iv))
+                {
+                    var dir = StableCellCenterDirection(face, iu, iv);
+                    var wp = LocalSpherePointToWorld(planetW, _terrain!.SampleVegetationAnchorLocal(dir));
+                    if (SN.Vector3.DistanceSquared(camPos, wp) <= cullDistSq)
+                        continue;
+                }
+                stale.Add(k);
+            }
             for (int i = 0; i < stale.Count && LastDespawnedThisUpdate < MaxDespawnsPerRefresh; i++)
                 DespawnLeaf(stale[i]);
         }
@@ -458,7 +492,7 @@ public sealed class PlanetVegetationSystem : Behavior
         if (fullPopulate || _manualSpawnPass)
             return Math.Max(16, _terrain?.Config?.MaxVegetationSpawnsPerUpdate ?? 16);
         int configCap = Math.Max(1, _terrain?.Config?.MaxVegetationSpawnsPerUpdate ?? 4);
-        return SceneService.PlayMode ? Math.Min(2, configCap) : Math.Min(6, configCap);
+        return SceneService.PlayMode ? Math.Min(6, configCap) : Math.Min(6, configCap);
     }
 
     void SpawnFromAssetPlacements(bool clearExisting, int? budgetOverride = null)
@@ -713,11 +747,23 @@ public sealed class PlanetVegetationSystem : Behavior
                 }
                 else
                 {
-                    int clumps = Math.Min(targetGrass, Math.Max(1, spawnBudget));
-                    var go = SpawnLeafGrassBatch(leaf, biome, clumps, profile, HashLeaf(leaf, 97));
-                    if (go != null && HasMeshFilterDeep(go))
+                    var usableGrass = GetUsableGrassItems(profile);
+                    int typeBatches = Math.Min(4, Math.Max(1, usableGrass.Count));
+                    int clumpsPerBatch = Math.Max(1, (targetGrass + typeBatches - 1) / typeBatches);
+                    int maxBladesPerBatch = SceneService.PlayMode ? 48 : 96;
+
+                    for (int ti = 0; ti < typeBatches && spawnBudget > 0 && currentTotal < hardCap
+                         && globalGrassCount < Math.Max(8, MaxRuntimeGrassPatches); ti++)
                     {
-                        var batchDir = CubeSphereMath.FaceUVToDirection(leaf.Face, (leaf.U0 + leaf.U1) * 0.5f, (leaf.V0 + leaf.V1) * 0.5f);
+                        int salt = HashLeaf(leaf, 97 + ti * 131);
+                        var item = ChooseGrassItem(profile, salt, ti);
+                        if (item == null && ti > 0)
+                            continue;
+                        var patchDir = OffsetPatchDirection(leaf, ti, typeBatches);
+                        var go = SpawnLeafGrassBatch(leaf, biome, clumpsPerBatch, profile, salt, item, patchDir, maxBladesPerBatch);
+                        if (go == null || !HasMeshFilterDeep(go))
+                            continue;
+
                         entries.Add(new Entry
                         {
                             GameObject = go,
@@ -725,13 +771,13 @@ public sealed class PlanetVegetationSystem : Behavior
                             BiomeName = biome.Name,
                             IsGrass = true,
                             BaseScale = 1f,
-                            SurfaceDir = batchDir,
+                            SurfaceDir = patchDir,
                             YawDeg = 0f,
-                            ModelPath = "",
-                            TexturePath = DefaultPlanetGrassTexturePath,
+                            ModelPath = item?.ModelPath ?? "",
+                            TexturePath = IsImageAssetPath(item?.ModelPath) ? item!.ModelPath : DefaultPlanetGrassTexturePath,
                             PrefabPath = ""
                         });
-                        grassCount = 1;
+                        grassCount++;
                         globalGrassCount++;
                         currentTotal++;
                         spawnBudget--;
@@ -760,10 +806,10 @@ public sealed class PlanetVegetationSystem : Behavior
                 spawnBudget--;
                 continue;
             }
-            var dir = SafeNormalize(new SN.Vector3(
-                (float)go.Transform.Position.X - center.X,
-                (float)go.Transform.Position.Y - center.Y,
-                (float)go.Transform.Position.Z - center.Z), SN.Vector3.UnitY);
+            var dir = RadialDirFromLocalPosition(new SN.Vector3(
+                (float)go.Transform.Position.X,
+                (float)go.Transform.Position.Y,
+                (float)go.Transform.Position.Z));
             string grassModelPath = ResolveVegetationModelPathForAsset(go, true);
             if (string.IsNullOrWhiteSpace(grassModelPath))
                 grassModelPath = DefaultPlanetGrassModelPath;
@@ -775,7 +821,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 IsGrass = true,
                 BaseScale = (float)go.Transform.Scale.X,
                 SurfaceDir = dir,
-                YawDeg = (float)go.Transform.Rotation.Y,
+                YawDeg = SpawnYawFromLeaf(leaf, grassCount + 97),
                 ModelPath = PlanetAssetIO.NormalizeAssetReference(grassModelPath),
                 TexturePath = "",
                 PrefabPath = go.PrefabPath ?? ""
@@ -799,10 +845,10 @@ public sealed class PlanetVegetationSystem : Behavior
                 continue;
             }
             var go = SpawnVegetationObject(leaf, biome, isGrass: false, treeCount + 17, profile);
-            var dir = SafeNormalize(new SN.Vector3(
-                (float)go.Transform.Position.X - center.X,
-                (float)go.Transform.Position.Y - center.Y,
-                (float)go.Transform.Position.Z - center.Z), SN.Vector3.UnitY);
+            var dir = RadialDirFromLocalPosition(new SN.Vector3(
+                (float)go.Transform.Position.X,
+                (float)go.Transform.Position.Y,
+                (float)go.Transform.Position.Z));
             entries.Add(new Entry
             {
                 GameObject = go,
@@ -811,7 +857,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 IsGrass = false,
                 BaseScale = (float)go.Transform.Scale.X,
                 SurfaceDir = dir,
-                YawDeg = (float)go.Transform.Rotation.Y,
+                YawDeg = SpawnYawFromLeaf(leaf, treeCount + 17),
                 ModelPath = PlanetAssetIO.NormalizeAssetReference(ResolveVegetationModelPathForAsset(go, false)),
                 TexturePath = "",
                 PrefabPath = PlanetAssetIO.NormalizeAssetReference(go.PrefabPath ?? "")
@@ -847,10 +893,9 @@ public sealed class PlanetVegetationSystem : Behavior
                 t.WindSway = Math.Clamp((e.IsGrass ? 1f : 0.65f) * _windMultiplier, 0f, 3f);
                 t.WindSpeed = Math.Clamp((e.IsGrass ? 1.35f : 1f) * _windMultiplier, 0f, 4f);
             }
-            else if (!e.IsGrass && e.GameObject != null)
+            else if (!e.IsGrass && e.GameObject?.Behaviors?.OfType<Tree>().FirstOrDefault() != null)
             {
-                // Imported-tree fast path may not include Tree behavior;
-                // still apply vitality-driven scale.
+                // Procedural trees only — imported meshes keep spawn scale/orientation stable.
                 float lifeScale = 0.55f + e.Vitality * 0.65f;
                 float scale = Math.Max(0.01f, e.BaseScale) * lifeScale;
                 var s = e.GameObject.Transform.Scale;
@@ -925,7 +970,6 @@ public sealed class PlanetVegetationSystem : Behavior
         var go = new GameObject(p.IsGrass ? $"AssetGrass_{index}" : $"AssetTree_{index}");
         AttachSpawnedInstance(go);
         SetLocalCrustPosition(go, dir, p.IsGrass ? 0f : treePad);
-        SetSurfaceAlignedRotation(go, placeUp, yawDeg);
 
         string prefabPath = p.PrefabPath ?? "";
         if (string.IsNullOrWhiteSpace(prefabPath) && (p.ModelPath ?? "").EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
@@ -937,14 +981,17 @@ public sealed class PlanetVegetationSystem : Behavior
             {
                 AttachSpawnedInstance(inst);
                 SetLocalCrustPosition(inst, dir, p.IsGrass ? 0f : treePad);
-                SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                 float s = Math.Max(0.01f, p.Scale);
                 inst.Transform.Scale = new Vector3(s, s, s);
                 if (p.IsGrass)
                     SeatGrassOnSurface(inst, surfaceGrass, radialW, placeUp, s);
                 else
+                {
+                    SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                     SinkTreeRootsToSurface(inst, surfaceTree, radialW, placeUp, s);
-                SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
+                }
+                if (p.IsGrass)
+                    SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                 go.RemoveFromParent();
                 return inst;
             }
@@ -981,6 +1028,7 @@ public sealed class PlanetVegetationSystem : Behavior
         tree.RebuildTree();
         float scale = Math.Max(0.01f, p.Scale);
         go.Transform.Scale = new Vector3(scale, scale, scale);
+        SetSurfaceAlignedRotation(go, placeUp, yawDeg);
         SinkTreeRootsToSurface(go, surfaceTree, radialW, placeUp, scale);
         return go;
     }
@@ -1005,7 +1053,6 @@ public sealed class PlanetVegetationSystem : Behavior
         AttachSpawnedInstance(go);
         SetLocalCrustPosition(go, dir, isGrass ? 0f : treePad);
         float yawDeg = Random01(HashLeaf(leaf, 53 + seedOffset)) * 360f;
-        SetSurfaceAlignedRotation(go, placeUp, yawDeg);
 
         var item = ChooseItem(profile, isGrass, HashLeaf(leaf, 197 + seedOffset));
         string prefabPath = item?.PrefabPath ?? "";
@@ -1018,7 +1065,6 @@ public sealed class PlanetVegetationSystem : Behavior
             {
                 AttachSpawnedInstance(inst);
                 SetLocalCrustPosition(inst, dir, isGrass ? 0f : treePad);
-                SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                 float prefMinScale = isGrass ? biome.GrassMinScale : biome.TreeMinScale;
                 float prefMaxScale = isGrass ? biome.GrassMaxScale : biome.TreeMaxScale;
                 if (item != null)
@@ -1032,8 +1078,12 @@ public sealed class PlanetVegetationSystem : Behavior
                 if (isGrass)
                     SeatGrassOnSurface(inst, surfaceGrass, radialW, placeUp, prefScale);
                 else
+                {
+                    SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                     SinkTreeRootsToSurface(inst, surfaceTree, radialW, placeUp, prefScale);
-                SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
+                }
+                if (isGrass)
+                    SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                 go.RemoveFromParent();
                 return inst;
             }
@@ -1109,6 +1159,7 @@ public sealed class PlanetVegetationSystem : Behavior
         }
         float scale = minScale + (maxScale - minScale) * Random01(HashLeaf(leaf, 97 + seedOffset));
         go.Transform.Scale = new Vector3(scale, scale, scale);
+        SetSurfaceAlignedRotation(go, placeUp, yawDeg);
         SinkTreeRootsToSurface(go, surfaceTree, radialW, placeUp, scale);
 
         return go;
@@ -1164,6 +1215,20 @@ public sealed class PlanetVegetationSystem : Behavior
         };
     }
 
+    static float EstimateMeshVerticalExtent(Mesh? mesh)
+    {
+        var verts = mesh?.Vertices;
+        if (verts == null || verts.Length == 0) return 0f;
+        float minY = verts[0].Y, maxY = verts[0].Y;
+        for (int i = 1; i < verts.Length; i++)
+        {
+            float y = verts[i].Y;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+        return MathF.Max(0f, maxY - minY);
+    }
+
     static float EstimateMeshExtent(Mesh? mesh)
     {
         var verts = mesh?.Vertices;
@@ -1203,33 +1268,35 @@ public sealed class PlanetVegetationSystem : Behavior
             return false;
 
         float importedScale = Math.Max(0.01f, baseScale);
-        if (meshExtent > 1e-3f)
+        float desiredHeight = isGrass
+            ? Math.Max(1.8f, GrassBaseHeight * 2.4f)
+            : Math.Max(6f, TreeBaseHeight * 1.35f);
+        if (meshExtent > 1e-4f)
         {
-            float desired = isGrass
-                ? Math.Max(0.4f, GrassBaseHeight * 1.65f)
-                : Math.Max(5.5f, TreeBaseHeight * 1.35f);
-            float fit = desired / meshExtent;
-            if (isGrass)
-                importedScale *= Math.Clamp(fit, 0.05f, 12f);
-            else if (fit > 1f)
-                importedScale *= Math.Min(fit, 24f);
-            else if (fit < 0.4f)
-                importedScale *= Math.Max(fit, 0.15f);
+            float fit = desiredHeight / meshExtent;
+            importedScale *= Math.Clamp(fit, 0.12f, 28f);
+            float projected = meshExtent * importedScale;
+            if (projected < desiredHeight * 0.5f)
+                importedScale = (desiredHeight * 0.92f) / meshExtent;
         }
 
         importedScale = isGrass
-            ? Math.Clamp(importedScale, 0.18f, 3.6f)
-            : Math.Clamp(importedScale, 0.08f, 18f);
+            ? Math.Clamp(importedScale, 0.75f, 6f)
+            : Math.Clamp(importedScale, 0.35f, 8f);
         go.Transform.Scale = new Vector3(importedScale, importedScale, importedScale);
         ResolveImportedTreeMaterialsRecursive(go);
         if (isGrass)
             ApplyImportedGrassCardCutoutRecursive(go);
-        SetSurfaceAlignedRotation(go, placeUp, yawDeg);
-        ApplyImportedTreeMeshEulerCorrection(go);
         if (isGrass)
             SeatGrassOnSurface(go, surface, radialW, placeUp, importedScale);
         else
+        {
+            SetSurfaceAlignedRotation(go, placeUp, yawDeg);
             SinkTreeRootsToSurface(go, surface, radialW, placeUp, importedScale);
+        }
+        if (isGrass)
+            SetSurfaceAlignedRotation(go, placeUp, yawDeg);
+        ApplyImportedTreeMeshEulerCorrection(go);
         return true;
     }
 
@@ -1247,7 +1314,7 @@ public sealed class PlanetVegetationSystem : Behavior
             AttachImportedTreeFromTemplate(tpl.Source, go);
             ApplyImportedTreeRenderSettingsRecursive(go);
             ResolveImportedTreeMaterialsRecursive(go);
-            meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateHierarchyMeshExtent(go);
+            meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateHierarchyVerticalExtent(go);
             if (meshExtent < 1e-3f)
                 meshExtent = tpl.MeshExtent;
             DisablePlanetImportedTreeLod(go);
@@ -1286,7 +1353,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 // Do NOT re-bake on go — it already has crust position/rotation and baking would
                 // embed those into vertex data, then Collapse zeros the anchor → giant green shards.
 
-                meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateHierarchyMeshExtent(go);
+                meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateHierarchyVerticalExtent(go);
                 if (meshExtent < 1e-3f)
                     meshExtent = tpl.MeshExtent;
 
@@ -1302,7 +1369,7 @@ public sealed class PlanetVegetationSystem : Behavior
         var mf = go.Behaviors.OfType<MeshFilter>().FirstOrDefault() ?? go.AddBehavior<MeshFilter>();
         mf.Mesh = tpl.Mesh;
         mf.ModelPath = "";
-        meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateMeshExtent(tpl.Mesh);
+        meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateMeshVerticalExtent(tpl.Mesh);
 
         var mr = go.Behaviors.OfType<MeshRenderer>().FirstOrDefault() ?? go.AddBehavior<MeshRenderer>();
         if (tpl.Material != null)
@@ -1450,7 +1517,9 @@ public sealed class PlanetVegetationSystem : Behavior
 
         ConsiderPath(placementTexture);
         ConsiderPath(item?.ModelPath);
-        if (profile != null)
+        // When the chosen item is a texture billboard, prefer cards over a profile FBX clump
+        // (FBX meadow meshes are often authored in cm and read as microscopic without rescale).
+        if (string.IsNullOrWhiteSpace(texture) && profile != null)
             ConsiderPath(profile.GrassModelPath);
 
         texture ??= DefaultPlanetGrassTexturePath;
@@ -1503,6 +1572,23 @@ public sealed class PlanetVegetationSystem : Behavior
         }
         foreach (var c in g.Children)
             ApplyImportedTreeRenderSettingsRecursive(c);
+    }
+
+    static float EstimateHierarchyVerticalExtent(GameObject root)
+    {
+        float maxH = 0f;
+        void Walk(GameObject node)
+        {
+            foreach (var b in node.Behaviors)
+            {
+                if (b is MeshFilter mf && mf.Mesh != null)
+                    maxH = MathF.Max(maxH, EstimateMeshVerticalExtent(mf.Mesh));
+            }
+            foreach (var c in node.Children)
+                Walk(c);
+        }
+        Walk(root);
+        return maxH;
     }
 
     static float EstimateHierarchyMeshExtent(GameObject root)
@@ -1564,14 +1650,14 @@ public sealed class PlanetVegetationSystem : Behavior
             // Keep the live baked hierarchy. JSON mesh DTOs omit UVs, which makes
             // alpha-tested pine needles disappear (GPU samples 0,0 = transparent).
             tpl.Source = root;
-            tpl.MeshExtent = EstimateHierarchyMeshExtent(root);
+            tpl.MeshExtent = EstimateHierarchyVerticalExtent(root);
 
             var mf = FindFirstComponent<MeshFilter>(root);
             if (mf?.Mesh != null)
             {
                 tpl.Mesh = mf.Mesh;
                 if (tpl.MeshExtent < 1e-3f)
-                    tpl.MeshExtent = EstimateMeshExtent(tpl.Mesh);
+                    tpl.MeshExtent = EstimateMeshVerticalExtent(tpl.Mesh);
             }
 
             var mr = FindFirstComponent<MeshRenderer>(root);
@@ -1847,15 +1933,15 @@ public sealed class PlanetVegetationSystem : Behavior
         if (!any) return;
 
         float ex = maxX - minX, ey = maxY - minY, ez = maxZ - minZ;
-        // Already sitting on XZ (Y is height, even if squat).
-        if (ey <= ez && ey <= ex)
+        // Already sitting on XZ (Y is height, even if squat) — but not if Z is clearly the trunk.
+        if (ey <= ez && ey <= ex && ez < MathF.Max(ex, ey) * 1.12f)
             return;
         // Paper-thin XY cards: already Y-up billboards (Z is thickness).
         float footprint = MathF.Max(ex, ey);
         if (ez < footprint * 0.18f)
             return;
         // Height along Z (Megascans / Unity Z-up) — same Rx(-90) as the Unity prefab.
-        if (ez <= ey && ez <= ex)
+        if (ez >= ey && ez >= ex)
             RotateImportedVertsAroundX(root, -MathF.PI * 0.5f);
     }
 
@@ -1888,9 +1974,64 @@ public sealed class PlanetVegetationSystem : Behavior
         Rot(root);
     }
 
-    /// <summary>Many vegetation FBX files are Z-up; planet trees expect baked mesh +Y as trunk.</summary>
+    static void RotateImportedVertsAroundZ(GameObject root, float radians)
+    {
+        var rot = SN.Matrix4x4.CreateRotationZ(radians);
+        SN.Matrix4x4.Invert(rot, out var invRot);
+        var nRot = SN.Matrix4x4.Transpose(invRot);
+        void Rot(GameObject node)
+        {
+            foreach (var b in node.Behaviors)
+            {
+                if (b is not MeshFilter mf || mf.Mesh?.Vertices == null) continue;
+                var verts = mf.Mesh.Vertices;
+                var norms = mf.Mesh.Normals;
+                for (int i = 0; i < verts.Length; i++)
+                    verts[i] = SN.Vector3.Transform(verts[i], rot);
+                if (norms != null)
+                {
+                    for (int i = 0; i < norms.Length; i++)
+                    {
+                        var n = SN.Vector3.TransformNormal(norms[i], nRot);
+                        norms[i] = n.LengthSquared() > 1e-12f ? SN.Vector3.Normalize(n) : SN.Vector3.UnitY;
+                    }
+                }
+            }
+            foreach (var c in node.Children)
+                Rot(c);
+        }
+        Rot(root);
+    }
+
+    /// <summary>
+    /// Planet spawn assumes baked local +Y is the trunk. Unity/Megascans FBX is often Z-up
+    /// (sometimes X-up). Pick the single 90° rotation that makes the AABB tallest in Y.
+    /// </summary>
     static void ReorientImportedTreeMeshesToYUp(GameObject root, bool forceZUpToYUp = false)
     {
+        _ = forceZUpToYUp;
+        if (!TryMeasureImportedAabb(root, out float ex, out float ey, out float ez))
+            return;
+
+        // Already standing: Y is the unique longest axis.
+        if (ey >= ex && ey >= ez)
+            return;
+
+        // Z-up (Unity vegetation): Rx(-90) maps +Z → +Y.
+        if (ez >= ex && ez > ey)
+        {
+            RotateImportedVertsAroundX(root, -MathF.PI * 0.5f);
+            return;
+        }
+
+        // X-up: Rz(+90) maps +X → +Y.
+        if (ex > ey && ex > ez)
+            RotateImportedVertsAroundZ(root, MathF.PI * 0.5f);
+    }
+
+    static bool TryMeasureImportedAabb(GameObject root, out float ex, out float ey, out float ez)
+    {
+        ex = ey = ez = 0f;
         float minX = float.MaxValue, maxX = float.MinValue;
         float minY = float.MaxValue, maxY = float.MinValue;
         float minZ = float.MaxValue, maxZ = float.MinValue;
@@ -1923,46 +2064,11 @@ public sealed class PlanetVegetationSystem : Behavior
                 Acc(c);
         }
         Acc(root);
-        if (!any) return;
-
-        float ex = maxX - minX, ey = maxY - minY, ez = maxZ - minZ;
-        if (!forceZUpToYUp)
-        {
-            if (ez <= ey * 1.12f || ez <= ex * 1.05f)
-                return;
-        }
-        else if (ey > ez * 1.15f)
-        {
-            // Already taller in Y than Z — extra Rx(-90) would flatten the clump onto XZ.
-            return;
-        }
-
-        var rot = SN.Matrix4x4.CreateRotationX(-MathF.PI * 0.5f);
-        SN.Matrix4x4.Invert(rot, out var invRot);
-        var nRot = SN.Matrix4x4.Transpose(invRot);
-
-        void Rot(GameObject node)
-        {
-            foreach (var b in node.Behaviors)
-            {
-                if (b is not MeshFilter mf || mf.Mesh?.Vertices == null) continue;
-                var verts = mf.Mesh.Vertices;
-                var norms = mf.Mesh.Normals;
-                for (int i = 0; i < verts.Length; i++)
-                    verts[i] = SN.Vector3.Transform(verts[i], rot);
-                if (norms != null)
-                {
-                    for (int i = 0; i < norms.Length; i++)
-                    {
-                        var n = SN.Vector3.TransformNormal(norms[i], nRot);
-                        norms[i] = n.LengthSquared() > 1e-12f ? SN.Vector3.Normalize(n) : SN.Vector3.UnitY;
-                    }
-                }
-            }
-            foreach (var c in node.Children)
-                Rot(c);
-        }
-        Rot(root);
+        if (!any) return false;
+        ex = maxX - minX;
+        ey = maxY - minY;
+        ez = maxZ - minZ;
+        return true;
     }
 
     static void EnsurePlanetImportedTreeCrustLocal(GameObject root, bool forceGrassZUp = false, bool isGrass = false)
@@ -1977,7 +2083,19 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         if (string.IsNullOrWhiteSpace(path)) return false;
         string n = path.Replace('\\', '/').ToLowerInvariant();
-        return n.Contains("grass") || n.Contains("meadow") || n.Contains("weed") || n.Contains("fern") || n.Contains("turf");
+        string file = Path.GetFileNameWithoutExtension(n);
+
+        // Pack folder is "new trees and grass" — that must not classify pines as grass.
+        if (file.Contains("tree") || file.Contains("pine") || file.Contains("oak")
+            || file.Contains("fir") || file.Contains("spruce") || file.Contains("birch"))
+            return false;
+
+        if (file.Contains("grass") || file.Contains("meadow") || file.Contains("weed")
+            || file.Contains("fern") || file.Contains("turf") || file.Contains("plant")
+            || file.Contains("flower") || file.Contains("herb"))
+            return true;
+
+        return n.Contains("/grass/") || n.Contains("/flowers/") || n.Contains("/ferns/");
     }
 
     /// <summary>
@@ -2193,27 +2311,40 @@ public sealed class PlanetVegetationSystem : Behavior
     }
 
     /// <summary>
-    /// Orients local +Y along planet trunk-up in <strong>world space</strong>, with yaw around that axis.
-    /// System.Numerics (and this engine’s <see cref="TransformUtil.WorldFromTransform"/>) apply rotations as
-    /// <strong>row vectors</strong>: <c>v' = TransformNormal(v, R)</c> uses <strong>rows</strong> of R, so local +Y maps to the
-    /// <strong>second row</strong> of R. We therefore build an orthonormal <em>column</em> basis [X|Y|Z] and
-    /// <see cref="SN.Matrix4x4.Transpose"/> it before Euler extraction. Without this, trees followed a bogus
-    /// world-Y–like frame and looked random across the sphere.
-    /// Converts world alignment to <strong>local</strong> rotation when <paramref name="go"/> has a parent (e.g. rotated planet).
-    /// </summary>
-    /// <summary>
-    /// Orients local +Y along planet trunk-up using an explicit rotation matrix (Euler garbles this on slopes).
+    /// Orients local +Y along planet trunk-up using <see cref="TransformUtil.AlignLocalUp"/> — the same
+    /// explicit rotation matrix path used by the player capsule on planets (stable on slopes, no Euler drift).
     /// </summary>
     static void SetSurfaceAlignedRotation(GameObject go, SN.Vector3 trunkUpWorld, float yawDeg)
     {
-        var mWorld = SN.Matrix4x4.Transpose(BuildTreeAlignMatrixColumnBasis(trunkUpWorld, yawDeg));
+        var forwardHint = BuildTreeForwardHint(trunkUpWorld, yawDeg);
+        SN.Vector3 up = trunkUpWorld;
+        SN.Vector3 fwd = forwardHint;
         if (go.Parent != null)
         {
             var pw = SceneGraphUtil.AccumulateWorld(go.Parent);
             if (SN.Matrix4x4.Invert(pw, out var invPw))
-                mWorld = OrthonormalizeRotationPart(mWorld * invPw);
+            {
+                up = SN.Vector3.TransformNormal(trunkUpWorld, invPw);
+                fwd = SN.Vector3.TransformNormal(forwardHint, invPw);
+            }
         }
-        go.Transform.SetExplicitRotationMatrix(OrthonormalizeRotationPart(mWorld));
+        TransformUtil.AlignLocalUp(go.Transform, up, fwd);
+    }
+
+    static SN.Vector3 BuildTreeForwardHint(SN.Vector3 trunkUpWorld, float yawDeg)
+    {
+        var worldUp = SafeNormalize(trunkUpWorld, SN.Vector3.UnitY);
+        var refAxis = ReferenceAxisLeastAligned(worldUp);
+        var side = SN.Vector3.Cross(refAxis, worldUp);
+        if (side.LengthSquared() < 1e-8f)
+        {
+            refAxis = MathF.Abs(refAxis.X) > 0.5f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+            side = SN.Vector3.Cross(refAxis, worldUp);
+        }
+        side = SN.Vector3.Normalize(side);
+        var baseFwd = SN.Vector3.Normalize(SN.Vector3.Cross(worldUp, side));
+        float yawRad = yawDeg * (MathF.PI / 180f);
+        return SN.Vector3.Normalize(side * MathF.Cos(yawRad) + baseFwd * MathF.Sin(yawRad));
     }
 
     /// <summary>
@@ -2228,11 +2359,8 @@ public sealed class PlanetVegetationSystem : Behavior
             return TransformUtil.EulerDegreesFromRotationMatrix3x3(mRow);
 
         var pw = SceneGraphUtil.AccumulateWorld(go.Parent);
-        if (!SN.Matrix4x4.Invert(pw, out var invPw))
-            return TransformUtil.EulerDegreesFromRotationMatrix3x3(mRow);
-
-        // Row order: v * M_child * M_parent — desired world rotation R_w gives R_child = R_w * M_parent^{-1}.
-        var localCombined = mRow * invPw;
+        var invParentRot = InvertRotation3x3(ExtractRotation3x3(pw));
+        var localCombined = mRow * invParentRot;
         var rotOnly = OrthonormalizeRotationPart(localCombined);
         return TransformUtil.EulerDegreesFromRotationMatrix3x3(rotOnly);
     }
@@ -2270,6 +2398,33 @@ public sealed class PlanetVegetationSystem : Behavior
         if (ay <= az) return SN.Vector3.UnitY;
         return SN.Vector3.UnitZ;
     }
+
+    static SN.Matrix4x4 ExtractRotation3x3(SN.Matrix4x4 world)
+    {
+        var c0 = new SN.Vector3(world.M11, world.M21, world.M31);
+        var c1 = new SN.Vector3(world.M12, world.M22, world.M32);
+        var c2 = new SN.Vector3(world.M13, world.M23, world.M33);
+        float l0 = c0.Length();
+        float l1 = c1.Length();
+        float l2 = c2.Length();
+        if (l0 > 1e-6f) c0 /= l0;
+        if (l1 > 1e-6f) c1 /= l1;
+        if (l2 > 1e-6f) c2 /= l2;
+        return OrthonormalizeRotationPart(new SN.Matrix4x4(
+            c0.X, c1.X, c2.X, 0f,
+            c0.Y, c1.Y, c2.Y, 0f,
+            c0.Z, c1.Z, c2.Z, 0f,
+            0f, 0f, 0f, 1f));
+    }
+
+    static SN.Matrix4x4 InvertRotation3x3(SN.Matrix4x4 rotation)
+        => SN.Matrix4x4.Transpose(OrthonormalizeRotationPart(rotation));
+
+    static SN.Vector3 RadialDirFromLocalPosition(SN.Vector3 localPos)
+        => SafeNormalize(localPos, SN.Vector3.UnitY);
+
+    static float SpawnYawFromLeaf(QuadNode leaf, int seedOffset)
+        => Random01(HashLeaf(leaf, 53 + seedOffset)) * 360f;
 
     static SN.Matrix4x4 OrthonormalizeRotationPart(in SN.Matrix4x4 m)
     {
@@ -2396,9 +2551,50 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         if (!string.IsNullOrWhiteSpace(it.PrefabPath) && IsPrefabPath(it.PrefabPath))
             return true;
-        if (!string.IsNullOrWhiteSpace(it.ModelPath) && (IsSupportedModelPath(it.ModelPath) || IsPrefabPath(it.ModelPath)))
+        if (!string.IsNullOrWhiteSpace(it.ModelPath)
+            && (IsSupportedModelPath(it.ModelPath) || IsPrefabPath(it.ModelPath) || IsImageAssetPath(it.ModelPath)))
             return true;
         return false;
+    }
+
+    static List<VegetationProfileItem> GetUsableGrassItems(VegetationProfile? profile)
+    {
+        var list = new List<VegetationProfileItem>(8);
+        var raw = profile?.GrassItems;
+        if (raw == null) return list;
+        for (int i = 0; i < raw.Count; i++)
+        {
+            var it = raw[i];
+            if (it != null && it.Weight > 0f && IsUsableGrassModelItem(it))
+                list.Add(it);
+        }
+        return list;
+    }
+
+    static VegetationProfileItem? ChooseGrassItem(VegetationProfile? profile, int seed, int batchIndex)
+    {
+        var items = GetUsableGrassItems(profile);
+        if (items.Count == 0)
+            return ChooseItem(profile, isGrass: true, seed);
+        if (batchIndex < items.Count)
+            return items[batchIndex];
+        return ChooseItem(profile, isGrass: true, seed);
+    }
+
+    static SN.Vector3 OffsetPatchDirection(QuadNode leaf, int index, int count)
+    {
+        float uMid = (leaf.U0 + leaf.U1) * 0.5f;
+        float vMid = (leaf.V0 + leaf.V1) * 0.5f;
+        if (count <= 1)
+            return CubeSphereMath.FaceUVToDirection(leaf.Face, uMid, vMid);
+
+        float uSpan = MathF.Abs(leaf.U1 - leaf.U0);
+        float vSpan = MathF.Abs(leaf.V1 - leaf.V0);
+        float fu = Random01(HashLeaf(leaf, 11 + index * 17)) - 0.5f;
+        float fv = Random01(HashLeaf(leaf, 31 + index * 17)) - 0.5f;
+        float u = Math.Clamp(uMid + fu * uSpan * 0.42f, 0f, 1f);
+        float v = Math.Clamp(vMid + fv * vSpan * 0.42f, 0f, 1f);
+        return CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
     }
 
     static string ResolveGrassModelPath(string? itemModelPath, VegetationProfile? profile)
@@ -2542,25 +2738,47 @@ public sealed class PlanetVegetationSystem : Behavior
             go.HideInHierarchy = true;
     }
 
-    GameObject? SpawnLeafGrassBatch(QuadNode leaf, BiomeDefinition biome, int clumpCount, VegetationProfile? profile, int seedSalt)
+    GameObject? SpawnLeafGrassBatch(
+        QuadNode leaf,
+        BiomeDefinition biome,
+        int clumpCount,
+        VegetationProfile? profile,
+        int seedSalt,
+        VegetationProfileItem? item = null,
+        SN.Vector3? patchDirOverride = null,
+        int maxBladesCap = 0)
     {
         if (_terrain == null || clumpCount <= 0)
             return null;
 
-        var leafDir = CubeSphereMath.FaceUVToDirection(leaf.Face, (leaf.U0 + leaf.U1) * 0.5f, (leaf.V0 + leaf.V1) * 0.5f);
+        var leafDir = patchDirOverride ?? CubeSphereMath.FaceUVToDirection(leaf.Face, (leaf.U0 + leaf.U1) * 0.5f, (leaf.V0 + leaf.V1) * 0.5f);
         float patchRadius = PlanetGrassPatchRadius() * MathF.Sqrt(Math.Clamp(clumpCount, 1, 32));
-        int maxBlades = SceneService.PlayMode ? 48 : 160;
+        int maxBlades = maxBladesCap > 0
+            ? maxBladesCap
+            : (SceneService.PlayMode ? 80 : 160);
         int bladeCount = Math.Clamp(clumpCount * Math.Max(4, GrassBladesPerPatch), 8, maxBlades);
 
-        var go = new GameObject($"BiomeGrassBatch_{leaf.Face}_{leaf.LodLevel}");
+        var go = new GameObject($"BiomeGrassBatch_{leaf.Face}_{leaf.LodLevel}_{seedSalt & 255}");
         AttachSpawnedInstance(go);
 
         var painter = go.AddBehavior<VegetationPainter>();
-        painter.GrassHeight = GrassBaseHeight;
+        item ??= ChooseItem(profile, isGrass: true, seedSalt);
+        float grassMinScale = Math.Max(1.0f, biome.GrassMinScale);
+        float grassMaxScale = Math.Max(grassMinScale, biome.GrassMaxScale);
+        if (item != null)
+        {
+            grassMinScale *= Math.Max(1.0f, item.MinScale);
+            grassMaxScale *= Math.Max(1.0f, item.MaxScale);
+        }
+        if (grassMaxScale < grassMinScale)
+            (grassMaxScale, grassMinScale) = (grassMinScale, grassMaxScale);
+        painter.MinScale = grassMinScale;
+        painter.MaxScale = grassMaxScale;
+        painter.GrassHeight = Math.Clamp(GrassBaseHeight * ((grassMinScale + grassMaxScale) * 0.5f), 2.0f, 4.5f);
+        painter.GrassWidth = Math.Clamp(painter.GrassHeight * 0.48f, 0.55f, 1.6f);
         painter.RandomRotation = true;
         painter.WindStrength = Math.Clamp(0.35f + _windMultiplier * 0.5f, 0f, 3f);
         painter.WindSpeed = Math.Clamp(0.8f + _windMultiplier * 0.8f, 0f, 4f);
-        var item = ChooseItem(profile, isGrass: true, seedSalt);
         ConfigurePlanetGrassPainter(painter, item, profile);
 
         int placed = painter.BuildOnPlanetPatch(_terrain, leafDir, patchRadius, bladeCount, sourceLeaf: leaf, notifyScene: false);
@@ -2787,12 +3005,41 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             int h = 17;
             h = h * 31 + leaf.Face;
-            h = h * 31 + leaf.LodLevel;
-            h = h * 31 + (int)(leaf.U0 * 100000f);
-            h = h * 31 + (int)(leaf.V0 * 100000f);
+            string cell = BuildStableVegetationCellKey(leaf);
+            for (int i = 0; i < cell.Length; i++)
+                h = h * 31 + cell[i];
             h = h * 31 + salt;
             return h;
         }
+    }
+
+    static string BuildStableVegetationCellKey(QuadNode leaf)
+        => BuildStableVegetationCellKey(leaf.Face, leaf.UCentre, leaf.VCentre);
+
+    static string BuildStableVegetationCellKey(int face, float u, float v)
+    {
+        int iu = Math.Clamp((int)MathF.Floor(u * VegetationCellsPerFaceEdge), 0, VegetationCellsPerFaceEdge - 1);
+        int iv = Math.Clamp((int)MathF.Floor(v * VegetationCellsPerFaceEdge), 0, VegetationCellsPerFaceEdge - 1);
+        return $"{face}:{iu}:{iv}";
+    }
+
+    static bool TryParseStableVegetationCellKey(string key, out int face, out int iu, out int iv)
+    {
+        face = iu = iv = 0;
+        if (string.IsNullOrEmpty(key)) return false;
+        int c1 = key.IndexOf(':');
+        int c2 = c1 >= 0 ? key.IndexOf(':', c1 + 1) : -1;
+        if (c1 < 0 || c2 < 0) return false;
+        return int.TryParse(key.AsSpan(0, c1), out face)
+               && int.TryParse(key.AsSpan(c1 + 1, c2 - c1 - 1), out iu)
+               && int.TryParse(key.AsSpan(c2 + 1), out iv);
+    }
+
+    static SN.Vector3 StableCellCenterDirection(int face, int iu, int iv)
+    {
+        float u = (iu + 0.5f) / VegetationCellsPerFaceEdge;
+        float v = (iv + 0.5f) / VegetationCellsPerFaceEdge;
+        return CubeSphereMath.FaceUVToDirection(face, u, v);
     }
 
     static float Random01(int seed)

@@ -889,7 +889,7 @@ public sealed class PlanetTerrain : Behavior
             _config.MergeDistanceScale = Math.Max(MergeDistanceScale, 1.8f);
             _config.MaxGenerationSchedulesPerUpdate = 6;
             _config.MaxMeshAppliesPerUpdate = 12;
-            _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 4);
+            _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 8);
         }
         else
         {

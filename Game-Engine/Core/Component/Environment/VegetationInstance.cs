@@ -865,8 +865,16 @@ namespace Game_Engine.Core.Component
             int tPerBlade = srcTris.Length;
             if (vPerBlade == 0 || tPerBlade == 0) return 0;
             float srcMinY = srcVerts[0].Y;
+            float srcMaxY = srcVerts[0].Y;
             for (int vi = 1; vi < vPerBlade; vi++)
+            {
                 if (srcVerts[vi].Y < srcMinY) srcMinY = srcVerts[vi].Y;
+                if (srcVerts[vi].Y > srcMaxY) srcMaxY = srcVerts[vi].Y;
+            }
+            // Imported FBX tufts can be tiny in source units; normalize to GrassHeight using real mesh bounds.
+            float srcH = MathF.Max(1e-4f, srcMaxY - srcMinY);
+            if (ResolvedMesh == null)
+                srcH = MathF.Max(srcH, MathF.Max(1e-4f, GrassHeight));
 
             int totalV = bladeCount * vPerBlade;
             int totalT = bladeCount * tPerBlade;
@@ -877,7 +885,7 @@ namespace Game_Engine.Core.Component
 
             SN.Vector3 centerAccum = SN.Vector3.Zero;
             float localPatch = Math.Max(0.05f, planet.WorldToLocalLength(Math.Max(0.05f, patchRadius)));
-            float localH = planet.WorldToLocalLength(Math.Clamp(GrassHeight, 0.35f, 1.6f));
+            float localH = planet.WorldToLocalLength(Math.Clamp(GrassHeight, 0.5f, 4.5f));
             SN.Vector3 centerBase = planet.SampleVegetationAnchorLocal(n);
             if (sourceLeaf != null && planet.TrySampleRenderedCrustPoint(n, out var leafBase, sourceLeaf))
                 centerBase = leafBase;
@@ -903,7 +911,6 @@ namespace Game_Engine.Core.Component
                 float scale = MinScale + (float)rng.NextDouble() * (MaxScale - MinScale);
                 int vOff = bi * vPerBlade;
                 int triOff = bi * tPerBlade;
-                float srcH = MathF.Max(1e-4f, GrassHeight);
                 float hMul = (localH * scale) / srcH;
 
                 for (int vi = 0; vi < vPerBlade; vi++)
