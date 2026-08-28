@@ -786,8 +786,57 @@ namespace Game_Engine.Core
                 }
             }
 
+            RenderPlanetLeafShadows(gl, depthShader, cache, lightVP, planes);
+
             // Restore default back-face culling after shadow pass
+            gl.Enable(EnableCap.CullFace);
             gl.CullFace(TriangleFace.Back);
+        }
+
+        /// <summary>
+        /// Draw GPU-cached planet leaves into the existing camera-centered shadow map.
+        /// Leaves are not scene nodes, so they would otherwise never occlude cave mouths or crater rims.
+        /// </summary>
+        private static void RenderPlanetLeafShadows(
+            GL gl,
+            ShaderProgram depthShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 lightVP,
+            Plane[] planes)
+        {
+            var planets = PlanetTerrain.ActivePlanets;
+            int planetCount = planets.Count;
+            if (planetCount == 0) return;
+
+            depthShader.SetInt("uHasBones", 0);
+            gl.Enable(EnableCap.CullFace);
+            gl.CullFace(TriangleFace.Back);
+
+            for (int p = 0; p < planetCount; p++)
+            {
+                var planet = planets[p];
+                if (planet == null || !planet.IsActiveAndEnabled || planet.gameObject == null)
+                    continue;
+
+                var leaves = planet.ChunkManager?.GetRenderableLeaves();
+                if (leaves == null || leaves.Count == 0)
+                    continue;
+
+                var planetWorld = TransformUtil.WorldFromTransform(planet.gameObject.Transform);
+
+                for (int i = 0; i < leaves.Count; i++)
+                {
+                    var mesh = leaves[i].GeneratedMesh;
+                    if (mesh == null) continue;
+
+                    var sph = GetMeshSphere(mesh);
+                    if (!SphereInsideFrustum(ref sph, planetWorld, planes)) continue;
+
+                    var gpuMesh = cache.GetMesh(mesh);
+                    depthShader.SetMatrix4("uMVP", planetWorld * lightVP);
+                    gpuMesh.Draw();
+                }
+            }
         }
 
         /// <summary>

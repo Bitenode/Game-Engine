@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core;
+using Game_Engine.Core.Rendering.GPU;
 using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
 
@@ -27,7 +28,7 @@ public sealed class PlanetChunkManager
     readonly ConcurrentQueue<MeshJob> _completed = new();
     readonly ConcurrentQueue<EditCommand> _pendingEditCommands = new();
     int _activeJobs;
-    const int MaxConcurrentJobs = 6;
+    const int BaselineConcurrentJobs = 6;
     int _lastAppliedEditCommands;
     int _lastDirtyLeavesFromEdits;
     SN.Vector3 _lastLocalCamera = new(float.NaN);
@@ -36,6 +37,7 @@ public sealed class PlanetChunkManager
     readonly List<QuadNode> _coverageScratch = new(256);
     readonly List<QuadNode> _prefetchScratch = new(256);
     readonly List<QuadNode> _renderableCache = new(256);
+    readonly List<QuadNode> _playRenderableScratch = new(64);
     readonly HashSet<QuadNode> _mergedParents = new();
     bool _renderableDirty = true;
 
@@ -89,6 +91,7 @@ public sealed class PlanetChunkManager
     struct MeshJob
     {
         public QuadNode Node;
+        public int GenerationToken;
         public TransvoxelMeshData MeshData;
         public VoxelChunk? Chunk;
     }
@@ -109,6 +112,42 @@ public sealed class PlanetChunkManager
             var leaves = Faces[f].GetLeafNodes();
             for (int i = 0; i < leaves.Count; i++)
                 leaves[i].NeedsMeshRebuild = true;
+        }
+    }
+
+    /// <summary>
+    /// After loading <c>.planetvox</c> or clearing edits: drop stale async meshes,
+    /// reset the quadtree, and schedule a full crust rebuild.
+    /// </summary>
+    public void ResetAfterVoxelEditsLoaded()
+    {
+        while (_completed.TryDequeue(out _)) { }
+        Volatile.Write(ref _activeJobs, 0);
+
+        for (int f = 0; f < Faces.Length; f++)
+            DisposeNodeRecursive(Faces[f].Root);
+
+        for (int f = 0; f < Faces.Length; f++)
+            Faces[f] = new FaceQuadtree(f);
+
+        RequestFullShellRebuild(16);
+        _renderableDirty = true;
+        _lastLocalCamera = new SN.Vector3(float.NaN);
+    }
+
+    static void DisposeNodeRecursive(QuadNode node)
+    {
+        node.InvalidateGeneration();
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
+        node.GeneratedMesh = null;
+        node.Chunk = null;
+        if (node.Children == null)
+            return;
+        for (int i = 0; i < 4; i++)
+        {
+            var child = node.Children[i];
+            if (child != null)
+                DisposeNodeRecursive(child);
         }
     }
 
@@ -167,8 +206,8 @@ public sealed class PlanetChunkManager
         int applied = 0;
         while (applied < applyBudget && _completed.TryDequeue(out var job))
         {
-            ApplyMesh(job.Node, job.MeshData, job.Chunk);
-            job.Node.IsGenerating = false;
+            if (!TryApplyCompletedJob(job))
+                continue;
             applied++;
         }
 
@@ -191,6 +230,8 @@ public sealed class PlanetChunkManager
                 var leaf = leaves[i];
                 if (leaf.Chunk != null || leaf.IsGenerating)
                     continue;
+                if (leaf.GeneratedMesh != null && !leaf.NeedsMeshRebuild)
+                    continue;
                 if (leaf.WorldSize(planetR) / res > maxCell)
                     continue;
                 leaf.NeedsMeshRebuild = true;
@@ -205,14 +246,15 @@ public sealed class PlanetChunkManager
             return da.CompareTo(db);
         }
 
-        int scheduleBudget = Math.Max(1, Config.MaxGenerationSchedulesPerUpdate);
+        int scheduleBudget = ResolveScheduleBudget(approachSpeed);
         int scheduled = 0;
 
         if (SceneService.PlayMode)
         {
-            var renderable = new List<QuadNode>(64);
+            _playRenderableScratch.Clear();
             for (int f = 0; f < 6; f++)
-                Faces[f].CollectRenderableNodes(renderable);
+                Faces[f].CollectRenderableNodes(_playRenderableScratch);
+            var renderable = _playRenderableScratch;
             for (int i = 0; i < renderable.Count; i++)
             {
                 var node = renderable[i];
@@ -309,8 +351,8 @@ public sealed class PlanetChunkManager
         int applied = 0;
         while (applied < applyBudget && _completed.TryDequeue(out var job))
         {
-            ApplyMesh(job.Node, job.MeshData, job.Chunk);
-            job.Node.IsGenerating = false;
+            if (!TryApplyCompletedJob(job))
+                continue;
             applied++;
         }
 
@@ -389,26 +431,28 @@ public sealed class PlanetChunkManager
     }
 
     /// <summary>
-    /// Play-mode: deform visible mesh vertices in place (instant), no main-thread rebuild.
+    /// Play-mode: remesh overlapping leaves (editor dirty/schedule path) with a
+    /// small budget. Coarse heightfield shells may get a one-frame in-place preview.
     /// </summary>
     public void ApplyPlayModeEditVisual(SN.Vector3 localCenter, float sphereRadius)
     {
         if (_editStore == null)
             return;
 
-        if (TryDeformVisibleMeshes(localCenter, sphereRadius))
-        {
+        if (TryPreviewDeformCoarseShells(localCenter, sphereRadius))
             _renderableDirty = true;
-            return;
-        }
 
-        ScheduleRenderablesNearEdit(localCenter, sphereRadius, maxNodes: 1);
+        DirtyOverlappingLeaves(localCenter, sphereRadius);
+
+        int playBudget = Math.Clamp(MaxConcurrentJobs, 4, 8);
+        ScheduleRenderablesNearEdit(localCenter, sphereRadius, maxNodes: playBudget);
     }
 
-    bool TryDeformVisibleMeshes(SN.Vector3 localCenter, float sphereRadius)
+    bool TryPreviewDeformCoarseShells(SN.Vector3 localCenter, float sphereRadius)
     {
         DensityGenerator.ComputeCrustBounds(Config, _editStore!, out _, out float radialSpan);
         float crustPad = radialSpan * 0.35f;
+        float maxCell = MathF.Max(8f, Config.VolumetricMaxCellSize);
 
         var renderable = new List<QuadNode>(64);
         for (int f = 0; f < 6; f++)
@@ -435,6 +479,9 @@ public sealed class PlanetChunkManager
                 continue;
 
             float spacing = PlanetShellDeformer.EstimateVertexSpacing(node, Config.Radius, Config.ChunkSize);
+            if (spacing <= maxCell)
+                continue;
+
             if (PlanetShellDeformer.TryDeformMesh(mesh, sampler, localCenter, sphereRadius, spacing))
             {
                 any = true;
@@ -443,6 +490,28 @@ public sealed class PlanetChunkManager
         }
 
         return any;
+    }
+
+    void DirtyOverlappingLeaves(SN.Vector3 localCenter, float sphereRadius)
+    {
+        DensityGenerator.ComputeCrustBounds(Config, _editStore, out _, out float radialSpan);
+        float crustPad = radialSpan * 0.35f;
+        var leaves = new List<QuadNode>(1024);
+        for (int f = 0; f < 6; f++)
+        {
+            leaves.AddRange(Faces[f].GetLeafNodes());
+            Faces[f].CollectPrefetchNodes(leaves);
+        }
+
+        int dirtied = 0;
+        int dirtyBudget = Math.Max(1, Config.MaxEditDirtyLeavesPerUpdate);
+        for (int i = 0; i < leaves.Count && dirtied < dirtyBudget; i++)
+        {
+            if (!IntersectsLeaf(leaves[i], localCenter, sphereRadius, crustPad))
+                continue;
+            MarkNodeAndAncestorsDirty(leaves[i], ref dirtied, dirtyBudget);
+        }
+        _lastDirtyLeavesFromEdits = Math.Max(_lastDirtyLeavesFromEdits, dirtied);
     }
 
     /// <summary>
@@ -525,6 +594,37 @@ public sealed class PlanetChunkManager
         float leafRadius = Math.Max(leaf.WorldSize(planetR) * 0.75f, planetR * 0.01f);
         float maxDist = leafRadius + sphereRadius + crustPad;
         return SN.Vector3.DistanceSquared(localCenter, leafCenter) <= maxDist * maxDist;
+    }
+
+    int MaxConcurrentJobs => ResolveMaxConcurrentJobs();
+
+    int ResolveMaxConcurrentJobs()
+    {
+        if (!Config.EnableAdaptiveScheduling)
+            return BaselineConcurrentJobs;
+        int scheduleCap = Math.Max(BaselineConcurrentJobs, Config.MaxGenerationSchedulesPerUpdate);
+        return Math.Clamp(scheduleCap / 2, BaselineConcurrentJobs, 12);
+    }
+
+    int ResolveScheduleBudget(float approachSpeed)
+    {
+        int configured = Math.Max(1, Config.MaxGenerationSchedulesPerUpdate);
+        if (!Config.EnableAdaptiveScheduling)
+            return configured;
+
+        float t = Math.Clamp(approachSpeed / 80f, 0f, 1f) * Math.Max(0f, Config.AdaptiveMotionBoost);
+        float worldR = Math.Max(0.001f, Config.EffectiveWorldRadius);
+        float camR = float.IsNaN(_lastLocalCamera.X) ? worldR : _lastLocalCamera.Length();
+        if (camR < worldR * 1.08f)
+            t += Math.Max(0f, Config.AdaptiveAltitudeBoost);
+        int maxLeaves = ResolveMaxLeaves();
+        if (maxLeaves > 0)
+            t += Math.Clamp(_leafScratch.Count / (float)maxLeaves, 0f, 1f) * Math.Max(0f, Config.AdaptiveActiveChunkBoost);
+        t = Math.Clamp(t, 0f, 1f);
+
+        int min = Math.Min(configured, Math.Max(1, Config.AdaptiveMinScheduleBudget));
+        int max = Math.Min(configured, Math.Max(min, Config.AdaptiveMaxScheduleBudget));
+        return min + (int)MathF.Round((max - min) * t);
     }
 
     int ResolveMaxLeaves()
@@ -634,12 +734,20 @@ public sealed class PlanetChunkManager
         int transitionStride = node.TransitionStride;
         int lodLevel = node.LodLevel;
 
+        int token = node.GenerationToken;
+
         Task.Run(() =>
         {
             try
             {
                 var result = _meshGen.Generate(face, u0, v0, u1, v1, resolution, transitionMask, lodLevel, transitionStride);
-                _completed.Enqueue(new MeshJob { Node = node, MeshData = result.Mesh, Chunk = result.Chunk });
+                _completed.Enqueue(new MeshJob
+                {
+                    Node = node,
+                    GenerationToken = token,
+                    MeshData = result.Mesh,
+                    Chunk = result.Chunk,
+                });
             }
             catch (Exception ex)
             {
@@ -654,15 +762,30 @@ public sealed class PlanetChunkManager
         });
     }
 
+    bool TryApplyCompletedJob(MeshJob job)
+    {
+        if (job.GenerationToken != job.Node.GenerationToken)
+        {
+            job.Node.IsGenerating = false;
+            return false;
+        }
+
+        ApplyMesh(job.Node, job.MeshData, job.Chunk);
+        job.Node.IsGenerating = false;
+        return true;
+    }
+
     void ApplyMesh(QuadNode node, TransvoxelMeshData meshData, VoxelChunk? chunk = null)
     {
         if (meshData.IsEmpty)
         {
             // Keep existing mesh to avoid visual holes; retry later.
             node.NeedsMeshRebuild = true;
+            node.IsGenerating = false;
             return;
         }
 
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
         node.GeneratedMesh = meshData.ToEngineMesh();
         if (chunk != null)
             node.Chunk = chunk;
@@ -676,6 +799,7 @@ public sealed class PlanetChunkManager
             var leaves = Faces[f].GetLeafNodes();
             foreach (var leaf in leaves)
             {
+                GpuMeshReleaseQueue.Enqueue(leaf.GeneratedMesh);
                 leaf.GeneratedMesh = null;
                 leaf.Chunk = null;
             }

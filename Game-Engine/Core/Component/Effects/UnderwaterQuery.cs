@@ -68,6 +68,16 @@ namespace Game_Engine.Core.Component
 
                 var dir = toPos / distToCenter;
                 float crustWorld = planet.SampleHeightfieldRadius(dir);
+
+                // Cave interiors / mouths are air below the heightfield shell.
+                // Ocean water is a separate sphere — density air ABOVE the crust.
+                if (planet.TrySampleWorldDensity(worldPos, out float density))
+                {
+                    bool belowCrust = distToCenter < crustWorld;
+                    if (density <= 0f || belowCrust)
+                        continue;
+                }
+
                 // Flooded column: between the visible crust and the sea sphere.
                 bool inOceanColumn = distToCenter >= crustWorld - 2f;
                 // Sea often sits a little inside the heightfield (this planet ~16m).

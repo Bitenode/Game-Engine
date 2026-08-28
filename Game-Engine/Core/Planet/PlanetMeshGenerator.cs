@@ -106,6 +106,7 @@ public sealed class PlanetMeshGenerator
 
     public TransvoxelMeshData Remesh(VoxelChunk chunk, byte transitionMask)
     {
+        TransvoxelMesher.EnableTransitionCells = _config.EnableTransvoxelTransitions;
         var mesh = TransvoxelMesher.GenerateMesh(chunk, transitionMask);
         ApplyBiomeBlends(mesh);
         mesh.RecalculateNormals();
@@ -151,9 +152,6 @@ public sealed class PlanetMeshGenerator
         _ = lodLevel;
         float cell = EstimateCell(face, u0, v0, u1, v1, resolution);
         float maxCell = MathF.Max(8f, _config.VolumetricMaxCellSize);
-
-        if (SceneService.PlayMode && _editStore != null && (_editStore.SphereEditCount > 0 || _editStore.BakedCellCount > 0))
-            return false;
 
         if (_editStore != null && (_editStore.SphereEditCount > 0 || _editStore.BakedCellCount > 0))
         {
@@ -289,7 +287,10 @@ public sealed class PlanetMeshGenerator
         }
 
         SnapLodTJunctions(data, n, size, transitionMask, transitionStride);
-        AddInwardSkirts(data, n, size, flip, EstimateCell(face, u0, v0, u1, v1, resolution));
+        // Inward skirts pull edge verts toward the core along world radius. After voxel
+        // edits that is often visible as upright white fins above trenches — skip them.
+        if (_editStore == null || (_editStore.SphereEditCount == 0 && _editStore.BakedCellCount == 0))
+            AddInwardSkirts(data, n, size, flip, EstimateCell(face, u0, v0, u1, v1, resolution));
         return data;
     }
 

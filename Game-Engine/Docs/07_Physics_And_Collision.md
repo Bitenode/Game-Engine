@@ -438,12 +438,13 @@ The `BVH` class provides spatial acceleration for collision queries. Instead of 
 
 An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-based feel. Features include:
 - **Force-based movement** with configurable ground/air drag
-- **Swimming physics** — automatic 3D underwater movement (`UnderwaterQuery`; planet caves and deep interior stay dry on land)
+- **Swimming physics** — automatic 3D underwater movement (`UnderwaterQuery`; planet caves and deep interior stay dry on land via density air-pocket check)
 - **Jump impulse** — physics-driven jumping with buffered input
 - **Natural push interactions** — momentum transfer between objects
 - **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing
+- **Cave-aware grounding** — short density probe along `-LocalUp` after penetration resolve; heightfield radius only as outer-shell fallback when the probe misses
 
-Pair with **`PlanetPlayerSpawner`** for quick play-mode setup, or add manually with `Rigidbody` + `CapsuleCollider`.
+Pair with **`PlanetPlayerSpawner`** for quick play-mode setup (retries spawn up to **12 s** while waiting for renderable leaves), or add manually with `Rigidbody` + `CapsuleCollider`.
 
 See the [Components Reference](03_Components_Reference.md) for full property details.
 
@@ -456,9 +457,9 @@ The planet pipeline integrates directly with runtime rigidbody and character phy
 1. `Rigidbody` / `CharacterController` find the nearest active `PlanetTerrain` each tick
 2. `LocalUp` is computed from planet center to body position (radial gravity)
 3. Gravity is applied along `-LocalUp` (fallback is world `-Y` when no planet is active)
-4. Grounding and walls use `Spherecast` / `RaycastDensity` along `-LocalUp` against the **same density field as meshing** (multi-scale caves, overhangs, full interior). `ResolveDensityPenetration` pushes the body out of solid
+4. Grounding and walls use `Spherecast` / `RaycastDensity` along `-LocalUp` against the **same density field as meshing** (multi-scale caves, overhangs, full interior). `ResolveDensityPenetration` pushes the body out of solid. `RigidbodyPlayer` uses a **short** downward probe (capsule height + step-up + ground snap), not a full radial ray to the core, so standing on outer crust does not snap into the first air pocket below
 5. On contact, the into-surface velocity component is removed and tangent motion is preserved
-6. **Underwater:** `UnderwaterQuery` only applies below sea level in ocean columns or when clipped into the sea mesh — not in land caves
+6. **Underwater:** `UnderwaterQuery` only applies below sea level in ocean columns or when clipped into the sea mesh — not in land caves (density air-pocket below crust skips ocean tint)
 
 `SampleSurfaceRadius` is **not** used for this contact; it remains the outer-crust radius for water/orbit/atmosphere/vegetation estimates.
 

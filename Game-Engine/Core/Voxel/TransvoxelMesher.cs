@@ -194,6 +194,12 @@ public sealed class TransvoxelMeshData
 public static class TransvoxelMesher
 {
     /// <summary>
+    /// Instant kill switch for LOD transition cells. <c>PlanetConfig.EnableTransvoxelTransitions</c>
+    /// is copied onto this before remesh. Set false if a case still fans.
+    /// </summary>
+    public static bool EnableTransitionCells { get; set; } = true;
+
+    /// <summary>
     /// Generate a mesh from a voxel chunk. The transition mask indicates which of the
     /// 4 edges (±U, ±V) border a coarser LOD neighbor and need transition cells.
     /// </summary>
@@ -223,13 +229,8 @@ public static class TransvoxelMesher
             }
         }
 
-        // Transition tables are not wired to real edge pairs yet (verts were
-        // interpolated around a 9-sample ring). That fans extra shredded tris
-        // on the facing leaf. Regular cells stitch enough once reuse includes X.
-        if (transitionMask != 0)
-        {
-            // Intentionally skipped until GenerateTransitionEdge uses Transvoxel vertex data.
-        }
+        if (EnableTransitionCells && transitionMask != 0)
+            GenerateTransitionCells(chunk, transitionMask, data);
 
         return data;
     }
@@ -373,192 +374,146 @@ public static class TransvoxelMesher
 
     /// <summary>
     /// Generate transition cells along the edges flagged in the transition mask.
-    /// These cells have a half-resolution sampling pattern to match the coarser neighbor.
-    /// Bit 0=-U edge, 1=+U, 2=-V, 3=+V.
+    /// Each cell samples the 13 Lengyel corners on the shared face (9 high-res + 4 coarse)
+    /// and emits from TransitionVertexData — never ring interpolation.
+    /// Bit 0=-U, 1=+U, 2=-V, 3=+V.
     /// </summary>
     static void GenerateTransitionCells(VoxelChunk chunk, byte mask, TransvoxelMeshData data)
     {
         int size = chunk.Size;
-
-        if ((mask & 1) != 0) GenerateTransitionEdge(chunk, data, size, 0);
-        if ((mask & 2) != 0) GenerateTransitionEdge(chunk, data, size, 1);
-        if ((mask & 4) != 0) GenerateTransitionEdge(chunk, data, size, 2);
-        if ((mask & 8) != 0) GenerateTransitionEdge(chunk, data, size, 3);
+        if ((mask & 1) != 0) ProcessTransitionFace(chunk, data, size, 0);
+        if ((mask & 2) != 0) ProcessTransitionFace(chunk, data, size, 1);
+        if ((mask & 4) != 0) ProcessTransitionFace(chunk, data, size, 2);
+        if ((mask & 8) != 0) ProcessTransitionFace(chunk, data, size, 3);
     }
 
-    /// <summary>
-    /// Generate transition geometry along one edge. Uses a simplified approach:
-    /// for each pair of high-res cells along the edge, create an intermediate
-    /// "transition cell" that bridges the half-res neighbor.
-    /// edge: 0=-X, 1=+X, 2=-Y, 3=+Y (in the XY plane of the chunk, Z is radial).
-    /// </summary>
-    static void GenerateTransitionEdge(VoxelChunk chunk, TransvoxelMeshData data, int size, int edge)
+    static void ProcessTransitionFace(VoxelChunk chunk, TransvoxelMeshData data, int size, int edge)
     {
-        for (int z = 0; z < size; z++)
+        // 2x2 high-res cells per transition cell (3x3 high-res samples on the face).
+        bool invertFace = edge == 1 || edge == 2;
+        for (int radial = 0; radial < size; radial += 2)
         {
             for (int along = 0; along < size; along += 2)
-            {
-                int a0 = along;
-                int a1 = Math.Min(along + 1, size - 1);
-                int a2 = Math.Min(along + 2, size);
-
-                int fixedHi, fixedLo;
-                switch (edge)
-                {
-                    case 0: fixedHi = 0; fixedLo = 0; break;
-                    case 1: fixedHi = size; fixedLo = size; break;
-                    case 2: fixedHi = 0; fixedLo = 0; break;
-                    case 3: fixedHi = size; fixedLo = size; break;
-                    default: continue;
-                }
-
-                var samples = new float[9];
-                var positions = new SN.Vector3[9];
-
-                if (edge <= 1)
-                {
-                    int fx = fixedHi;
-                    FillTransitionSamples(chunk, fx, a0, a1, a2, z, true, samples, positions);
-                }
-                else
-                {
-                    int fy = fixedHi;
-                    FillTransitionSamples(chunk, a0, fy, a1, a2, z, false, samples, positions);
-                }
-
-                int caseCode = 0;
-                for (int i = 0; i < 9; i++)
-                {
-                    if (samples[i] < 0f)
-                        caseCode |= (1 << i);
-                }
-
-                if (caseCode == 0 || caseCode == 511)
-                    continue;
-
-                EmitTransitionTriangles(chunk, data, caseCode, samples, positions);
-            }
+                ProcessOneTransitionCell(chunk, data, size, edge, along, radial, invertFace);
         }
     }
 
-    static void FillTransitionSamples(VoxelChunk chunk, int x0, int y0, int y1, int y2, int z,
-        bool fixedIsX, float[] samples, SN.Vector3[] positions)
+    static void ProcessOneTransitionCell(
+        VoxelChunk chunk, TransvoxelMeshData data, int size, int edge,
+        int along, int radial, bool invertFace)
     {
-        int n = chunk.SamplesPerAxis;
+        Span<float> densities = stackalloc float[13];
+        Span<byte> materials = stackalloc byte[13];
+        Span<float> gridX = stackalloc float[13];
+        Span<float> gridY = stackalloc float[13];
+        Span<float> gridZ = stackalloc float[13];
 
-        if (fixedIsX)
+        int caseCode = 0;
+        for (int i = 0; i < 13; i++)
         {
-            int fx = Math.Clamp(x0, 0, n - 1);
-            int cy0 = Math.Clamp(y0, 0, n - 1);
-            int cy1 = Math.Clamp(y1, 0, n - 1);
-            int cy2 = Math.Clamp(y2, 0, n - 1);
-            int cz0 = Math.Clamp(z, 0, n - 1);
-            int cz1 = Math.Clamp(z + 1, 0, n - 1);
-
-            samples[0] = chunk.Sample(fx, cy0, cz0); positions[0] = chunk.GridToWorld(fx, cy0, cz0);
-            samples[1] = chunk.Sample(fx, cy1, cz0); positions[1] = chunk.GridToWorld(fx, cy1, cz0);
-            samples[2] = chunk.Sample(fx, cy2, cz0); positions[2] = chunk.GridToWorld(fx, cy2, cz0);
-            samples[3] = chunk.Sample(fx, cy0, cz1); positions[3] = chunk.GridToWorld(fx, cy0, cz1);
-            samples[4] = chunk.Sample(fx, cy1, cz1); positions[4] = chunk.GridToWorld(fx, cy1, cz1);
-            samples[5] = chunk.Sample(fx, cy2, cz1); positions[5] = chunk.GridToWorld(fx, cy2, cz1);
-
-            float midY01 = (cy0 + cy1) * 0.5f;
-            float midY12 = (cy1 + cy2) * 0.5f;
-            float midZ = (cz0 + cz1) * 0.5f;
-
-            samples[6] = (samples[0] + samples[1]) * 0.5f; positions[6] = chunk.GridToWorld(fx, midY01, cz0);
-            samples[7] = (samples[1] + samples[2]) * 0.5f; positions[7] = chunk.GridToWorld(fx, midY12, cz0);
-            samples[8] = (samples[0] + samples[3]) * 0.5f; positions[8] = chunk.GridToWorld(fx, cy0, midZ);
+            var (s, t) = MarchingCubesTables.TransitionCornerST[i];
+            MapTransitionCorner(edge, size, along + s, radial + t, out int x, out int y, out int z);
+            densities[i] = chunk.Sample(x, y, z);
+            materials[i] = chunk.GetMaterial(x, y, z);
+            gridX[i] = x;
+            gridY[i] = y;
+            gridZ[i] = z;
+            // Case index uses the 9 high-res samples only (512 Lengyel cases).
+            if (i < 9 && densities[i] < 0f)
+                caseCode |= 1 << i;
         }
-        else
-        {
-            int fy = Math.Clamp(y0, 0, n - 1);
-            int cx0 = Math.Clamp(x0, 0, n - 1);
-            int cx1 = Math.Clamp(y1, 0, n - 1);
-            int cx2 = Math.Clamp(y2, 0, n - 1);
-            int cz0 = Math.Clamp(z, 0, n - 1);
-            int cz1 = Math.Clamp(z + 1, 0, n - 1);
 
-            samples[0] = chunk.Sample(cx0, fy, cz0); positions[0] = chunk.GridToWorld(cx0, fy, cz0);
-            samples[1] = chunk.Sample(cx1, fy, cz0); positions[1] = chunk.GridToWorld(cx1, fy, cz0);
-            samples[2] = chunk.Sample(cx2, fy, cz0); positions[2] = chunk.GridToWorld(cx2, fy, cz0);
-            samples[3] = chunk.Sample(cx0, fy, cz1); positions[3] = chunk.GridToWorld(cx0, fy, cz1);
-            samples[4] = chunk.Sample(cx1, fy, cz1); positions[4] = chunk.GridToWorld(cx1, fy, cz1);
-            samples[5] = chunk.Sample(cx2, fy, cz1); positions[5] = chunk.GridToWorld(cx2, fy, cz1);
+        if (caseCode == 0 || caseCode == 511)
+            return;
 
-            float midX01 = (cx0 + cx1) * 0.5f;
-            float midX12 = (cx1 + cx2) * 0.5f;
-            float midZ = (cz0 + cz1) * 0.5f;
+        var vertexData = MarchingCubesTables.TransitionVertexData[caseCode];
+        if (vertexData.Length == 0)
+            return;
 
-            samples[6] = (samples[0] + samples[1]) * 0.5f; positions[6] = chunk.GridToWorld(midX01, fy, cz0);
-            samples[7] = (samples[1] + samples[2]) * 0.5f; positions[7] = chunk.GridToWorld(midX12, fy, cz0);
-            samples[8] = (samples[0] + samples[3]) * 0.5f; positions[8] = chunk.GridToWorld(cx0, fy, midZ);
-        }
-    }
-
-    static void EmitTransitionTriangles(VoxelChunk chunk, TransvoxelMeshData data,
-        int caseCode, float[] samples, SN.Vector3[] positions)
-    {
-        byte cellClassByte = caseCode < MarchingCubesTables.TransitionCellClass.Length
-            ? MarchingCubesTables.TransitionCellClass[caseCode]
-            : (byte)0;
-
+        byte cellClassByte = MarchingCubesTables.TransitionCellClass[caseCode];
         int classIndex = cellClassByte & 0x7F;
-        if (classIndex >= MarchingCubesTables.TransitionCellData.Length)
+        if ((uint)classIndex >= (uint)MarchingCubesTables.TransitionCellData.Length)
             return;
 
         ref readonly var cellData = ref MarchingCubesTables.TransitionCellData[classIndex];
-        int triCount = cellData.TriangleCount;
         int vertCount = cellData.VertexCount;
+        int triCount = cellData.TriangleCount;
+        if (vertCount == 0 || triCount == 0 || vertexData.Length < vertCount)
+            return;
 
-        if (triCount == 0 || vertCount == 0) return;
+        bool invert = ((cellClassByte & 0x80) != 0) ^ invertFace;
+        Span<int> localToGlobal = stackalloc int[vertCount];
 
-        bool invert = (cellClassByte & 0x80) != 0;
-        int baseVertex = data.Positions.Count;
-
-        for (int v = 0; v < vertCount; v++)
+        for (int i = 0; i < vertCount; i++)
         {
-            int sA = v % 9;
-            int sB = (v + 1) % 9;
+            ushort vd = vertexData[i];
+            int cornerA = (vd >> 4) & 0x0F;
+            int cornerB = vd & 0x0F;
+            if ((uint)cornerA > 12 || (uint)cornerB > 12)
+                return;
 
-            float dA = samples[sA];
-            float dB = samples[sB];
+            float dA = densities[cornerA];
+            float dB = densities[cornerB];
             float t = (MathF.Abs(dA - dB) > 1e-6f) ? dA / (dA - dB) : 0.5f;
             t = Math.Clamp(t, 0f, 1f);
 
-            SN.Vector3 pos = SN.Vector3.Lerp(positions[sA], positions[sB], t);
-            SN.Vector3 normal = SN.Vector3.Normalize(pos);
-            if (normal.LengthSquared() < 0.5f)
-                normal = SN.Vector3.UnitY;
+            float px = gridX[cornerA] + t * (gridX[cornerB] - gridX[cornerA]);
+            float py = gridY[cornerA] + t * (gridY[cornerB] - gridY[cornerA]);
+            float pz = gridZ[cornerA] + t * (gridZ[cornerB] - gridZ[cornerA]);
 
-            data.Positions.Add(pos);
+            SN.Vector3 worldPos = chunk.GridToWorld(px, py, pz);
+            SN.Vector3 normal = ComputeGradient(chunk, px, py, pz);
+
+            byte matA = materials[cornerA];
+            byte matB = materials[cornerB];
+            byte dominantMat = (t < 0.5f) ? matA : matB;
+
+            int globalIdx = data.Positions.Count;
+            data.Positions.Add(worldPos);
             data.Normals.Add(normal);
-            data.UVs.Add(new SN.Vector2(pos.X * 0.01f, pos.Z * 0.01f));
-            data.BlendIndices.Add(new SN.Vector4(0, 0, 0, 0));
-            data.BlendWeights.Add(new SN.Vector4(1, 0, 0, 0));
+            data.UVs.Add(new SN.Vector2(px / chunk.Size, py / chunk.Size));
+            data.BlendIndices.Add(new SN.Vector4(dominantMat, matA == matB ? dominantMat : (matA == dominantMat ? matB : matA), 0, 0));
+            data.BlendWeights.Add(new SN.Vector4(1f, 0f, 0f, 0f));
+            localToGlobal[i] = globalIdx;
         }
 
-        for (int t = 0; t < triCount; t++)
+        for (int tri = 0; tri < triCount; tri++)
         {
-            int i0 = cellData.VertexIndex[t * 3 + 0];
-            int i1 = cellData.VertexIndex[t * 3 + 1];
-            int i2 = cellData.VertexIndex[t * 3 + 2];
-
-            if (i0 >= vertCount || i1 >= vertCount || i2 >= vertCount)
+            int i0 = cellData.VertexIndex[tri * 3 + 0];
+            int i1 = cellData.VertexIndex[tri * 3 + 1];
+            int i2 = cellData.VertexIndex[tri * 3 + 2];
+            if ((uint)i0 >= (uint)vertCount || (uint)i1 >= (uint)vertCount || (uint)i2 >= (uint)vertCount)
                 continue;
 
             if (invert)
             {
-                data.Indices.Add(baseVertex + i0);
-                data.Indices.Add(baseVertex + i2);
-                data.Indices.Add(baseVertex + i1);
+                data.Indices.Add(localToGlobal[i0]);
+                data.Indices.Add(localToGlobal[i2]);
+                data.Indices.Add(localToGlobal[i1]);
             }
             else
             {
-                data.Indices.Add(baseVertex + i0);
-                data.Indices.Add(baseVertex + i1);
-                data.Indices.Add(baseVertex + i2);
+                data.Indices.Add(localToGlobal[i0]);
+                data.Indices.Add(localToGlobal[i1]);
+                data.Indices.Add(localToGlobal[i2]);
             }
+        }
+    }
+
+    static void MapTransitionCorner(int edge, int size, int along, int radial, out int x, out int y, out int z)
+    {
+        along = Math.Clamp(along, 0, size);
+        radial = Math.Clamp(radial, 0, size);
+        switch (edge)
+        {
+            case 0: // -U / -X
+                x = 0; y = along; z = radial; break;
+            case 1: // +U / +X
+                x = size; y = along; z = radial; break;
+            case 2: // -V / -Y
+                x = along; y = 0; z = radial; break;
+            default: // +V / +Y
+                x = along; y = size; z = radial; break;
         }
     }
 }

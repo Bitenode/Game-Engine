@@ -1503,30 +1503,23 @@ public sealed class PlanetVegetationSystem : Behavior
         VegetationProfile? profile,
         string? placementTexture = null)
     {
-        string? meshPath = null;
         string? texture = null;
 
-        void ConsiderPath(string? path)
+        void ConsiderTexture(string? path)
         {
-            if (string.IsNullOrWhiteSpace(path)) return;
-            if (IsSupportedModelPath(path))
-                meshPath ??= path;
-            else if (IsImageAssetPath(path))
+            if (IsImageAssetPath(path))
                 texture ??= path;
         }
 
-        ConsiderPath(placementTexture);
-        ConsiderPath(item?.ModelPath);
-        // When the chosen item is a texture billboard, prefer cards over a profile FBX clump
-        // (FBX meadow meshes are often authored in cm and read as microscopic without rescale).
-        if (string.IsNullOrWhiteSpace(texture) && profile != null)
-            ConsiderPath(profile.GrassModelPath);
+        ConsiderTexture(placementTexture);
+        ConsiderTexture(item?.ModelPath);
+        ConsiderTexture(profile?.GrassModelPath);
 
         texture ??= DefaultPlanetGrassTexturePath;
         painter.TexturePath = PlanetAssetIO.NormalizeAssetReference(texture);
-        painter.CustomMeshPath = IsSupportedModelPath(meshPath)
-            ? PlanetAssetIO.NormalizeAssetReference(meshPath!)
-            : "";
+        // Planet grass streams as cross-blade billboards. Meadow FBX clumps import on the
+        // main thread and often render as huge gray silhouettes when materials are not ready.
+        painter.CustomMeshPath = "";
     }
 
     static bool IsImageAssetPath(string? path)

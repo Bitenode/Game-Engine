@@ -165,6 +165,7 @@ namespace Game_Engine.Views
         double _shadowAccumSec;
         SN.Vector3 _lastShadowCamPos = new(float.NaN);
         bool _hasShadowMap;
+        int _gpuCacheMaintainCounter;
         #endregion
 
         // Render gating: prevent InvalidateVisual() from piling up.
@@ -1211,6 +1212,12 @@ namespace Game_Engine.Views
 
             Profiler.End(); // end "Render"
 
+            if (_cache != null && ++_gpuCacheMaintainCounter >= 120)
+            {
+                _gpuCacheMaintainCounter = 0;
+                _cache.Maintain(maxEntries: 384, maxReleasesPerFrame: 96);
+            }
+
             g.Flush();
 
             // Restore Avalonia's FB and clean up GL state for compositing.
@@ -1794,7 +1801,9 @@ namespace Game_Engine.Views
             if (dt > 0.1) dt = 0.1;
             _fixedAccum += dt;
             if (_fixedAccum > 0.25) _fixedAccum = 0.25;
-            while (_fixedAccum >= FIXED_DT)
+            int physicsSteps = 0;
+            const int maxPhysicsSteps = 3;
+            while (_fixedAccum >= FIXED_DT && physicsSteps < maxPhysicsSteps)
             {
                 Profiler.Begin("Physics");
                 Core.Time.BeginFixedUpdate(FIXED_DT);
@@ -1802,6 +1811,7 @@ namespace Game_Engine.Views
                 ForEachBehavior(b => b.__FixedUpdate());
                 Profiler.End();
                 _fixedAccum -= FIXED_DT;
+                physicsSteps++;
             }
         }
 

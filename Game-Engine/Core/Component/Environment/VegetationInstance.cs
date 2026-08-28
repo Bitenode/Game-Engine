@@ -815,27 +815,21 @@ namespace Game_Engine.Core.Component
 
             ClearAll();
 
-            var grassMesh = ResolvedMesh ?? CreateGrassBladeMesh();
-            Material grassMat;
-            if (ResolvedMesh != null && ResolvedMaterial != null)
-            {
-                grassMat = ResolvedMaterial;
-                try { MaterialUtil.EnsureVegetationCardCutout(grassMat); } catch { }
-            }
+            // Always use lightweight cross-blades on planets — not meadow FBX clumps.
+            var grassMesh = CreateGrassBladeMesh();
+            var srcTex = ResolvedTexture;
+            Texture2D? grassTex;
+            if (srcTex != null && MaterialUtil.TextureHasMeaningfulAlpha(srcTex))
+                grassTex = srcTex;
+            else if (srcTex != null && !SceneService.PlayMode)
+                grassTex = PrepareGrassTextureForCutout(srcTex);
             else
-            {
-                // Texture grass = standing cross-blades. Lawn photos have no blade alpha, so use a
-                // cutout blade texture instead of painting the photo on a flat ground quad.
-                var srcTex = ResolvedTexture;
-                var grassTex = (srcTex != null && MaterialUtil.TextureHasMeaningfulAlpha(srcTex))
-                    ? PrepareGrassTextureForCutout(srcTex)
-                    : CreateFallbackGrassCutoutTexture();
-                string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) && grassTex == srcTex
-                    ? ToRelativePath(TexturePath)
-                    : "";
-                grassMat = BuildGrassMaterial(grassTex, relTexPath);
-                grassMat.AlphaCutoff = 0.38f;
-            }
+                grassTex = CreateFallbackGrassCutoutTexture();
+            string relTexPath = !string.IsNullOrWhiteSpace(TexturePath) && grassTex == srcTex
+                ? ToRelativePath(TexturePath)
+                : "";
+            var grassMat = BuildGrassMaterial(grassTex, relTexPath);
+            grassMat.AlphaCutoff = 0.38f;
 
             // Use a non-"chunk_" name so renderer fast-paths meant for flat-terrain grass tiles
             // don't treat planet patches like axis-aligned terrain chunks.

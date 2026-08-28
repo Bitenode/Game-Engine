@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using Game_Engine.Core;
 using Game_Engine.Core.Physics;
+using Game_Engine.Core.Planet;
 using GEInput = Game_Engine.Core.Input.Input;
 using GEPhysics = Game_Engine.Core.Physics.Physics;
 using SN = System.Numerics;
@@ -55,6 +56,10 @@ namespace Game_Engine.Core.Component
 
         // ── Jump buffering ──
         [Persist] public float JumpBufferSeconds { get; set; } = 0.12f;
+
+        // ── Planet density grounding (matches CharacterController) ──
+        [Persist] public float StepUpMax { get; set; } = 0.5f;
+        [Persist] public float GroundSnapDistance { get; set; } = 0.7f;
 
         // ── Runtime ──
         Rigidbody? _rb;
@@ -260,22 +265,52 @@ namespace Game_Engine.Core.Component
             var wish = right * _wishLocal.X + fwd * (-_wishLocal.Y);
             wish -= up * SN.Vector3.Dot(wish, up);
             float speed = MathF.Max(1f, MaxSpeed) * (_sprintHeld ? MathF.Max(1f, SprintMultiplier) : 1f);
+
+            float radius = 0.4f;
+            float capsuleH = 1f;
+            var cap = GetComponent<CapsuleCollider>();
+            if (cap != null)
+            {
+                radius = MathF.Max(0.05f, cap.Radius);
+                capsuleH = MathF.Max(radius, cap.Height * 0.5f);
+            }
+
+            const float stepUp = Rigidbody.PlanetWalkStepUp;
+            const float groundSnap = Rigidbody.PlanetWalkGroundSnap;
+            float probeDist = capsuleH + stepUp + groundSnap;
+
             if (wish.LengthSquared() > 1e-8f)
             {
                 wish = SN.Vector3.Normalize(wish);
+                float altBefore = (pos - center).Length();
                 pos += wish * speed * dt;
-                up = pos - center;
-                if (up.LengthSquared() > 1e-8f) up = SN.Vector3.Normalize(up);
+                var toNew = pos - center;
+                float newDist = toNew.Length();
+                if (newDist > 1e-6f)
+                    pos = center + (toNew / newDist) * altBefore;
+                up = SN.Vector3.Normalize(pos - center);
             }
 
-            float halfH = 1f;
-            var cap = GetComponent<CapsuleCollider>();
-            if (cap != null) halfH = MathF.Max(0.1f, cap.Height * 0.5f);
-            float stand = planet.SampleHeightfieldRadius(up) + halfH;
-            float dist = (pos - center).Length();
-            bool onCrust = dist <= stand + 0.08f;
+            planet.ResolveDensityPenetration(ref pos, radius);
+            RefreshRadialUp(pos, center, ref up);
 
-            if (!_airborne && _jumpBuf > 0f && onCrust)
+            bool densityHit = Rigidbody.TryDensityGroundProbe(
+                planet, pos, up, radius, probeDist, out var hit);
+            bool standable = densityHit && !hit.StartedInside;
+            if (standable)
+            {
+                var n = hit.Normal.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(hit.Normal) : up;
+                float minSlope = MathF.Cos(55f * (MathF.PI / 180f));
+                if (SN.Vector3.Dot(n, up) < minSlope * 0.5f)
+                    standable = false;
+            }
+
+            float feetDiff = float.PositiveInfinity;
+            if (standable)
+                feetDiff = SN.Vector3.Dot((pos - up * capsuleH) - hit.Point, up);
+            bool onContact = standable && feetDiff >= -0.02f && feetDiff <= stepUp + 0.02f;
+
+            if (!_airborne && _jumpBuf > 0f && onContact)
             {
                 _airborne = true;
                 _verticalVel = JumpImpulse;
@@ -286,20 +321,68 @@ namespace Game_Engine.Core.Component
             {
                 _verticalVel -= 9.81f * dt;
                 pos += up * (_verticalVel * dt);
-                up = pos - center;
-                if (up.LengthSquared() > 1e-8f) up = SN.Vector3.Normalize(up);
-                dist = (pos - center).Length();
-                stand = planet.SampleHeightfieldRadius(up) + halfH;
-                if (_verticalVel <= 0f && dist <= stand + 0.02f)
+                RefreshRadialUp(pos, center, ref up);
+
+                bool wasInside = planet.ResolveDensityPenetration(ref pos, radius);
+                RefreshRadialUp(pos, center, ref up);
+
+                var landStart = pos + up * 0.02f;
+                float landProbe = capsuleH + 0.05f;
+                bool landHit = false;
+                PlanetDensityHit land = default;
+                if (!wasInside)
                 {
-                    pos = center + up * stand;
-                    _airborne = false;
-                    _verticalVel = 0f;
+                    if (planet.Spherecast(landStart, -up, radius * 0.25f, landProbe, out land))
+                        landHit = true;
+                    else if (planet.RaycastDensity(landStart, -up, landProbe, out land))
+                        landHit = true;
                 }
+                if (landHit && !land.StartedInside && land.Distance < capsuleH)
+                {
+                    pos = land.Point + up * capsuleH;
+                    if (_verticalVel < 0f) _verticalVel = 0f;
+                    _airborne = false;
+                    planet.ResolveDensityPenetration(ref pos, radius);
+                }
+                else if (_verticalVel <= 0f &&
+                         Rigidbody.IsNearOuterHeightfield(planet, pos, center, up))
+                {
+                    float stand = planet.SampleHeightfieldRadius(up) + capsuleH;
+                    float dist = (pos - center).Length();
+                    if (dist <= stand + 0.02f)
+                    {
+                        pos = center + up * stand;
+                        _airborne = false;
+                        _verticalVel = 0f;
+                    }
+                }
+            }
+            else if (onContact)
+            {
+                pos = hit.Point + up * capsuleH;
+                planet.ResolveDensityPenetration(ref pos, radius);
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+            }
+            else if (densityHit && hit.StartedInside)
+            {
+                planet.ResolveDensityPenetration(ref pos, radius);
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+            }
+            else if (densityHit)
+            {
+                // Floor is beyond step-up (ledge / cave mouth). Fall; do not teleport to the shell.
+                _airborne = true;
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
+            }
+            else if (Rigidbody.IsNearOuterHeightfield(planet, pos, center, up, radialSlack: 1f))
+            {
+                float stand = planet.SampleHeightfieldRadius(up) + capsuleH;
+                pos = center + up * stand;
+                _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
             else
             {
-                pos = center + up * stand;
+                _airborne = true;
                 _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
 
@@ -308,6 +391,13 @@ namespace Game_Engine.Core.Component
                 _rb.Velocity = tan + up * _verticalVel;
 
             Transform.Position = new Vector3(pos.X, pos.Y, pos.Z);
+        }
+
+        static void RefreshRadialUp(SN.Vector3 pos, SN.Vector3 center, ref SN.Vector3 up)
+        {
+            var radial = pos - center;
+            if (radial.LengthSquared() > 1e-8f)
+                up = SN.Vector3.Normalize(radial);
         }
 
         public override void FixedUpdate()

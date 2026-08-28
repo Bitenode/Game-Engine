@@ -2103,7 +2103,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (++_evictCounter > 300) // roughly every ~5s at 60fps
         {
             _evictCounter = 0;
-            _cache.EvictOrphans();
+            _cache.Maintain(maxEntries: 512, maxReleasesPerFrame: 96);
         }
 
         _tGizmo = _sec.Elapsed.TotalMilliseconds;

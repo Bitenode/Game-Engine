@@ -2782,7 +2782,7 @@ float shadowFactor(vec4 sc)
     return (projCoords.z - bias > closestDepth) ? 0.55 : 1.0;
 }
 
-vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend)
+vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadial)
 {
     float t = uBiomeTiling[idx];
     vec3 texCol = sampleBiome(idx, worldPos, ba, t);
@@ -2792,7 +2792,8 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend)
     float lum = dot(texCol, vec3(0.299, 0.587, 0.114));
     vec3 topCol = (lum > 0.98) ? baseCol : texCol;
 
-    underCol = max(underCol, vec3(0.12));
+    // Grey floor is for outward cliffs only; inward cave rock keeps biome under-color.
+    underCol = mix(underCol, max(underCol, vec3(0.12)), clamp(nDotRadial, 0.0, 1.0));
     vec3 cliffCol = mix(underCol, topCol * 0.7, 0.4);
 
     return mix(cliffCol, topCol, slopeBlend);
@@ -2802,7 +2803,11 @@ vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
 {
     if (uAtmoEnabled == 0) return vec3(0.0);
 
-    float altitude = max(length(worldPos - uPlanetCenter) - uPlanetRadius, 0.0);
+    float distFromCenter = length(worldPos - uPlanetCenter);
+    // Below the crust: skip sky tint so cave walls are not shaded like outdoor rock.
+    if (distFromCenter < uPlanetRadius) return vec3(0.0);
+
+    float altitude = max(distFromCenter - uPlanetRadius, 0.0);
     float atmoDepth = clamp(altitude / max(uAtmoHeight, 1.0), 0.0, 1.0);
     float density = exp(-atmoDepth * max(uAtmoDensityFalloff, 0.1));
 
@@ -2824,8 +2829,9 @@ void main()
 {
     vec3 N = normalize(vWorldNormal);
     vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
+    float nDotRadial = dot(N, radialDir);
 
-    float slope = abs(dot(N, radialDir));
+    float slope = abs(nDotRadial);
     float slopeBlend = smoothstep(0.15, 0.55, slope);
 
     vec3 radialAxes = abs(radialDir);
@@ -2851,7 +2857,7 @@ void main()
         float w = weights[i];
         if (w < 0.01) continue;
         int idx = clamp(indices[i], 0, 7);
-        finalColor += evalBiome(idx, vWorldPos, blendAxes, slopeBlend) * w;
+        finalColor += evalBiome(idx, vWorldPos, blendAxes, slopeBlend, nDotRadial) * w;
         totalWeight += w;
     }
 
@@ -2867,7 +2873,11 @@ void main()
     float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
 
     float shadow = shadowFactor(vShadowCoord);
-    vec3 lit = finalColor * (uAmbient + diffuse * shadow) + vec3(spec * shadow);
+    float ao = mix(1.0, 0.35, clamp(-nDotRadial, 0.0, 1.0));
+    float distFromCenter = length(vWorldPos - uPlanetCenter);
+    float interior = 1.0 - smoothstep(uPlanetRadius - 2.0, uPlanetRadius, distFromCenter);
+    float ambient = uAmbient * mix(1.0, 0.7, interior);
+    vec3 lit = finalColor * (ambient + diffuse * shadow) * ao + vec3(spec * shadow * ao);
     lit += evalAtmosphere(vWorldPos, V, radialDir);
 
     lit = lit / (lit + vec3(1.0));

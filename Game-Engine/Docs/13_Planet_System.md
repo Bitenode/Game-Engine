@@ -189,7 +189,9 @@ Fine leaves do **not** stretch one 32³ grid across the entire radius (that woul
 | `> VolumetricMaxCellSize` | Smooth **heightfield shell** (orbit / coarse Scene View) |
 | `≤ VolumetricMaxCellSize` | **Stacked transvoxel** shells (caves + interior rock) |
 
-`VolumetricMaxCellSize` defaults to **3.5** at orbit. When the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`), `PlanetTerrain.ApplyChunkBudgets` raises it to **11**, increases leaf/chunk caps, and boosts mesh job budgets so interior cave walls refine while you fly around.
+`VolumetricMaxCellSize` defaults to **3.5** at orbit. When the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`), `PlanetTerrain.ApplyChunkBudgets` raises it to **11**, increases leaf/chunk caps, and boosts mesh job budgets so interior cave walls refine while you fly around — in **both Play and editor** (editor gets slightly higher caps when underground).
+
+**Play-mode interior profile** (when `cameraInside` in Play): `MaxLodDepth` up to **6**, `MaxActiveChunks` / `MaxLeafNodes` toward **120–160**, `MaxGenerationSchedulesPerUpdate` **~14**, `VolumetricMaxCellSize` **11**. Orbit play outside the crust band keeps tighter caps (depth **4–5**, **32–64** leaves, **6** schedules). `QuadNode.Merge` keeps a valid parent mesh on budget merge unless the subtree was edited (`NeedsMeshRebuild` only when children were dirty), reducing underground pop-in.
 
 ### Multi-scale cave carving
 
@@ -210,10 +212,20 @@ Cave density and biome `CaveDensity` scale how aggressively each scale opens roc
 
 When the camera is inside or just under the crust:
 
-- `QuadNode.CameraPriorityDistance` samples the patch at the camera radius (not only outer-surface corners), so Scene View fly-cam refines walls you are looking at
+- `QuadNode.CameraPriorityDistance` samples the patch at the camera radius (not only outer-surface corners), so fly-cam refines walls you are looking at
 - `FaceQuadtree` splits **2.3×** more aggressively near the crust
 - `SceneRenderer` disables backface culling and frustum culling in the crust band (`camRadial < 1.08 × radius`)
 - Planet terrain shader uses `slope = abs(dot(N, radialDir))` so steep cave walls still get rock textures, not grey undersides
+- **Interior lighting:** `evalAtmosphere` is skipped below the crust (`distFromCenter < uPlanetRadius`); inward faces keep biome under-color (no grey floor clamp); cavity AO darkens ceilings (`ao = mix(1.0, 0.35, -nDotRadial)`); interior ambient is slightly reduced
+- **Form shadows:** `RenderPlanetLeafShadows` draws `GetRenderableLeaves()` into the depth shadow pass so cave mouths and crater rims cast shadows (vegetation already did; planet leaves are GPU caches, not scene nodes)
+
+### Transvoxel LOD seams
+
+Fine volumetric leaves set `TransitionMask` on edges that border a coarser neighbor. `TransvoxelMesher.GenerateMesh` calls `GenerateTransitionCells` when the mask is non-zero (toggle with `PlanetConfig.EnableTransvoxelTransitions`, default **true**). Transition cells use the full Lengyel **13-corner** layout (`MarchingCubesTables.TransitionVertexData` / `TransitionCellData`) — not the old 9-sample ring interpolation. Only the outer radial shell layer currently receives the mask (enough for cave mouths and crust LOD boundaries).
+
+### Play-mode voxel edits
+
+Dig/build in Play no longer forces every leaf back to a heightfield shell after the first stroke. `PlanetMeshGenerator.ShouldUseVolumetric` keeps volumetric remesh on overlapping leaves (small-brush coarse-leaf exception: `MaxRadius ≤ 2.5 m` and `cell > VolumetricMaxCellSize` may stay shell-only). `PlanetChunkManager.ApplyPlayModeEditVisual` dirtys overlapping leaves and schedules async remesh with a play budget (**4–8** nodes); coarse non-volumetric leaves may get a one-frame `PlanetShellDeformer` preview.
 
 Hierarchy/runtime note:
 - Chunk `GameObject` children are no longer created (no `PlanetChunk_*` scene hierarchy spam)
@@ -259,7 +271,7 @@ Hierarchy/runtime note:
 |------|---------|
 | `VoxelChunk.cs` | Density/material grid + oriented basis/world mapping |
 | `TransvoxelMesher.cs` | Regular + transition-cell meshing; `TransvoxelMeshData.Append` merges radial shells |
-| `MarchingCubesTables.cs` | Lookup tables for marching cubes/transvoxel topology |
+| `MarchingCubesTables.cs` | Lookup tables for marching cubes/transvoxel topology, including full 512-case `TransitionVertexData` and 56-class `TransitionCellData` |
 
 ---
 
@@ -298,6 +310,7 @@ Additional runtime state:
 - Builds move axes from a tangent basis derived from `LocalUp`
 - Applies acceleration and drag in tangent space on planets
 - Jumps along `LocalUp` (not always world +Y)
+- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `Spherecast` / `RaycastDensity` probe along `-LocalUp` (capsule height + step-up + ground snap — not a ray to the core). Stands on the density hit; goes airborne when contact is lost. `SampleHeightfieldRadius` is only a last-resort fallback near the outer shell when chunks are not ready
 - Avoids pole-specific movement mode switching to prevent axis flips/discontinuities
 - Smooths camera up-vector transitions to reduce horizon jitter
 - Writes smoothed up-vector into `Camera.WorldUp`
@@ -335,13 +348,15 @@ Recommended setup:
 
 ---
 
-## Scene View LOD and editor brushes
+## Scene View LOD, Play LOD, and editor brushes
 
 Scene View runs the real quadtree LOD every editor frame (`PlanetTerrain.UpdateSceneViewLod` / `RefreshLodAroundCamera`):
 
 - Authored `MaxLodDepth` is kept; active-chunk / leaf / apply budgets are raised for editor orbit
 - When the fly camera is **inside** the planet, interior chunk budgets apply (higher `VolumetricMaxCellSize`, more leaves, faster mesh apply)
 - Parent-hold LOD still applies while orbiting or underground
+
+**Play mode** uses the same `RefreshLodAroundCamera` path with play-specific budgets (see **Interior LOD and rendering** above). Interior refinement is no longer editor-only.
 
 **Scene View planet brushes** (Inspector **Planet brushes (Scene View)** when a GameObject with `PlanetTerrain` is selected):
 

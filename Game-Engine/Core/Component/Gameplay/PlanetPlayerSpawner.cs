@@ -34,7 +34,9 @@ namespace Game_Engine.Core.Component
         [Persist] public bool AttachPlanetTool { get; set; } = true;
 
         GameObject? _spawned;
-        int _retryFrames;
+        bool _awaitingSpawn;
+        float _spawnWaitSec;
+        const float SpawnRetryTimeoutSec = 12f;
 
         public GameObject? SpawnedPlayer => _spawned;
 
@@ -42,22 +44,29 @@ namespace Game_Engine.Core.Component
         {
             if (!SpawnOnStart)
                 return;
-            if (!SpawnPlayer())
-                _retryFrames = 48;
+            if (!TrySpawnNow(requireRenderableLeaf: true))
+                _awaitingSpawn = true;
         }
 
         public override void Update()
         {
-            if (_spawned != null || _retryFrames <= 0)
+            if (_spawned != null || !_awaitingSpawn)
                 return;
-            _retryFrames--;
-            SpawnPlayer();
+            _spawnWaitSec += Math.Max(0f, Time.deltaTime);
+            bool requireLeaf = _spawnWaitSec < SpawnRetryTimeoutSec;
+            if (TrySpawnNow(requireLeaf))
+                _awaitingSpawn = false;
         }
 
-        public bool SpawnPlayer()
+        public bool SpawnPlayer() => TrySpawnNow(requireRenderableLeaf: false);
+
+        bool TrySpawnNow(bool requireRenderableLeaf)
         {
             var planet = ResolvePlanet();
             if (planet == null || planet.Config == null)
+                return false;
+
+            if (requireRenderableLeaf && planet.ActiveChunkCount <= 0)
                 return false;
 
             if (EnsurePlanetCollider)
@@ -65,7 +74,7 @@ namespace Game_Engine.Core.Component
             if (EnsureSunLight)
                 EnsureLight();
 
-            if (!TryFindSurface(planet, out var worldPos, out var up))
+            if (!TryFindSurface(planet, out var worldPos, out var up, allowFallback: !requireRenderableLeaf))
                 return false;
 
             float halfH = MathF.Max(CapsuleHeight, CapsuleRadius * 2f) * 0.5f;
@@ -124,7 +133,7 @@ namespace Game_Engine.Core.Component
             SceneService.Add(sun);
         }
 
-        bool TryFindSurface(PlanetTerrain planet, out SN.Vector3 worldPos, out SN.Vector3 up)
+        bool TryFindSurface(PlanetTerrain planet, out SN.Vector3 worldPos, out SN.Vector3 up, bool allowFallback)
         {
             worldPos = SN.Vector3.Zero;
             up = SN.Vector3.UnitY;
@@ -168,16 +177,32 @@ namespace Game_Engine.Core.Component
                 return true;
             }
 
-            // Last resort: sit on the water, not under it.
             var fallbackDir = SpawnSphereDir();
-            if (!TrySampleDir(planet, fallbackDir, sea, preferLand: false, out worldPos, out up))
+            if (TrySampleDir(planet, fallbackDir, sea, preferLand: false, out worldPos, out up))
             {
-                worldPos = center + fallbackDir * MathF.Max(sea + 8f, planet.Radius);
-                up = fallbackDir;
+                float radial = (worldPos - center).Length();
+                if (radial < sea + 2f)
+                    worldPos = center + up * (sea + 8f);
+                return true;
             }
-            float radial = (worldPos - center).Length();
-            if (radial < sea + 2f)
-                worldPos = center + up * (sea + 8f);
+
+            if (!allowFallback)
+                return false;
+
+            // Timeout only: density ray from far out. Never SampleHeightfieldRadius.
+            float maxR = MathF.Max(10f, planet.Radius) * 4f;
+            var origin = center + fallbackDir * maxR;
+            if (planet.Raycast(origin, -fallbackDir, maxR * 2f, out PlanetDensityHit hit))
+            {
+                worldPos = hit.Point;
+                up = hit.Normal.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(hit.Normal) : fallbackDir;
+                if (SN.Vector3.Dot(up, fallbackDir) < 0.2f)
+                    up = fallbackDir;
+                return true;
+            }
+
+            worldPos = center + fallbackDir * MathF.Max(sea + 8f, planet.Radius);
+            up = fallbackDir;
             return true;
         }
 

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Game_Engine.Core;
 using Game_Engine.Core.Physics;
+using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -140,23 +141,51 @@ namespace Game_Engine.Core.Component
                 float dist = toBody.Length();
                 LocalUp = dist > 1e-6f ? toBody / dist : SN.Vector3.UnitY;
 
-                // Islands sit inside the water sphere. Treat crust as land so
-                // buoyancy/swim do not fight gravity and cancel WASD.
                 float halfH = GetColliderHalfHeight();
-                float crustR = planet!.SampleHeightfieldRadius(LocalUp);
-                if (dist - halfH <= crustR + 0.45f)
-                    IsUnderwater = false;
+                float radius = GetColliderRadius();
 
                 // RigidbodyPlayer writes planet position itself. Integrating here
                 // (gravity / mesh triangles / radial snap) cancels tangent WASD.
                 if (GetComponent<RigidbodyPlayer>() != null)
                 {
-                    IsGrounded = dist - halfH <= crustR + 0.08f;
-                    GroundNormal = LocalUp;
+                    bool densityStand = TryDensityGroundProbe(
+                        planet!, pos0, LocalUp, radius,
+                        halfH + PlanetWalkStepUp + PlanetWalkGroundSnap, out var playerHit);
+                    if (densityStand && !playerHit.StartedInside)
+                    {
+                        var feet = pos0 - LocalUp * halfH;
+                        float diff = SN.Vector3.Dot(feet - playerHit.Point, LocalUp);
+                        IsGrounded = diff >= -0.02f && diff <= PlanetWalkStepUp + 0.02f;
+                        GroundNormal = playerHit.Normal.LengthSquared() > 1e-8f
+                            ? SN.Vector3.Normalize(playerHit.Normal)
+                            : LocalUp;
+                    }
+                    else
+                    {
+                        IsGrounded = false;
+                        GroundNormal = LocalUp;
+                    }
+
+                    if (IsGrounded)
+                        IsUnderwater = false;
+
                     _forceAccum = SN.Vector3.Zero;
                     _impulseAccum = SN.Vector3.Zero;
                     CheckTriggersOnly();
                     return;
+                }
+
+                // Islands sit inside the water sphere. Density stand is land so
+                // buoyancy does not fight gravity on the crust.
+                bool landStand = TryDensityGroundProbe(
+                    planet!, pos0, LocalUp, radius,
+                    halfH + PlanetWalkStepUp + PlanetWalkGroundSnap, out var landHit);
+                if (landStand && !landHit.StartedInside)
+                {
+                    var landFeet = pos0 - LocalUp * halfH;
+                    float landDiff = SN.Vector3.Dot(landFeet - landHit.Point, LocalUp);
+                    if (landDiff >= -0.02f && landDiff <= PlanetWalkStepUp + 0.45f)
+                        IsUnderwater = false;
                 }
             }
             else
@@ -215,26 +244,51 @@ namespace Game_Engine.Core.Component
 
             if (onPlanet)
             {
-                // Last-push contact: feet vs crust radius. Density resolve + a
-                // sticky radial band cancelled tangent velocity (WASD looked dead).
                 float halfHeight = GetColliderHalfHeight();
+                float radius = GetColliderRadius();
+                planet!.ResolveDensityPenetration(ref newPos, radius);
+
                 var toNew = newPos - planetCenter;
                 float distFromCenter = toNew.Length();
                 var surfNorm = distFromCenter > 1e-6f ? toNew / distFromCenter : LocalUp;
                 LocalUp = surfNorm;
 
-                float actualSurfaceR = planet!.SampleHeightfieldRadius(surfNorm);
-                float feetDist = distFromCenter - halfHeight;
+                float probe = halfHeight + PlanetWalkStepUp + PlanetWalkGroundSnap;
+                bool densityHit = TryDensityGroundProbe(
+                    planet, newPos, surfNorm, radius, probe, out var hit);
 
-                if (feetDist < actualSurfaceR)
+                if (densityHit && !hit.StartedInside)
                 {
-                    float vDotN = SN.Vector3.Dot(Velocity, surfNorm);
-                    if (vDotN < 0f)
-                        Velocity -= surfNorm * vDotN;
+                    var feet = newPos - surfNorm * halfHeight;
+                    float diff = SN.Vector3.Dot(feet - hit.Point, surfNorm);
+                    if (diff < 0.08f)
+                    {
+                        newPos = hit.Point + surfNorm * halfHeight;
+                        var n = hit.Normal.LengthSquared() > 1e-8f
+                            ? SN.Vector3.Normalize(hit.Normal)
+                            : surfNorm;
+                        float vDotN = SN.Vector3.Dot(Velocity, n);
+                        if (vDotN < 0f)
+                            Velocity -= n * vDotN;
 
-                    newPos = planetCenter + surfNorm * (actualSurfaceR + halfHeight);
-                    IsGrounded = true;
-                    GroundNormal = surfNorm;
+                        IsGrounded = true;
+                        GroundNormal = n;
+                    }
+                }
+                else if (!densityHit && IsNearOuterHeightfield(planet, newPos, planetCenter, surfNorm, radialSlack: 1f))
+                {
+                    float actualSurfaceR = planet.SampleHeightfieldRadius(surfNorm);
+                    float feetDist = distFromCenter - halfHeight;
+                    if (feetDist < actualSurfaceR)
+                    {
+                        float vDotN = SN.Vector3.Dot(Velocity, surfNorm);
+                        if (vDotN < 0f)
+                            Velocity -= surfNorm * vDotN;
+
+                        newPos = planetCenter + surfNorm * (actualSurfaceR + halfHeight);
+                        IsGrounded = true;
+                        GroundNormal = surfNorm;
+                    }
                 }
             }
             else if (PhysicsCache.SampleTerrainHeight(newPos.X, newPos.Z, out float terrainY, out var terrainNormal))
@@ -556,6 +610,42 @@ namespace Game_Engine.Core.Component
         }
 
         // ── Collider size helpers ──
+
+        /// <summary>
+        /// CharacterController step/snap defaults. Short density probes use
+        /// <c>capsuleH + StepUp + GroundSnap</c> so standing on outer crust cannot
+        /// fall into a cave tens of meters below.
+        /// </summary>
+        internal const float PlanetWalkStepUp = 0.5f;
+        internal const float PlanetWalkGroundSnap = 0.7f;
+
+        internal static bool TryDensityGroundProbe(
+            PlanetTerrain planet,
+            SN.Vector3 pos,
+            SN.Vector3 up,
+            float capsuleRadius,
+            float maxDistance,
+            out PlanetDensityHit hit)
+        {
+            hit = default;
+            float lift = MathF.Max(PlanetWalkStepUp, 0.2f) + 0.002f;
+            var rayStart = pos + up * lift;
+            float sphereR = MathF.Max(0.01f, capsuleRadius * 0.2f);
+            return planet.Spherecast(rayStart, -up, sphereR, maxDistance, out hit)
+                || planet.RaycastDensity(rayStart, -up, maxDistance, out hit);
+        }
+
+        internal static bool IsNearOuterHeightfield(
+            PlanetTerrain planet,
+            SN.Vector3 pos,
+            SN.Vector3 center,
+            SN.Vector3 up,
+            float radialSlack = 6f)
+        {
+            float crustR = planet.SampleHeightfieldRadius(up);
+            float dist = (pos - center).Length();
+            return dist >= crustR - radialSlack;
+        }
 
         /// <summary>Get the half-height from the object's collider (bottom to center).</summary>
         private float GetColliderHalfHeight()

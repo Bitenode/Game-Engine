@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using Game_Engine.Core;
@@ -8,6 +9,29 @@ using Game_Engine.Core.Rendering;
 using Silk.NET.OpenGL;
 
 namespace Game_Engine.Core.Rendering.GPU;
+
+/// <summary>Thread-safe queue of CPU meshes whose GPU entries should be dropped on the render thread.</summary>
+public static class GpuMeshReleaseQueue
+{
+    static readonly ConcurrentQueue<Mesh> Pending = new();
+
+    public static void Enqueue(Mesh? mesh)
+    {
+        if (mesh != null)
+            Pending.Enqueue(mesh);
+    }
+
+    public static int Drain(ResourceCache cache, int maxPerFrame = 64)
+    {
+        int released = 0;
+        while (released < maxPerFrame && Pending.TryDequeue(out var mesh))
+        {
+            cache.ReleaseMesh(mesh);
+            released++;
+        }
+        return released;
+    }
+}
 
 /// <summary>
 /// Maps engine Mesh/Texture2D objects to their GPU counterparts.
@@ -140,6 +164,16 @@ public sealed class ResourceCache : IDisposable
         }
     }
 
+    /// <summary>Drop a single mesh from the GPU cache (render thread only).</summary>
+    public void ReleaseMesh(Mesh mesh)
+    {
+        if (_meshes.TryGetValue(mesh, out var entry))
+        {
+            entry.GPU.Dispose();
+            _meshes.Remove(mesh);
+        }
+    }
+
     /// <summary>
     /// Remove entries that are no longer referenced by any scene object.
     /// Call periodically (e.g., every few seconds) to prevent unbounded growth.
@@ -150,6 +184,13 @@ public sealed class ResourceCache : IDisposable
         // Nuclear eviction: clear everything; entries rebuild lazily on next GetMesh call.
         foreach (var kv in _meshes) kv.Value.GPU.Dispose();
         _meshes.Clear();
+    }
+
+    /// <summary>Process queued mesh releases then evict if the cache is still large.</summary>
+    public void Maintain(int maxEntries = 512, int maxReleasesPerFrame = 64)
+    {
+        GpuMeshReleaseQueue.Drain(this, maxReleasesPerFrame);
+        EvictOrphans(maxEntries);
     }
 
     /// <summary>

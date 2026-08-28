@@ -466,8 +466,11 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 | `DefaultManipulationFalloff` | `float` | `0.6` | Default brush falloff used by dig/build APIs |
 
 **Runtime config (via `PlanetConfig`, adjusted by `ApplyChunkBudgets`):**
-- `VolumetricMaxCellSize` — **3.5** at orbit; **11** when the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`)
+- `VolumetricMaxCellSize` — **3.5** at orbit; **11** when the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`) in **Play and editor**
+- Play interior (inside crust): `MaxLodDepth` up to **6**, leaf cap **~120–160**, **~14** generation schedules per update; orbit play uses lower caps
+- `EnableTransvoxelTransitions` — when **true** (default), volumetric leaves emit Lengyel transition cells on LOD seam edges
 - Coarse leaves above that cell size use a smooth heightfield shell; finer leaves stack 1–4 radial transvoxel shells from near the core to the surface
+- Play dig/build remeshes overlapping volumetric leaves (no global heightfield flatten after the first edit); coarse shells may get a one-frame shell deform preview
 
 **Key methods:**
 - `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON (`PlanetAssetData` version 2) and the `.planetvox` sidecar
@@ -494,6 +497,7 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 **Runtime rendering note:**
 - Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches.
 - Planet water uses a continuous shell mesh with shoreline blending in shader for smooth coast transitions.
+- Interior cave lighting skips atmosphere below crust, applies cavity AO, and planet leaves participate in the shadow depth pass.
 
 See the Planet System doc for full pipeline details.
 
@@ -1334,6 +1338,7 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 - **Momentum-based** — natural sliding, pushing, and inertia
 - **Planet movement** — tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
+- **Density grounding on planets** — `ResolveDensityPenetration`, short `Spherecast` / `RaycastDensity` along `-LocalUp` for cave floors/ceilings; `SampleHeightfieldRadius` only as outer-shell fallback
 - **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
 - **Pole stability** — avoids pole-only movement mode toggles that can flip controls
@@ -1365,8 +1370,8 @@ Play-mode helper that creates or reuses a `RigidbodyPlayer` on `PlanetTerrain` a
 | `FirstPerson` | `bool` | `true` | Passed to `RigidbodyPlayer` |
 
 **Behavior:**
-- Resolves the nearest/active `PlanetTerrain`, samples the outer crust with density raycast, and places the player feet-down using explicit quaternion alignment
-- Retries spawn for ~48 frames if the planet mesh is still generating
+- Resolves the nearest/active `PlanetTerrain`, samples the density isosurface with `TrySampleLocalIsosurface` / density raycast, and places the player feet-down using explicit quaternion alignment
+- Retries spawn for up to **12 seconds** while waiting for renderable leaves (`ActiveChunkCount > 0`); after timeout falls back without the leaf requirement
 - Adds `Rigidbody`, `CapsuleCollider`, and `RigidbodyPlayer` if missing
 
 Attach to the planet root or any scene object. See [Planet System](13_Planet_System.md).

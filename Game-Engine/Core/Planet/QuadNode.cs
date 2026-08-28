@@ -1,4 +1,5 @@
 using System;
+using Game_Engine.Core.Rendering.GPU;
 using Game_Engine.Core.Voxel;
 using SN = System.Numerics;
 
@@ -48,6 +49,15 @@ public sealed class QuadNode
     public bool NeedsMeshRebuild { get; set; } = true;
 
     public volatile bool IsGenerating;
+
+    /// <summary>Incremented when this node is merged/cancelled so stale async jobs are ignored.</summary>
+    public int GenerationToken { get; private set; }
+
+    public void InvalidateGeneration()
+    {
+        GenerationToken++;
+        IsGenerating = false;
+    }
 
     public QuadNode(int face, int lod, float u0, float v0, float u1, float v1, QuadNode? parent = null)
     {
@@ -195,19 +205,37 @@ public sealed class QuadNode
             return;
         }
 
+        bool childrenDirty = false;
         for (int i = 0; i < 4; i++)
         {
             var child = Children[i];
-            if (child != null)
-            {
-                child.Merge();
-                DisposeChunkData(child);
-            }
+            if (child == null) continue;
+            if (SubtreeNeedsRebuild(child))
+                childrenDirty = true;
+            child.Merge();
+            DisposeChunkData(child);
         }
         Children = null;
         _splitCommitted = false;
-        // Parent mesh was built from children; after merge it must be rebuilt to reflect edits.
-        NeedsMeshRebuild = true;
+        // Keep a valid parent mesh on budget merge; rebuild only if the subtree
+        // was edited or this node has nothing to draw.
+        if (GeneratedMesh == null || childrenDirty)
+            NeedsMeshRebuild = true;
+    }
+
+    static bool SubtreeNeedsRebuild(QuadNode node)
+    {
+        if (node.NeedsMeshRebuild)
+            return true;
+        if (node.Children == null)
+            return false;
+        for (int i = 0; i < 4; i++)
+        {
+            var child = node.Children[i];
+            if (child != null && SubtreeNeedsRebuild(child))
+                return true;
+        }
+        return false;
     }
 
     void AllocateChildren()
@@ -225,8 +253,10 @@ public sealed class QuadNode
 
     static void DisposeChunkData(QuadNode node)
     {
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
         node.Chunk = null;
         node.GeneratedMesh = null;
+        node.InvalidateGeneration();
     }
 
     public void CollectLeaves(System.Collections.Generic.List<QuadNode> leaves)

@@ -72,6 +72,7 @@ public sealed class PlanetTerrain : Behavior
     BiomeMap? _biomeMap;
     PlanetChunkManager? _chunkManager;
     PlanetVoxelEditStore? _voxelEditStore;
+    bool _pendingVoxelMeshRefresh;
     PlanetWater? _planetWater;
     PlanetVegetationAssetData? _pendingVegetationAssetData;
 
@@ -257,6 +258,21 @@ public sealed class PlanetTerrain : Behavior
 
         ApplyPendingVegetationAssetData();
         WireSurfaceStreaming();
+        FlushPendingVoxelMeshRefresh();
+    }
+
+    void FlushPendingVoxelMeshRefresh()
+    {
+        if (!_pendingVoxelMeshRefresh || _chunkManager == null || _voxelEditStore == null)
+            return;
+        if (_voxelEditStore.SphereEditCount == 0 && _voxelEditStore.BakedCellCount == 0)
+        {
+            _pendingVoxelMeshRefresh = false;
+            return;
+        }
+
+        _chunkManager.ResetAfterVoxelEditsLoaded();
+        _pendingVoxelMeshRefresh = false;
     }
 
     void WireSurfaceStreaming()
@@ -780,14 +796,14 @@ public sealed class PlanetTerrain : Behavior
         {
             _playEditLodCooldown -= dt;
             bool pendingEdits = _chunkManager.PendingEditCommands > 0;
-            bool pendingMeshes = _chunkManager.PendingCompletedJobs > 0 || _chunkManager.ActiveJobs > 0;
-            if ((_playEditRefreshQueued || pendingEdits || pendingMeshes)
+            bool pendingApplies = _chunkManager.PendingCompletedJobs > 0;
+            if ((_playEditRefreshQueued || pendingEdits || pendingApplies)
                 && LastCameraPosition.LengthSquared() > 1e-6f
-                && (_playEditLodCooldown <= 0f || pendingMeshes || _playEditRefreshQueued))
+                && (_playEditLodCooldown <= 0f || _playEditRefreshQueued))
             {
                 RefreshLodAroundCamera(LastCameraPosition);
                 _playEditRefreshQueued = false;
-                _playEditLodCooldown = pendingEdits ? 0.12f : 0.05f;
+                _playEditLodCooldown = pendingEdits ? 0.12f : 0.20f;
             }
             return;
         }
@@ -880,16 +896,28 @@ public sealed class PlanetTerrain : Behavior
         if (_config == null) return;
         if (play)
         {
-            _config.MaxLodDepth = Math.Clamp(MaxLodDepth, 4, 5);
-            int cap = Math.Clamp(MaxActiveChunks, 32, 64);
-            _config.MaxActiveChunks = cap;
-            _config.MaxLeafNodes = cap;
             _config.LodDistanceMultiplier = Math.Min(LodDistanceMultiplier, 1.85f);
             _config.SplitDistanceScale = 0.55f;
             _config.MergeDistanceScale = Math.Max(MergeDistanceScale, 1.8f);
-            _config.MaxGenerationSchedulesPerUpdate = 6;
             _config.MaxMeshAppliesPerUpdate = 12;
             _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 8);
+
+            if (cameraInside)
+            {
+                _config.MaxLodDepth = Math.Clamp(MaxLodDepth, 4, 6);
+                int cap = Math.Clamp(MaxActiveChunks, 80, 96);
+                _config.MaxActiveChunks = cap;
+                _config.MaxLeafNodes = cap;
+                _config.MaxGenerationSchedulesPerUpdate = 12;
+            }
+            else
+            {
+                _config.MaxLodDepth = Math.Clamp(MaxLodDepth, 4, 5);
+                int cap = Math.Clamp(MaxActiveChunks, 32, 64);
+                _config.MaxActiveChunks = cap;
+                _config.MaxLeafNodes = cap;
+                _config.MaxGenerationSchedulesPerUpdate = 6;
+            }
         }
         else
         {
@@ -904,6 +932,8 @@ public sealed class PlanetTerrain : Behavior
         }
 
         _config.VolumetricMaxCellSize = 3.5f;
+        if (cameraInside && play)
+            _config.VolumetricMaxCellSize = 11f;
         if (cameraInside && !play)
         {
             _config.VolumetricMaxCellSize = 11f;
@@ -1083,6 +1113,19 @@ public sealed class PlanetTerrain : Behavior
             sampler, GetWorldCenter(), GetWorldRadiusScale(), ref worldPos, worldClearance);
     }
 
+    /// <summary>
+    /// Density at a world point (same field as meshing). Negative = solid, positive = air.
+    /// </summary>
+    public bool TrySampleWorldDensity(SN.Vector3 worldPos, out float density)
+    {
+        density = 1f;
+        var sampler = CreateDensitySampler();
+        if (sampler == null)
+            return false;
+        density = sampler.SampleDensity(WorldToLocal(worldPos));
+        return true;
+    }
+
     public bool TryGetSphereDirectionAtWorldPos(SN.Vector3 worldPos, out SN.Vector3 sphereDir)
     {
         sphereDir = SN.Vector3.UnitY;
@@ -1206,8 +1249,10 @@ public sealed class PlanetTerrain : Behavior
         try
         {
             _voxelEditStore.LoadFromAsset(asset);
-            MarkAllLeavesDirty();
-            _chunkManager?.RequestFullShellRebuild();
+            if (_chunkManager != null)
+                _chunkManager.ResetAfterVoxelEditsLoaded();
+            else
+                _pendingVoxelMeshRefresh = true;
             return true;
         }
         catch (Exception ex)
@@ -1770,8 +1815,8 @@ public sealed class PlanetTerrain : Behavior
     {
         _voxelEditStore?.Clear();
         if (!rebuildNow || gameObject == null) return;
-        MarkAllLeavesDirty();
-        _chunkManager?.RequestFullShellRebuild();
+        _chunkManager?.ResetAfterVoxelEditsLoaded();
+        _pendingVoxelMeshRefresh = false;
     }
 
     void MarkAllLeavesDirty()

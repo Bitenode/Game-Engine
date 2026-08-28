@@ -77,6 +77,12 @@ public sealed class PlanetConfig
     /// </summary>
     public float VolumetricMaxCellSize { get; set; } = 3.5f;
 
+    /// <summary>
+    /// Generate Lengyel transition cells on volumetric LOD seams. Default on (full 512-entry table).
+    /// Set false, or <c>TransvoxelMesher.EnableTransitionCells = false</c>, if a case still fans.
+    /// </summary>
+    public bool EnableTransvoxelTransitions { get; set; } = true;
+
     /// <summary>Signed-density iso-surface search range around the procedural surface radius.</summary>
     public float VoxelIsoSearchRange { get; set; } = 96f;
 

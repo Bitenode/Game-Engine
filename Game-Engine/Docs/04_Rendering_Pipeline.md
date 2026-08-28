@@ -570,8 +570,9 @@ Planet atmosphere rendering is now an isolated path and does not depend on `Skyb
 
 - **Planet data source:** `PlanetTerrain` + `PlanetAtmosphere` component state
 - **Resolver:** `SceneRenderer.ResolvePlanetAtmosphere(...)` produces per-planet render params
-- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls.
+- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls
 - **Interior rendering:** when the camera is inside the crust band, backface and frustum culling are disabled so cave interiors stay visible while LOD refines
+- **Planet shadows:** renderable planet leaf meshes are drawn in the shadow depth pass (`RenderPlanetLeafShadows`) for form shadows at cave mouths and rims
 - **Planet water pass:** `PlanetWaterFrag` uses atmosphere-driven reflection and extinction
 - **Cloud pass:** `PlanetCloudsFrag` is rendered as a dedicated planet pass
 
