@@ -304,7 +304,7 @@ public partial class BiomeGraphPanel : UserControl
             Width = PortRadius * 2, Height = PortRadius * 2,
             Fill = connected
                 ? new SolidColorBrush(Color.Parse("#FFFFFF"))
-                : new SolidColorBrush(isOutput ? Color.Parse("#FF8844") : Color.Parse("#4488FF")),
+                : new SolidColorBrush(GetPortColor(port, isOutput)),
             Stroke = new SolidColorBrush(Color.FromArgb(180, 255, 255, 255)),
             StrokeThickness = connected ? 1.5 : 0.5,
             IsHitTestVisible = false,
@@ -377,6 +377,10 @@ public partial class BiomeGraphPanel : UserControl
         BiomeErosionNode => Color.Parse("#3D2D44"),
         BiomeMaskNode => Color.Parse("#2D3D3D"),
         BiomeRiverNode => Color.Parse("#2D3D44"),
+        BiomeWaterBodyNode => Color.Parse("#2D3A55"),
+        BiomeWaterPathNode => Color.Parse("#2D4555"),
+        BiomeShoreNode => Color.Parse("#554D2D"),
+        BiomeWaterMergeNode => Color.Parse("#3D3D55"),
         _ => Color.Parse("#2D2D44"),
     };
 
@@ -391,10 +395,21 @@ public partial class BiomeGraphPanel : UserControl
         BiomeErosionNode => Color.Parse("#604066"),
         BiomeMaskNode => Color.Parse("#406060"),
         BiomeRiverNode => Color.Parse("#406066"),
+        BiomeWaterBodyNode => Color.Parse("#4060AA"),
+        BiomeWaterPathNode => Color.Parse("#4088AA"),
+        BiomeShoreNode => Color.Parse("#AA8840"),
+        BiomeWaterMergeNode => Color.Parse("#6666AA"),
         _ => Color.Parse("#404060"),
     };
 
     // ── Port hit testing ──
+
+    static Color GetPortColor(BiomePort port, bool isOutput) => port.DataType switch
+    {
+        BiomeDataType.Water => Color.Parse("#44CCDD"),
+        BiomeDataType.BiomeLayer => Color.Parse("#66CC66"),
+        _ => isOutput ? Color.Parse("#FF8844") : Color.Parse("#4488FF"),
+    };
 
     (float x, float y) GetPortWorldPos(BiomePort port)
     {
@@ -650,6 +665,10 @@ public partial class BiomeGraphPanel : UserControl
             12 => new BiomeErosionNode(),
             13 => new BiomeMaskNode(),
             14 => new BiomeRiverNode(),
+            15 => new BiomeWaterBodyNode(),
+            16 => new BiomeWaterPathNode(),
+            17 => new BiomeShoreNode(),
+            18 => new BiomeWaterMergeNode(),
             _ => new BiomeNoiseNode(),
         };
 
@@ -1296,6 +1315,39 @@ public partial class BiomeGraphPanel : UserControl
                 AddPropFloat("Frequency", n.Frequency, v => n.Frequency = v);
                 AddPropFloat("Meander", n.Meander, v => n.Meander = v);
                 AddPropText("Biomes", n.AllowedBiomes, v => n.AllowedBiomes = v);
+                AddPropFloat("Sand Width", n.SandWidth, v => n.SandWidth = v);
+                AddPropText("Sand Biome", n.SandBiomeName, v => n.SandBiomeName = v);
+                AddPropCheckbox("Flow To Ocean", n.FlowToOcean, v => n.FlowToOcean = v);
+                break;
+            case BiomeWaterBodyNode n:
+                AddPropCombo("Kind", new[] { "Ocean", "Lake", "Pond" }, n.Kind, v => n.Kind = v);
+                AddPropSlider("Fill Fraction", n.FillFraction, 0f, 1f, v => n.FillFraction = v);
+                AddPropText("Allowed Biomes", n.AllowedBiomes, v => n.AllowedBiomes = v);
+                AddPropFloat("Min Basin Depth", n.MinBasinDepth, v => n.MinBasinDepth = v);
+                AddPropText("Shore Biome", n.ShoreBiomeName, v => n.ShoreBiomeName = v);
+                AddPropFloat("Shore Width", n.ShoreWidth, v => n.ShoreWidth = v);
+                AddPropColor("Shallow", n.ShallowR, n.ShallowG, n.ShallowB,
+                    (r, g, b) => { n.ShallowR = r; n.ShallowG = g; n.ShallowB = b; });
+                AddPropColor("Deep", n.DeepR, n.DeepG, n.DeepB,
+                    (r, g, b) => { n.DeepR = r; n.DeepG = g; n.DeepB = b; });
+                AddPropColor("Deepest", n.DeepestR, n.DeepestG, n.DeepestB,
+                    (r, g, b) => { n.DeepestR = r; n.DeepestG = g; n.DeepestB = b; });
+                break;
+            case BiomeWaterPathNode n:
+                AddPropFloat("Width", n.Width, v => n.Width = v);
+                AddPropFloat("Depth", n.Depth, v => n.Depth = v);
+                AddPropFloat("Frequency", n.Frequency, v => n.Frequency = v);
+                AddPropFloat("Meander", n.Meander, v => n.Meander = v);
+                AddPropText("Allowed Biomes", n.AllowedBiomes, v => n.AllowedBiomes = v);
+                AddPropFloat("Sand Width", n.SandWidth, v => n.SandWidth = v);
+                AddPropText("Sand Biome", n.SandBiomeName, v => n.SandBiomeName = v);
+                AddPropCheckbox("Flow To Ocean", n.FlowToOcean, v => n.FlowToOcean = v);
+                break;
+            case BiomeShoreNode n:
+                AddPropText("Shore Biome", n.ShoreBiomeName, v => n.ShoreBiomeName = v);
+                AddPropFloat("Shore Width", n.ShoreWidth, v => n.ShoreWidth = v);
+                AddPropText("Texture Path", n.TexturePath, v => n.TexturePath = v);
+                AddPropFloat("Tiling", n.Tiling, v => n.Tiling = v);
                 break;
         }
 
@@ -1334,6 +1386,29 @@ public partial class BiomeGraphPanel : UserControl
         };
         sp.Children.Add(cb);
         _propsPanel?.Children.Add(sp);
+    }
+
+    void AddPropSlider(string label, float value, float min, float max, Action<float> setter)
+    {
+        var row = new StackPanel { Spacing = 2 };
+        var caption = new TextBlock
+        {
+            Text = $"{label}  {value:F2}",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.Parse("#CCCCEE"))
+        };
+        var sl = new Slider { Minimum = min, Maximum = max, Value = value, MinHeight = 20 };
+        sl.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != Slider.ValueProperty) return;
+            float v = (float)sl.Value;
+            caption.Text = $"{label}  {v:F2}";
+            setter(v);
+        };
+        sl.LostFocus += (_, _) => CaptureUndo();
+        row.Children.Add(caption);
+        row.Children.Add(sl);
+        _propsPanel?.Children.Add(row);
     }
 
     void AddPropFloat(string label, float value, Action<float> setter)

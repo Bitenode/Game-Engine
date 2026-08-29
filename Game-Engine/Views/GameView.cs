@@ -481,8 +481,8 @@ namespace Game_Engine.Views
             g.ColorMask(true, true, true, true);
             g.DepthMask(true);
 
-            // --- EDITOR MODE: dark screen ---
-            if (State != GamePanel.GameState.Playing)
+            // --- EDITOR MODE: dark screen (paused still shows the frozen play frame) ---
+            if (State == GamePanel.GameState.Stopped)
             {
                 g.ClearColor(0.07f, 0.08f, 0.09f, 1f);
                 g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
@@ -820,19 +820,6 @@ namespace Game_Engine.Views
                     SceneRenderer.RenderWater(g, _waterShader, _cache!, view, proj,
                         SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
                 }
-                if (_planetWaterShader != null)
-                {
-                    foreach (var planet in PlanetTerrain.ActivePlanets)
-                    {
-                        if (planet?.Config == null) continue;
-                        var tp = planet.gameObject?.Transform?.Position;
-                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                        SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache!,
-                            view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                            pc, planet.Config.SeaLevel);
-                    }
-                }
                 if (_planetAtmosphereShader != null)
                 {
                     foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -855,6 +842,19 @@ namespace Game_Engine.Views
                         var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
                         SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache!,
                             view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
+                    }
+                }
+                if (_planetWaterShader != null)
+                {
+                    foreach (var planet in PlanetTerrain.ActivePlanets)
+                    {
+                        if (planet?.Config == null) continue;
+                        var tp = planet.gameObject?.Transform?.Position;
+                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                        SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache!,
+                            view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                            pc, planet.Config.SeaLevel);
                     }
                 }
                 planetRenderSwF.Stop();
@@ -1029,22 +1029,7 @@ namespace Game_Engine.Views
                     SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
             }
 
-            // 8c. PLANET WATER
-            if (_planetWaterShader != null)
-            {
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config == null) continue;
-                    var tp = planet.gameObject?.Transform?.Position;
-                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
-                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                        pc, planet.Config.SeaLevel);
-                }
-            }
-
-            // 8d. PLANET ATMOSPHERE SHELL (visible from outside and inside)
+            // 8c. PLANET ATMOSPHERE SHELL (visible from outside and inside)
             if (_planetAtmosphereShader != null)
             {
                 foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -1058,7 +1043,7 @@ namespace Game_Engine.Views
                 }
             }
 
-            // 8e. PLANET CLOUDS (separate from Skybox path)
+            // 8d. PLANET CLOUDS (separate from Skybox path)
             if (_planetCloudShader != null)
             {
                 foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -1069,6 +1054,21 @@ namespace Game_Engine.Views
                     var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
                     SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache,
                         view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
+                }
+            }
+
+            // 8e. PLANET WATER — after atmosphere/cloud shells so haze does not cover the surface
+            if (_planetWaterShader != null)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
+                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
+                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                        pc, planet.Config.SeaLevel);
                 }
             }
             planetRenderSw.Stop();

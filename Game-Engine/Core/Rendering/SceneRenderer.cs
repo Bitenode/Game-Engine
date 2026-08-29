@@ -3137,13 +3137,10 @@ namespace Game_Engine.Core
                 return;
 
             var waterObj = planet.WaterGO;
-            if (waterObj == null) return;
-
-            var mf = waterObj.Behaviors.OfType<MeshFilter>().FirstOrDefault();
-            if (mf?.Mesh == null) return;
-
-            var world = TransformUtil.WorldFromTransform(waterObj.Transform)
-                      * TransformUtil.WorldFromTransform(planet.gameObject.Transform);
+            var parentWorld = TransformUtil.WorldFromTransform(planet.gameObject.Transform);
+            var world = waterObj != null
+                ? TransformUtil.WorldFromTransform(waterObj.Transform) * parentWorld
+                : parentWorld;
             var resolvedPlanetCenter = new SN.Vector3(world.M41, world.M42, world.M43);
             float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
             float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
@@ -3161,11 +3158,15 @@ namespace Game_Engine.Core
             waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
 
             waterShader.SetVector3("uPlanetCenter", resolvedPlanetCenter);
+            float camDist = (camPos - resolvedPlanetCenter).Length();
+            bool nearSurface = camDist < planetRadiusWorld * 1.15f;
+            float waveAmp = nearSurface ? 0.08f : 0.4f;
+
             waterShader.SetFloat("uTime", planet.WaterAnimTime);
-            waterShader.SetFloat("uWaveAmp1", 0.4f);
+            waterShader.SetFloat("uWaveAmp1", waveAmp);
             waterShader.SetFloat("uWaveFreq1", 0.6f);
-            waterShader.SetFloat("uWaveSteep1", 0.25f);
-            waterShader.SetFloat("uWaveAmp2", 0.2f);
+            waterShader.SetFloat("uWaveSteep1", nearSurface ? 0.08f : 0.25f);
+            waterShader.SetFloat("uWaveAmp2", waveAmp * 0.45f);
             waterShader.SetFloat("uWaveFreq2", 1.2f);
 
             var oceanBiome = planet.OceanBiome;
@@ -3178,6 +3179,39 @@ namespace Game_Engine.Core
             waterShader.SetVector4("uDeepestColor",
                 oceanBiome.WaterDeepestColorR, oceanBiome.WaterDeepestColorG,
                 oceanBiome.WaterDeepestColorB, 1f);
+
+            int waterBodyCount = 0;
+            var waterBodies = planet.Config?.WaterBodies;
+            void SetBodyColor(int i, float sr, float sg, float sb, float dr, float dg, float db, float er, float eg, float eb)
+            {
+                waterShader.SetVector4($"uBodyShallow[{i}]", sr, sg, sb, 1f);
+                waterShader.SetVector4($"uBodyDeep[{i}]", dr, dg, db, 1f);
+                waterShader.SetVector4($"uBodyDeepest[{i}]", er, eg, eb, 1f);
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                SetBodyColor(i,
+                    oceanBiome.WaterShallowColorR, oceanBiome.WaterShallowColorG, oceanBiome.WaterShallowColorB,
+                    oceanBiome.WaterDeepColorR, oceanBiome.WaterDeepColorG, oceanBiome.WaterDeepColorB,
+                    oceanBiome.WaterDeepestColorR, oceanBiome.WaterDeepestColorG, oceanBiome.WaterDeepestColorB);
+            }
+
+            if (waterBodies is { Length: > 0 })
+            {
+                waterBodyCount = 8;
+                int n = Math.Min(7, waterBodies.Length);
+                for (int i = 0; i < n; i++)
+                {
+                    var wb = waterBodies[i];
+                    SetBodyColor(i,
+                        wb.ShallowR, wb.ShallowG, wb.ShallowB,
+                        wb.DeepR, wb.DeepG, wb.DeepB,
+                        wb.DeepestR, wb.DeepestG, wb.DeepestB);
+                }
+                SetBodyColor(7, 0.12f, 0.35f, 0.28f, 0.04f, 0.12f, 0.14f, 0.02f, 0.05f, 0.08f);
+            }
+            waterShader.SetInt("uWaterBodyCount", waterBodyCount);
 
             waterShader.SetVector3("uPlanetCenter", resolvedPlanetCenter);
             waterShader.SetFloat("uSeaLevel", seaLevelWorld);
@@ -3230,13 +3264,53 @@ namespace Game_Engine.Core
             waterShader.SetFloat("uFoamIntensity", 0.4f);
             waterShader.SetVector4("uFoamColor", 0.9f, 0.95f, 1.0f, 1.0f);
 
+            gl.Enable(EnableCap.DepthTest);
+            gl.DepthFunc(DepthFunction.Lequal);
+            gl.DepthMask(false);
             gl.Enable(EnableCap.Blend);
             gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             gl.Disable(EnableCap.CullFace);
 
-            var gpuMesh = cache.GetMesh(mf.Mesh);
-            gpuMesh.Draw();
+            var leaves = planet.ChunkManager?.GetRenderableLeaves();
+            if (nearSurface && leaves != null)
+            {
+                float chunkSize = MathF.Max(1f, planet.Config?.ChunkSize ?? 32);
+                float localRadius = MathF.Max(1f, planet.Config?.Radius ?? planetRadiusWorld);
+                waterShader.SetMatrix4("uModel", parentWorld);
+                SN.Matrix4x4.Invert(parentWorld, out var invParent);
+                waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invParent));
 
+                for (int i = 0; i < leaves.Count; i++)
+                {
+                    var leaf = leaves[i];
+                    var waterMesh = leaf.GeneratedWaterMesh;
+                    if (waterMesh == null) continue;
+
+                    float leafSize = leaf.WorldSize(localRadius) * radiusScale;
+                    float cell = leafSize / chunkSize;
+                    var leafCenter = SN.Vector3.Transform(leaf.WorldCentre(localRadius), parentWorld);
+                    float leafDist = SN.Vector3.Distance(camPos, leafCenter);
+                    // Coarse parent patches under the camera are the shard/spike source.
+                    if (cell > 14f && leafDist < leafSize * 1.6f)
+                        continue;
+
+                    cache.GetMesh(waterMesh).Draw();
+                }
+            }
+
+            if (!nearSurface)
+            {
+                var mf = waterObj?.Behaviors.OfType<MeshFilter>().FirstOrDefault();
+                if (mf?.Mesh != null)
+                {
+                    waterShader.SetMatrix4("uModel", world);
+                    SN.Matrix4x4.Invert(world, out var invOrbit);
+                    waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invOrbit));
+                    cache.GetMesh(mf.Mesh).Draw();
+                }
+            }
+
+            gl.DepthMask(true);
             gl.Enable(EnableCap.CullFace);
             gl.Disable(EnableCap.Blend);
         }

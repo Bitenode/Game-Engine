@@ -70,6 +70,16 @@ public sealed class PlanetConfig
     public float RiverMeander { get; set; } = 0.5f;
     public string[] RiverAllowedBiomes { get; set; } = System.Array.Empty<string>();
 
+    /// <summary>Graph-authored water bodies (ocean / lake / pond). Empty = legacy sea-level shell.</summary>
+    public PlanetWaterBody[] WaterBodies { get; set; } = Array.Empty<PlanetWaterBody>();
+    /// <summary>Graph-authored rivers and streams.</summary>
+    public PlanetWaterPath[] WaterPaths { get; set; } = Array.Empty<PlanetWaterPath>();
+
+    public const int MaxWaterBodies = 8;
+    public bool HasCompiledWaterBodies => WaterBodies != null && WaterBodies.Length > 0;
+    public bool NeedsRiverNoise =>
+        HasRiver || (WaterPaths != null && WaterPaths.Length > 0);
+
     /// <summary>
     /// Transvoxel crust is used when a leaf's tangential cell size is at or below this
     /// (planet-local units). Coarser leaves use a smooth spherical heightfield shell so

@@ -44,13 +44,13 @@ Core goals:
 | Property | Default | Description |
 |----------|---------|-------------|
 | `Radius` | `1000` | Base planet radius |
-| `SeaLevelFraction` | `0.25` | Fraction of terrain min/max range used to compute sea level |
+| `SeaLevelFraction` | `0.55` | Fraction of terrain min/max range used when no graph ocean body overrides sea level (see **Planet water**) |
 | `MaxLodDepth` | `6` | Max quadtree depth |
 | `ChunkSize` | `32` | Voxel/mesh chunk resolution |
 | `LodDistanceMultiplier` | `5.0` | LOD split distance tuning |
 | `Seed` | `42` | Planet seed |
 | `EnableCaves` | `true` | Enables cave carving in the density pipeline |
-| `EnableWater` | `true` | Enables ocean shell mesh |
+| `EnableWater` | `true` | Enables planet water rendering (orbit shell + per-chunk patches) |
 | `MaxActiveChunks` | `120` | Hard cap for active runtime chunk meshes |
 | `PlanetAssetPath` | `""` | Project-relative or absolute `.planet` path |
 | `BiomeGraphPath` | `""` | Project-relative or absolute `.biomegraph` path |
@@ -146,10 +146,19 @@ The Biome Graph editor (`BiomeGraphPanel`) is a node-based authoring tool that w
 When applied, planet runtime state is rebuilt so generated chunks immediately reflect new biome graph data.
 
 Water output notes:
-- Layer `SpawnWater` contributes to biome water masks
-- Water mesh uses a continuous shell; shoreline appearance is blended in shader using mask/tint data (avoids patchy mesh holes)
-- Shoreline tinting blends water color toward nearby non-water biome colors
-- River settings (`RiverWidth`, `RiverDepth`, `Frequency`, `Meander`, `AllowedBiomes`) are compiled into planet runtime config
+- **Output.Water** port accepts `WaterBody`, `WaterPath`, `Shore`, `WaterMerge`, or legacy `River` nodes (compiled up to 8 bodies / 8 paths).
+- `WaterBody` kinds: `Ocean`, `Lake`, `Pond` at independent `FillFraction` levels (0–1 of terrain min–max radius).
+- `WaterPath` / `River` carve channel depth into the heightfield and contribute sand banks via `SandBiome` (e.g. Beach). `FlowToOcean` raises river water to the ocean fill radius when terrain is below sea level.
+- `Shore` overrides shore biome/width on upstream bodies; `WaterMerge` combines branches.
+- Layer `SpawnWater` still marks ocean biomes for masks when no graph bodies are present.
+- Compiled `WaterBodies` / `WaterPaths` are stored on `PlanetConfig` and persisted in `.planet` JSON via `PlanetAssetIO`.
+- When an ocean `WaterBody` is present, `SeaLevelFraction` on `PlanetTerrain` is synced from that body's `FillFraction` on compile.
+
+See **Planet water** below for mesh generation, rendering, and underwater rules.
+
+- Shoreline tinting blends water color toward nearby shore biome colors; per-body shallow/deep/deepest tints are passed to the water shader.
+- River settings (`RiverWidth`, `RiverDepth`, `Frequency`, `Meander`, `AllowedBiomes`) remain on `PlanetConfig` as fallbacks when graph water is unconnected.
+- Terrain sand bands near rivers/shores bias blend weights toward the configured shore biome index (`PlanetMeshGenerator.ApplyShoreSand`).
 - Vegetation profiles are authored per biome layer in the Biome Graph properties panel:
   - profile selector + `New/Save/Delete/Reload`
   - editable grass/tree type lists with per-item mesh path, weight, density multiplier, and min/max scale
@@ -230,7 +239,74 @@ Dig/build in Play no longer forces every leaf back to a heightfield shell after 
 Hierarchy/runtime note:
 - Chunk `GameObject` children are no longer created (no `PlanetChunk_*` scene hierarchy spam)
 - Runtime chunk meshes are cached on quadtree leaves and rendered directly
-- Rendering reads `PlanetChunkManager.GetRenderableLeaves()` for terrain/water/cloud passes
+- Rendering reads `PlanetChunkManager.GetRenderableLeaves()` for terrain passes; each leaf may also carry `GeneratedWaterMesh` for close-up water
+
+---
+
+## Planet Water
+
+Planet water is a **two-tier** system: a low-resolution **orbit shell** for distant views and **per-chunk water patches** that follow terrain LOD near the camera.
+
+### Water table sampling (`PlanetWaterSampler`)
+
+| API | Role |
+|-----|------|
+| `SampleWaterSurface(sphereDir, config, biomeMap, terrainRadius, …)` | Returns local water radius, mask, shore biome index, kind (`Ocean` / `Lake` / `Pond` / `River`), and body index |
+| `GetOceanFillRadius(config)` | Resolves ocean fill from graph bodies; clamps so sea level covers the ocean biome floor (not below `Radius + ocean HeightAmplitude`) |
+| `ResolveSeaLevel(config, seaLevelFraction)` | Authoritative sea level for legacy or multi-level setups |
+| `ApplyWaterCarving(...)` | Lowers heightfield for rivers and pond/lake basins during terrain generation |
+| `SampleSandWeight(...)` | Shore/river-bank sand blend for terrain mesh |
+
+**Multi-level water** (when `PlanetConfig.WaterBodies` is non-empty):
+- **Ocean** — geometric flood: any point where `terrainRadius < oceanFillR` is wet (shoreline follows terrain, not only the Ocean biome mask).
+- **Lake / Pond** — require basin depth ≥ `MinBasinDepth` and optional `MaskBiomes`.
+- **River** — noise-line mask × allowed biomes; water sits at carved bed + 0.35 m (or ocean fill when `FlowToOcean` and below sea level).
+
+**Legacy fallback** (no compiled bodies): uses `SpawnWater` biome weight + optional `HasRiver`; single `SeaLevel` shell.
+
+### Mesh generation
+
+| Mesh | Source | When used |
+|------|--------|-----------|
+| **Orbit shell** | `PlanetWater` — uniform cube-sphere at `GetOceanFillRadius`, 56 subdivisions per face | Orbit / far camera; also reused as the atmosphere proxy mesh |
+| **Chunk patches** | `PlanetMeshGenerator.GenerateWaterPatch` — same UV grid as the terrain leaf | Camera within ~1.15× planet radius (`RenderPlanetWater` near-surface path) |
+
+Chunk water rules:
+- Built asynchronously with terrain in `PlanetChunkManager` → stored on `QuadNode.GeneratedWaterMesh`.
+- Vertices sample `SampleWaterSurface` at each grid point; dry verts are omitted from the index buffer.
+- Ocean/lake/pond triangles use the water-table radius; rivers use bed + offset.
+- Triangles spanning more than ~1.75× the leaf cell size are dropped to avoid sky-spike shards.
+- Very coarse parent patches (`cell > 14` world units) under the camera are skipped during draw (avoids giant flat shards while children refine).
+
+`PlanetTerrain.SetupWater()` creates the orbit shell child `PlanetWater` with a `MeshFilter` / `MeshRenderer`. `RebuildWater()` runs after biome graph apply and on init when `EnableWater` is true.
+
+### Rendering (`SceneRenderer.RenderPlanetWater`)
+
+Draw order (Game View deferred path, after planet terrain):
+1. Planar `Water` components (legacy flat water)
+2. **Planet atmosphere** shell
+3. **Planet clouds**
+4. **Planet water** — drawn **after** atmosphere/clouds so haze does not cover the surface
+
+Water pass state: double-sided (`CullFace` off), `DepthFunc.Lequal`, depth write off, alpha blend.
+
+Near the surface, wave amplitude in the vertex shader is reduced (~0.08 vs 0.4 orbit) to limit mesh swimming artifacts.
+
+Shader: `PlanetWaterVert` / `PlanetWaterFrag` — Gerstner-style radial waves, Fresnel sky/atmosphere reflection, per-body color arrays (`uBodyShallow/Deep/Deepest[8]`), shore biome tint from packed UV.x, mask discard when `waterMask < 0.02`.
+
+### Underwater (`UnderwaterQuery`)
+
+Used by post-processing, `Rigidbody`, and `RigidbodyPlayer`. Planet branch rules (as of current implementation):
+
+1. Skip if inside solid density (`density ≤ 0`).
+2. Sample `SampleWaterSurface` along the camera→planet-center direction; require `Mask ≥ 0.2`.
+3. Require **submersion depth** ≥ **0.35 m** below the local water surface (prevents full-screen effect when grazing banks).
+4. Require an **open water column**: camera radial distance ≥ crust height − 0.75 m and crust ≤ water level + 0.5 m (dry land above the water table does not trigger swim/post FX).
+5. Cave air below the crust is never treated as water.
+
+Per-body underwater tint comes from the matching `PlanetWaterBody` deep colors when kind is ocean/lake/pond; rivers use the planet `OceanBiome` preset.
+
+**Game View note:** Paused play mode still renders the last frame; only **Stopped** clears to the dark editor backdrop.
 
 ---
 
@@ -253,7 +329,9 @@ Hierarchy/runtime note:
 | `PlanetMeshGenerator.cs` | Heightfield shell (coarse) or stacked `VoxelChunk` → transvoxel (fine) |
 | `PlanetVoxelEditStore.cs` / `PlanetVoxelEditAsset.cs` | Live strokes + sidecar DTO |
 | `PlanetManipulationApi.cs` | Static `DigSphere` / `BuildSphere` helpers |
-| `PlanetWater.cs` | Planet ocean shell mesh generation |
+| `PlanetWater.cs` | Orbit-only uniform sea-level shell (atmosphere proxy mesh) |
+| `PlanetWaterTypes.cs` | `PlanetWaterBody` / `PlanetWaterPath` / `PlanetWaterSurfaceSample` descriptors |
+| `PlanetWaterSampler.cs` | Water table, river carve, shore sand, ocean fill clamp |
 | `PlanetAssetIO.cs` | `.planet` DTO + `.planetvox` sidecar + path normalization |
 | `PlanetWaterSimulation.cs` | Runtime water simulation state for planet rendering integration |
 | `PlanetWaterVoxelGenerator.cs` | Water-related voxel contribution utilities |
@@ -287,7 +365,7 @@ Hierarchy/runtime note:
 - Grounds with `Spherecast` / `RaycastDensity` along `-LocalUp` and `ResolveDensityPenetration` (cave floors, walls, ceilings)
 - Keeps tangent velocity when grounded (removes into-surface component)
 - Preserves existing non-planet collision paths (terrain, mesh, AABB, triggers)
-- Resolves underwater state against world-space sea level (including planet transform scale)
+- Resolves underwater state via `UnderwaterQuery` (local water table + strict submersion column; see **Planet water**)
 
 Additional runtime state:
 - `LocalUp`
@@ -506,7 +584,7 @@ Planet weather precipitation uses layered particle emitters around the camera:
 - optional planet surface-hit termination can be disabled for weather emitters to reduce script cost
 - emitters support planet gravity alignment (nearest active planet center)
 
-**Underwater on planets:** `UnderwaterQuery` treats deep interior and caves as **dry** unless the point is below sea level **and** inside an ocean column (between crust and sea sphere) or clipped into the sea mesh. Caves under land stay walkable without swim physics.
+**Underwater on planets:** `UnderwaterQuery` uses the local water table from `SampleWaterSurface` (ocean, lake, pond, or river). Submersion requires ≥ **0.35 m** below the surface and an open column above the bed; dry slopes and cave air below the crust do not activate swim physics or the underwater post pass. See **Planet water** for full rules.
 
 Recommended runtime tuning for weak CPUs:
 

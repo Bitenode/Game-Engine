@@ -697,12 +697,14 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 - **Vegetation profile management** — select or create vegetation profiles per biome layer (`New`, `Save`, `Delete`, `Reload`)
 - **Per-biome vegetation tuning** — `VegetationDensity`, `TreeDensity`, `Patchiness`, and `SeasonalGrowthMultiplier` are exposed directly under profile controls
 - **Multi-item grass/tree authoring** — each profile supports multiple weighted grass and tree entries with per-item model path, density multiplier, and scale range
+- **Water graph nodes** — `WaterBody` (Ocean / Lake / Pond), `WaterPath`, legacy `River`, `Shore`, `WaterMerge`; wire into **Output.Water** (up to 8 bodies and 8 paths). Compile rebuilds terrain carving, shore sand, orbit shell, and per-chunk water meshes on all scene planets.
 
 ### Typical workflow
 1. Open via **Window > Biome Graph**
 2. Build or load a graph (`.biomegraph`)
-3. Click **Validate** to catch graph issues
-4. Click **Compile** to apply updated biome settings to active planets
+3. Wire biome layers to **Output**, and water nodes to **Output.Water** (or leave disconnected for legacy sea-level-only water)
+4. Click **Validate** to catch graph issues
+5. Click **Compile** to apply updated biome and water settings to active planets
 
 ---
 

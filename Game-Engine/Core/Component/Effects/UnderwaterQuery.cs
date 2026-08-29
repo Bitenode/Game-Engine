@@ -1,6 +1,7 @@
 using System;
 using SN = System.Numerics;
 using Game_Engine.Core;
+using Game_Engine.Core.Planet;
 
 namespace Game_Engine.Core.Component
 {
@@ -47,7 +48,7 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            // Planet oceans.
+            // Planet oceans, lakes, ponds, and rivers.
             for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
             {
                 var planet = PlanetTerrain.ActivePlanets[i];
@@ -61,48 +62,74 @@ namespace Game_Engine.Core.Component
                     continue;
 
                 float radiusScale = planet.GetWorldRadiusScale();
-                float seaLevelWorld = planet.Config.SeaLevel * radiusScale;
-                float depth = seaLevelWorld - distToCenter;
-                if (depth <= bestDepth)
-                    continue;
-
                 var dir = toPos / distToCenter;
                 float crustWorld = planet.SampleHeightfieldRadius(dir);
 
-                // Cave interiors / mouths are air below the heightfield shell.
-                // Ocean water is a separate sphere — density air ABOVE the crust.
                 if (planet.TrySampleWorldDensity(worldPos, out float density))
                 {
-                    bool belowCrust = distToCenter < crustWorld;
-                    if (density <= 0f || belowCrust)
+                    // Negative density is solid crust. Do not treat buried cameras as swimming.
+                    if (density <= 0f)
                         continue;
                 }
 
-                // Flooded column: between the visible crust and the sea sphere.
-                bool inOceanColumn = distToCenter >= crustWorld - 2f;
-                // Sea often sits a little inside the heightfield (this planet ~16m).
-                // Crossing that water mesh with the fly camera is still ocean;
-                // deep interior / caves are not.
-                bool clippedIntoSeaSphere = crustWorld > seaLevelWorld + 1f
-                                            && distToCenter > seaLevelWorld - 32f;
-                if (!inOceanColumn && !clippedIntoSeaSphere)
+                var waterSample = planet.SampleWaterSurface(dir);
+                if (waterSample.Mask < 0.2f)
                     continue;
 
-                var ocean = planet.OceanBiome;
+                float waterLevelWorld = waterSample.Radius * radiusScale;
+                float depth = waterLevelWorld - distToCenter;
+                // Require a real submersion so looking down a bank / grazing the
+                // surface cannot flip the full-screen underwater post.
+                if (depth < 0.35f || depth <= bestDepth)
+                    continue;
+
+                // Must be in the open water column (above the bed, below the surface).
+                // The old 32 m "clipped into water" test fired on dry slopes.
+                if (distToCenter < crustWorld - 0.75f)
+                    continue;
+                if (crustWorld > waterLevelWorld + 0.5f)
+                    continue;
+
+                var tintSource = ResolveWaterTint(planet, waterSample);
                 bestDepth = depth;
                 best = new UnderwaterState
                 {
                     Depth = depth,
-                    Tint = new SN.Vector3(ocean.UnderwaterTintR, ocean.UnderwaterTintG, ocean.UnderwaterTintB),
-                    FogDensity = ocean.UnderwaterFogDensity,
-                    CausticStrength = ocean.UnderwaterCausticStrength,
-                    Distortion = ocean.UnderwaterDistortion,
-                    Buoyancy = ocean.UnderwaterBuoyancy,
-                    Drag = ocean.UnderwaterDrag
+                    Tint = new SN.Vector3(tintSource.UnderwaterTintR, tintSource.UnderwaterTintG, tintSource.UnderwaterTintB),
+                    FogDensity = tintSource.UnderwaterFogDensity,
+                    CausticStrength = tintSource.UnderwaterCausticStrength,
+                    Distortion = tintSource.UnderwaterDistortion,
+                    Buoyancy = tintSource.UnderwaterBuoyancy,
+                    Drag = tintSource.UnderwaterDrag
                 };
             }
 
             return best;
+        }
+
+        static Biome.BiomeDefinition ResolveWaterTint(PlanetTerrain planet, PlanetWaterSurfaceSample sample)
+        {
+            var config = planet.Config;
+            if (config?.WaterBodies is { Length: > 0 }
+                && sample.BodyIndex >= 0
+                && sample.BodyIndex < config.WaterBodies.Length
+                && sample.Kind is PlanetWaterKind.Ocean or PlanetWaterKind.Lake or PlanetWaterKind.Pond)
+            {
+                var body = config.WaterBodies[sample.BodyIndex];
+                return new Biome.BiomeDefinition
+                {
+                    UnderwaterTintR = body.DeepR,
+                    UnderwaterTintG = body.DeepG,
+                    UnderwaterTintB = body.DeepB,
+                    UnderwaterFogDensity = planet.OceanBiome.UnderwaterFogDensity,
+                    UnderwaterCausticStrength = planet.OceanBiome.UnderwaterCausticStrength,
+                    UnderwaterDistortion = planet.OceanBiome.UnderwaterDistortion,
+                    UnderwaterBuoyancy = planet.OceanBiome.UnderwaterBuoyancy,
+                    UnderwaterDrag = planet.OceanBiome.UnderwaterDrag
+                };
+            }
+
+            return planet.OceanBiome;
         }
     }
 }

@@ -156,7 +156,13 @@ public sealed class DensityGenerator
                             _noise.ErosionNoise,
                             _noise.RidgeNoise,
                             _noise.BasinNoise,
-                            sphereDir));
+                            sphereDir,
+                            new PlanetWaterCarveContext
+                            {
+                                Config = _config,
+                                RiverPrimary = _noise.RiverPrimary,
+                                RiverMeander = _noise.RiverMeander
+                            }));
                     byte dominantMat = 0;
                     float dominantWeight = 0f;
 

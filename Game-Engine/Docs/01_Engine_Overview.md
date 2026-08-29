@@ -151,7 +151,9 @@ Game-Engine/
 │   │   ├── PlanetMeshGenerator.cs # Heightfield shell + stacked transvoxel
 │   │   ├── PlanetNoiseCache.cs  # Shared per-planet noise instances
 │   │   ├── PlanetSpace.cs       # World ↔ local unscaled transforms
-│   │   ├── PlanetWater.cs       # Planet water shell mesh
+│   │   ├── PlanetWater.cs       # Orbit sea-level shell; chunk patches in PlanetMeshGenerator
+│   │   ├── PlanetWaterSampler.cs # Water table, carving, shore sand
+│   │   ├── PlanetWaterTypes.cs  # WaterBody / WaterPath graph compile types
 │   │   └── QuadNode.cs          # Quadtree node state + interior LOD priority
 │   ├── Noise/                   # Procedural noise utilities
 │   │   ├── SimplexNoise.cs      # Base 2D/3D simplex noise

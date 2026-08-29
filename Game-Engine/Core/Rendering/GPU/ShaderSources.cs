@@ -2960,6 +2960,10 @@ uniform float uDepthRange;
 uniform vec4 uShallowColor;
 uniform vec4 uDeepColor;
 uniform vec4 uDeepestColor;
+uniform vec4 uBodyShallow[8];
+uniform vec4 uBodyDeep[8];
+uniform vec4 uBodyDeepest[8];
+uniform int uWaterBodyCount;
 uniform vec3 uBiomeBaseColor[8];
 uniform int uBiomeColorCount;
 uniform float uShorelineThreshold;
@@ -3064,20 +3068,38 @@ void main()
     float noiseVal = fract(sin(dot(vec2(tCoord, bCoord) * 0.1, vec2(12.9898, 78.233))) * 43758.5453);
     apparentDepth = clamp(apparentDepth + noiseVal * 0.1 - 0.05, 0.0, 1.0);
 
+    int shorelineBiomeIdx = int(mod(vUV.x, 8.0));
+    int bodyIdx = int(vUV.x / 8.0);
+    vec4 shallowCol = uShallowColor;
+    vec4 deepCol = uDeepColor;
+    vec4 deepestCol = uDeepestColor;
+    float waterMask = clamp(vUV.y, 0.0, 1.0);
+    if (waterMask < 0.02) discard;
+    if (uWaterBodyCount > 0)
+    {
+        int clampedBody = clamp(bodyIdx, 0, min(7, uWaterBodyCount - 1));
+        if (clampedBody == 0) { shallowCol = uBodyShallow[0]; deepCol = uBodyDeep[0]; deepestCol = uBodyDeepest[0]; }
+        else if (clampedBody == 1) { shallowCol = uBodyShallow[1]; deepCol = uBodyDeep[1]; deepestCol = uBodyDeepest[1]; }
+        else if (clampedBody == 2) { shallowCol = uBodyShallow[2]; deepCol = uBodyDeep[2]; deepestCol = uBodyDeepest[2]; }
+        else if (clampedBody == 3) { shallowCol = uBodyShallow[3]; deepCol = uBodyDeep[3]; deepestCol = uBodyDeepest[3]; }
+        else if (clampedBody == 4) { shallowCol = uBodyShallow[4]; deepCol = uBodyDeep[4]; deepestCol = uBodyDeepest[4]; }
+        else if (clampedBody == 5) { shallowCol = uBodyShallow[5]; deepCol = uBodyDeep[5]; deepestCol = uBodyDeepest[5]; }
+        else if (clampedBody == 6) { shallowCol = uBodyShallow[6]; deepCol = uBodyDeep[6]; deepestCol = uBodyDeepest[6]; }
+        else { shallowCol = uBodyShallow[7]; deepCol = uBodyDeep[7]; deepestCol = uBodyDeepest[7]; }
+    }
+
     vec3 waterColor;
     if (apparentDepth < 0.4)
-        waterColor = mix(uShallowColor.rgb, uDeepColor.rgb, apparentDepth * 2.5);
+        waterColor = mix(shallowCol.rgb, deepCol.rgb, apparentDepth * 2.5);
     else
-        waterColor = mix(uDeepColor.rgb, uDeepestColor.rgb, (apparentDepth - 0.4) * 1.67);
+        waterColor = mix(deepCol.rgb, deepestCol.rgb, (apparentDepth - 0.4) * 1.67);
 
-    int shorelineBiomeIdx = int(clamp(floor(vUV.x + 0.5), 0.0, 7.0));
     vec3 shorelineBiomeColor = sampleBiomeColor(shorelineBiomeIdx);
-    float waterMask = clamp(vUV.y, 0.0, 1.0);
     float shoreWetness = smoothstep(
         max(0.0, uShorelineThreshold - uShorelineSoftness),
         min(1.0, uShorelineThreshold + uShorelineSoftness),
         waterMask);
-    vec3 shoreTint = mix(uShallowColor.rgb, shorelineBiomeColor, clamp(uShoreBiomeBlend, 0.0, 1.0));
+    vec3 shoreTint = mix(shallowCol.rgb, shorelineBiomeColor, clamp(uShoreBiomeBlend, 0.0, 1.0));
     waterColor = mix(shoreTint, waterColor, shoreWetness);
 
     if (uHasWaterTexture == 1)

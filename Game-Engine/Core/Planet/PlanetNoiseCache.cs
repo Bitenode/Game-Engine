@@ -17,6 +17,8 @@ public sealed class PlanetNoiseCache
     public FractalNoise CaveWormNoise { get; }
     public FractalNoise CaveCavernNoise { get; }
     public FractalNoise CaveDetailNoise { get; }
+    public SimplexNoise RiverPrimary { get; }
+    public SimplexNoise RiverMeander { get; }
 
     PlanetNoiseCache(
         FractalNoise[] biomeNoises,
@@ -26,7 +28,9 @@ public sealed class PlanetNoiseCache
         FractalNoise caveCellNoise,
         FractalNoise caveWormNoise,
         FractalNoise caveCavernNoise,
-        FractalNoise caveDetailNoise)
+        FractalNoise caveDetailNoise,
+        SimplexNoise riverPrimary,
+        SimplexNoise riverMeander)
     {
         BiomeNoises = biomeNoises;
         ErosionNoise = erosionNoise;
@@ -36,6 +40,8 @@ public sealed class PlanetNoiseCache
         CaveWormNoise = caveWormNoise;
         CaveCavernNoise = caveCavernNoise;
         CaveDetailNoise = caveDetailNoise;
+        RiverPrimary = riverPrimary;
+        RiverMeander = riverMeander;
     }
 
     public static PlanetNoiseCache Create(PlanetConfig config)
@@ -121,6 +127,9 @@ public sealed class PlanetNoiseCache
             Mode = FractalMode.FBM,
         };
 
+        var riverPrimary = new SimplexNoise(seed + 10000);
+        var riverMeander = new SimplexNoise(seed + 11000);
+
         return new PlanetNoiseCache(
             biomeNoises,
             erosionNoise,
@@ -129,7 +138,9 @@ public sealed class PlanetNoiseCache
             caveCellNoise,
             caveWormNoise,
             caveCavernNoise,
-            caveDetailNoise);
+            caveDetailNoise,
+            riverPrimary,
+            riverMeander);
     }
 
     public static FractalMode ParseMode(string mode) => mode switch

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Game_Engine.Core.Planet;
 
 namespace Game_Engine.Core.Biome.Graph;
 
@@ -43,6 +44,9 @@ public sealed class BiomeGraphResult
     public float RiverMeander { get; set; } = 0.5f;
     public string[] RiverAllowedBiomes { get; set; } = Array.Empty<string>();
     public bool HasRiver { get; set; } = false;
+
+    public PlanetWaterBody[] WaterBodies { get; set; } = Array.Empty<PlanetWaterBody>();
+    public PlanetWaterPath[] WaterPaths { get; set; } = Array.Empty<PlanetWaterPath>();
 }
 
 public sealed class BiomeLayerInfo
@@ -116,6 +120,7 @@ public sealed class BiomeGraph
     {
         if (!from.IsOutput || to.IsOutput) return false;
         if (from.Owner == to.Owner) return false;
+        if (from.DataType != to.DataType) return false;
 
         if (to.Connection != null) Disconnect(to);
 
@@ -294,21 +299,221 @@ public sealed class BiomeGraph
         }
         result.Layers = layers.ToArray();
 
-        foreach (var node in Nodes)
+        CompileWater(result, output);
+
+        return result;
+    }
+
+    void CompileWater(BiomeGraphResult result, BiomeOutputNode output)
+    {
+        var collected = new List<BiomeNode>();
+        var visited = new HashSet<string>();
+
+        BiomePort? waterPort = output.Inputs.FirstOrDefault(p => p.Name == "Water");
+        if (waterPort?.Connection != null)
+            CollectWaterFromPort(waterPort, collected, visited);
+        else
         {
-            if (node is BiomeRiverNode rn)
+            foreach (var node in Nodes)
             {
-                result.HasRiver = true;
-                result.RiverWidth = rn.RiverWidth;
-                result.RiverDepth = rn.RiverDepth;
-                result.RiverFrequency = rn.Frequency;
-                result.RiverMeander = rn.Meander;
-                if (!string.IsNullOrWhiteSpace(rn.AllowedBiomes))
-                    result.RiverAllowedBiomes = rn.AllowedBiomes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                if (node is BiomeWaterBodyNode or BiomeWaterPathNode or BiomeRiverNode)
+                    collected.Add(node);
             }
         }
 
-        return result;
+        var bodies = new List<PlanetWaterBody>();
+        var paths = new List<PlanetWaterPath>();
+        var shoreOverrides = new List<BiomeShoreNode>();
+
+        foreach (var node in collected)
+        {
+            switch (node)
+            {
+                case BiomeWaterBodyNode wb:
+                    bodies.Add(ConvertWaterBody(wb));
+                    break;
+                case BiomeWaterPathNode wp:
+                    paths.Add(ConvertWaterPath(wp));
+                    break;
+                case BiomeRiverNode rn:
+                    paths.Add(ConvertRiver(rn));
+                    break;
+                case BiomeShoreNode sh:
+                    shoreOverrides.Add(sh);
+                    break;
+            }
+        }
+
+        foreach (var shore in shoreOverrides)
+        {
+            var bodyNode = FindUpstreamWaterBody(shore);
+            if (bodyNode == null) continue;
+            int bodyIdx = 0;
+            for (int i = 0; i < collected.Count; i++)
+            {
+                if (collected[i] is BiomeWaterBodyNode wb && wb.Id == bodyNode.Id)
+                    break;
+                if (collected[i] is BiomeWaterBodyNode)
+                    bodyIdx++;
+            }
+            if (bodyIdx < bodies.Count)
+            {
+                if (!string.IsNullOrWhiteSpace(shore.ShoreBiomeName))
+                    bodies[bodyIdx].ShoreBiomeName = shore.ShoreBiomeName;
+                if (shore.ShoreWidth > 0f)
+                    bodies[bodyIdx].ShoreWidth = shore.ShoreWidth;
+            }
+
+            if (!string.IsNullOrWhiteSpace(shore.TexturePath) || shore.Tiling > 0f)
+            {
+                string biomeName = string.IsNullOrWhiteSpace(shore.ShoreBiomeName) ? "Beach" : shore.ShoreBiomeName;
+                for (int li = 0; li < result.Layers.Length; li++)
+                {
+                    if (!string.Equals(result.Layers[li].BiomeName, biomeName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (!string.IsNullOrWhiteSpace(shore.TexturePath))
+                        result.Layers[li].AlbedoPath = shore.TexturePath;
+                    if (shore.Tiling > 0f)
+                        result.Layers[li].Tiling = shore.Tiling;
+                    break;
+                }
+            }
+        }
+
+        result.WaterBodies = bodies.Take(PlanetWaterSampler.MaxWaterBodies).ToArray();
+        result.WaterPaths = paths.Take(PlanetWaterSampler.MaxWaterPaths).ToArray();
+
+        if (paths.Count > 0)
+        {
+            var first = paths[0];
+            result.HasRiver = true;
+            result.RiverWidth = first.Width;
+            result.RiverDepth = first.Depth;
+            result.RiverFrequency = first.Frequency;
+            result.RiverMeander = first.Meander;
+            result.RiverAllowedBiomes = first.AllowedBiomes;
+        }
+        else
+        {
+            foreach (var node in Nodes)
+            {
+                if (node is BiomeRiverNode rn)
+                {
+                    result.HasRiver = true;
+                    result.RiverWidth = rn.RiverWidth;
+                    result.RiverDepth = rn.RiverDepth;
+                    result.RiverFrequency = rn.Frequency;
+                    result.RiverMeander = rn.Meander;
+                    if (!string.IsNullOrWhiteSpace(rn.AllowedBiomes))
+                        result.RiverAllowedBiomes = rn.AllowedBiomes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                    break;
+                }
+            }
+        }
+    }
+
+    static BiomeWaterBodyNode? FindUpstreamWaterBody(BiomeShoreNode shore)
+    {
+        var port = shore.Inputs.Count > 0 ? shore.Inputs[0].Connection : null;
+        while (port != null)
+        {
+            if (port.Owner is BiomeWaterBodyNode wb)
+                return wb;
+            if (port.Owner is BiomeWaterMergeNode merge)
+            {
+                port = merge.Inputs[0].Connection ?? merge.Inputs[1].Connection;
+                continue;
+            }
+            if (port.Owner is BiomeShoreNode innerShore)
+            {
+                port = innerShore.Inputs[0].Connection;
+                continue;
+            }
+            break;
+        }
+        return null;
+    }
+
+    static void CollectWaterFromPort(BiomePort port, List<BiomeNode> collected, HashSet<string> visited)
+    {
+        var from = port.Connection;
+        if (from == null) return;
+        var owner = from.Owner;
+        if (!visited.Add(owner.Id)) return;
+
+        switch (owner)
+        {
+            case BiomeWaterBodyNode:
+            case BiomeWaterPathNode:
+            case BiomeRiverNode:
+            case BiomeShoreNode:
+                collected.Add(owner);
+                if (owner is BiomeShoreNode shore && shore.Inputs[0].Connection != null)
+                    CollectWaterFromPort(shore.Inputs[0], collected, visited);
+                break;
+            case BiomeWaterMergeNode merge:
+                if (merge.Inputs[0].Connection != null)
+                    CollectWaterFromPort(merge.Inputs[0], collected, visited);
+                if (merge.Inputs[1].Connection != null)
+                    CollectWaterFromPort(merge.Inputs[1], collected, visited);
+                break;
+        }
+    }
+
+    static PlanetWaterBody ConvertWaterBody(BiomeWaterBodyNode node)
+    {
+        var kind = Enum.TryParse<PlanetWaterBodyKind>(node.Kind, true, out var parsed)
+            ? parsed
+            : PlanetWaterBodyKind.Ocean;
+        return new PlanetWaterBody
+        {
+            Kind = kind,
+            FillFraction = node.FillFraction,
+            MaskBiomes = SplitCsv(node.AllowedBiomes),
+            MinBasinDepth = node.MinBasinDepth,
+            ShallowR = node.ShallowR,
+            ShallowG = node.ShallowG,
+            ShallowB = node.ShallowB,
+            DeepR = node.DeepR,
+            DeepG = node.DeepG,
+            DeepB = node.DeepB,
+            DeepestR = node.DeepestR,
+            DeepestG = node.DeepestG,
+            DeepestB = node.DeepestB,
+            ShoreBiomeName = string.IsNullOrWhiteSpace(node.ShoreBiomeName) ? "Beach" : node.ShoreBiomeName,
+            ShoreWidth = node.ShoreWidth
+        };
+    }
+
+    static PlanetWaterPath ConvertWaterPath(BiomeWaterPathNode node) => new()
+    {
+        Width = node.Width,
+        Depth = node.Depth,
+        Frequency = node.Frequency,
+        Meander = node.Meander,
+        AllowedBiomes = SplitCsv(node.AllowedBiomes),
+        SandWidth = node.SandWidth,
+        SandBiomeName = string.IsNullOrWhiteSpace(node.SandBiomeName) ? "Beach" : node.SandBiomeName,
+        FlowToOcean = node.FlowToOcean
+    };
+
+    static PlanetWaterPath ConvertRiver(BiomeRiverNode node) => new()
+    {
+        Width = node.RiverWidth,
+        Depth = node.RiverDepth,
+        Frequency = node.Frequency,
+        Meander = node.Meander,
+        AllowedBiomes = SplitCsv(node.AllowedBiomes),
+        SandWidth = node.SandWidth,
+        SandBiomeName = string.IsNullOrWhiteSpace(node.SandBiomeName) ? "Beach" : node.SandBiomeName,
+        FlowToOcean = node.FlowToOcean
+    };
+
+    static string[] SplitCsv(string csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv))
+            return Array.Empty<string>();
+        return csv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
     }
 
     /// <summary>Create a default graph with standard biome generation nodes.</summary>
@@ -464,6 +669,10 @@ public sealed class BiomeGraph
         BiomeErosionNode => "Erosion",
         BiomeMaskNode => "Mask",
         BiomeRiverNode => "River",
+        BiomeWaterBodyNode => "WaterBody",
+        BiomeWaterPathNode => "WaterPath",
+        BiomeShoreNode => "Shore",
+        BiomeWaterMergeNode => "WaterMerge",
         BiomeOutputNode => "Output",
         _ => "Unknown",
     };
@@ -485,6 +694,10 @@ public sealed class BiomeGraph
         "Erosion" => new BiomeErosionNode(),
         "Mask" => new BiomeMaskNode(),
         "River" => new BiomeRiverNode(),
+        "WaterBody" => new BiomeWaterBodyNode(),
+        "WaterPath" => new BiomeWaterPathNode(),
+        "Shore" => new BiomeShoreNode(),
+        "WaterMerge" => new BiomeWaterMergeNode(),
         "Output" => new BiomeOutputNode(),
         _ => null,
     };
@@ -545,7 +758,36 @@ public sealed class BiomeGraph
             case BiomeRiverNode n:
                 obj["riverWidth"] = n.RiverWidth; obj["riverDepth"] = n.RiverDepth;
                 obj["frequency"] = n.Frequency; obj["meander"] = n.Meander;
-                obj["allowedBiomes"] = n.AllowedBiomes; break;
+                obj["allowedBiomes"] = n.AllowedBiomes;
+                obj["sandWidth"] = n.SandWidth;
+                obj["sandBiome"] = n.SandBiomeName;
+                obj["flowToOcean"] = n.FlowToOcean;
+                break;
+            case BiomeWaterBodyNode n:
+                obj["kind"] = n.Kind;
+                obj["fillFraction"] = n.FillFraction;
+                obj["allowedBiomes"] = n.AllowedBiomes;
+                obj["minBasinDepth"] = n.MinBasinDepth;
+                obj["shallowR"] = n.ShallowR; obj["shallowG"] = n.ShallowG; obj["shallowB"] = n.ShallowB;
+                obj["deepR"] = n.DeepR; obj["deepG"] = n.DeepG; obj["deepB"] = n.DeepB;
+                obj["deepestR"] = n.DeepestR; obj["deepestG"] = n.DeepestG; obj["deepestB"] = n.DeepestB;
+                obj["shoreBiome"] = n.ShoreBiomeName;
+                obj["shoreWidth"] = n.ShoreWidth;
+                break;
+            case BiomeWaterPathNode n:
+                obj["width"] = n.Width; obj["depth"] = n.Depth;
+                obj["frequency"] = n.Frequency; obj["meander"] = n.Meander;
+                obj["allowedBiomes"] = n.AllowedBiomes;
+                obj["sandWidth"] = n.SandWidth;
+                obj["sandBiome"] = n.SandBiomeName;
+                obj["flowToOcean"] = n.FlowToOcean;
+                break;
+            case BiomeShoreNode n:
+                obj["shoreBiome"] = n.ShoreBiomeName;
+                obj["shoreWidth"] = n.ShoreWidth;
+                obj["texturePath"] = n.TexturePath;
+                obj["tiling"] = n.Tiling;
+                break;
         }
     }
 
@@ -626,7 +868,44 @@ public sealed class BiomeGraph
                 n.RiverDepth = item["riverDepth"]?.GetValue<float>() ?? 5f;
                 n.Frequency = item["frequency"]?.GetValue<float>() ?? 0.003f;
                 n.Meander = item["meander"]?.GetValue<float>() ?? 0.5f;
-                n.AllowedBiomes = item["allowedBiomes"]?.GetValue<string>() ?? ""; break;
+                n.AllowedBiomes = item["allowedBiomes"]?.GetValue<string>() ?? "";
+                n.SandWidth = item["sandWidth"]?.GetValue<float>() ?? 0.04f;
+                n.SandBiomeName = item["sandBiome"]?.GetValue<string>() ?? "Beach";
+                n.FlowToOcean = item["flowToOcean"]?.GetValue<bool>() ?? true;
+                break;
+            case BiomeWaterBodyNode n:
+                n.Kind = item["kind"]?.GetValue<string>() ?? "Ocean";
+                n.FillFraction = item["fillFraction"]?.GetValue<float>() ?? 0.55f;
+                n.AllowedBiomes = item["allowedBiomes"]?.GetValue<string>() ?? "";
+                n.MinBasinDepth = item["minBasinDepth"]?.GetValue<float>() ?? 8f;
+                n.ShallowR = item["shallowR"]?.GetValue<float>() ?? 0.08f;
+                n.ShallowG = item["shallowG"]?.GetValue<float>() ?? 0.30f;
+                n.ShallowB = item["shallowB"]?.GetValue<float>() ?? 0.38f;
+                n.DeepR = item["deepR"]?.GetValue<float>() ?? 0.02f;
+                n.DeepG = item["deepG"]?.GetValue<float>() ?? 0.08f;
+                n.DeepB = item["deepB"]?.GetValue<float>() ?? 0.22f;
+                n.DeepestR = item["deepestR"]?.GetValue<float>() ?? 0.01f;
+                n.DeepestG = item["deepestG"]?.GetValue<float>() ?? 0.04f;
+                n.DeepestB = item["deepestB"]?.GetValue<float>() ?? 0.12f;
+                n.ShoreBiomeName = item["shoreBiome"]?.GetValue<string>() ?? "Beach";
+                n.ShoreWidth = item["shoreWidth"]?.GetValue<float>() ?? 0.08f;
+                break;
+            case BiomeWaterPathNode n:
+                n.Width = item["width"]?.GetValue<float>() ?? 0.02f;
+                n.Depth = item["depth"]?.GetValue<float>() ?? 5f;
+                n.Frequency = item["frequency"]?.GetValue<float>() ?? 0.003f;
+                n.Meander = item["meander"]?.GetValue<float>() ?? 0.5f;
+                n.AllowedBiomes = item["allowedBiomes"]?.GetValue<string>() ?? "";
+                n.SandWidth = item["sandWidth"]?.GetValue<float>() ?? 0.04f;
+                n.SandBiomeName = item["sandBiome"]?.GetValue<string>() ?? "Beach";
+                n.FlowToOcean = item["flowToOcean"]?.GetValue<bool>() ?? true;
+                break;
+            case BiomeShoreNode n:
+                n.ShoreBiomeName = item["shoreBiome"]?.GetValue<string>() ?? "Beach";
+                n.ShoreWidth = item["shoreWidth"]?.GetValue<float>() ?? 0.08f;
+                n.TexturePath = item["texturePath"]?.GetValue<string>() ?? "";
+                n.Tiling = item["tiling"]?.GetValue<float>() ?? 28f;
+                break;
         }
     }
 }

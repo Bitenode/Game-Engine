@@ -284,10 +284,33 @@
       "x": 300,
       "y": 960,
       "riverWidth": 0.02,
-      "riverDepth": 5,
+      "riverDepth": 6,
       "frequency": 0.003,
       "meander": 0.5,
-      "allowedBiomes": "Grassland, Forest, Mountains, Tundra"
+      "allowedBiomes": "Grassland, Forest, Mountains, Tundra",
+      "sandWidth": 0.04,
+      "sandBiome": "Beach",
+      "flowToOcean": true
+    },
+    {
+      "type": "WaterBody",
+      "id": "water_ocean",
+      "name": "Ocean Body",
+      "x": 520,
+      "y": 900,
+      "kind": "Ocean",
+      "fillFraction": 0.55,
+      "allowedBiomes": "Ocean",
+      "minBasinDepth": 0,
+      "shoreBiome": "Beach",
+      "shoreWidth": 0.08
+    },
+    {
+      "type": "WaterMerge",
+      "id": "water_merge",
+      "name": "Water Merge",
+      "x": 680,
+      "y": 930
     },
     {
       "type": "Output",
@@ -381,6 +404,24 @@
       "fromPort": "NormalizedAlt",
       "toNode": "select1",
       "toPort": "Altitude"
+    },
+    {
+      "fromNode": "water_ocean",
+      "fromPort": "Water",
+      "toNode": "water_merge",
+      "toPort": "A"
+    },
+    {
+      "fromNode": "river1",
+      "fromPort": "Water",
+      "toNode": "water_merge",
+      "toPort": "B"
+    },
+    {
+      "fromNode": "water_merge",
+      "fromPort": "Water",
+      "toNode": "output1",
+      "toPort": "Water"
     }
   ]
 }

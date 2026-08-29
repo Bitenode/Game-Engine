@@ -64,4 +64,28 @@ public static class PlanetSurfaceUtility
 
         return height;
     }
+
+    public static float SampleHeight(
+        PlanetConfig config,
+        BiomeMap biomeMap,
+        FractalNoise[] biomeNoises,
+        FractalNoise? erosionNoise,
+        FractalNoise? ridgeNoise,
+        FractalNoise? basinNoise,
+        SN.Vector3 sphereDir,
+        PlanetWaterCarveContext? waterCarve)
+    {
+        float height = SampleHeight(
+            config, biomeMap, biomeNoises, erosionNoise, ridgeNoise, basinNoise, sphereDir);
+        if (waterCarve == null)
+            return height;
+
+        return PlanetWaterSampler.ApplyWaterCarving(
+            height,
+            sphereDir,
+            waterCarve.Config,
+            biomeMap,
+            waterCarve.RiverPrimary,
+            waterCarve.RiverMeander);
+    }
 }

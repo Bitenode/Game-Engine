@@ -1967,21 +1967,6 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
             }
 
-            // --- PLANET WATER ---
-            if (_planetWaterShader != null)
-            {
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config == null) continue;
-                    var tp = planet.gameObject?.Transform?.Position;
-                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
-                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
-                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                        pc, planet.Config.SeaLevel);
-                }
-            }
-
             if (_planetAtmosphereShader != null)
             {
                 foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -2005,6 +1990,21 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
                     SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache,
                         view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
+                }
+            }
+
+            // Planet water after atmosphere/cloud shells so haze does not cover the surface.
+            if (_planetWaterShader != null)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    var tp = planet.gameObject?.Transform?.Position;
+                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
+                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
+                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                        pc, planet.Config.SeaLevel);
                 }
             }
 

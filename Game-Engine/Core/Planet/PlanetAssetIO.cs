@@ -11,7 +11,7 @@ public sealed class PlanetAssetData
 
     public int Version { get; set; } = CurrentVersion;
     public string BiomeGraphPath { get; set; } = "";
-    public float SeaLevelFraction { get; set; } = 0.25f;
+    public float SeaLevelFraction { get; set; } = 0.55f;
     public bool EnableWater { get; set; } = true;
     public PlanetConfig Config { get; set; } = new();
     public PlanetVegetationAssetData Vegetation { get; set; } = new();
@@ -106,6 +106,8 @@ public static class PlanetAssetIO
                 data.Config = new PlanetConfig();
             data.Config.Biomes ??= BiomeDefinition.AllPresets;
             data.Config.RiverAllowedBiomes ??= Array.Empty<string>();
+            data.Config.WaterBodies ??= Array.Empty<PlanetWaterBody>();
+            data.Config.WaterPaths ??= Array.Empty<PlanetWaterPath>();
             if (data.Vegetation == null)
                 data.Vegetation = new PlanetVegetationAssetData();
             if (data.Vegetation.Placements == null)
@@ -142,6 +144,8 @@ public static class PlanetAssetIO
             data.Config ??= new PlanetConfig();
             data.Config.Biomes ??= BiomeDefinition.AllPresets;
             data.Config.RiverAllowedBiomes ??= Array.Empty<string>();
+            data.Config.WaterBodies ??= Array.Empty<PlanetWaterBody>();
+            data.Config.WaterPaths ??= Array.Empty<PlanetWaterPath>();
             data.Vegetation ??= new PlanetVegetationAssetData();
             data.Vegetation.Placements ??= Array.Empty<PlanetVegetationPlacement>();
             for (int i = 0; i < data.Vegetation.Placements.Length; i++)

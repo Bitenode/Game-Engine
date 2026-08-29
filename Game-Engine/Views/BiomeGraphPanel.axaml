@@ -6,7 +6,7 @@
 		<!-- Toolbar -->
 		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="8">
 			<TextBlock Text="Biome Graph" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
-			<ComboBox x:Name="NodeTypeCombo" Width="130" SelectedIndex="0">
+			<ComboBox x:Name="NodeTypeCombo" Width="148" SelectedIndex="0">
 				<ComboBoxItem Content="Noise" />
 				<ComboBoxItem Content="Coordinate" />
 				<ComboBoxItem Content="Temperature" />
@@ -22,6 +22,10 @@
 				<ComboBoxItem Content="Erosion" />
 				<ComboBoxItem Content="Mask" />
 				<ComboBoxItem Content="River" />
+				<ComboBoxItem Content="Water Body" />
+				<ComboBoxItem Content="Water Path" />
+				<ComboBoxItem Content="Shore" />
+				<ComboBoxItem Content="Water Merge" />
 			</ComboBox>
 			<Button x:Name="AddNodeBtn" Content="Add Node" Padding="8,4" />
 			<Button x:Name="DeleteNodeBtn" Content="Delete" Padding="8,4" />

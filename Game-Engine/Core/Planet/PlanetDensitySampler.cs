@@ -19,8 +19,10 @@ public sealed class PlanetDensitySampler
     readonly FractalNoise? _erosionNoise;
     readonly FractalNoise? _ridgeNoise;
     readonly FractalNoise? _basinNoise;
-    readonly PlanetNoiseCache? _noise;
     readonly PlanetVoxelEditStore? _editStore;
+    readonly PlanetNoiseCache? _noise;
+    readonly Noise.SimplexNoise? _riverPrimary;
+    readonly Noise.SimplexNoise? _riverMeander;
 
     public PlanetDensitySampler(
         PlanetConfig config,
@@ -69,7 +71,36 @@ public sealed class PlanetDensitySampler
         _basinNoise = basinNoise;
         _editStore = editStore;
         _noise = noise;
+        if (noise != null)
+        {
+            _riverPrimary = noise.RiverPrimary;
+            _riverMeander = noise.RiverMeander;
+        }
+        else if (config.NeedsRiverNoise)
+        {
+            int seed = config.Seed;
+            _riverPrimary = new Noise.SimplexNoise(seed + 10000);
+            _riverMeander = new Noise.SimplexNoise(seed + 11000);
+        }
     }
+
+    PlanetWaterCarveContext CreateCarveContext() => new()
+    {
+        Config = _config,
+        RiverPrimary = _riverPrimary,
+        RiverMeander = _riverMeander
+    };
+
+    float SampleCarvedHeight(SN.Vector3 sphereDir) =>
+        PlanetSurfaceUtility.SampleHeight(
+            _config,
+            _biomeMap,
+            _biomeNoises,
+            _erosionNoise,
+            _ridgeNoise,
+            _basinNoise,
+            sphereDir,
+            CreateCarveContext());
 
     /// <summary>Procedural crust density only (no caves, no paint strokes).</summary>
     public float SampleProceduralDensity(SN.Vector3 localPos)
@@ -79,14 +110,7 @@ public sealed class PlanetDensitySampler
             return 1f;
 
         var dir = localPos / len;
-        float baseHeight = PlanetSurfaceUtility.SampleHeight(
-            _config,
-            _biomeMap,
-            _biomeNoises,
-            _erosionNoise,
-            _ridgeNoise,
-            _basinNoise,
-            dir);
+        float baseHeight = SampleCarvedHeight(dir);
 
         return len - (_config.Radius + baseHeight);
     }
@@ -104,6 +128,34 @@ public sealed class PlanetDensitySampler
         return density;
     }
 
+    public (int biomeIndex, float weight)? SampleShoreSandBias(SN.Vector3 sphereDir)
+    {
+        if (sphereDir.LengthSquared() < 1e-12f)
+            return null;
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        float terrainR = _config.Radius + SampleCarvedHeight(sphereDir);
+        return PlanetWaterSampler.SampleSandWeight(
+            sphereDir,
+            _config,
+            _biomeMap,
+            terrainR,
+            _riverPrimary,
+            _riverMeander,
+            ResolveBiomeIndex);
+    }
+
+    int ResolveBiomeIndex(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return -1;
+        for (int i = 0; i < _config.Biomes.Length; i++)
+        {
+            if (string.Equals(_config.Biomes[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
     /// <summary>
     /// Outer crust radius along <paramref name="sphereDir"/>, including paint strokes
     /// but not worm caves (those must not punch the heightfield shell).
@@ -114,14 +166,7 @@ public sealed class PlanetDensitySampler
         if (lenSq < 1e-12f)
             return _config.Radius;
         var dir = sphereDir / MathF.Sqrt(lenSq);
-        float height = PlanetSurfaceUtility.SampleHeight(
-            _config,
-            _biomeMap,
-            _biomeNoises,
-            _erosionNoise,
-            _ridgeNoise,
-            _basinNoise,
-            dir);
+        float height = SampleCarvedHeight(dir);
         float r0 = _config.Radius + height;
         if (_editStore == null || (_editStore.SphereEditCount == 0 && _editStore.BakedCellCount == 0))
             return r0;

@@ -414,7 +414,7 @@ Physics body component with force/impulse integration, trigger events, collider 
 - Finds nearest active `PlanetTerrain`
 - Applies gravity along `-LocalUp`
 - Grounds with `Spherecast` / `RaycastDensity` along `-LocalUp` and `ResolveDensityPenetration` (floors, walls, ceilings throughout the interior)
-- Uses scale-aware planet radius/sea-level queries for underwater state (`UnderwaterQuery` — caves and deep interior stay dry on land)
+- Uses `UnderwaterQuery` for swim physics and post FX (local water table, ≥ 0.35 m submersion, open water column; caves and dry slopes stay dry)
 
 **Events:**
 - `OnTriggerEnter(Collider)`, `OnTriggerStay(Collider)`, `OnTriggerExit(Collider)`
@@ -448,13 +448,13 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 | Property                | Type    | Default | Description |
 |-------------------------|---------|---------|-------------|
 | `Radius`                | `float` | `1000`  | Base planet radius |
-| `SeaLevelFraction`      | `float` | `0.25`  | Sea level fraction of terrain min/max range |
+| `SeaLevelFraction`      | `float` | `0.55`  | Sea level fraction of terrain min/max range (overridden by graph ocean `FillFraction` when present) |
 | `MaxLodDepth`           | `int`   | `6`     | Maximum quadtree LOD depth |
 | `ChunkSize`             | `int`   | `32`    | Chunk mesh/voxel resolution |
 | `LodDistanceMultiplier` | `float` | `5.0`   | LOD split tuning |
 | `Seed`                  | `int`   | `42`    | Planet generation seed |
 | `EnableCaves`           | `bool`  | `true`  | Enable interior cave carving (per-biome `CavesEnabled` still applies) |
-| `EnableWater`           | `bool`  | `true`  | Spawn ocean shell mesh |
+| `EnableWater`           | `bool`  | `true`  | Enable planet water (orbit shell + per-chunk patches) |
 | `MaxActiveChunks`       | `int`   | `120`   | Hard cap of active runtime chunk meshes |
 | `PlanetAssetPath`       | `string`| `""`    | `.planet` path for loading/saving planet config + style references |
 | `BiomeGraphPath`        | `string`| `""`    | `.biomegraph` path to load/auto-apply |
@@ -483,7 +483,8 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 - `TryLoadBiomeGraph()` — load, compile, and apply graph data
 - `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
 - `SampleSurfaceRadius(sphereDir)` — **outermost** crust radius (water, orbit, atmosphere, vegetation estimates). Not cave contact
-- `SampleWaterMask(sphereDir)` — biome/river water coverage mask used by planet water shading
+- `SampleWaterSurface(sphereDir)` — local water table sample (radius, mask, kind, body index) for rendering and underwater queries
+- `SampleWaterMask(sphereDir)` — shorthand water coverage mask
 - `UpdateLOD(cameraPos)` — camera position for the chunk streamer
 - `RefreshLodAroundCamera(cameraPos)` — editor/play LOD refresh with interior chunk budgets
 - `UpdateSceneViewLod(cameraPos)` — Scene View always runs real quadtree LOD
@@ -496,7 +497,8 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 
 **Runtime rendering note:**
 - Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches.
-- Planet water uses a continuous shell mesh with shoreline blending in shader for smooth coast transitions.
+- **Planet water (two-tier):** near the camera, each renderable leaf may draw `GeneratedWaterMesh` built from the same patch grid as terrain; from orbit or when far, the uniform sea-level shell on `WaterGO` is used instead.
+- Water is drawn after planet atmosphere and clouds; chunk patches skip very coarse parent cells under the camera to avoid shard artifacts.
 - Interior cave lighting skips atmosphere below crust, applies cavity AO, and planet leaves participate in the shadow depth pass.
 
 See the Planet System doc for full pipeline details.

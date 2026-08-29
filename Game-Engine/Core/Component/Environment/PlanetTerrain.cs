@@ -27,7 +27,7 @@ public sealed class PlanetTerrain : Behavior
     public static void ResetPlanetNetworkStatics() => _registeredPlanetNetRpcs = false;
 
     [Persist] public float Radius { get; set; } = 1000f;
-    [Persist] public float SeaLevelFraction { get; set; } = 0.25f;
+    [Persist] public float SeaLevelFraction { get; set; } = 0.55f;
     [Persist] public int MaxLodDepth { get; set; } = 6;
     [Persist] public int ChunkSize { get; set; } = 32;
     [Persist] public float LodDistanceMultiplier { get; set; } = 5.0f;
@@ -230,6 +230,8 @@ public sealed class PlanetTerrain : Behavior
         _config.MaxVegetationSpawnsPerUpdate = MaxVegetationSpawnsPerUpdate;
         _config.Biomes = CloneBiomes(_config.Biomes);
         _config.RiverAllowedBiomes = _config.RiverAllowedBiomes?.ToArray() ?? Array.Empty<string>();
+        _config.WaterBodies = CloneWaterBodies(_config.WaterBodies);
+        _config.WaterPaths = CloneWaterPaths(_config.WaterPaths);
         _voxelEditStore ??= new PlanetVoxelEditStore();
 
         // If a graph path is present, apply it immediately so runtime/game view
@@ -252,9 +254,13 @@ public sealed class PlanetTerrain : Behavior
             _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
             RebuildPhysicsNoise();
         }
+        else if (_riverNoisePrimary == null && _config.NeedsRiverNoise)
+        {
+            RebuildPhysicsNoise();
+        }
 
-        if (EnableWater && WaterGO == null)
-            SetupWater();
+        if (EnableWater)
+            RebuildWater();
 
         ApplyPendingVegetationAssetData();
         WireSurfaceStreaming();
@@ -399,8 +405,52 @@ public sealed class PlanetTerrain : Behavior
             _densitySampler = new PlanetDensitySampler(_config, _biomeMap, _noiseCache, _voxelEditStore);
         }
 
-        _riverNoisePrimary = _config.HasRiver ? new Noise.SimplexNoise(seed + 10000) : null;
-        _riverNoiseMeander = _config.HasRiver ? new Noise.SimplexNoise(seed + 11000) : null;
+        _riverNoisePrimary = _noiseCache?.RiverPrimary
+            ?? (_config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 10000) : null);
+        _riverNoiseMeander = _noiseCache?.RiverMeander
+            ?? (_config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 11000) : null);
+    }
+
+    PlanetWaterCarveContext CreateWaterCarveContext() => new()
+    {
+        Config = _config!,
+        RiverPrimary = _riverNoisePrimary,
+        RiverMeander = _riverNoiseMeander
+    };
+
+    float SampleCarvedHeight(SN.Vector3 sphereDir)
+    {
+        if (_config == null || _biomeMap == null || _biomeNoises == null)
+            return 0f;
+        return PlanetSurfaceUtility.SampleHeight(
+            _config,
+            _biomeMap,
+            _biomeNoises,
+            _erosionNoise,
+            _ridgeNoise,
+            _basinNoise,
+            sphereDir,
+            CreateWaterCarveContext());
+    }
+
+    public PlanetWaterSurfaceSample SampleWaterSurface(SN.Vector3 sphereDir)
+    {
+        if (_config == null || _biomeMap == null)
+            return PlanetWaterSurfaceSample.Empty;
+
+        if (sphereDir.LengthSquared() < 1e-8f)
+            return PlanetWaterSurfaceSample.Empty;
+
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        float terrainR = _config.Radius + SampleCarvedHeight(sphereDir);
+        return PlanetWaterSampler.SampleWaterSurface(
+            sphereDir,
+            _config,
+            _biomeMap,
+            terrainR,
+            _riverNoisePrimary,
+            _riverNoiseMeander,
+            FindBiomeIndex);
     }
 
     /// <summary>
@@ -414,14 +464,7 @@ public sealed class PlanetTerrain : Behavior
         if (_config == null || _biomeMap == null || _biomeNoises == null)
             return Radius * worldScale;
 
-        float height = PlanetSurfaceUtility.SampleHeight(
-            _config,
-            _biomeMap,
-            _biomeNoises,
-            _erosionNoise,
-            _ridgeNoise,
-            _basinNoise,
-            sphereDir);
+        float height = SampleCarvedHeight(sphereDir);
         float baseSurfaceR = _config.Radius + height;
 
         var sampler = CreateDensitySampler();
@@ -441,14 +484,7 @@ public sealed class PlanetTerrain : Behavior
         if (_config == null || _biomeMap == null || _biomeNoises == null)
             return Radius * worldScale;
 
-        float height = PlanetSurfaceUtility.SampleHeight(
-            _config,
-            _biomeMap,
-            _biomeNoises,
-            _erosionNoise,
-            _ridgeNoise,
-            _basinNoise,
-            sphereDir);
+        float height = SampleCarvedHeight(sphereDir);
         return (_config.Radius + height) * worldScale;
     }
 
@@ -636,62 +672,7 @@ public sealed class PlanetTerrain : Behavior
 
     public float SampleWaterMask(SN.Vector3 sphereDir)
     {
-        if (_config == null || _biomeMap == null)
-            return 0f;
-
-        if (sphereDir.LengthSquared() < 1e-8f)
-            return 0f;
-
-        sphereDir = SN.Vector3.Normalize(sphereDir);
-        var blends = _biomeMap.GetBiomes(sphereDir);
-
-        float biomeWater = 0f;
-        for (int i = 0; i < blends.Length; i++)
-        {
-            if (blends[i].Biome.SpawnWater)
-                biomeWater += blends[i].Weight;
-        }
-
-        float riverWater = 0f;
-        if (_config.HasRiver && _riverNoisePrimary != null)
-        {
-            float freq = MathF.Max(0.0001f, _config.RiverFrequency);
-            float width = MathF.Max(0.001f, _config.RiverWidth);
-
-            float n1 = _riverNoisePrimary.Noise3D(
-                sphereDir.X * freq,
-                sphereDir.Y * freq,
-                sphereDir.Z * freq);
-            float n2 = _riverNoiseMeander != null
-                ? _riverNoiseMeander.Noise3D(
-                    sphereDir.X * freq * 1.9f + 33.7f,
-                    sphereDir.Y * freq * 1.9f + 77.2f,
-                    sphereDir.Z * freq * 1.9f + 19.4f)
-                : 0f;
-
-            float line = MathF.Abs(n1 + n2 * Math.Clamp(_config.RiverMeander, 0f, 2f));
-            riverWater = 1f - Math.Clamp(line / width, 0f, 1f);
-
-            var allowed = _config.RiverAllowedBiomes;
-            if (riverWater > 0f && allowed.Length > 0)
-            {
-                float allowedWeight = 0f;
-                for (int i = 0; i < blends.Length; i++)
-                {
-                    for (int j = 0; j < allowed.Length; j++)
-                    {
-                        if (string.Equals(blends[i].Biome.Name, allowed[j], StringComparison.OrdinalIgnoreCase))
-                        {
-                            allowedWeight += blends[i].Weight;
-                            break;
-                        }
-                    }
-                }
-                riverWater *= Math.Clamp(allowedWeight * 1.5f, 0f, 1f);
-            }
-        }
-
-        return Math.Clamp(Math.Max(biomeWater, riverWater), 0f, 1f);
+        return SampleWaterSurface(sphereDir).Mask;
     }
 
     public float SampleShoreBiomeIndex(SN.Vector3 sphereDir)
@@ -703,6 +684,16 @@ public sealed class PlanetTerrain : Behavior
             return 0f;
 
         sphereDir = SN.Vector3.Normalize(sphereDir);
+        float terrainR = _config.Radius + SampleCarvedHeight(sphereDir);
+        var sand = PlanetWaterSampler.SampleSandWeight(
+            sphereDir, _config, _biomeMap, terrainR, _riverNoisePrimary, _riverNoiseMeander, FindBiomeIndex);
+        if (sand is { weight: > 0.25f } s)
+            return s.biomeIndex;
+
+        var sample = SampleWaterSurface(sphereDir);
+        if (sample.Mask > 0.01f)
+            return sample.ShoreBiomeIndex;
+
         var blends = _biomeMap.GetBiomes(sphereDir);
         if (blends == null || blends.Length == 0)
             return 0f;
@@ -746,7 +737,7 @@ public sealed class PlanetTerrain : Behavior
 
         float terrainMin = Radius - maxAmp;
         float terrainMax = Radius + maxAmp;
-        _config.SeaLevel = terrainMin + SeaLevelFraction * (terrainMax - terrainMin);
+        _config.SeaLevel = PlanetWaterSampler.ResolveSeaLevel(_config, SeaLevelFraction);
         Log.Info($"[PlanetTerrain] SeaLevel={_config.SeaLevel:F1} (Radius={Radius}, maxAmp={maxAmp:F1}, frac={SeaLevelFraction}, range={terrainMin:F1}-{terrainMax:F1})");
     }
 
@@ -754,7 +745,8 @@ public sealed class PlanetTerrain : Behavior
     {
         if (WaterGO != null || gameObject == null || _config == null) return;
 
-        _planetWater = new PlanetWater(_config.SeaLevel, 48, SampleWaterMask, SampleShoreBiomeIndex);
+        float waterR = PlanetWaterSampler.GetOceanFillRadius(_config);
+        _planetWater = new PlanetWater(waterR, 56);
         if (_planetWater.WaterMesh == null) return;
 
         WaterGO = new GameObject("PlanetWater");
@@ -1468,6 +1460,8 @@ public sealed class PlanetTerrain : Behavior
             RiverFrequency = src.RiverFrequency,
             RiverMeander = src.RiverMeander,
             RiverAllowedBiomes = src.RiverAllowedBiomes?.ToArray() ?? Array.Empty<string>(),
+            WaterBodies = CloneWaterBodies(src.WaterBodies),
+            WaterPaths = CloneWaterPaths(src.WaterPaths),
             VoxelIsoSearchRange = src.VoxelIsoSearchRange,
             VoxelIsoSearchSteps = src.VoxelIsoSearchSteps,
             MaxEditCommandsPerUpdate = src.MaxEditCommandsPerUpdate,
@@ -1486,6 +1480,22 @@ public sealed class PlanetTerrain : Behavior
         src ??= BiomeDefinition.AllPresets;
         var json = System.Text.Json.JsonSerializer.Serialize(src);
         return System.Text.Json.JsonSerializer.Deserialize<BiomeDefinition[]>(json) ?? BiomeDefinition.AllPresets;
+    }
+
+    static PlanetWaterBody[] CloneWaterBodies(PlanetWaterBody[]? src)
+    {
+        if (src == null || src.Length == 0)
+            return Array.Empty<PlanetWaterBody>();
+        var json = System.Text.Json.JsonSerializer.Serialize(src);
+        return System.Text.Json.JsonSerializer.Deserialize<PlanetWaterBody[]>(json) ?? Array.Empty<PlanetWaterBody>();
+    }
+
+    static PlanetWaterPath[] CloneWaterPaths(PlanetWaterPath[]? src)
+    {
+        if (src == null || src.Length == 0)
+            return Array.Empty<PlanetWaterPath>();
+        var json = System.Text.Json.JsonSerializer.Serialize(src);
+        return System.Text.Json.JsonSerializer.Deserialize<PlanetWaterPath[]>(json) ?? Array.Empty<PlanetWaterPath>();
     }
 
     public void TryLoadBiomeGraph()
@@ -1545,6 +1555,15 @@ public sealed class PlanetTerrain : Behavior
         _config.RiverFrequency = result.RiverFrequency;
         _config.RiverMeander = result.RiverMeander;
         _config.RiverAllowedBiomes = result.RiverAllowedBiomes ?? Array.Empty<string>();
+        _config.WaterBodies = CloneWaterBodies(result.WaterBodies);
+        _config.WaterPaths = CloneWaterPaths(result.WaterPaths);
+
+        if (result.WaterBodies is { Length: > 0 })
+        {
+            var ocean = result.WaterBodies.FirstOrDefault(b => b.Kind == PlanetWaterBodyKind.Ocean);
+            if (ocean != null)
+                SeaLevelFraction = ocean.FillFraction;
+        }
 
         float ampScale = result.HeightAmplitude / 50f;
         float freqScale = result.NoiseFrequency / 0.005f;
@@ -1615,7 +1634,6 @@ public sealed class PlanetTerrain : Behavior
         }
 
         RecalcSeaLevel();
-        RebuildWater();
 
         _chunkManager?.Dispose();
         _chunkManager = null;
@@ -1630,6 +1648,8 @@ public sealed class PlanetTerrain : Behavior
             edgeDistortionAmp: _config.EdgeDistortionAmp);
         _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
         RebuildPhysicsNoise();
+        RebuildWater();
+        _chunkManager.RequestFullShellRebuild(16);
 
         SceneRenderer.ResetBiomeTexDebug();
         SavePlanetAsset();

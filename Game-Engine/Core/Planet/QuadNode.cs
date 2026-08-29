@@ -32,6 +32,7 @@ public sealed class QuadNode
 
     public VoxelChunk? Chunk { get; set; }
     public Mesh? GeneratedMesh { get; set; }
+    public Mesh? GeneratedWaterMesh { get; set; }
 
     /// <summary>
     /// 4 bits for the 4 edges of this quad (±U, ±V), set when the neighbor across
@@ -254,8 +255,10 @@ public sealed class QuadNode
     static void DisposeChunkData(QuadNode node)
     {
         GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
         node.Chunk = null;
         node.GeneratedMesh = null;
+        node.GeneratedWaterMesh = null;
         node.InvalidateGeneration();
     }
 

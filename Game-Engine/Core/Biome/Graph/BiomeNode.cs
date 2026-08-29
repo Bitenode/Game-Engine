@@ -4,7 +4,7 @@ using System.Collections.Generic;
 
 namespace Game_Engine.Core.Biome.Graph;
 
-public enum BiomeDataType { Float, Vec2, Vec3, BiomeLayer }
+public enum BiomeDataType { Float, Vec2, Vec3, BiomeLayer, Water }
 
 public sealed class BiomePort
 {
@@ -250,6 +250,7 @@ public sealed class BiomeOutputNode : BiomeNode
         AddInput("Layer5", BiomeDataType.BiomeLayer);
         AddInput("Layer6", BiomeDataType.BiomeLayer);
         AddInput("Layer7", BiomeDataType.BiomeLayer);
+        AddInput("Water", BiomeDataType.Water);
     }
 }
 
@@ -323,6 +324,10 @@ public sealed class BiomeRiverNode : BiomeNode
     public float Meander { get; set; } = 0.5f;
     public string AllowedBiomes { get; set; } = "";
 
+    public float SandWidth { get; set; } = 0.04f;
+    public string SandBiomeName { get; set; } = "Beach";
+    public bool FlowToOcean { get; set; } = true;
+
     public BiomeRiverNode()
     {
         Name = "River";
@@ -330,5 +335,81 @@ public sealed class BiomeRiverNode : BiomeNode
         AddInput("Depth", BiomeDataType.Float, 5f);
         AddOutput("RiverMask", BiomeDataType.Float);
         AddOutput("RiverDepth", BiomeDataType.Float);
+        AddOutput("Water", BiomeDataType.Water);
+    }
+}
+
+// ── Water Body Node ──
+public sealed class BiomeWaterBodyNode : BiomeNode
+{
+    public string Kind { get; set; } = "Ocean";
+    public float FillFraction { get; set; } = 0.55f;
+    public string AllowedBiomes { get; set; } = "";
+    public float MinBasinDepth { get; set; } = 8f;
+    public float ShallowR { get; set; } = 0.08f;
+    public float ShallowG { get; set; } = 0.30f;
+    public float ShallowB { get; set; } = 0.38f;
+    public float DeepR { get; set; } = 0.02f;
+    public float DeepG { get; set; } = 0.08f;
+    public float DeepB { get; set; } = 0.22f;
+    public float DeepestR { get; set; } = 0.01f;
+    public float DeepestG { get; set; } = 0.04f;
+    public float DeepestB { get; set; } = 0.12f;
+    public string ShoreBiomeName { get; set; } = "Beach";
+    public float ShoreWidth { get; set; } = 0.08f;
+
+    public BiomeWaterBodyNode()
+    {
+        Name = "Water Body";
+        AddOutput("Water", BiomeDataType.Water);
+    }
+}
+
+// ── Water Path Node ──
+public sealed class BiomeWaterPathNode : BiomeNode
+{
+    public float Width { get; set; } = 0.02f;
+    public float Depth { get; set; } = 5f;
+    public float Frequency { get; set; } = 0.003f;
+    public float Meander { get; set; } = 0.5f;
+    public string AllowedBiomes { get; set; } = "";
+    public float SandWidth { get; set; } = 0.04f;
+    public string SandBiomeName { get; set; } = "Beach";
+    public bool FlowToOcean { get; set; } = true;
+
+    public BiomeWaterPathNode()
+    {
+        Name = "Water Path";
+        AddInput("Width", BiomeDataType.Float, 0.02f);
+        AddInput("Depth", BiomeDataType.Float, 5f);
+        AddOutput("Water", BiomeDataType.Water);
+    }
+}
+
+// ── Shore Node ──
+public sealed class BiomeShoreNode : BiomeNode
+{
+    public string ShoreBiomeName { get; set; } = "Beach";
+    public float ShoreWidth { get; set; } = 0.08f;
+    public string TexturePath { get; set; } = "";
+    public float Tiling { get; set; } = 28f;
+
+    public BiomeShoreNode()
+    {
+        Name = "Shore";
+        AddInput("Water", BiomeDataType.Water);
+        AddOutput("Water", BiomeDataType.Water);
+    }
+}
+
+// ── Water Merge Node ──
+public sealed class BiomeWaterMergeNode : BiomeNode
+{
+    public BiomeWaterMergeNode()
+    {
+        Name = "Water Merge";
+        AddInput("A", BiomeDataType.Water);
+        AddInput("B", BiomeDataType.Water);
+        AddOutput("Water", BiomeDataType.Water);
     }
 }

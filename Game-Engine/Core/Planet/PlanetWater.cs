@@ -5,90 +5,66 @@ using SN = System.Numerics;
 namespace Game_Engine.Core.Planet;
 
 /// <summary>
-/// Generates a spherical water shell mesh for the planet ocean.
-/// The mesh is a subdivided cube-sphere at the sea level radius.
+/// Low-resolution spherical water shell used from orbit and as the atmosphere proxy mesh.
+/// Close-up water is generated per terrain chunk so it matches LOD and the shoreline.
 /// </summary>
 public sealed class PlanetWater
 {
     public Mesh? WaterMesh { get; private set; }
     public float SeaLevelRadius { get; }
 
-    readonly int _subdivisions;
-    readonly Func<SN.Vector3, float>? _waterMaskSampler;
-    readonly Func<SN.Vector3, float>? _shoreBiomeSampler;
-
-    public PlanetWater(
-        float seaLevelRadius,
-        int subdivisions = 40,
-        Func<SN.Vector3, float>? waterMaskSampler = null,
-        Func<SN.Vector3, float>? shoreBiomeSampler = null)
+    public PlanetWater(float seaLevelRadius, int subdivisions = 56)
     {
-        SeaLevelRadius = seaLevelRadius;
-        _subdivisions = Math.Max(4, subdivisions);
-        _waterMaskSampler = waterMaskSampler;
-        _shoreBiomeSampler = shoreBiomeSampler;
-        BuildMesh();
+        SeaLevelRadius = MathF.Max(1f, seaLevelRadius);
+        int subdiv = Math.Max(8, subdivisions);
+        BuildUniformSphere(subdiv);
     }
 
-    void BuildMesh()
+    void BuildUniformSphere(int subdivisions)
     {
-        int vertsPerFace = (_subdivisions + 1) * (_subdivisions + 1);
-        int totalVerts = vertsPerFace * 6;
-        var vertices = new SN.Vector3[totalVerts];
-        var normals = new SN.Vector3[totalVerts];
-        var uvs = new SN.Vector2[totalVerts];
-        var waterMask = new float[totalVerts];
-        var indices = new List<int>(_subdivisions * _subdivisions * 6 * 6);
+        int vertsPerFace = (subdivisions + 1) * (subdivisions + 1);
+        var vertices = new SN.Vector3[vertsPerFace * 6];
+        var normals = new SN.Vector3[vertices.Length];
+        var uvs = new SN.Vector2[vertices.Length];
+        var indices = new List<int>(subdivisions * subdivisions * 6 * 6);
 
         int vertIdx = 0;
-
         for (int face = 0; face < 6; face++)
         {
             int faceBase = vertIdx;
-
-            for (int y = 0; y <= _subdivisions; y++)
+            for (int y = 0; y <= subdivisions; y++)
             {
-                float v = (float)y / _subdivisions;
-                for (int x = 0; x <= _subdivisions; x++)
+                float v = (float)y / subdivisions;
+                for (int x = 0; x <= subdivisions; x++)
                 {
-                    float u = (float)x / _subdivisions;
+                    float u = (float)x / subdivisions;
                     SN.Vector3 dir = CubeSphereMath.FaceUVToDirection(face, u, v);
-                    SN.Vector3 pos = dir * SeaLevelRadius;
-                    float mask = _waterMaskSampler?.Invoke(dir) ?? 1f;
-                    float shoreBiome = _shoreBiomeSampler?.Invoke(dir) ?? 0f;
-
-                    vertices[vertIdx] = pos;
+                    vertices[vertIdx] = dir * SeaLevelRadius;
                     normals[vertIdx] = dir;
-                    // UV.x stores dominant shore biome index, UV.y stores water mask.
-                    uvs[vertIdx] = new SN.Vector2(shoreBiome, mask);
-                    waterMask[vertIdx] = mask;
+                    uvs[vertIdx] = new SN.Vector2(0f, 1f);
                     vertIdx++;
                 }
             }
 
-            int rowLen = _subdivisions + 1;
-            for (int y = 0; y < _subdivisions; y++)
+            int rowLen = subdivisions + 1;
+            for (int y = 0; y < subdivisions; y++)
             {
-                for (int x = 0; x < _subdivisions; x++)
+                for (int x = 0; x < subdivisions; x++)
                 {
                     int a = faceBase + y * rowLen + x;
                     int b = a + 1;
                     int c = a + rowLen;
                     int d = c + 1;
-
-                    indices.Add(a);
-                    indices.Add(b);
-                    indices.Add(c);
-
-                    indices.Add(b);
-                    indices.Add(d);
-                    indices.Add(c);
+                    indices.Add(a); indices.Add(b); indices.Add(c);
+                    indices.Add(b); indices.Add(d); indices.Add(c);
                 }
             }
         }
 
-        WaterMesh = new Mesh(vertices, Array.Empty<int>(), indices.ToArray());
-        WaterMesh.Normals = normals;
-        WaterMesh.UVs = uvs;
+        WaterMesh = new Mesh(vertices, Array.Empty<int>(), indices.ToArray())
+        {
+            Normals = normals,
+            UVs = uvs
+        };
     }
 }

@@ -84,7 +84,8 @@ public sealed class PlanetChunkManager
     /// <summary>Apply mesh from the network and clear <see cref="QuadNode.IsGenerating"/>.</summary>
     public void ApplyNetworkMesh(QuadNode node, TransvoxelMeshData meshData)
     {
-        ApplyMesh(node, meshData);
+        ApplyMesh(node, meshData, null, _meshGen.GenerateWaterPatch(
+            node.Face, node.U0, node.V0, node.U1, node.V1, Config.ChunkSize));
         node.IsGenerating = false;
     }
 
@@ -93,6 +94,7 @@ public sealed class PlanetChunkManager
         public QuadNode Node;
         public int GenerationToken;
         public TransvoxelMeshData MeshData;
+        public TransvoxelMeshData? WaterData;
         public VoxelChunk? Chunk;
     }
 
@@ -139,7 +141,9 @@ public sealed class PlanetChunkManager
     {
         node.InvalidateGeneration();
         GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
         node.GeneratedMesh = null;
+        node.GeneratedWaterMesh = null;
         node.Chunk = null;
         if (node.Children == null)
             return;
@@ -746,6 +750,7 @@ public sealed class PlanetChunkManager
                     Node = node,
                     GenerationToken = token,
                     MeshData = result.Mesh,
+                    WaterData = result.Water,
                     Chunk = result.Chunk,
                 });
             }
@@ -770,12 +775,16 @@ public sealed class PlanetChunkManager
             return false;
         }
 
-        ApplyMesh(job.Node, job.MeshData, job.Chunk);
+        ApplyMesh(job.Node, job.MeshData, job.Chunk, job.WaterData);
         job.Node.IsGenerating = false;
         return true;
     }
 
-    void ApplyMesh(QuadNode node, TransvoxelMeshData meshData, VoxelChunk? chunk = null)
+    void ApplyMesh(
+        QuadNode node,
+        TransvoxelMeshData meshData,
+        VoxelChunk? chunk = null,
+        TransvoxelMeshData? waterData = null)
     {
         if (meshData.IsEmpty)
         {
@@ -786,7 +795,11 @@ public sealed class PlanetChunkManager
         }
 
         GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
         node.GeneratedMesh = meshData.ToEngineMesh();
+        node.GeneratedWaterMesh = waterData != null && !waterData.IsEmpty
+            ? waterData.ToEngineMesh()
+            : null;
         if (chunk != null)
             node.Chunk = chunk;
         _renderableDirty = true;
@@ -800,7 +813,9 @@ public sealed class PlanetChunkManager
             foreach (var leaf in leaves)
             {
                 GpuMeshReleaseQueue.Enqueue(leaf.GeneratedMesh);
+                GpuMeshReleaseQueue.Enqueue(leaf.GeneratedWaterMesh);
                 leaf.GeneratedMesh = null;
+                leaf.GeneratedWaterMesh = null;
                 leaf.Chunk = null;
             }
         }
