@@ -660,7 +660,7 @@ namespace Game_Engine.Views
             platform switch
             {
                 "Xbox"           => "net9.0-windows10.0.19041.0",
-                "Android"        => "net9.0-android",
+                "Android"        => "net9.0-android35.0",
                 _                => "net9.0"
             };
 
@@ -821,9 +821,9 @@ namespace Game_Engine.Views
 
                 var rid = GetRuntimeIdentifier(info.Platform, info.Architecture);
                 var androidCsproj = FindPlayerAndroidCsproj();
-                Log.Info($"[Build] Step 3/5: Publishing Engine.Player.Android (net9.0-android, {rid})...");
+                Log.Info($"[Build] Step 3/5: Publishing Engine.Player.Android (net9.0-android35.0, {rid})...");
                 RunDotnetPublish(androidCsproj,
-                    $"publish \"{androidCsproj}\" -c {info.Configuration} -f net9.0-android -r {rid} --self-contained " +
+                    $"publish \"{androidCsproj}\" -c {info.Configuration} -f net9.0-android35.0 -r {rid} --self-contained " +
                     $"-p:EnginePlayerZipPath=\"{zipPath}\" -o \"{outDir}\"");
 
                 var apk = FindFirstFile(outDir, "*.apk");

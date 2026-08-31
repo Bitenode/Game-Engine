@@ -1,6 +1,6 @@
 # Game Engine
 
-A full-featured 3D game engine and editor built in C# (.NET 9.0) with Avalonia 11 and Silk.NET OpenGL. Features 34+ built-in components, a visual shader graph editor, physics with joints and BVH, skeletal animation with IK and blend trees, 2D support (Camera2D, SpriteRenderer, Tilemap), a GPU-rendered runtime UI system (Canvas, Text, Image, Button, Slider, Toggle, InputField), runtime scene loading, networking, audio mixing with reverb zones, and multi-platform build publishing.
+A full-featured 3D game engine and editor built in C# (.NET 9.0) with Avalonia 12 and Silk.NET OpenGL. Features 34+ built-in components, a visual shader graph editor, physics with joints and BVH, skeletal animation with IK and blend trees, 2D support (Camera2D, SpriteRenderer, Tilemap), a GPU-rendered runtime UI system (Canvas, Text, Image, Button, Slider, Toggle, InputField), runtime scene loading, networking, audio mixing with reverb zones, and multi-platform build publishing.
 
 See the [main README](../README.md) at the repository root for the full project description, features, and getting started guide.
 

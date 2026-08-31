@@ -30,11 +30,11 @@ Github Engine/
 |---------|---------|--------|--------|-----|------------|-------------|
 | **Game_Engine** | Editor + development | `WinExe` | Yes (runtime C# compilation) | Yes | Yes | Any CPU |
 | **Engine.Player** | Standalone game player | `WinExe` | No (loads pre-compiled DLLs) | No | No | Multi-platform + `net9.0-windows10.0.19041.0` for Xbox / Microsoft Store app packages |
-| **Engine.Player.Android** | Same core, Android APK | `Exe` (net9.0-android) | No | No | No | android-arm64, android-x64 |
+| **Engine.Player.Android** | Same core, Android APK | `Exe` (net9.0-android35.0) | No | No | No | android-arm64, android-x64 |
 
 ### Android, MSIX / Store, and Xbox from Build Settings
 
-- **Android** — Build Settings runs `dotnet publish` on `Engine.Player.Android` with `-f net9.0-android`. Game `Data` is zipped and passed as **`Data.zip`** in the APK **assets**; the player extracts it on first launch (see `Engine.Player.Android` and player `Program.cs` for asset loading). Install the [.NET Android workload](https://learn.microsoft.com/dotnet/mobile/get-started) (`dotnet workload install android`). Release APK signing: set keystore properties as in [Avalonia Android deployment](https://docs.avaloniaui.net/docs/deployment/android).
+- **Android** — Build Settings runs `dotnet publish` on `Engine.Player.Android` with `-f net9.0-android35.0`. The Android host currently pins **Avalonia 11.3.11** (desktop/editor use **Avalonia 12** on .NET 9); **Avalonia.Android 12.x requires .NET 10** (`net10.0-android36.0`) — upgrade the Android TFM and packages after installing the .NET 10 SDK. Game `Data` is zipped and passed as **`Data.zip`** in the APK **assets**; the player extracts it on first launch (see `Engine.Player.Android` and player `Program.cs` for asset loading). Install the [.NET Android workload](https://learn.microsoft.com/dotnet/mobile/get-started) (`dotnet workload install android`). Release APK signing: set keystore properties as in [Avalonia Android deployment](https://docs.avaloniaui.net/docs/deployment/android).
 - **Windows MSIX / Microsoft Store** — The `Engine.Player` project includes **`Properties/Package.appxmanifest`** for packaged desktop identity. Publishing with **`net9.0-windows10.0.19041.0`** produces a layout suitable for **MSIX** / Store tooling (Visual Studio “Packaging” or `dotnet publish` with Windows App SDK / Windows packaging projects). The editor build panel should use the same output folder conventions as the CLI (`publish/` under the player project, plus copied `Data/`). Replace placeholder `Assets/` tiles and set a valid package **identity** publisher before Store submission.
 - **Xbox** — Publishes `Engine.Player` with `net9.0-windows10.0.19041.0` (Windows app package TFM). `Package.appxmanifest` declares **`Windows.Desktop`** and **`Windows.Xbox`** so a Store submission can target PC and Xbox device families where Microsoft allows your app type. **Important:** a **full-trust Win32** (`Windows.FullTrustApplication`) Avalonia player is not the same as a native **Xbox GDK** title; shipping a game to retail Xbox consoles usually requires the [Microsoft GDK](https://learn.microsoft.com/gaming/gdk/) and an Xbox-specific build pipeline, not only this editor packaging path. Use this target for manifest and publish settings aligned with Xbox + PC Store packaging; replace placeholder `Assets/` tiles and set a valid package identity publisher. A signed app package (often a `.msix` file from tooling) may require [Windows App SDK](https://learn.microsoft.com/windows/apps/windows-app-sdk/) / Visual Studio packaging; the build always produces a runnable `Engine.Player.exe` plus `Data/` when no packaged output appears.
 
@@ -96,10 +96,10 @@ Both projects build under all configurations.
 
 | Package | Version | Category | Purpose |
 |---------|---------|----------|---------|
-| `Avalonia` | `11.*` | UI | Core cross-platform UI framework |
-| `Avalonia.Desktop` | `11.*` | UI | Desktop platform integration (Windows/macOS/Linux) |
-| `Avalonia.Themes.Fluent` | `11.*` | UI | Fluent design theme (modern look) |
-| `Avalonia.Fonts.Inter` | `11.*` | UI | Inter font family for the editor UI |
+| `Avalonia` | `12.*` | UI | Core cross-platform UI framework |
+| `Avalonia.Desktop` | `12.*` | UI | Desktop platform integration (Windows/macOS/Linux) |
+| `Avalonia.Themes.Fluent` | `12.*` | UI | Fluent design theme (modern look) |
+| `Avalonia.Fonts.Inter` | `12.*` | UI | Inter font family for the editor UI |
 | `Silk.NET.OpenGL` | `2.23.0` | Rendering | OpenGL / OpenGL ES 3.0 bindings |
 | `AssimpNet` | `4.1.0` | Import | 3D model loading (FBX, OBJ, glTF, DAE) |
 | `SkiaSharp` | `2.88.9` | Image | 2D image decoding (PNG, JPG, BMP) |
@@ -240,7 +240,7 @@ Same as the editor project **except**:
 
 | Included | Excluded |
 |----------|----------|
-| Avalonia 11.* (all 4 packages) | Microsoft.CodeAnalysis.CSharp 4.14.0 |
+| Avalonia 12.* (all 4 packages) | Microsoft.CodeAnalysis.CSharp 4.14.0 |
 | Silk.NET.OpenGL 2.23.0 | |
 | AssimpNet 4.1.0 | |
 | SkiaSharp 2.88.9 | |

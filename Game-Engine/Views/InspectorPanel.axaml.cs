@@ -9268,7 +9268,7 @@ public partial class InspectorPanel : UserControl
 
 
 
-// Helper: place Controls in Grid cells (Avalonia 11: constrain to Control)
+// Helper: place Controls in Grid cells (Avalonia 12: constrain to Control)
 static class GridPos
 {
     public static T Place<T>(this T c, int col, int row, int columnSpan = 1, int rowSpan = 1)

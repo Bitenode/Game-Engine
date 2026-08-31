@@ -10,7 +10,7 @@ using Avalonia.VisualTree;
 
 namespace Avalonia.Controls
 {
-    /// <summary>Avalonia 11-compatible filter used by the editor file-dialog shims.</summary>
+    /// <summary>Legacy file-dialog filter type shimmed for Avalonia 12 editor code.</summary>
     public sealed class FileDialogFilter
     {
         public string Name { get; set; } = "";

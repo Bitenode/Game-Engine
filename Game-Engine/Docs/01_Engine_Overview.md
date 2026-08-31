@@ -2,7 +2,7 @@
 
 ## What Is It?
 
-A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalonia 11** for the cross-platform UI framework, and **Silk.NET OpenGL** for GPU-accelerated rendering. The architecture follows a component-based design similar to Unity, with a scene graph, inspector, hierarchy panel, play mode, runtime scripting, physics (**triggers**, **`TriggerVolume`** presets, tag/layer filtering), audio, animation, post-processing, and an extensible plugin system. The editor can offload heavy CPU work via **`EditorJobs`** / **`EditorJobScheduler`** (see [Scripting and Extensibility](06_Scripting_And_Extensibility.md)).
+A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalonia 12** for the cross-platform UI framework, and **Silk.NET OpenGL** for GPU-accelerated rendering. The architecture follows a component-based design similar to Unity, with a scene graph, inspector, hierarchy panel, play mode, runtime scripting, physics (**triggers**, **`TriggerVolume`** presets, tag/layer filtering), audio, animation, post-processing, and an extensible plugin system. The editor can offload heavy CPU work via **`EditorJobs`** / **`EditorJobScheduler`** (see [Scripting and Extensibility](06_Scripting_And_Extensibility.md)).
 
 ---
 
@@ -11,7 +11,7 @@ A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalon
 | Layer             | Technology                                    | Version   | Purpose                                    |
 |-------------------|-----------------------------------------------|-----------|--------------------------------------------|
 | Runtime           | .NET                                          | 9.0       | Core runtime and language features         |
-| UI Framework      | Avalonia                                      | 11.*      | Cross-platform desktop UI (Windows/macOS/Linux) |
+| UI Framework      | Avalonia                                      | 12.*      | Cross-platform desktop UI (Windows/macOS/Linux) |
 | Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)      | 2.23.0    | GPU-accelerated 3D rendering               |
 | 3D Import         | AssimpNet                                     | 4.1.0     | FBX, OBJ, glTF/GLB, DAE model loading     |
 | Image Loading     | SkiaSharp                                     | 2.88.9    | PNG, JPG, BMP texture decoding             |

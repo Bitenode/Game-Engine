@@ -1,6 +1,6 @@
 # Game Engine
 
-A full-featured 3D game engine and editor built from the ground up in **C# (.NET 9.0)**, using **Avalonia 11** for the cross-platform UI framework and **Silk.NET OpenGL** for GPU-accelerated rendering. The architecture follows a component-based design inspired by Unity, providing a complete scene graph, visual editor, runtime scripting, physics, audio, animation, post-processing, and more.
+A full-featured 3D game engine and editor built from the ground up in **C# (.NET 9.0)**, using **Avalonia 12** for the cross-platform UI framework and **Silk.NET OpenGL** for GPU-accelerated rendering. The architecture follows a component-based design inspired by Unity, providing a complete scene graph, visual editor, runtime scripting, physics, audio, animation, post-processing, and more.
 
 ---
 
@@ -58,7 +58,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 | Layer             | Technology                             | Version   |
 |-------------------|----------------------------------------|-----------|
 | Runtime           | .NET                                   | 9.0       |
-| UI Framework      | Avalonia                               | 11.*      |
+| UI Framework      | Avalonia                               | 12.*      |
 | Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)| 2.23.0    |
 | Audio Playback    | Silk.NET OpenAL (cross-platform)       | 2.23.0    |
 | Audio Decoding    | NAudio (WAV/MP3/OGG file reading)      | 2.2.1     |
