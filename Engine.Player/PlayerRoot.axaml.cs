@@ -89,7 +89,11 @@ public partial class PlayerRoot : UserControl
             if (fullscreen)
             {
                 host.WindowState = WindowState.FullScreen;
+#if ANDROID
                 host.SystemDecorations = SystemDecorations.None;
+#else
+                host.WindowDecorations = WindowDecorations.None;
+#endif
             }
         }
 

@@ -185,7 +185,13 @@ High-level update sequence:
 5. Unload far leaves beyond active cap
 6. Schedule new mesh generation for nearest dirty leaves (bounded)
 
-**Parent-hold LOD:** a node stays a visible leaf (`IsLeaf`) until `TryCommitSplit` succeeds — all four children already have `GeneratedMesh`. Prefetch allocates children and generates their meshes while the parent mesh still renders (`CollectRenderable` keeps the parent if children are incomplete). On merge, the parent mesh is kept when it still exists; only dirty parents rebuild. This avoids missing-face holes while LOD refines.
+**Parent-hold LOD:** a node stays a visible leaf (`IsLeaf`) until `TryCommitSplit` succeeds — all four children already have `GeneratedMesh`. Prefetch allocates children and generates their meshes while the parent mesh still renders (`CollectRenderable` keeps the parent if children are incomplete). On merge, **any parent that had visible child meshes must rebuild** — the pre-split parent mesh is stale and is never reused after a budget merge. This avoids missing-face holes while LOD refines and prevents standing on coarse geometry after fine chunks are destroyed.
+
+**Play-mode LOD ownership:** while Play is active, **Game View owns planet split/merge**. Scene View still renders the runtime world for inspection but does **not** drive quadtree LOD updates. `PlanetTerrain.Update()` in play only applies completed async mesh jobs (lightweight path) or runs a full refresh after voxel edits. Game View throttles planet LOD (~**0.40 s** / **18 m** camera move outside crust) and clamps render delta time so unfocus/refocus (screenshot, alt-tab) does not batch destructive LOD work on the first frame back.
+
+**Play-mode merge safety:** budget merges skip any parent quad whose children touch within **~150 m** of the play camera. Merge hysteresis tolerates up to **~6** chunks over the leaf cap before merging, reducing churn when hovering near the budget (e.g. 63/64 leaves). Never merge a sibling leaf’s parent if you are standing on another child of that parent — that was a common cause of pits and broken shards while idle.
+
+**Transition / stitch remesh in play:** `UpdateTransitionMasks` still records new seam masks when neighbor LOD changes, but in **Play mode it does not force an immediate live remesh** of existing leaves. Stitch parameters apply on the next natural rebuild (split commit, merge rebuild, edit, or first generation). This stops slope/peak T-junction snaps from rewriting the mesh under a stationary player. Editor Scene View still remeshes on mask change.
 
 ### Interior fill and stacked voxel shells
 
@@ -198,9 +204,9 @@ Fine leaves do **not** stretch one 32³ grid across the entire radius (that woul
 | `> VolumetricMaxCellSize` | Smooth **heightfield shell** (orbit / coarse Scene View) |
 | `≤ VolumetricMaxCellSize` | **Stacked transvoxel** shells (caves + interior rock) |
 
-`VolumetricMaxCellSize` defaults to **3.5** at orbit. When the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`), `PlanetTerrain.ApplyChunkBudgets` raises it to **11**, increases leaf/chunk caps, and boosts mesh job budgets so interior cave walls refine while you fly around — in **both Play and editor** (editor gets slightly higher caps when underground).
+`VolumetricMaxCellSize` defaults to **3.5** at orbit. When **`CameraBelowCrust`** is latched true (density probe at the camera with hysteresis, throttled ~**0.25 s** / **6 m** move), `PlanetTerrain.ApplyChunkBudgets` raises it to **11**, increases leaf/chunk caps, and boosts mesh job budgets so interior cave walls refine — in **both Play and editor** (editor gets slightly higher caps when underground).
 
-**Play-mode interior profile** (when `cameraInside` in Play): `MaxLodDepth` up to **6**, `MaxActiveChunks` / `MaxLeafNodes` toward **120–160**, `MaxGenerationSchedulesPerUpdate` **~14**, `VolumetricMaxCellSize` **11**. Orbit play outside the crust band keeps tighter caps (depth **4–5**, **32–64** leaves, **6** schedules). `QuadNode.Merge` keeps a valid parent mesh on budget merge unless the subtree was edited (`NeedsMeshRebuild` only when children were dirty), reducing underground pop-in.
+**Play-mode interior profile** (when `CameraBelowCrust` latch is true in Play): `MaxLodDepth` up to **6**, `MaxActiveChunks` / `MaxLeafNodes` toward **120–160**, `MaxGenerationSchedulesPerUpdate` **~14**, `VolumetricMaxCellSize` **11**. Orbit play outside the crust band keeps tighter caps (depth **4–5**, **32–64** leaves, **6** schedules). Walking the outer shell no longer false-triggers interior LOD (the old `camR < 1.08 × radius` heuristic remeshed whole hills as volumetric and spiked triangle count).
 
 ### Multi-scale cave carving
 
@@ -230,7 +236,9 @@ When the camera is inside or just under the crust:
 
 ### Transvoxel LOD seams
 
-Fine volumetric leaves set `TransitionMask` on edges that border a coarser neighbor. `TransvoxelMesher.GenerateMesh` calls `GenerateTransitionCells` when the mask is non-zero (toggle with `PlanetConfig.EnableTransvoxelTransitions`, default **true**). Transition cells use the full Lengyel **13-corner** layout (`MarchingCubesTables.TransitionVertexData` / `TransitionCellData`) — not the old 9-sample ring interpolation. Only the outer radial shell layer currently receives the mask (enough for cave mouths and crust LOD boundaries).
+Fine volumetric leaves set `TransitionMask` on edges that border a coarser neighbor. `TransvoxelMesher.GenerateMesh` calls `GenerateTransitionCells` when the mask is non-zero (toggle with `PlanetConfig.EnableTransvoxelTransitions`, default **true**). Heightfield shells also run `SnapLodTJunctions` so odd edge verts align to coarser neighbors (T-junction crack prevention). Transition cells use the full Lengyel **13-corner** layout (`MarchingCubesTables.TransitionVertexData` / `TransitionCellData`) — not the old 9-sample ring interpolation. Only the outer radial shell layer currently receives the mask (enough for cave mouths and crust LOD boundaries).
+
+**Play-mode stitch policy:** mask/stride updates are recorded every LOD tick, but existing rendered meshes are **not** torn down for stitch-only changes during Play. Editor orbit continues to remesh immediately when seams change so you can inspect LOD boundaries while flying the Scene camera.
 
 ### Play-mode voxel edits
 
@@ -319,8 +327,8 @@ Per-body underwater tint comes from the matching `PlanetWaterBody` deep colors w
 | `PlanetConfig.cs` | Planet generation settings and runtime chunk/job budgets (`VolumetricMaxCellSize`, cave globals, vegetation caps) |
 | `PlanetSpace.cs` | World ↔ planet-local unscaled transforms |
 | `PlanetNoiseCache.cs` | Shared per-planet noise instances (biome, erosion, cave worm/cavern/detail) |
-| `PlanetChunkManager.cs` | Face quadtree updates, job scheduling, parent-hold apply, sphere edits |
-| `FaceQuadtree.cs` | Per-face split/merge/prefetch and neighbor lookup |
+| `PlanetChunkManager.cs` | Face quadtree updates, job scheduling, parent-hold apply, play merge safe zone, sphere edits, `ApplyCompletedMeshJobs()` |
+| `FaceQuadtree.cs` | Per-face split/merge/prefetch, neighbor lookup, `CommitReadySplits`, transition masks |
 | `QuadNode.cs` | Leaf/`VoxelChunk`/`GeneratedMesh`, `TransitionMask`, interior-aware camera priority |
 | `CubeSphereMath.cs` | Cube-face UV <-> sphere direction conversions |
 | `DensityGenerator.cs` | Fills radial `VoxelChunk` shells; `ComputeInteriorBounds`, `RadialLayerCount` |
@@ -388,7 +396,8 @@ Additional runtime state:
 - Builds move axes from a tangent basis derived from `LocalUp`
 - Applies acceleration and drag in tangent space on planets
 - Jumps along `LocalUp` (not always world +Y)
-- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `Spherecast` / `RaycastDensity` probe along `-LocalUp` (capsule height + step-up + ground snap — not a ray to the core). Stands on the density hit; goes airborne when contact is lost. `SampleHeightfieldRadius` is only a last-resort fallback near the outer shell when chunks are not ready
+- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `Spherecast` / `RaycastDensity` probe along `-LocalUp` (capsule height + step-up + ground snap — not a ray to the core). Stands on the density hit; goes airborne when contact is lost. `SampleCollisionRadius` is cached once per frame; heightfield radius is only a last-resort fallback near the outer shell when chunks are not ready
+- **Planet swimming:** when `UnderwaterQuery.GetState(pos).Depth > 0.35 m` on a planet, `SwimOnPlanet()` runs instead of crust walking — buoyancy at the local water surface, WASD tangent swim, Space swim up, Ctrl/Crouch dive, look-down + W dives along view. `IsPlanetSwimming` exposes the mode; `Rigidbody` keeps underwater state while planet swimming
 - Avoids pole-specific movement mode switching to prevent axis flips/discontinuities
 - Smooths camera up-vector transitions to reduce horizon jitter
 - Writes smoothed up-vector into `Camera.WorldUp`
@@ -428,13 +437,20 @@ Recommended setup:
 
 ## Scene View LOD, Play LOD, and editor brushes
 
-Scene View runs the real quadtree LOD every editor frame (`PlanetTerrain.UpdateSceneViewLod` / `RefreshLodAroundCamera`):
+**Editor (Scene View)** runs the real quadtree LOD on its own schedule (`PlanetTerrain.UpdateSceneViewLod` / `RefreshLodAroundCamera` when not playing):
 
 - Authored `MaxLodDepth` is kept; active-chunk / leaf / apply budgets are raised for editor orbit
 - When the fly camera is **inside** the planet, interior chunk budgets apply (higher `VolumetricMaxCellSize`, more leaves, faster mesh apply)
 - Parent-hold LOD still applies while orbiting or underground
+- Transition mask changes trigger immediate remesh in editor (stitch preview while orbiting)
 
-**Play mode** uses the same `RefreshLodAroundCamera` path with play-specific budgets (see **Interior LOD and rendering** above). Interior refinement is no longer editor-only.
+**Play mode (Game View only for LOD split/merge):**
+
+- `GameView` calls `RefreshLodAroundCamera` on a throttled interval (~**0.40 s**) and when the play camera moves ~**18 m** (tighter caps outside crust; see **Interior LOD** above)
+- Render delta is clamped (~**0.10 s** max); after a long render pause (> **0.25 s**, e.g. unfocus for screenshot), the first LOD tick **applies finished meshes and commits ready splits only** — no split/merge decisions that frame
+- `PlanetChunkManager.Update` runs at most **once per frame**; completed mesh jobs can also be applied from `PlanetTerrain.Update()` without a full LOD pass
+- **Scene View during Play** renders the same runtime world but **does not** call `RefreshLodAroundCamera` (avoids dual-view LOD fights that caused chunk splits and refocus glitches)
+- Game View HUD shows FPS, GL ms, planet chunk/triangle counts, and top script costs when script sampling is enabled
 
 **Scene View planet brushes** (Inspector **Planet brushes (Scene View)** when a GameObject with `PlanetTerrain` is selected):
 
@@ -550,7 +566,10 @@ Planet grass spawned through `VegetationPainter.BuildOnPlanetPatch(...)` and bio
 - planet grass chunk culling uses 3D world distance (X/Y/Z), not flat XZ distance
 - grass materials are forced to alpha-cutout behavior to avoid opaque card fallback
 - if external texture decode fails, a generated cutout fallback blade texture is used
-- `MaxVegetationSpawnsPerUpdate` is capped during play (32) to keep frame time stable
+- `MaxVegetationSpawnsPerUpdate` is capped during play (**8** trees / **8** grass batches per tick by default via `ApplyChunkBudgets`) to keep frame time stable
+- **Play spawn caps:** ~**24** trees and ~**32** grass batches near camera; activation distance ~**220 m** for procedural spawn
+- **Deferred FBX import:** imported tree templates load on a background thread; spawn waits until the template is ready instead of blocking the main thread (~1 s+ spikes)
+- **Play refresh budget:** `RefreshVegetation` spends ~**4 ms**/frame in play; prefers cheaper tree LOD meshes when available
 - **Default fallbacks** when a profile item has no texture/model: `Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd` and `Meadow_Grass_01_Var4.FBX`
 - **Grass scale/height**: planet batches clamp `GrassHeight` to roughly **2.0–4.5 m** (via `GrassBaseHeight` and per-item min/max scale) so imported tufts read at landscape scale instead of lawn scale
 - **Multi-type grass per leaf**: when `BatchGrassPerLeaf` is on, up to **4** weighted grass items from the profile can spawn as separate patches in the same leaf (offset patch directions), improving variety without extra draw-call churn per blade

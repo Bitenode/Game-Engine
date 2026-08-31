@@ -96,12 +96,12 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             if (!_renderInFlight)
             {
                 _renderInFlight = true;
-                InvalidateVisual();
+                RequestNextFrameRendering();
             }
         };
         _fixedTimer.Tick += (_, __) => TickFixedUpdate();
 
-        SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; _cache?.InvalidateAll(); InvalidateVisual(); };
+        SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; _cache?.InvalidateAll(); RequestNextFrameRendering(); };
 
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
@@ -233,7 +233,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // Wind system update
         WindSystem.Update((float)Math.Min(dt, 0.1));
 
-        double scaling = VisualRoot?.RenderScaling ?? 1.0;
+        double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
         double Wdip = Math.Max(1.0, Bounds.Width);
         double Hdip = Math.Max(1.0, Bounds.Height);
         int W = Math.Max(1, (int)(Wdip * scaling));
@@ -473,7 +473,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         MaterialRebind.RepairScene();
         if (MaterialRebind.NeedsMoreFrames)
-            Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+            Dispatcher.UIThread.Post(RequestNextFrameRendering, DispatcherPriority.Render);
 
         base.Render(ctx);
         DrawFpsHud(ctx);
@@ -570,7 +570,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (SceneManager.HasPendingLoad)
         {
             SceneManager.ProcessPendingLoad(
-                callOnDestroyAll: () => ForEachBehavior(b => b.__OnDestroy()),
+                callOnDestroyAll: () => SceneService.ForEachActiveBehavior(b => b.__OnDestroy()),
                 clearRegistries: () =>
                 {
                     PostProcessVolume.ClearAll();
@@ -589,8 +589,8 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 });
         }
 
-        if (!_awakened) { ForEachBehavior(b => b.__Awake()); _awakened = true; }
-        if (!_started) { ForEachBehavior(b => b.__Start()); _started = true; }
+        if (!_awakened) { SceneService.ForEachActiveBehavior(b => b.__Awake()); _awakened = true; }
+        if (!_started) { SceneService.ForEachActiveBehavior(b => b.__Start()); _started = true; }
         if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
 
         var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
@@ -606,8 +606,9 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
         if (NetworkManager.IsActive)
             NetworkManager.Update();
-        ForEachBehavior(b => b.__Update());
-        ForEachBehavior(b => b.__LateUpdate());
+        SceneService.TickActiveBehaviors(Profiler.ScriptPhase.Update);
+        SceneService.TickActiveBehaviors(Profiler.ScriptPhase.LateUpdate);
+        Profiler.PublishScriptCosts();
         Input.EndFrame();
     }
 
@@ -625,7 +626,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             Core.Time.BeginFixedUpdate(FIXED_DT);
             PhysicsCache.Tick();
-            ForEachBehavior(b => b.__FixedUpdate());
+            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.FixedUpdate);
             _fixedAccum -= FIXED_DT;
         }
     }
@@ -650,20 +651,13 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _collidersWarm = true;
     }
 
-    static void ForEachBehavior(Action<Behavior> a)
-    {
-        var roots = SceneService.Root.ToArray();
-        for (int i = 0; i < roots.Length; i++)
-            Traverse(roots[i], a);
-    }
-
     static void Traverse(GameObject go, Action<Behavior> a)
     {
-        var behaviors = go.Behaviors.ToArray();
-        for (int i = 0; i < behaviors.Length; i++)
+        var behaviors = go.Behaviors;
+        for (int i = 0; i < behaviors.Count; i++)
             a(behaviors[i]);
-        var children = go.Children.ToArray();
-        for (int i = 0; i < children.Length; i++)
+        var children = go.Children;
+        for (int i = 0; i < children.Count; i++)
             Traverse(children[i], a);
     }
     #endregion

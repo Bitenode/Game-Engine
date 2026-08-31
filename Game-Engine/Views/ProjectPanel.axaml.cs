@@ -6,6 +6,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.VisualTree;
 using Avalonia.Threading;
+using Avalonia.Platform.Storage;
 using Game_Engine.Core;
 using System;
 using System.Collections.ObjectModel;
@@ -40,6 +41,7 @@ public sealed partial class ProjectPanel : UserControl
     // Drag state
     private Point _pressPt;
     private ProjectNode? _pressNode;
+    private PointerPressedEventArgs? _pressArgs;
 
     public ProjectPanel()
     {
@@ -715,6 +717,7 @@ public sealed partial class ProjectPanel : UserControl
     {
         _pressPt = e.GetPosition(Tree);
         _pressNode = NodeFromObject(e.Source);
+        _pressArgs = e;
     }
 
     private async void OnTreePointerMoved(object? s, PointerEventArgs e)
@@ -727,18 +730,20 @@ public sealed partial class ProjectPanel : UserControl
             if ((dx * dx + dy * dy) > 9) // ~3px
             {
                 var path = _pressNode.FullPath;
-                var data = new DataObject();
+                var transfer = new DataTransfer();
+                transfer.Add(DataTransferItem.Create(EditorDragFormats.ProjectNodePath, path));
 
-                // keep your internal key (used for tree-to-tree moves)
-                data.Set("project-node-path", path);
+                if (File.Exists(path) && TopLevel.GetTopLevel(this) is { } top)
+                {
+                    var file = await top.StorageProvider.TryGetFileFromPathAsync(path);
+                    if (file != null)
+                        transfer.Add(DataTransferItem.CreateFile(file));
+                }
 
-                // ALSO provide standard FileNames when it�s a file
-                if (File.Exists(path))
-                    data.Set(DataFormats.FileNames, new[] { path });
-
-                // IMPORTANT: allow both Copy and Move so external targets (Inspector) can accept it
-                await DragDrop.DoDragDrop(e, data, DragDropEffects.Copy | DragDropEffects.Move);
+                if (_pressArgs != null)
+                    await DragDrop.DoDragDropAsync(_pressArgs, transfer, DragDropEffects.Copy | DragDropEffects.Move);
                 _pressNode = null;
+                _pressArgs = null;
             }
         }
     }
@@ -751,9 +756,9 @@ public sealed partial class ProjectPanel : UserControl
         if (targetFolder is null) { e.DragEffects = DragDropEffects.None; return; }
 
         // Internal move?
-        if (e.Data.Contains("project-node-path"))
+        if (e.Payload().GetProjectNodePath() != null)
         {
-            var src = e.Data.Get("project-node-path") as string;
+            var src = e.Payload().GetProjectNodePath();
             if (string.IsNullOrWhiteSpace(src)) { e.DragEffects = DragDropEffects.None; return; }
 
             // cannot drop into itself or descendant
@@ -767,7 +772,7 @@ public sealed partial class ProjectPanel : UserControl
         }
 
         // OS files drop
-        if (e.Data.Contains(DataFormats.FileNames))
+        if (e.Payload().HasFiles)
         {
             e.DragEffects = DragDropEffects.Copy;
             e.Handled = true;
@@ -784,9 +789,9 @@ public sealed partial class ProjectPanel : UserControl
         if (targetFolder is null) return;
 
         // Internal move
-        if (e.Data.Contains("project-node-path"))
+        if (e.Payload().GetProjectNodePath() != null)
         {
-            var src = e.Data.Get("project-node-path") as string;
+            var src = e.Payload().GetProjectNodePath();
             if (string.IsNullOrWhiteSpace(src)) return;
 
             try
@@ -804,9 +809,9 @@ public sealed partial class ProjectPanel : UserControl
         }
 
         // OS files drop
-        if (e.Data.Contains(DataFormats.FileNames))
+        if (e.Payload().HasFiles)
         {
-            var files = e.Data.GetFileNames();
+            var files = e.Payload().GetFilePaths();
             if (files != null)
             {
                 foreach (var src in files)

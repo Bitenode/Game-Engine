@@ -44,6 +44,12 @@ namespace Game_Engine.Core.Component
         public SN.Vector3 LookForward { get; set; } = -SN.Vector3.UnitZ;
         public SN.Vector3 LookUp { get; set; } = SN.Vector3.UnitY;
 
+        /// <summary>
+        /// Set by player camera when the eye was inside crust this frame.
+        /// Game view consumes it to drop TAA history (clipped frames smear water).
+        /// </summary>
+        public bool InvalidateTemporalHistory { get; set; }
+
         public SN.Matrix4x4 GetViewMatrix()
         {
             var go = gameObject;

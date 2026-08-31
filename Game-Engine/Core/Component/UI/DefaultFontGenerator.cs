@@ -33,16 +33,16 @@ namespace Game_Engine.Core.Component.UI
             if (File.Exists(fntPath) && File.Exists(pngPath))
                 return fntPath;
 
+            using var typeface = SKTypeface.FromFamilyName(FontFamily, SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
+                                 ?? SKTypeface.Default;
+            using var font = new SKFont(typeface, FontSizePx);
             using var paint = new SKPaint
             {
-                TextSize = FontSizePx,
                 IsAntialias = true,
-                Color = SKColors.White,
-                Typeface = SKTypeface.FromFamilyName(FontFamily, SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
-                          ?? SKTypeface.Default
+                Color = SKColors.White
             };
 
-            var metrics = paint.FontMetrics;
+            var metrics = font.Metrics;
             float lineHeight = MathF.Ceiling(-metrics.Ascent + metrics.Descent + metrics.Leading);
             float baseline = MathF.Ceiling(-metrics.Ascent);
 
@@ -67,12 +67,11 @@ namespace Game_Engine.Core.Component.UI
             {
                 string s = ((char)ch).ToString();
 
-                float advance = paint.MeasureText(s);
+                float advance = font.MeasureText(s);
                 float charWidth = MathF.Ceiling(advance);
 
                 // Get glyph bounds for precise positioning
-                SKRect bounds = new SKRect();
-                paint.MeasureText(s, ref bounds);
+                font.MeasureText(s, out SKRect bounds);
                 float glyphW = MathF.Ceiling(bounds.Width) + 2;
                 float glyphH = MathF.Ceiling(lineHeight);
 
@@ -89,7 +88,7 @@ namespace Game_Engine.Core.Component.UI
                 // Draw the character
                 float drawX = cursorX - bounds.Left;
                 float drawY = cursorY + baseline;
-                canvas.DrawText(s, drawX, drawY, paint);
+                canvas.DrawText(s, drawX, drawY, font, paint);
 
                 // Emit BMFont char line
                 float xoff = bounds.Left;

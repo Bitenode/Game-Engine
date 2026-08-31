@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using Game_Engine.Core.Biome;
 
 namespace Game_Engine.Core.Planet;
@@ -19,6 +20,14 @@ public sealed class PlanetConfig
     public float SplitDistanceScale { get; set; } = 0.75f;
     public int Seed { get; set; } = 42;
     public bool EnableCaves { get; set; } = true;
+
+    /// <summary>
+    /// Runtime: camera is under the outer crust (caves). Surface walking stays false
+    /// so LOD does not remesh the neighborhood into coarse volumetric chunks.
+    /// </summary>
+    [JsonIgnore]
+    public bool CameraBelowCrust { get; set; }
+
     public BiomeDefinition[] Biomes { get; set; } = BiomeDefinition.AllPresets;
 
     /// <summary>

@@ -220,14 +220,16 @@ public static class PlanetDensityRaycast
         SN.Vector3 planetCenter,
         float worldScale,
         ref SN.Vector3 worldPos,
-        float worldClearance)
+        float worldClearance,
+        int maxIters = 10)
     {
         float scale = PlanetSpace.SanitizeScale(worldScale);
         var local = PlanetSpace.WorldToLocal(worldPos, planetCenter, scale);
         float clearance = PlanetSpace.WorldToLocalLength(MathF.Max(0f, worldClearance), scale);
         bool moved = false;
+        int iters = Math.Clamp(maxIters, 1, 16);
 
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < iters; i++)
         {
             float d = sampler.SampleDensity(local);
             if (d >= clearance)

@@ -6,11 +6,13 @@
 		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="12">
 			<TextBlock Text="Profiler" FontSize="14" VerticalAlignment="Center" />
 			<ToggleButton x:Name="EnableToggle" Content="Enable" IsChecked="False" />
+			<CheckBox x:Name="ScriptSampleToggle" Content="Script costs" IsChecked="True"
+			          VerticalAlignment="Center" />
 			<TextBlock x:Name="FpsLabel" Text="FPS: --" VerticalAlignment="Center" FontWeight="Bold" />
 			<TextBlock x:Name="FrameTimeLabel" Text="Frame: -- ms" VerticalAlignment="Center" />
 		</StackPanel>
 
-		<Grid Margin="6" RowDefinitions="Auto,*">
+		<Grid Margin="6" RowDefinitions="Auto,Auto,*">
 			<!-- Stats summary -->
 			<Border Grid.Row="0" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
 				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto,Auto">
@@ -36,8 +38,25 @@
 				</Grid>
 			</Border>
 
+			<Border Grid.Row="1" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
+				<Grid ColumnDefinitions="*,16,*">
+					<StackPanel Grid.Column="0" Spacing="2">
+						<TextBlock Text="Scripts this frame" FontWeight="SemiBold" FontSize="11" />
+						<TextBlock x:Name="ScriptFrameLabel" Text="Play to sample behavior Update costs."
+						           FontFamily="Cascadia Mono, Consolas, Courier New, monospace"
+						           FontSize="11" TextWrapping="Wrap" />
+					</StackPanel>
+					<StackPanel Grid.Column="2" Spacing="2">
+						<TextBlock x:Name="ScriptSpikeTitle" Text="Last script spike" FontWeight="SemiBold" FontSize="11" />
+						<TextBlock x:Name="ScriptSpikeLabel" Text="No spike over 8 ms yet."
+						           FontFamily="Cascadia Mono, Consolas, Courier New, monospace"
+						           FontSize="11" TextWrapping="Wrap" Foreground="#FFCC88" />
+					</StackPanel>
+				</Grid>
+			</Border>
+
 			<!-- Frame time graph (drawn in code-behind) -->
-			<Border Grid.Row="1" Background="#20000000" CornerRadius="4">
+			<Border Grid.Row="2" Background="#20000000" CornerRadius="4">
 				<Canvas x:Name="GraphCanvas" ClipToBounds="True" />
 			</Border>
 		</Grid>

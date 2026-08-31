@@ -1,7 +1,10 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Game_Engine.Views"
-             x:Class="Game_Engine.Views.ConsolePanel">
+             xmlns:core="clr-namespace:Game_Engine.Core"
+             x:Class="Game_Engine.Views.ConsolePanel"
+             x:CompileBindings="False"
+             x:DataType="local:ConsolePanel">
 	<UserControl.Resources>
 		<local:SeverityToBrushConverter x:Key="SeverityBg"     Kind="Background"/>
 		<local:SeverityToBrushConverter x:Key="SeverityBorder" Kind="Border"/>
@@ -37,7 +40,7 @@
 					 Grid.Row="0" Grid.ColumnSpan="2"
 					 ItemsSource="{Binding VisibleLogs}">
 				<ListBox.ItemTemplate>
-					<DataTemplate>
+					<DataTemplate x:DataType="core:LogItem">
 						<Grid ColumnDefinitions="Auto,Auto,*" Margin="0,2">
 							<TextBlock Grid.Column="0"
 									   Text="{Binding Timestamp, StringFormat=HH:mm:ss}"

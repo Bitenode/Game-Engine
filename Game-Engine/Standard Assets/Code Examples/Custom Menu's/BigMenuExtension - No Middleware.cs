@@ -30,7 +30,7 @@ public sealed class BigMenuExtension : EditorExtension
             Height = 260,
             Title = "Big Menu",
             ShowInTaskbar = false,
-            SystemDecorations = SystemDecorations.BorderOnly,
+            WindowDecorations = WindowDecorations.BorderOnly,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
             Topmost = true

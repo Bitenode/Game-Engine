@@ -27,6 +27,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 
 ### World Building
 - **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
+- **Planet System** — Cube-sphere worlds with stacked transvoxel interiors, multi-scale caves, biome graph authoring, async chunk LOD streaming, LOD seam stitching, planet water/atmosphere, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
 - **3D Model Import** — FBX, OBJ, glTF/GLB, DAE via AssimpNet with automatic material extraction, skeleton building, and bone animation import
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
@@ -36,7 +37,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 ### Physics & Animation
 - **Physics & Collision** — BoxCollider, CapsuleCollider, MeshCollider, BVH spatial acceleration, CharacterController with gravity, slope limiting, step climbing, coyote time, and CCD
 - **Physics Joints** — Fixed, Hinge, Spring, Slider, and Ball-Socket joint constraints
-- **Player Controllers** — PlayerMovement (sweep-and-slide) and RigidbodyPlayer (momentum-based with swimming)
+- **Player Controllers** — PlayerMovement (sweep-and-slide) and RigidbodyPlayer (momentum-based with planet surface walk and planet swimming)
 - **Animation System** — Bone-based skeletal animation with GPU skinning, animation state machine, blend trees, and keyframe editing
 - **Inverse Kinematics** — IKConstraint with TwoBone (arms/legs), LookAt (head tracking), and FABRIK (multi-joint chains)
 
@@ -46,7 +47,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Networking** — Static `NetworkManager` API (server/client, RPCs, UDP transport with keepalive and idle disconnect) plus Inspector components NetworkIdentity, NetworkTransform (interpolated sync), and NetworkAnimator (state sync); Standard Assets include sample menu/server UI (`MainMenuController`, `ServerHostController` / `Main Menu.scene`, `Server.scene`). The game loop invokes `NetworkManager.Update` automatically in Game View and Engine.Player.
 
 ### Tools & Profiling
-- **Profiler** — Real-time FPS, frame time, draw call, and vertex/triangle count monitoring
+- **Profiler** — Real-time FPS, frame time, draw call, triangle/chunk counts, and per-script timing (Game View HUD + Profiler panel)
 - **Build Settings** — Package games as standalone Engine.Player executables for Windows, macOS, and Linux (x64/ARM64)
 - **Wind System** — Global wind parameters driving tree and vegetation animation
 
@@ -116,7 +117,7 @@ Documentation for the engine and editor is in `Game-Engine/Docs/`:
 | [10 — Model Import & Assets](Game-Engine/Docs/10_Model_Import_And_Assets.md) | 3D model import, animation import, skeletal meshes, primitives, asset pipeline |
 | [11 — UIX Framework](Game-Engine/Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
 | [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, project configuration, dependencies, Engine.Player, publishing, ANGLE/OpenGL setup |
-| [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | PlanetTerrain, biome graph workflow, chunk streaming, and planet-aware Rigidbody/Camera behavior |
+| [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | PlanetTerrain, biome graph workflow, play/editor chunk LOD, seam stitching, swimming, vegetation budgets |
 | [14 — Visual Blueprints](Game-Engine/Docs/14_Visual_Blueprints.md) | Visual behavior graphs (`.blueprint`), Visual Blueprint component, nodes, reflection, EventBus integration |
 
 ---

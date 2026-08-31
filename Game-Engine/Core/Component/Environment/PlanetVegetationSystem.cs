@@ -1,8 +1,11 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Planet;
@@ -115,13 +118,23 @@ public sealed class PlanetVegetationSystem : Behavior
     public GameObject? TerrainGameObject => _terrain?.gameObject;
 
     public int ActiveLeafGroups => _leafEntries.Count;
-    public int ActiveVegetationInstances => _leafEntries.Values.Sum(v => v.Count);
+    public int ActiveVegetationInstances
+    {
+        get
+        {
+            int n = 0;
+            foreach (var group in _leafEntries.Values)
+                n += group.Count;
+            return n;
+        }
+    }
     /// <summary>Count of entries deserialized from the .planet asset (before proximity spawn).</summary>
     public int StoredPlacementCount => _assetPlacements.Count;
     public int LastSpawnedThisUpdate { get; private set; }
     public int LastDespawnedThisUpdate { get; private set; }
 
     const int MaxDespawnsPerRefresh = 32;
+    const int PlayMaxDespawnsPerRefresh = 4;
     const float VegRefreshMoveThresholdSq = 100f; // 10 m
     /// <summary>Fixed grid per cube face — vegetation keys ignore LOD splits so plants do not pop when chunks refine.</summary>
     const int VegetationCellsPerFaceEdge = 18;
@@ -140,6 +153,17 @@ public sealed class PlanetVegetationSystem : Behavior
     readonly List<PlanetVegetationPlacement> _assetPlacements = new();
     int _assetSpawnCursor;
     readonly Dictionary<int, Entry> _assetActive = new();
+    readonly HashSet<int> _wantedAssetSet = new();
+    readonly List<int> _staleAssetIndices = new();
+    readonly List<int> _assetSpawnOrder = new();
+    readonly List<SN.Vector3> _assetDirs = new();
+    readonly List<int> _grassPlacementIdx = new();
+    readonly List<int> _treePlacementIdx = new();
+    readonly List<int> _nearestGrass = new();
+    readonly List<int> _nearestTrees = new();
+    readonly List<string> _staleLeafKeys = new();
+    int[] _nearestIdxScratch = Array.Empty<int>();
+    float[] _nearestDistScratch = Array.Empty<float>();
     GameObject? _runtimeRoot;
 
     sealed class Entry
@@ -171,11 +195,15 @@ public sealed class PlanetVegetationSystem : Behavior
     static readonly Dictionary<string, ImportedTreeTemplate> s_treeTemplateCache = new(StringComparer.OrdinalIgnoreCase);
     static readonly object s_treeTemplateLock = new();
     /// <summary>Suffix so template cache invalidates when import/spawn pipeline changes.</summary>
-    const string TreeTemplateCacheKeySuffix = "|hier_v25_filename";
+    const string TreeTemplateCacheKeySuffix = "|hier_v26_lod2";
     const string DefaultPlanetGrassTexturePath = "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd";
     const string DefaultPlanetGrassModelPath = "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX";
     const int MaxImportedTreeTriangles = 48000;
     const long MaxImportedTreeSourceBytes = 1_800_000;
+    static readonly ConcurrentQueue<string> s_pendingTemplateLoads = new();
+    static readonly HashSet<string> s_queuedTemplateLoads = new(StringComparer.OrdinalIgnoreCase);
+    static int s_templateLoaderRunning;
+    bool _deferSpawnForTemplate;
 
     public override void Awake()
     {
@@ -184,6 +212,7 @@ public sealed class PlanetVegetationSystem : Behavior
         if (!s_activeSystems.Contains(this))
             s_activeSystems.Add(this);
         EnsureRuntimeRoot();
+        QueueProfileTemplateLoads();
     }
 
     public override void Update()
@@ -194,29 +223,30 @@ public sealed class PlanetVegetationSystem : Behavior
         float dt = Math.Max(0f, (float)Time.deltaTime);
         if (dt <= 1e-6f) dt = 1f / 60f;
         _updateAccum += dt;
-        if (_updateAccum < Math.Max(0.05f, UpdateIntervalSeconds))
+        float minInterval = SceneService.PlayMode
+            ? Math.Max(0.45f, UpdateIntervalSeconds)
+            : Math.Max(0.08f, UpdateIntervalSeconds);
+        if (_updateAccum < minInterval)
             return;
         _updateAccum = 0f;
 
         var camPos = ResolveCameraPosition();
-        if (!float.IsNaN(_lastVegCamPos.X))
+        bool usingAssets = UsePlanetAssetPlacements && _assetPlacements.Count > 0;
+        int liveCount = usingAssets ? _assetActive.Count : ActiveVegetationInstances;
+        float moveThreshSq = SceneService.PlayMode ? 35f * 35f : VegRefreshMoveThresholdSq;
+        if (!float.IsNaN(_lastVegCamPos.X) && liveCount > 0
+            && SN.Vector3.DistanceSquared(camPos, _lastVegCamPos) < moveThreshSq)
         {
-            bool pendingWork = _manualSpawnPass
-                || (_terrain.ChunkManager?.PendingCompletedJobs ?? 0) > 0
-                || (_terrain.ChunkManager?.ActiveJobs ?? 0) > 0;
-            if (!pendingWork && SN.Vector3.DistanceSquared(camPos, _lastVegCamPos) < VegRefreshMoveThresholdSq
-                && ActiveVegetationInstances > 0 && !UsePlanetAssetPlacements)
-            {
-                return;
-            }
+            return;
         }
         _lastVegCamPos = camPos;
 
-        if (UsePlanetAssetPlacements && _assetPlacements.Count > 0)
+        if (usingAssets)
             SpawnFromAssetPlacements(clearExisting: false);
+        else
+            RefreshVegetation(playTimeBudgetMs: SceneService.PlayMode ? 4.0 : 0.0);
 
-        RefreshVegetation();
-        if (LastSpawnedThisUpdate > 0 || LastDespawnedThisUpdate > 0)
+        if (!SceneService.PlayMode && (LastSpawnedThisUpdate > 0 || LastDespawnedThisUpdate > 0))
             SceneService.NotifyChanged();
     }
 
@@ -321,6 +351,8 @@ public sealed class PlanetVegetationSystem : Behavior
             p.TexturePath = PlanetAssetIO.NormalizeAssetReference(p.TexturePath);
         }
         _assetSpawnCursor = 0;
+        RebuildAssetPlacementAccel();
+        QueuePlacementTemplateLoads();
         bool hasPlacements = _assetPlacements.Count > 0;
         UsePlanetAssetPlacements = AutoUseSavedPlacementsWhenPresent && hasPlacements;
         if (AutoSpawnWhenUsingSavedPlacements && UsePlanetAssetPlacements && hasPlacements)
@@ -356,6 +388,7 @@ public sealed class PlanetVegetationSystem : Behavior
             _leafEntries.Clear();
             _assetSpawnCursor = 0;
             _assetActive.Clear();
+            RebuildAssetPlacementAccel();
             LastDespawnedThisUpdate = 0;
         }
 
@@ -376,6 +409,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 {
                     _assetPlacements.Clear();
                     _assetSpawnCursor = 0;
+                    RebuildAssetPlacementAccel();
                 }
                 RefreshVegetation();
             }
@@ -395,10 +429,17 @@ public sealed class PlanetVegetationSystem : Behavior
         }
     }
 
-    void RefreshVegetation()
+    void RefreshVegetation(double playTimeBudgetMs = 0.0)
     {
         LastSpawnedThisUpdate = 0;
         LastDespawnedThisUpdate = 0;
+        long budgetTicks = playTimeBudgetMs > 0.0
+            ? (long)(playTimeBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0)
+            : 0;
+        long budgetStart = budgetTicks > 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        bool OverBudget()
+            => budgetTicks > 0
+               && (System.Diagnostics.Stopwatch.GetTimestamp() - budgetStart) >= budgetTicks;
 
         var cfg = _terrain!.Config!;
         var leaves = _terrain.ChunkManager!.GetRenderableLeaves();
@@ -414,7 +455,9 @@ public sealed class PlanetVegetationSystem : Behavior
         var center = GetWorldCenter();
         var camPos = ResolveCameraPosition();
         float worldRadius = Math.Max(1f, cfg.EffectiveWorldRadius);
-        float spawnDist = worldRadius * Math.Max(0.5f, ActiveDistanceMultiplier);
+        float spawnDist = SceneService.PlayMode
+            ? Math.Min(180f, worldRadius * 0.18f)
+            : worldRadius * Math.Max(0.5f, ActiveDistanceMultiplier);
         float spawnDistSq = spawnDist * spawnDist;
         float cullDistSq = spawnDistSq * VegetationCullDistanceHysteresis * VegetationCullDistanceHysteresis;
 
@@ -426,7 +469,11 @@ public sealed class PlanetVegetationSystem : Behavior
         });
 
         bool fullPopulate = _manualSpawnPass && FullBiomePopulate;
-        int maxCells = fullPopulate ? leaves.Count : Math.Max(16, MaxTrackedLeaves);
+        int maxCells = fullPopulate
+            ? leaves.Count
+            : (SceneService.PlayMode
+                ? Math.Clamp(Math.Min(12, MaxTrackedLeaves), 6, 16)
+                : Math.Max(16, MaxTrackedLeaves));
         int spawnTickCap = ResolveSpawnTickCap(fullPopulate);
 
         // Map each terrain leaf to a stable face/UV cell (not LOD-specific) so split/merge does not despawn plants.
@@ -454,6 +501,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
         for (int i = 0; i < activeCells.Count; i++)
         {
+            if (OverBudget()) break;
             if (!fullPopulate && LastSpawnedThisUpdate >= spawnTickCap)
                 break;
 
@@ -461,14 +509,15 @@ public sealed class PlanetVegetationSystem : Behavior
             if (!cellBestLeaf.TryGetValue(cellKey, out var picked))
                 continue;
             EnsureLeafEntries(picked.leaf, cellKey);
-            UpdateLeafVitality(cellKey);
+            if (!SceneService.PlayMode || RemoveVegetationWhenVitalityExhausted)
+                UpdateLeafVitality(cellKey);
             if (!fullPopulate && LastSpawnedThisUpdate >= spawnTickCap)
                 break;
         }
 
         if (CullVegetationWhenLeafNotActive)
         {
-            var stale = new List<string>();
+            _staleLeafKeys.Clear();
             foreach (var k in _leafEntries.Keys)
             {
                 if (string.Equals(k, "asset", StringComparison.OrdinalIgnoreCase))
@@ -476,14 +525,14 @@ public sealed class PlanetVegetationSystem : Behavior
                 if (TryParseStableVegetationCellKey(k, out int face, out int iu, out int iv))
                 {
                     var dir = StableCellCenterDirection(face, iu, iv);
-                    var wp = LocalSpherePointToWorld(planetW, _terrain!.SampleVegetationAnchorLocal(dir));
+                    var wp = LocalSpherePointToWorld(planetW, dir * worldRadius);
                     if (SN.Vector3.DistanceSquared(camPos, wp) <= cullDistSq)
                         continue;
                 }
-                stale.Add(k);
+                _staleLeafKeys.Add(k);
             }
-            for (int i = 0; i < stale.Count && LastDespawnedThisUpdate < MaxDespawnsPerRefresh; i++)
-                DespawnLeaf(stale[i]);
+            for (int i = 0; i < _staleLeafKeys.Count && LastDespawnedThisUpdate < ResolveDespawnCap(); i++)
+                DespawnLeaf(_staleLeafKeys[i]);
         }
     }
 
@@ -492,7 +541,29 @@ public sealed class PlanetVegetationSystem : Behavior
         if (fullPopulate || _manualSpawnPass)
             return Math.Max(16, _terrain?.Config?.MaxVegetationSpawnsPerUpdate ?? 16);
         int configCap = Math.Max(1, _terrain?.Config?.MaxVegetationSpawnsPerUpdate ?? 4);
-        return SceneService.PlayMode ? Math.Min(6, configCap) : Math.Min(6, configCap);
+        return SceneService.PlayMode ? 1 : Math.Min(6, configCap);
+    }
+
+    int ResolveDespawnCap()
+        => SceneService.PlayMode ? PlayMaxDespawnsPerRefresh : MaxDespawnsPerRefresh;
+
+    int ResolveActiveTreeCap()
+    {
+        int configured = Math.Max(8, MaxActiveAssetTrees);
+        return SceneService.PlayMode ? Math.Min(24, configured) : configured;
+    }
+
+    int ResolveActiveGrassCap()
+    {
+        int configured = Math.Max(4, MaxActiveAssetGrassPatches);
+        return SceneService.PlayMode ? Math.Min(32, configured) : configured;
+    }
+
+    float ResolveAssetActivationDistance(float worldRadius)
+    {
+        if (SceneService.PlayMode)
+            return Math.Min(220f, worldRadius * 0.22f);
+        return worldRadius * Math.Max(0.2f, AssetPlacementActivationDistanceMultiplier);
     }
 
     void SpawnFromAssetPlacements(bool clearExisting, int? budgetOverride = null)
@@ -519,33 +590,39 @@ public sealed class PlanetVegetationSystem : Behavior
         }
 
         float worldRadius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
-        float maxDist = worldRadius * Math.Max(0.2f, AssetPlacementActivationDistanceMultiplier);
+        float maxDist = ResolveAssetActivationDistance(worldRadius);
         float maxDistSq = maxDist * maxDist;
         var camPos = ResolveCameraPosition();
+        int grassCapWanted = ResolveActiveGrassCap();
+        int treeCapWanted = ResolveActiveTreeCap();
 
-        var wantGrass = CollectNearestPlacementIndices(
+        CollectNearestPlacementIndices(
             isGrass: true,
-            maxCount: Math.Max(4, MaxActiveAssetGrassPatches),
+            maxCount: grassCapWanted,
             maxDistSq: maxDistSq,
-            cameraPos: camPos);
-        var wantTrees = CollectNearestPlacementIndices(
+            cameraPos: camPos,
+            _nearestGrass);
+        CollectNearestPlacementIndices(
             isGrass: false,
-            maxCount: Math.Max(8, MaxActiveAssetTrees),
+            maxCount: treeCapWanted,
             maxDistSq: maxDistSq,
-            cameraPos: camPos);
+            cameraPos: camPos,
+            _nearestTrees);
 
-        // Stable union for despawn checks (order does not matter).
-        var wantedSet = new HashSet<int>(wantGrass);
-        wantedSet.UnionWith(wantTrees);
+        _wantedAssetSet.Clear();
+        for (int i = 0; i < _nearestGrass.Count; i++)
+            _wantedAssetSet.Add(_nearestGrass[i]);
+        for (int i = 0; i < _nearestTrees.Count; i++)
+            _wantedAssetSet.Add(_nearestTrees[i]);
 
-        // Despawn no-longer-needed placements first to free memory quickly.
-        var stale = new List<int>();
+        _staleAssetIndices.Clear();
         foreach (var kv in _assetActive)
-            if (!wantedSet.Contains(kv.Key))
-                stale.Add(kv.Key);
-        for (int i = 0; i < stale.Count; i++)
+            if (!_wantedAssetSet.Contains(kv.Key))
+                _staleAssetIndices.Add(kv.Key);
+        int despawnCap = ResolveDespawnCap();
+        for (int i = 0; i < _staleAssetIndices.Count && LastDespawnedThisUpdate < despawnCap; i++)
         {
-            int idx = stale[i];
+            int idx = _staleAssetIndices[i];
             if (_assetActive.TryGetValue(idx, out var old))
             {
                 old.GameObject.RemoveFromParent();
@@ -554,22 +631,38 @@ public sealed class PlanetVegetationSystem : Behavior
             }
         }
 
-        // Grass first: with tiny per-frame budgets (default MaxAssetSpawnsPerUpdate = 2), arbitrary
-        // mixed iteration could starve grass for a long time after load. Lists are disjoint (IsGrass).
-        var spawnOrder = new List<int>(wantGrass.Count + wantTrees.Count);
-        spawnOrder.AddRange(wantGrass);
-        spawnOrder.AddRange(wantTrees);
+        _assetSpawnOrder.Clear();
+        _assetSpawnOrder.AddRange(_nearestGrass);
+        _assetSpawnOrder.AddRange(_nearestTrees);
 
-        // Spawn only a small budget per tick unless caller overrides (manual spawn / deferred hydrate).
-        foreach (var idx in spawnOrder)
+        int grassCap = grassCapWanted;
+        int treeCap = treeCapWanted;
+        int activeGrass = 0;
+        int activeTrees = 0;
+        foreach (var kv in _assetActive)
+        {
+            if (kv.Value.IsGrass) activeGrass++;
+            else activeTrees++;
+        }
+
+        foreach (var idx in _assetSpawnOrder)
         {
             if (budget <= 0) break;
             if (_assetActive.ContainsKey(idx)) continue;
             if (idx < 0 || idx >= _assetPlacements.Count) continue;
             var p = _assetPlacements[idx];
-            if (p.IsGrass && _assetActive.Count(e => e.Value.IsGrass) >= Math.Max(4, MaxActiveAssetGrassPatches))
+            _deferSpawnForTemplate = false;
+            if (p.IsGrass)
+            {
+                if (activeGrass >= grassCap) continue;
+            }
+            else if (activeTrees >= treeCap)
+            {
                 continue;
+            }
             var go = SpawnVegetationFromPlacement(p, idx);
+            if (_deferSpawnForTemplate)
+                break;
             if (go == null || go.Parent == null) continue;
             if (p.IsGrass && !HasMeshFilterDeep(go))
             {
@@ -591,6 +684,8 @@ public sealed class PlanetVegetationSystem : Behavior
                 TexturePath = p.TexturePath ?? "",
             };
             _assetActive[idx] = entry;
+            if (p.IsGrass) activeGrass++;
+            else activeTrees++;
             LastSpawnedThisUpdate++;
             budget--;
         }
@@ -609,57 +704,84 @@ public sealed class PlanetVegetationSystem : Behavior
             _terrain = GetComponent<PlanetTerrain>();
         if (!UsePlanetAssetPlacements || _assetPlacements.Count == 0 || _terrain?.Config == null)
             return;
-        int warm = Math.Clamp(Math.Max(_assetPlacements.Count, 256), 96, 1024);
+        int warm = SceneService.PlayMode
+            ? Math.Min(2, Math.Max(1, MaxAssetSpawnsPerUpdate))
+            : Math.Min(6, Math.Max(2, MaxAssetSpawnsPerUpdate));
         SpawnFromAssetPlacements(clearExisting: false, budgetOverride: warm);
     }
 
-    List<int> CollectNearestPlacementIndices(bool isGrass, int maxCount, float maxDistSq, SN.Vector3 cameraPos)
+    void RebuildAssetPlacementAccel()
     {
-        var result = new List<int>(Math.Max(0, maxCount));
-        if (_assetPlacements.Count == 0 || maxCount <= 0 || _terrain == null)
-            return result;
-
-        var planetW = GetPlanetWorldMatrix();
-        var bestIdx = new int[maxCount];
-        var bestDist = new float[maxCount];
-        int count = 0;
-        for (int k = 0; k < maxCount; k++) bestDist[k] = float.MaxValue;
-
+        _assetDirs.Clear();
+        _grassPlacementIdx.Clear();
+        _treePlacementIdx.Clear();
         for (int i = 0; i < _assetPlacements.Count; i++)
+            RegisterAssetPlacementAt(i);
+    }
+
+    void RegisterAssetPlacementAt(int i)
+    {
+        var p = _assetPlacements[i];
+        var dir = SafeNormalize(new SN.Vector3(p.DirX, p.DirY, p.DirZ), SN.Vector3.UnitY);
+        if (i < _assetDirs.Count)
+            _assetDirs[i] = dir;
+        else
+            _assetDirs.Add(dir);
+        if (p.IsGrass) _grassPlacementIdx.Add(i);
+        else _treePlacementIdx.Add(i);
+    }
+
+    void CollectNearestPlacementIndices(bool isGrass, int maxCount, float maxDistSq, SN.Vector3 cameraPos, List<int> result)
+    {
+        result.Clear();
+        if (_assetPlacements.Count == 0 || maxCount <= 0 || _terrain?.Config == null)
+            return;
+        if (_assetDirs.Count != _assetPlacements.Count)
+            RebuildAssetPlacementAccel();
+
+        var indices = isGrass ? _grassPlacementIdx : _treePlacementIdx;
+        var planetW = GetPlanetWorldMatrix();
+        float radius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+        if (_nearestIdxScratch.Length < maxCount)
         {
-            var p = _assetPlacements[i];
-            if (p.IsGrass != isGrass) continue;
-            var dir = SafeNormalize(new SN.Vector3(p.DirX, p.DirY, p.DirZ), SN.Vector3.UnitY);
-            var wp = VegetationWorldPoint(_terrain, planetW, dir, treePad: 0f);
+            _nearestIdxScratch = new int[maxCount];
+            _nearestDistScratch = new float[maxCount];
+        }
+        int count = 0;
+        for (int k = 0; k < maxCount; k++) _nearestDistScratch[k] = float.MaxValue;
+
+        for (int n = 0; n < indices.Count; n++)
+        {
+            int i = indices[n];
+            var wp = SN.Vector3.Transform(_assetDirs[i] * radius, planetW);
             float d2 = SN.Vector3.DistanceSquared(cameraPos, wp);
             if (d2 > maxDistSq) continue;
 
             if (count < maxCount)
             {
-                bestIdx[count] = i;
-                bestDist[count] = d2;
+                _nearestIdxScratch[count] = i;
+                _nearestDistScratch[count] = d2;
                 count++;
                 continue;
             }
 
             int farI = 0;
-            float farD = bestDist[0];
+            float farD = _nearestDistScratch[0];
             for (int j = 1; j < maxCount; j++)
             {
-                if (bestDist[j] <= farD) continue;
-                farD = bestDist[j];
+                if (_nearestDistScratch[j] <= farD) continue;
+                farD = _nearestDistScratch[j];
                 farI = j;
             }
             if (d2 < farD)
             {
-                bestIdx[farI] = i;
-                bestDist[farI] = d2;
+                _nearestIdxScratch[farI] = i;
+                _nearestDistScratch[farI] = d2;
             }
         }
 
         for (int i = 0; i < count; i++)
-            result.Add(bestIdx[i]);
-        return result;
+            result.Add(_nearestIdxScratch[i]);
     }
 
     void EnsureLeafEntries(QuadNode leaf, string key)
@@ -671,6 +793,22 @@ public sealed class PlanetVegetationSystem : Behavior
         }
 
         if (_terrain?.Config == null) return;
+
+        if (!_manualSpawnPass && entries.Count > 0)
+        {
+            int existingTrees = 0;
+            int existingGrass = 0;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].IsGrass) existingGrass++;
+                else existingTrees++;
+            }
+            int treeDone = SceneService.PlayMode ? Math.Min(2, MaxTreesPerLeaf) : MaxTreesPerLeaf;
+            int grassDone = SceneService.PlayMode || BatchGrassPerLeaf ? 1 : MaxGrassClumpsPerLeaf;
+            if (existingTrees >= treeDone && existingGrass >= grassDone)
+                return;
+        }
+
         int hardCap = Math.Max(1024, _terrain.Config.MaxVegetationInstances);
         int currentTotal = ActiveVegetationInstances;
         if (currentTotal >= hardCap) return;
@@ -700,6 +838,11 @@ public sealed class PlanetVegetationSystem : Behavior
         int grassCapPerLeaf = fullPopulate
             ? Math.Max(1, (int)MathF.Round(MaxGrassClumpsPerLeaf * areaMul))
             : MaxGrassClumpsPerLeaf;
+        if (SceneService.PlayMode && !_manualSpawnPass)
+        {
+            treeCapPerLeaf = Math.Min(treeCapPerLeaf, 2);
+            grassCapPerLeaf = Math.Min(grassCapPerLeaf, 1);
+        }
         int targetTrees = Math.Clamp((int)MathF.Round(biome.TreeDensity * treeDensityMul * treeCapPerLeaf), 0, treeCapPerLeaf);
         int targetGrass = Math.Clamp((int)MathF.Round(biome.VegetationDensity * grassDensityMul * grassCapPerLeaf), 0, grassCapPerLeaf);
         bool hasTreeItems = profile?.TreeItems?.Any(it => it != null && it.Weight > 0f) == true;
@@ -742,6 +885,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     {
                         var p = BuildPlacementFromLeaf(leaf, biome, isGrass: true, grassCount + 97, profile);
                         _assetPlacements.Add(p);
+                        RegisterAssetPlacementAt(_assetPlacements.Count - 1);
                         grassCount++;
                     }
                 }
@@ -750,7 +894,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     var usableGrass = GetUsableGrassItems(profile);
                     int typeBatches = Math.Min(4, Math.Max(1, usableGrass.Count));
                     int clumpsPerBatch = Math.Max(1, (targetGrass + typeBatches - 1) / typeBatches);
-                    int maxBladesPerBatch = SceneService.PlayMode ? 48 : 96;
+                    int maxBladesPerBatch = SceneService.PlayMode ? 12 : 96;
 
                     for (int ti = 0; ti < typeBatches && spawnBudget > 0 && currentTotal < hardCap
                          && globalGrassCount < Math.Max(8, MaxRuntimeGrassPatches); ti++)
@@ -794,12 +938,15 @@ public sealed class PlanetVegetationSystem : Behavior
                     break;
                 var p = BuildPlacementFromLeaf(leaf, biome, isGrass: true, grassCount + 97, profile);
                 _assetPlacements.Add(p);
+                RegisterAssetPlacementAt(_assetPlacements.Count - 1);
                 grassCount++;
                 continue;
             }
             if (globalGrassCount >= Math.Max(8, MaxRuntimeGrassPatches))
                 break;
             var go = SpawnVegetationObject(leaf, biome, isGrass: true, grassCount + 97, profile);
+            if (_deferSpawnForTemplate || go == null)
+                break;
             if (go.Parent == null || !HasMeshFilterDeep(go))
             {
                 grassCount++;
@@ -841,10 +988,13 @@ public sealed class PlanetVegetationSystem : Behavior
                     break;
                 var p = BuildPlacementFromLeaf(leaf, biome, isGrass: false, treeCount + 17, profile);
                 _assetPlacements.Add(p);
+                RegisterAssetPlacementAt(_assetPlacements.Count - 1);
                 treeCount++;
                 continue;
             }
             var go = SpawnVegetationObject(leaf, biome, isGrass: false, treeCount + 17, profile);
+            if (_deferSpawnForTemplate || go == null)
+                break;
             var dir = RadialDirFromLocalPosition(new SN.Vector3(
                 (float)go.Transform.Position.X,
                 (float)go.Transform.Position.Y,
@@ -955,6 +1105,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
     GameObject? SpawnVegetationFromPlacement(PlanetVegetationPlacement p, int index)
     {
+        _deferSpawnForTemplate = false;
         if (_terrain?.gameObject == null || _terrain.Config == null) return null;
         var dir = SafeNormalize(new SN.Vector3(p.DirX, p.DirY, p.DirZ), SN.Vector3.UnitY);
         var planetW = GetPlanetWorldMatrix();
@@ -1003,6 +1154,11 @@ public sealed class PlanetVegetationSystem : Behavior
             string grassModel = ResolveGrassModelPath(p.ModelPath, null);
             if (TrySpawnImportedVegetationMesh(go, grassModel, isGrass: true, minScale, surfaceGrass, radialW, placeUp, yawDeg))
                 return go;
+            if (_deferSpawnForTemplate)
+            {
+                go.RemoveFromParent();
+                return null;
+            }
 
             go.RemoveFromParent();
             return go;
@@ -1012,6 +1168,11 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             if (TrySpawnImportedVegetationMesh(go, p.ModelPath, isGrass: false, Math.Max(0.01f, p.Scale), surfaceTree, radialW, placeUp, yawDeg))
                 return go;
+            if (_deferSpawnForTemplate)
+            {
+                go.RemoveFromParent();
+                return null;
+            }
         }
 
         var tree = go.AddBehavior<Tree>();
@@ -1033,8 +1194,9 @@ public sealed class PlanetVegetationSystem : Behavior
         return go;
     }
 
-    GameObject SpawnVegetationObject(QuadNode leaf, BiomeDefinition biome, bool isGrass, int seedOffset, VegetationProfile? profile)
+    GameObject? SpawnVegetationObject(QuadNode leaf, BiomeDefinition biome, bool isGrass, int seedOffset, VegetationProfile? profile)
     {
+        _deferSpawnForTemplate = false;
         float u = Random01(HashLeaf(leaf, 11 + seedOffset));
         float v = Random01(HashLeaf(leaf, 31 + seedOffset));
         var dir = CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
@@ -1104,6 +1266,11 @@ public sealed class PlanetVegetationSystem : Behavior
             string grassModel = ResolveGrassModelPath(item?.ModelPath, profile);
             if (TrySpawnImportedVegetationMesh(go, grassModel, isGrass: true, grassScale, surfaceGrass, radialW, placeUp, yawDeg))
                 return go;
+            if (_deferSpawnForTemplate)
+            {
+                go.RemoveFromParent();
+                return null;
+            }
 
             go.RemoveFromParent();
             return go;
@@ -1119,6 +1286,11 @@ public sealed class PlanetVegetationSystem : Behavior
             float importedScale = minScaleImported + (maxScaleImported - minScaleImported) * Random01(HashLeaf(leaf, 97 + seedOffset));
             if (TrySpawnImportedVegetationMesh(go, item.ModelPath, isGrass: false, importedScale, surfaceTree, radialW, placeUp, yawDeg))
                 return go;
+            if (_deferSpawnForTemplate)
+            {
+                go.RemoveFromParent();
+                return null;
+            }
         }
 
         var tree = go.AddBehavior<Tree>();
@@ -1284,7 +1456,8 @@ public sealed class PlanetVegetationSystem : Behavior
             ? Math.Clamp(importedScale, 0.75f, 6f)
             : Math.Clamp(importedScale, 0.35f, 8f);
         go.Transform.Scale = new Vector3(importedScale, importedScale, importedScale);
-        ResolveImportedTreeMaterialsRecursive(go);
+        if (!isGrass)
+            ApplyImportedTreeRenderSettingsRecursive(go);
         if (isGrass)
             ApplyImportedGrassCardCutoutRecursive(go);
         if (isGrass)
@@ -1307,13 +1480,27 @@ public sealed class PlanetVegetationSystem : Behavior
         if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
             return false;
 
-        var tpl = GetOrLoadTreeTemplate(abs);
+        if (!TryGetReadyTreeTemplate(abs, out var tpl))
+        {
+            RequestTreeTemplateLoad(abs);
+            if (_manualSpawnPass && !SceneService.PlayMode)
+            {
+                GetOrLoadTreeTemplate(abs);
+                if (!TryGetReadyTreeTemplate(abs, out tpl))
+                    return false;
+            }
+            else
+            {
+                _deferSpawnForTemplate = true;
+                return false;
+            }
+        }
 
         if (tpl.Source != null)
         {
             AttachImportedTreeFromTemplate(tpl.Source, go);
             ApplyImportedTreeRenderSettingsRecursive(go);
-            ResolveImportedTreeMaterialsRecursive(go);
+            // Materials were resolved when the template was imported on a worker thread.
             meshExtent = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateHierarchyVerticalExtent(go);
             if (meshExtent < 1e-3f)
                 meshExtent = tpl.MeshExtent;
@@ -1601,6 +1788,112 @@ public sealed class PlanetVegetationSystem : Behavior
         return maxE;
     }
 
+    static bool TemplateHasVisual(ImportedTreeTemplate? tpl)
+        => tpl != null && (tpl.Source != null || tpl.Mesh != null || !string.IsNullOrWhiteSpace(tpl.VisualHierarchyJson));
+
+    static string TreeTemplateKey(string absModelPath, bool grassOrient)
+        => Path.GetFullPath(absModelPath) + TreeTemplateCacheKeySuffix + (grassOrient ? "|zupy" : "");
+
+    static bool TryGetReadyTreeTemplate(string absModelPath, out ImportedTreeTemplate tpl)
+    {
+        absModelPath = Path.GetFullPath(absModelPath);
+        bool grassOrient = LooksLikeImportedGrassModel(absModelPath);
+        string cacheKey = TreeTemplateKey(absModelPath, grassOrient);
+        lock (s_treeTemplateLock)
+        {
+            if (s_treeTemplateCache.TryGetValue(cacheKey, out tpl!) && TemplateHasVisual(tpl))
+                return true;
+        }
+        tpl = null!;
+        return false;
+    }
+
+    static void RequestTreeTemplateLoad(string absModelPath)
+    {
+        if (string.IsNullOrWhiteSpace(absModelPath) || !File.Exists(absModelPath))
+            return;
+        absModelPath = Path.GetFullPath(absModelPath);
+        if (IsExcessivelyHeavySourceModel(absModelPath))
+            return;
+        lock (s_treeTemplateLock)
+        {
+            bool grassOrient = LooksLikeImportedGrassModel(absModelPath);
+            if (s_treeTemplateCache.ContainsKey(TreeTemplateKey(absModelPath, grassOrient)))
+                return;
+            if (!s_queuedTemplateLoads.Add(absModelPath))
+                return;
+        }
+        s_pendingTemplateLoads.Enqueue(absModelPath);
+        KickTemplateLoader();
+    }
+
+    static void KickTemplateLoader()
+    {
+        if (Interlocked.CompareExchange(ref s_templateLoaderRunning, 1, 0) != 0)
+            return;
+        Task.Run(TemplateLoaderLoop);
+    }
+
+    static void TemplateLoaderLoop()
+    {
+        try
+        {
+            while (s_pendingTemplateLoads.TryDequeue(out var path))
+            {
+                try { GetOrLoadTreeTemplate(path); }
+                catch { /* import is best-effort; spawn retries next tick */ }
+                lock (s_treeTemplateLock)
+                    s_queuedTemplateLoads.Remove(path);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref s_templateLoaderRunning, 0);
+            if (!s_pendingTemplateLoads.IsEmpty)
+                KickTemplateLoader();
+        }
+    }
+
+    void QueueProfileTemplateLoads()
+    {
+        foreach (var profile in _vegProfiles.Values)
+        {
+            if (profile == null) continue;
+            QueueStoredModelLoad(profile.TreeModelPath);
+            QueueStoredModelLoad(profile.GrassModelPath);
+            QueueItemModelLoads(profile.TreeItems);
+            QueueItemModelLoads(profile.GrassItems);
+        }
+    }
+
+    void QueuePlacementTemplateLoads()
+    {
+        for (int i = 0; i < _assetPlacements.Count; i++)
+        {
+            var p = _assetPlacements[i];
+            QueueStoredModelLoad(p.ModelPath);
+        }
+    }
+
+    void QueueItemModelLoads(IEnumerable<VegetationProfileItem>? items)
+    {
+        if (items == null) return;
+        foreach (var it in items)
+        {
+            if (it == null) continue;
+            QueueStoredModelLoad(it.ModelPath);
+        }
+    }
+
+    void QueueStoredModelLoad(string? stored)
+    {
+        if (string.IsNullOrWhiteSpace(stored) || !IsSupportedModelPath(stored))
+            return;
+        string? abs = ResolveTreeModelAbsPath(stored);
+        if (!string.IsNullOrWhiteSpace(abs))
+            RequestTreeTemplateLoad(abs);
+    }
+
     static ImportedTreeTemplate GetOrLoadTreeTemplate(string absModelPath)
     {
         absModelPath = Path.GetFullPath(absModelPath);
@@ -1742,7 +2035,7 @@ public sealed class PlanetVegetationSystem : Behavior
         return -1;
     }
 
-    /// <summary>Strip LOD1/LOD2 duplicates per mesh stem; keep LOD0 for each part (trunk + foliage).</summary>
+    /// <summary>Strip extra LOD meshes per stem; keep the cheapest available (LOD3/2 before LOD0).</summary>
     static string LodStemKey(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return "";
@@ -1779,13 +2072,18 @@ public sealed class PlanetVegetationSystem : Behavior
 
         foreach (var list in groups.Values)
         {
-            int best = int.MaxValue;
-            for (int i = 0; i < list.Count; i++)
-                if (list[i].rank < best)
-                    best = list[i].rank;
+            int want = -1;
             for (int i = 0; i < list.Count; i++)
             {
-                if (list[i].rank != best)
+                int rank = list[i].rank;
+                if (rank > want)
+                    want = rank;
+            }
+            if (want < 0)
+                continue;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].rank != want)
                     list[i].go.RemoveFromParent();
             }
         }
@@ -2748,7 +3046,7 @@ public sealed class PlanetVegetationSystem : Behavior
         float patchRadius = PlanetGrassPatchRadius() * MathF.Sqrt(Math.Clamp(clumpCount, 1, 32));
         int maxBlades = maxBladesCap > 0
             ? maxBladesCap
-            : (SceneService.PlayMode ? 80 : 160);
+            : (SceneService.PlayMode ? 12 : 160);
         int bladeCount = Math.Clamp(clumpCount * Math.Max(4, GrassBladesPerPatch), 8, maxBlades);
 
         var go = new GameObject($"BiomeGrassBatch_{leaf.Face}_{leaf.LodLevel}_{seedSalt & 255}");

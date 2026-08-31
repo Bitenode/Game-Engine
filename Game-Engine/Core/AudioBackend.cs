@@ -2,14 +2,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-#if !ANDROID
+#if WINDOWS
 using NAudio.Wave;
 #endif
 
 namespace Game_Engine.Core
 {
-#if ANDROID
-    /// <summary>Placeholder audio backend on Android (NAudio is not used). Playback is disabled until a mobile backend is added.</summary>
+#if !WINDOWS
+    /// <summary>Placeholder audio backend on non-Windows (NAudio WinMM/WaveOut is Windows-only). Playback is disabled until a platform backend is added.</summary>
     public static class AudioBackend
     {
         private static readonly List<WeakReference<AudioHandle>> s_activeHandles = new();
@@ -47,7 +47,7 @@ namespace Game_Engine.Core
 #else
     /// <summary>
     /// Low-level audio backend using NAudio.
-    /// Each sound gets its own WaveOutEvent for maximum compatibility.
+    /// Each sound gets its own WaveOut for maximum compatibility.
     /// Simple and reliable — avoids mixer format-matching issues.
     /// </summary>
     public static class AudioBackend
@@ -126,7 +126,7 @@ namespace Game_Engine.Core
                 // Wrap for looping
                 var loopStream = new LoopingReader(reader, loop);
 
-                var output = new WaveOutEvent();
+                var output = new WaveOut();
                 output.Init(loopStream);
                 output.Play();
 
@@ -214,12 +214,15 @@ namespace Game_Engine.Core
         }
 
         public override int Read(byte[] buffer, int offset, int count)
+            => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
         {
             int totalRead = 0;
 
-            while (totalRead < count)
+            while (totalRead < buffer.Length)
             {
-                int read = _reader.Read(buffer, offset + totalRead, count - totalRead);
+                int read = _reader.Read(buffer[totalRead..]);
                 if (read == 0)
                 {
                     if (Loop)
@@ -243,7 +246,7 @@ namespace Game_Engine.Core
     /// </summary>
     public sealed class AudioHandle : IDisposable
     {
-        private readonly WaveOutEvent _output;
+        private readonly WaveOut _output;
         private readonly AudioFileReader _reader;
         private readonly LoopingReader _looper;
         private bool _disposed;
@@ -251,7 +254,7 @@ namespace Game_Engine.Core
         public bool IsPlaying => !_disposed && _output.PlaybackState == PlaybackState.Playing;
         public TimeSpan Duration => _reader.TotalTime;
 
-        internal AudioHandle(WaveOutEvent output, AudioFileReader reader, LoopingReader looper)
+        internal AudioHandle(WaveOut output, AudioFileReader reader, LoopingReader looper)
         {
             _output = output;
             _reader = reader;

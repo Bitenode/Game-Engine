@@ -438,7 +438,7 @@ The `BVH` class provides spatial acceleration for collision queries. Instead of 
 
 An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-based feel. Features include:
 - **Force-based movement** with configurable ground/air drag
-- **Swimming physics** — automatic 3D underwater movement when `UnderwaterQuery` reports submersion (local water table + depth/column checks; land caves stay dry)
+- **Swimming physics** — automatic 3D underwater movement when `UnderwaterQuery` reports submersion (local water table + depth/column checks; land caves stay dry). On planets, **`SwimOnPlanet()`** runs when depth ≥ **0.35 m** — buoyancy at the water surface, tangent WASD swim, Space up, Ctrl/Crouch dive
 - **Jump impulse** — physics-driven jumping with buffered input
 - **Natural push interactions** — momentum transfer between objects
 - **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing
@@ -459,7 +459,7 @@ The planet pipeline integrates directly with runtime rigidbody and character phy
 3. Gravity is applied along `-LocalUp` (fallback is world `-Y` when no planet is active)
 4. Grounding and walls use `Spherecast` / `RaycastDensity` along `-LocalUp` against the **same density field as meshing** (multi-scale caves, overhangs, full interior). `ResolveDensityPenetration` pushes the body out of solid. `RigidbodyPlayer` uses a **short** downward probe (capsule height + step-up + ground snap), not a full radial ray to the core, so standing on outer crust does not snap into the first air pocket below
 5. On contact, the into-surface velocity component is removed and tangent motion is preserved
-6. **Underwater:** `UnderwaterQuery` uses the **local water table** (`SampleWaterSurface`), not a single global sea radius. Requires ≥ **0.35 m** submersion below the surface and an open water column (camera above the bed, crust not blocking). Solid density and cave air below the crust skip ocean tint/swim. See [Planet System — Planet water](13_Planet_System.md#planet-water).
+6. **Underwater:** `UnderwaterQuery` uses the **local water table** (`SampleWaterSurface`), not a single global sea radius. Requires ≥ **0.35 m** submersion below the surface and an open water column (camera above the bed, crust not blocking). Solid density and cave air below the crust skip ocean tint/swim. On planets, `RigidbodyPlayer.SwimOnPlanet()` handles movement while submerged; `Rigidbody` preserves underwater state when `IsPlanetSwimming` is true. See [Planet System — Planet water](13_Planet_System.md#planet-water).
 
 `SampleSurfaceRadius` is **not** used for this contact; it remains the outer-crust radius for water/orbit/atmosphere/vegetation estimates.
 

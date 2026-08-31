@@ -12,6 +12,23 @@ namespace Game_Engine.Core
     /// </summary>
     public static class Profiler
     {
+        public enum ScriptPhase : byte
+        {
+            Update,
+            LateUpdate,
+            FixedUpdate
+        }
+
+        /// <summary>One behavior type's cost for the latest published script tick.</summary>
+        public struct ScriptCost
+        {
+            public string TypeName;
+            public string ObjectName;
+            public string Phase;
+            public double Ms;
+            public int Count;
+        }
+
         /// <summary>A single profiler sample with timing information.</summary>
         public struct ProfileSample
         {
@@ -48,6 +65,15 @@ namespace Game_Engine.Core
         // ── Configuration ──
         /// <summary>Enable or disable profiling. When disabled, Begin/End are no-ops.</summary>
         public static bool Enabled { get; set; } = false;
+
+        /// <summary>
+        /// Time each behavior during Update / LateUpdate / FixedUpdate.
+        /// Cheap (two timestamps per component); on by default so script spikes are attributable.
+        /// </summary>
+        public static bool SampleScripts { get; set; } = true;
+
+        public const int TopScriptCount = 8;
+        public const double ScriptSpikeMs = 8.0;
 
         /// <summary>Number of frames to keep in the history ring buffer.</summary>
         public const int HistorySize = 300; // ~5 seconds at 60fps
@@ -200,6 +226,189 @@ namespace Game_Engine.Core
 
         /// <summary>Increment the batch counter for this frame.</summary>
         public static void CountBatch() { if (Enabled) _batches++; }
+
+        sealed class ScriptAccum
+        {
+            public double TotalMs;
+            public int Count;
+            public double HeaviestMs;
+            public string HeaviestObject = "";
+            public ScriptPhase HeaviestPhase;
+        }
+
+        static readonly Dictionary<string, ScriptAccum> _scriptByType = new(64);
+        static readonly Dictionary<string, long> _scriptSpikeLog = new(32);
+        static readonly ScriptCost[] _latestTop = new ScriptCost[TopScriptCount];
+        static readonly ScriptCost[] _spikeTop = new ScriptCost[TopScriptCount];
+        static int _latestTopCount;
+        static int _spikeTopCount;
+        static double _latestScriptsMs;
+        static double _spikeScriptsMs;
+        static long _spikeTimestamp;
+
+        public static int LatestTopScriptCount => _latestTopCount;
+        public static double LatestScriptsMs => _latestScriptsMs;
+        public static int SpikeTopScriptCount => _spikeTopCount;
+        public static double SpikeScriptsMs => _spikeScriptsMs;
+
+        public static ScriptCost GetLatestTopScript(int index)
+            => (uint)index < (uint)_latestTopCount ? _latestTop[index] : default;
+
+        public static ScriptCost GetSpikeTopScript(int index)
+            => (uint)index < (uint)_spikeTopCount ? _spikeTop[index] : default;
+
+        public static double SpikeAgeSeconds
+        {
+            get
+            {
+                if (_spikeTimestamp == 0) return -1;
+                return (Stopwatch.GetTimestamp() - _spikeTimestamp) * 1.0 / Stopwatch.Frequency;
+            }
+        }
+
+        public static string FormatScriptCost(in ScriptCost s)
+        {
+            string obj = string.IsNullOrEmpty(s.ObjectName) ? "" : $" @{s.ObjectName}";
+            string count = s.Count > 1 ? $"  ×{s.Count}" : "";
+            string phase = string.IsNullOrEmpty(s.Phase) ? "" : $"  {s.Phase}";
+            return $"{s.TypeName}  {s.Ms:F2} ms{count}{phase}{obj}";
+        }
+
+        /// <summary>Run a behavior tick and, when sampling, add its time to the per-type totals.</summary>
+        public static void InvokeAndRecord(Behavior b, ScriptPhase phase)
+        {
+            if (!SampleScripts)
+            {
+                InvokePhase(b, phase);
+                return;
+            }
+
+            long t0 = Stopwatch.GetTimestamp();
+            InvokePhase(b, phase);
+            double ms = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+            RecordScript(b, phase, ms);
+        }
+
+        static void InvokePhase(Behavior b, ScriptPhase phase)
+        {
+            switch (phase)
+            {
+                case ScriptPhase.LateUpdate: b.__LateUpdate(); break;
+                case ScriptPhase.FixedUpdate: b.__FixedUpdate(); break;
+                default: b.__Update(); break;
+            }
+        }
+
+        static void RecordScript(Behavior b, ScriptPhase phase, double ms)
+        {
+            string typeName = b.GetType().Name;
+            if (!_scriptByType.TryGetValue(typeName, out var acc))
+            {
+                acc = new ScriptAccum();
+                _scriptByType[typeName] = acc;
+            }
+
+            acc.TotalMs += ms;
+            acc.Count++;
+            if (ms >= acc.HeaviestMs)
+            {
+                acc.HeaviestMs = ms;
+                acc.HeaviestPhase = phase;
+                acc.HeaviestObject = b.gameObject?.Name ?? "";
+            }
+
+            if (ms < ScriptSpikeMs)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (_scriptSpikeLog.TryGetValue(typeName, out long last)
+                && (now - last) * 1000.0 / Stopwatch.Frequency < 2000.0)
+                return;
+
+            _scriptSpikeLog[typeName] = now;
+            string owner = b.gameObject?.Name ?? "?";
+            Log.Warning($"[Scripts] {typeName}.{phase} {ms:F1} ms on '{owner}'");
+        }
+
+        /// <summary>
+        /// Sort this tick's behavior costs, remember a spike snapshot, then reset accumulators.
+        /// Call once after Update/LateUpdate (FixedUpdate since the last publish is included).
+        /// </summary>
+        public static void PublishScriptCosts()
+        {
+            _latestScriptsMs = 0;
+            _latestTopCount = 0;
+            if (_scriptByType.Count == 0)
+                return;
+
+            foreach (var acc in _scriptByType.Values)
+                _latestScriptsMs += acc.TotalMs;
+
+            int filled = 0;
+            foreach (var kv in _scriptByType)
+            {
+                var acc = kv.Value;
+                if (acc.Count <= 0 || acc.TotalMs <= 0)
+                    continue;
+
+                var cost = new ScriptCost
+                {
+                    TypeName = kv.Key,
+                    ObjectName = acc.HeaviestObject,
+                    Phase = acc.HeaviestPhase.ToString(),
+                    Ms = acc.TotalMs,
+                    Count = acc.Count
+                };
+
+                if (filled < TopScriptCount)
+                {
+                    _latestTop[filled++] = cost;
+                    continue;
+                }
+
+                int weakest = 0;
+                for (int i = 1; i < TopScriptCount; i++)
+                {
+                    if (_latestTop[i].Ms < _latestTop[weakest].Ms)
+                        weakest = i;
+                }
+                if (cost.Ms > _latestTop[weakest].Ms)
+                    _latestTop[weakest] = cost;
+            }
+
+            _latestTopCount = filled;
+            for (int i = 0; i < _latestTopCount - 1; i++)
+            {
+                int best = i;
+                for (int j = i + 1; j < _latestTopCount; j++)
+                {
+                    if (_latestTop[j].Ms > _latestTop[best].Ms)
+                        best = j;
+                }
+                if (best != i)
+                    (_latestTop[i], _latestTop[best]) = (_latestTop[best], _latestTop[i]);
+            }
+
+            bool spikeAgedOut = _spikeTimestamp == 0 || SpikeAgeSeconds > 8.0;
+            if (_latestScriptsMs >= ScriptSpikeMs
+                && (spikeAgedOut || _latestScriptsMs >= _spikeScriptsMs))
+            {
+                _spikeScriptsMs = _latestScriptsMs;
+                _spikeTopCount = _latestTopCount;
+                _spikeTimestamp = Stopwatch.GetTimestamp();
+                for (int i = 0; i < _latestTopCount; i++)
+                    _spikeTop[i] = _latestTop[i];
+            }
+
+            foreach (var acc in _scriptByType.Values)
+            {
+                acc.TotalMs = 0;
+                acc.Count = 0;
+                acc.HeaviestMs = 0;
+                acc.HeaviestObject = "";
+                acc.HeaviestPhase = ScriptPhase.Update;
+            }
+        }
 
         /// <summary>Set planet system counters/timings for this frame.</summary>
         public static void SetPlanetStats(

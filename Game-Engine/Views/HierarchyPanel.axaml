@@ -2,7 +2,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:core="clr-namespace:Game_Engine.Core"
              xmlns:views="clr-namespace:Game_Engine.Views"
-             x:Class="Game_Engine.Views.HierarchyPanel">
+             x:Class="Game_Engine.Views.HierarchyPanel"
+             x:CompileBindings="False">
 
 	<!-- Shared menu used by BOTH the Tree root and each TreeViewItem -->
 	<UserControl.Resources>

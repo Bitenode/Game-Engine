@@ -119,6 +119,7 @@ public sealed class PlanetMeshGenerator
         int n = size + 1;
         float vertexSpacing = EstimateCell(face, u0, v0, u1, v1, resolution);
         float maxSpan = MathF.Max(3f, vertexSpacing * 1.75f);
+        float oceanFillR = PlanetWaterSampler.GetOceanFillRadius(_config);
 
         var positions = new SN.Vector3[n * n];
         var uvs = new SN.Vector2[n * n];
@@ -164,11 +165,15 @@ public sealed class PlanetMeshGenerator
                 int idx = iy * n + ix;
                 if (sample.Mask >= 0.01f && sample.Radius > terrainR + 0.05f)
                 {
-                    float radius = sample.Radius;
-                    // Keep ocean on a constant sphere so adjacent verts cannot
-                    // open sky-spikes. Rivers stay a thin offset above the bed.
-                    if (sample.Kind != PlanetWaterKind.River)
-                        radius = MathF.Max(radius, terrainR + 0.2f);
+                    // Ocean must be a constant sphere. Lifting verts to
+                    // terrain+offset made adjacent LODs disagree and stacked
+                    // as flickering sheets after look / LOD changes.
+                    float radius = sample.Kind switch
+                    {
+                        PlanetWaterKind.Ocean => oceanFillR,
+                        PlanetWaterKind.River => MathF.Max(sample.Radius, terrainR + 0.2f),
+                        _ => sample.Radius
+                    };
                     positions[idx] = dir * radius;
                     int packedId = sample.Kind == PlanetWaterKind.River
                         ? 7
@@ -206,6 +211,17 @@ public sealed class PlanetMeshGenerator
         if (data.Positions.Count < 3)
             return null;
 
+        bool WaterBuried(SN.Vector3 pa, SN.Vector3 pb)
+        {
+            var mid = pa + pb;
+            if (mid.LengthSquared() < 1e-8f)
+                return true;
+            var dir = SN.Vector3.Normalize(mid);
+            float terrainR = _sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
+            float waterR = (pa.Length() + pb.Length()) * 0.5f;
+            return terrainR > waterR + 0.35f;
+        }
+
         bool TriangleOk(int a, int b, int c)
         {
             if (!wet[a] || !wet[b] || !wet[c])
@@ -214,7 +230,25 @@ public sealed class PlanetMeshGenerator
             float rb = positions[b].Length();
             float rc = positions[c].Length();
             float span = MathF.Max(ra, MathF.Max(rb, rc)) - MathF.Min(ra, MathF.Min(rb, rc));
-            return span <= maxSpan;
+            if (span > maxSpan)
+                return false;
+
+            // Ocean verts sit on a constant sphere. A coarse tri can connect
+            // three wet shoreline verts around a hill and chord through crust.
+            var mid = positions[a] + positions[b] + positions[c];
+            if (mid.LengthSquared() < 1e-8f)
+                return false;
+            var dir = SN.Vector3.Normalize(mid);
+            float terrainR = _sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
+            float waterR = (ra + rb + rc) * (1f / 3f);
+            if (terrainR > waterR + 0.35f)
+                return false;
+            if (vertexSpacing > 6f
+                && (WaterBuried(positions[a], positions[b])
+                    || WaterBuried(positions[b], positions[c])
+                    || WaterBuried(positions[c], positions[a])))
+                return false;
+            return true;
         }
 
         void AddTri(int a, int b, int c)

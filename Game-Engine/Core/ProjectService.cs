@@ -138,11 +138,13 @@ namespace Game_Engine.Core
                 throw new FileNotFoundException("project.json not found", projectJsonPath);
 
             var text = File.ReadAllText(projectJsonPath);
-            var proj = JsonSerializer.Deserialize<Project>(text, _json)
-                ?? throw new InvalidDataException("Invalid project.json");
+            var root = Path.GetDirectoryName(projectJsonPath)!;
+            var proj = TryReadManifest(text);
+            bool recovered = proj is null;
+            if (proj is null)
+                proj = ReconstructManifest(root);
 
             // Ensure absolute root (allow moving projects)
-            var root = Path.GetDirectoryName(projectJsonPath)!;
             proj = proj with
             {
                 RootPath = root,
@@ -151,6 +153,8 @@ namespace Game_Engine.Core
 
             Current = proj;
             EnsureFolders(proj);
+            if (recovered)
+                WriteManifest(proj);
             ProjectRenderingSettings.Load(proj);
             ProjectOpened?.Invoke();
             Changed?.Invoke();
@@ -275,7 +279,90 @@ namespace Game_Engine.Core
         static void WriteManifest(Project proj)
         {
             var json = JsonSerializer.Serialize(proj, _json);
-            File.WriteAllText(proj.ManifestPath, json);
+            var path = proj.ManifestPath;
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, json);
+            try
+            {
+                if (File.Exists(path))
+                    File.Replace(tmp, path, null);
+                else
+                    File.Move(tmp, path);
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* ignore */ }
+                throw;
+            }
+        }
+
+        static Project? TryReadManifest(string text)
+        {
+            if (IsCorruptManifestText(text))
+                return null;
+            try
+            {
+                return JsonSerializer.Deserialize<Project>(text, _json);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        static bool IsCorruptManifestText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return true;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c != '\0' && !char.IsWhiteSpace(c))
+                    return false;
+            }
+            return true;
+        }
+
+        static Project ReconstructManifest(string root)
+        {
+            var now = DateTime.UtcNow;
+            var scenes = new List<string>();
+            var scenesDir = Path.Combine(root, "Scenes");
+            if (Directory.Exists(scenesDir))
+            {
+                foreach (var file in Directory.EnumerateFiles(scenesDir, "*.scene", SearchOption.AllDirectories))
+                    scenes.Add(Path.GetRelativePath(root, file));
+            }
+
+            string? last = null;
+            foreach (var s in scenes)
+            {
+                if (s.IndexOf("planet", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    last = s;
+                    break;
+                }
+            }
+            last ??= scenes.Count > 0 ? scenes[0] : null;
+
+            var recent = new List<string>();
+            if (!string.IsNullOrWhiteSpace(last))
+                recent.Add(last);
+
+            return new Project
+            {
+                Id = Guid.NewGuid(),
+                Name = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                RootPath = root,
+                LastOpenedScenePath = last,
+                RecentScenes = recent,
+                AutosaveEnabled = false,
+                AutosaveIntervalMinutes = 5,
+                Version = 1,
+                EngineVersion = EngineVersion,
+                CreatedUtc = now,
+                ModifiedUtc = now
+            };
         }
 
         static void EnsureFolders(Project proj)

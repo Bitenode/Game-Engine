@@ -121,6 +121,7 @@ namespace Game_Engine.Views
         private bool _leftPressed;
         private Point _pressPos;
         private GameObject _pressedItem;
+        private PointerPressedEventArgs? _pressArgs;
         private bool _isDragging;
 
         // Re-entrancy guard so TreeView ↔ SelectionService don't fight
@@ -760,6 +761,7 @@ namespace Game_Engine.Views
             _leftPressed = true;
             _pressPos = e.GetPosition(this);
             _pressedItem = go;
+            _pressArgs = e;
         }
 
         private async void OnPointerMoved(object sender, PointerEventArgs e)
@@ -773,9 +775,10 @@ namespace Game_Engine.Views
 
             _isDragging = true;
 
-            var data = new DataObject();
-            data.Set(DragFormat, _pressedItem);
-            await DragDrop.DoDragDrop(e, data, DragDropEffects.Move);
+            var transfer = new DataTransfer();
+            transfer.Add(DataTransferItem.Create(EditorDragFormats.GameObjectRef, _pressedItem));
+            if (_pressArgs != null)
+                await DragDrop.DoDragDropAsync(_pressArgs, transfer, DragDropEffects.Move);
 
             _isDragging = false;
             _leftPressed = false;
@@ -792,7 +795,7 @@ namespace Game_Engine.Views
         private void OnDragOver(object sender, DragEventArgs e)
         {
             // Accept internal GO reparenting
-            var dragged = e.Data.Get(DragFormat) as GameObject;
+            var dragged = e.Payload().GetGameObject();
             if (dragged != null)
             {
                 var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
@@ -811,9 +814,9 @@ namespace Game_Engine.Views
             }
 
             // Accept .prefab files from ProjectPanel (or OS file drop)
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var files = e.Data.GetFileNames()?.ToList();
+                var files = e.Payload().GetFilePaths()?.ToList();
                 if (files != null && files.Any(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
                 {
                     e.DragEffects = DragDropEffects.Copy;
@@ -823,9 +826,9 @@ namespace Game_Engine.Views
             }
 
             // Also accept the project-node-path format (ProjectPanel internal format)
-            if (e.Data.Contains("project-node-path"))
+            if (e.Payload().GetProjectNodePath() != null)
             {
-                var path = e.Data.Get("project-node-path") as string;
+                var path = e.Payload().GetProjectNodePath();
                 if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                 {
                     e.DragEffects = DragDropEffects.Copy;
@@ -838,7 +841,7 @@ namespace Game_Engine.Views
         private void OnDrop(object sender, DragEventArgs e)
         {
             // Internal GO reparenting
-            var dragged = e.Data.Get(DragFormat) as GameObject;
+            var dragged = e.Payload().GetGameObject();
             if (dragged != null)
             {
                 var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
@@ -865,14 +868,14 @@ namespace Game_Engine.Views
             // Prefab file drop
             string prefabPath = null;
 
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var files = e.Data.GetFileNames()?.ToList();
+                var files = e.Payload().GetFilePaths()?.ToList();
                 prefabPath = files?.FirstOrDefault(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase));
             }
-            if (prefabPath == null && e.Data.Contains("project-node-path"))
+            if (prefabPath == null && e.Payload().GetProjectNodePath() != null)
             {
-                var path = e.Data.Get("project-node-path") as string;
+                var path = e.Payload().GetProjectNodePath();
                 if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                     prefabPath = path;
             }

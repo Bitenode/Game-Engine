@@ -59,13 +59,13 @@ namespace Game_Engine.Core.UIX
 
             if (spec.Utility)
             {
-                w.SystemDecorations = SystemDecorations.BorderOnly;       // menu look
+                w.WindowDecorations = WindowDecorations.BorderOnly;       // menu look
                 w.ShowInTaskbar = false;
                 w.Topmost = true;
             }
             else
             {
-                w.SystemDecorations = SystemDecorations.Full;
+                w.WindowDecorations = WindowDecorations.Full;
             }
 
             // Render user UI

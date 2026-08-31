@@ -477,7 +477,7 @@ public class CodeEditorControl : UserControl
 
     // ── Layout ──────────────────────────────────────────────────
 
-    protected override void OnGotFocus(GotFocusEventArgs e)
+    protected override void OnGotFocus(FocusChangedEventArgs e)
     {
         base.OnGotFocus(e);
         _canvas.ResetCaretBlink();

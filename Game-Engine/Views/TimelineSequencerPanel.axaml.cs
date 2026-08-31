@@ -400,7 +400,7 @@ public sealed class TimelineSequencerCanvas : Control
             e.Handled = true;
             return;
         }
-        if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+        if (e.Payload().HasFiles)
             e.DragEffects = DragDropEffects.Copy;
         else
             e.DragEffects = DragDropEffects.None;
@@ -417,11 +417,11 @@ public sealed class TimelineSequencerCanvas : Control
         }
 
         string? picked = null;
-        if (e.Data.Contains(DataFormats.FileNames))
-            picked = e.Data.GetFileNames()?.FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(picked) && e.Data.Contains(DataFormats.Files))
+        if (e.Payload().HasFiles)
+            picked = e.Payload().GetFilePaths()?.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(picked) && e.Payload().HasFiles)
         {
-            if (e.Data.Get(DataFormats.Files) is IEnumerable<IStorageItem> items)
+            if (e.Payload().GetStorageItems() is IEnumerable<IStorageItem> items)
             {
                 var file = items.FirstOrDefault() as IStorageFile;
                 var local = file?.TryGetLocalPath();

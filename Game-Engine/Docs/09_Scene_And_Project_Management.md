@@ -54,6 +54,8 @@ MyGame/
 | `autosaveEnabled` | bool | Enables/disables periodic autosave for this project |
 | `autosaveIntervalMinutes` | int | Autosave interval in minutes (`1-60`, editor menu offers 1/5/10 presets) |
 
+**Crash-safe writes:** `ProjectService` writes `project.json` atomically (temp file + replace) so a crash mid-save does not leave a zeroed or truncated manifest. On open, if the file is unreadable or all-NUL, the service attempts **auto-recovery** from a valid scene path or prompts reconstruction; backups may be saved as `project.json.nul.bak`.
+
 ### Project Lifecycle
 
 | Action | Menu | Description |
@@ -435,7 +437,7 @@ Low-level audio playback via **NAudio**:
 
 | Feature | Description |
 |---------|-------------|
-| **Per-sound playback** | Each sound gets its own `WaveOutEvent` |
+| **Per-sound playback** | Each sound gets its own `WaveOut` |
 | **AudioHandle** | Wraps playback state with volume, pause, resume control |
 | **LoopingReader** | `WaveStream` wrapper for seamless audio looping |
 | **Path resolution** | Tries absolute, project-relative, Assets folder, filename search |

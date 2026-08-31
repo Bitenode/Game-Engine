@@ -421,18 +421,18 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     static SceneView()
     {
-        ToolProperty.Changed.AddClassHandler<SceneView>((s, _) => s.InvalidateVisual());
-        ShowGridProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowWireProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowLightProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        Is2DProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        GizmoLocalProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowSelectionOutlineProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
-        ShowStatsOverlayProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.InvalidateVisual(); s.SaveViewSettings(); });
+        ToolProperty.Changed.AddClassHandler<SceneView>((s, _) => s.RequestNextFrameRendering());
+        ShowGridProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowWireProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowLightProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        Is2DProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        Supersample2xProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        GizmoLocalProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowCamerasProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowTerrainGizmosProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowSelectionOutlineProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        ShowStatsOverlayProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
     }
     #endregion
 
@@ -469,7 +469,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             _target = center;
             _distance = desiredDistance;
-            InvalidateVisual();
+            RequestNextFrameRendering();
             return;
         }
 
@@ -558,7 +558,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             rolled = true;
         }
         if (rolled)
-            InvalidateVisual();
+            RequestNextFrameRendering();
     }
 
     // Height clamp range: allows digging below the initial flatland
@@ -1089,31 +1089,21 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     // ────────────── Planet LOD Update ──────────────
     static void UpdatePlanetLOD(SN.Vector3 camPos, bool force = false)
     {
+        // GameView owns planet LOD split/merge during play; SceneView only renders the current state.
         if (GameView.IsAnyViewPlaying)
-        {
-            camPos = GetPlayCameraWorldPosition();
-            if (camPos.LengthSquared() <= 1e-6f)
-                return;
-        }
+            return;
 
         foreach (var planet in PlanetTerrain.ActivePlanets)
         {
             if (planet == null) continue;
             var cm = planet.ChunkManager;
             bool pending = cm != null && (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0);
-            if (!force && GameView.IsAnyViewPlaying && !pending)
+            if (!force && !pending)
                 continue;
 
             planet.LastCameraPosition = camPos;
-            if (GameView.IsAnyViewPlaying)
-            {
-                if (pending || force)
-                    planet.RefreshLodAroundCamera(camPos);
-            }
-            else if (force || pending)
-            {
+            if (force || pending)
                 planet.RefreshLodAroundCamera(camPos);
-            }
         }
     }
 
@@ -1248,7 +1238,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         PlanetTool.ApplyStrokeAt(_hoverPlanetPointW, dig, build);
         e.Pointer.Capture(this);
         e.Handled = true;
-        InvalidateVisual();
+        RequestNextFrameRendering();
         return true;
     }
 
@@ -1374,7 +1364,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _selected = SelectionService.Current;
             _multiSelected.Clear();
             _multiSelected.AddRange(SelectionService.Selected);
-            InvalidateVisual();
+            RequestNextFrameRendering();
         };
         SelectionService.FrameRequested += go =>
         {
@@ -1388,7 +1378,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             if (GameView.IsAnyViewPlaying)
                 return;
             _cache?.InvalidateAll();
-            InvalidateVisual();
+            RequestNextFrameRendering();
         };
 
         // Full scene replacement (e.g. File > Load Scene) needs a heavier reset
@@ -1407,9 +1397,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _selected = null;
             _multiSelected.Clear();
 
-            // Post InvalidateVisual at Render priority to ensure it runs
-            // after the scene data is fully committed.
-            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+            // Request the next GL frame at Render priority after the scene is committed.
+            Avalonia.Threading.Dispatcher.UIThread.Post(RequestNextFrameRendering,
                 Avalonia.Threading.DispatcherPriority.Render);
         };
 
@@ -1446,7 +1435,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             if (!GameView.IsAnyViewPlaying || _renderInFlight) return;
             _renderInFlight = true;
-            InvalidateVisual();
+            RequestNextFrameRendering();
         };
         _playModePreviewTimer.Start();
 
@@ -1459,7 +1448,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         if (!GameView.IsAnyViewPlaying)
         {
-            InvalidateVisual();
+            RequestNextFrameRendering();
             return;
         }
 
@@ -1467,7 +1456,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _lastPlayPreviewTicks = Stopwatch.GetTimestamp();
         if (_renderInFlight) return;
         _renderInFlight = true;
-        Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+        Avalonia.Threading.Dispatcher.UIThread.Post(RequestNextFrameRendering,
             Avalonia.Threading.DispatcherPriority.Render);
     }
     #endregion
@@ -1692,7 +1681,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _renderInFlight = false;
             if (!GameView.IsAnyViewPlaying)
             {
-                Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+                Avalonia.Threading.Dispatcher.UIThread.Post(RequestNextFrameRendering,
                     Avalonia.Threading.DispatcherPriority.Render);
             }
             return;
@@ -1730,7 +1719,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         WindSystem.Update((float)dt);
 
         // Use physical pixel size for the GL viewport (accounting for DPI)
-        double scaling = VisualRoot?.RenderScaling ?? 1.0;
+        double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
         var size = Bounds.Size;
         int pxW = Math.Max(1, (int)(size.Width * scaling));
         int pxH = Math.Max(1, (int)(size.Height * scaling));
@@ -2143,7 +2132,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // Material warm-up runs outside GL context to avoid blocking GPU work
         MaterialRebind.RepairScene();
         if (MaterialRebind.NeedsMoreFrames)
-            Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual, Avalonia.Threading.DispatcherPriority.Render);
+            Avalonia.Threading.Dispatcher.UIThread.Post(RequestNextFrameRendering, Avalonia.Threading.DispatcherPriority.Render);
 
         // This calls OnOpenGlRender internally, then Avalonia reads back the FBO (glReadPixels).
         // Both GL rendering AND compositing time are included in this call.
@@ -2208,7 +2197,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (e.Key == Key.L && !e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             GizmoLocal = !GizmoLocal;
-            InvalidateVisual();
+            RequestNextFrameRendering();
             e.Handled = true;
             return;
         }
@@ -2273,7 +2262,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             SnapEnabled = !SnapEnabled;
             Log.Info(SnapEnabled ? $"[SceneView] Snap ON (move grid {SnapStep} world units)" : "[SceneView] Snap OFF");
-            InvalidateVisual();
+            RequestNextFrameRendering();
             e.Handled = true;
         }
 
@@ -2289,7 +2278,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             if (!_lookThroughCamera)
             { _lastPreviewCam = FindBestCameraForPreview(); _lookThroughCamera = _lastPreviewCam != null; }
             else { _lookThroughCamera = false; _lastPreviewCam = null; }
-            InvalidateVisual(); e.Handled = true;
+            RequestNextFrameRendering(); e.Handled = true;
         }
     }
 
@@ -2400,7 +2389,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
 
         SceneService.NotifyChanged();
-        InvalidateVisual();
+        RequestNextFrameRendering();
         Log.Info($"[SceneView] Deleted {targets.Count} object(s)");
     }
 
@@ -2428,7 +2417,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _pitch = bookmark.Value.Pitch;
         _roll = bookmark.Value.Roll;
         _distance = bookmark.Value.Distance;
-        InvalidateVisual();
+        RequestNextFrameRendering();
         Log.Info($"[SceneView] Recalled camera bookmark {slot + 1}");
     }
 
@@ -2537,7 +2526,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         SceneService.NotifyChanged();
         SelectionService.Touch();
-        InvalidateVisual();
+        RequestNextFrameRendering();
     }
 
     private void StepFrameLerp()
@@ -2548,7 +2537,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _target = _frameEndTarget;
             _distance = _frameEndDistance;
             _frameLerpTimer.Stop();
-            InvalidateVisual();
+            RequestNextFrameRendering();
             return;
         }
 
@@ -2556,7 +2545,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         var s = t * t * (3f - 2f * t);
         _target = SN.Vector3.Lerp(_frameStartTarget, _frameEndTarget, s);
         _distance = _frameStartDistance + (_frameEndDistance - _frameStartDistance) * s;
-        InvalidateVisual();
+        RequestNextFrameRendering();
     }
 
     void OnPointerPressed(object? s, PointerPressedEventArgs e)
@@ -2580,7 +2569,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     : _hoverPlanet.Radius;
                 _planetPaintHasLastHit = false;
                 ApplyPlanetToolUnified(_planetPaintTarget, _hoverPlanetPointW, _planetPaintToolIndex, _planetPaintSign);
-                InvalidateVisual();
+                RequestNextFrameRendering();
                 e.Pointer.Capture(this); e.Handled = true; return;
             }
         }
@@ -2594,7 +2583,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 // Flatten tool: sample center height on mouse-down
                 if (toolIndex == 5) _flattenTargetHeight = SampleTerrainHeight01(_hoverTerrain, _hoverPointW);
                 ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign);
-                InvalidateVisual();
+                RequestNextFrameRendering();
                 e.Pointer.Capture(this); e.Handled = true; return;
             }
         }
@@ -2645,7 +2634,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 else
                     SelectionService.Set(picked);
                 _selected = SelectionService.Current;
-                InvalidateVisual();
+                RequestNextFrameRendering();
                 e.Handled = true;
                 return;
             }
@@ -2821,14 +2810,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (_playModePlanetPaint && _hasPlanetHover)
         {
             PlanetTool.ApplyStrokeAt(_hoverPlanetPointW, !_playModePlanetBuild, _playModePlanetBuild);
-            InvalidateVisual();
+            RequestNextFrameRendering();
             e.Handled = true;
             return;
         }
         if (_paintingPlanet && _planetPaintTarget != null && _hasPlanetHover && ReferenceEquals(_hoverPlanet, _planetPaintTarget))
-        { ApplyPlanetToolUnified(_planetPaintTarget, _hoverPlanetPointW, _planetPaintToolIndex, _planetPaintSign); InvalidateVisual(); e.Handled = true; return; }
+        { ApplyPlanetToolUnified(_planetPaintTarget, _hoverPlanetPointW, _planetPaintToolIndex, _planetPaintSign); RequestNextFrameRendering(); e.Handled = true; return; }
         if (_paintingTerrain && _paintTarget != null && _hasHover && ReferenceEquals(_hoverTerrain, _paintTarget))
-        { ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign); InvalidateVisual(); e.Handled = true; return; }
+        { ApplyTerrainToolUnified(_paintTarget, _hoverPointW, _paintToolIndex, _paintSign); RequestNextFrameRendering(); e.Handled = true; return; }
         if (_isDragging && _dragAxis != Axis.None && _selected != null)
         {
             var (view2, proj2) = GetViewProj(Bounds.Size);
@@ -2842,7 +2831,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _yaw += (float)d.X * orbitSensitivity;
             _pitch -= (float)d.Y * orbitSensitivity;
             _pitch = Math.Clamp(_pitch, -1.5f, 1.5f);
-            InvalidateVisual();
+            RequestNextFrameRendering();
         }
         else if (_panning)
         {
@@ -2851,7 +2840,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             var up = SN.Vector3.Normalize(new SN.Vector3(view2.M12, view2.M22, view2.M32));
             float panSpeed = Math.Clamp(_distance * 0.0035f, 0.005f, 1.25f);
             _target += (-right * (float)d.X + up * (float)d.Y) * panSpeed;
-            InvalidateVisual();
+            RequestNextFrameRendering();
         }
     }
 
@@ -2912,7 +2901,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         float wheelStep = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 1.03f : 1.08f;
         _distance *= (float)Math.Pow(wheelStep, -e.Delta.Y);
         _distance = Math.Clamp(_distance, 1.5f, 200f);
-        UpdateTerrainHover(_last); InvalidateVisual();
+        UpdateTerrainHover(_last); RequestNextFrameRendering();
     }
     #endregion
 
@@ -2945,7 +2934,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _dragPlaneN = SN.Vector3.Normalize(n);
         Picking.BuildPickRay(mouse, view, proj, sz, out var ro, out var rd);
         if (Picking.RayIntersectPlane(ro, rd, _dragPlaneN, _dragAnchorW, out var hit)) _dragAnchorW = hit;
-        InvalidateVisual(); return true;
+        RequestNextFrameRendering(); return true;
     }
 
     void UpdateAxisDrag(Point mouse, in SN.Matrix4x4 view, in SN.Matrix4x4 proj, Size sz, bool axisOnly = false)
@@ -2967,7 +2956,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
 
         // Keep drag interaction lightweight; commit scene-change notification on pointer release.
-        InvalidateVisual();
+        RequestNextFrameRendering();
     }
 
     void ApplyGizmoDelta(GameObject go, float delta, bool axisOnly)

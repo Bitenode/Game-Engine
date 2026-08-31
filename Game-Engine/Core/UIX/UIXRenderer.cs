@@ -147,9 +147,7 @@ namespace Game_Engine.Core.UIX
             {
                 var check = new CheckBox { Content = cb.Label, IsChecked = cb.Value, Margin = cb.Margin };
                 if (cb.OnChanged != null)
-                    check.Checked += (_, __) => cb.OnChanged(true);
-                if (cb.OnChanged != null)
-                    check.Unchecked += (_, __) => cb.OnChanged(false);
+                    check.IsCheckedChanged += (_, __) => cb.OnChanged(check.IsChecked == true);
                 return check;
             }
 
@@ -294,7 +292,11 @@ namespace Game_Engine.Core.UIX
                         IsChecked = ri == rg.SelectedIndex
                     };
                     if (rg.OnChanged != null)
-                        rb.Checked += (_, __) => rg.OnChanged(idx, rg.Options[idx]);
+                        rb.IsCheckedChanged += (_, __) =>
+                        {
+                            if (rb.IsChecked == true)
+                                rg.OnChanged(idx, rg.Options[idx]);
+                        };
                     sp2.Children.Add(rb);
                 }
                 return sp2;

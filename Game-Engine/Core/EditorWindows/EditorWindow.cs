@@ -57,7 +57,7 @@ namespace Game_Engine.Core.EditorWindows
         private void MakeUtility()
         {
             // Utility style: small title bar feeling
-            SystemDecorations = SystemDecorations.BorderOnly;
+            WindowDecorations = WindowDecorations.BorderOnly;
 
             // Give a *list* of allowed transparency levels (or omit entirely)
             TransparencyLevelHint = new[] { WindowTransparencyLevel.None };

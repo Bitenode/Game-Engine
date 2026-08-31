@@ -454,7 +454,7 @@ public partial class InspectorPanel : UserControl
         // ── Drag-over handler ──
         dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
-            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            if (e.Payload().HasFiles)
                 e.DragEffects = DragDropEffects.Copy;
             else
                 e.DragEffects = DragDropEffects.None;
@@ -466,15 +466,15 @@ public partial class InspectorPanel : UserControl
         {
             string? pickedPath = null;
 
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var names = e.Data.GetFileNames();
+                var names = e.Payload().GetFilePaths();
                 if (names != null) pickedPath = names.FirstOrDefault();
             }
 
-            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            if (pickedPath == null && e.Payload().HasFiles)
             {
-                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
                 if (items != null)
                 {
                     var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
@@ -596,7 +596,7 @@ public partial class InspectorPanel : UserControl
         // ── Drag-over handler ──
         dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
-            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            if (e.Payload().HasFiles)
                 e.DragEffects = DragDropEffects.Copy;
             else
                 e.DragEffects = DragDropEffects.None;
@@ -608,15 +608,15 @@ public partial class InspectorPanel : UserControl
         {
             string? pickedPath = null;
 
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var names = e.Data.GetFileNames();
+                var names = e.Payload().GetFilePaths();
                 if (names != null) pickedPath = names.FirstOrDefault();
             }
 
-            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            if (pickedPath == null && e.Payload().HasFiles)
             {
-                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
                 if (items != null)
                 {
                     var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
@@ -862,7 +862,7 @@ public partial class InspectorPanel : UserControl
         // ── Drag-over handler ──
         dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
-            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            if (e.Payload().HasFiles)
                 e.DragEffects = DragDropEffects.Copy;
             else
                 e.DragEffects = DragDropEffects.None;
@@ -874,15 +874,15 @@ public partial class InspectorPanel : UserControl
         {
             string? pickedPath = null;
 
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var names = e.Data.GetFileNames();
+                var names = e.Payload().GetFilePaths();
                 if (names != null) pickedPath = names.FirstOrDefault();
             }
 
-            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            if (pickedPath == null && e.Payload().HasFiles)
             {
-                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
                 if (items != null)
                 {
                     var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
@@ -1004,7 +1004,7 @@ public partial class InspectorPanel : UserControl
         // ── Drag-over handler ──
         dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
-            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            if (e.Payload().HasFiles)
                 e.DragEffects = DragDropEffects.Copy;
             else
                 e.DragEffects = DragDropEffects.None;
@@ -1016,15 +1016,15 @@ public partial class InspectorPanel : UserControl
         {
             string? pickedPath = null;
 
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var names = e.Data.GetFileNames();
+                var names = e.Payload().GetFilePaths();
                 if (names != null) pickedPath = names.FirstOrDefault();
             }
 
-            if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+            if (pickedPath == null && e.Payload().HasFiles)
             {
-                var items = e.Data.Get(DataFormats.Files) as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
+                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
                 if (items != null)
                 {
                     var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
@@ -1655,12 +1655,13 @@ public partial class InspectorPanel : UserControl
         if (this.FindControl<ToggleButton>("LockToggle") is { } lockBtn)
         {
             lockBtn.IsChecked = false;
-            lockBtn.Checked += (_, __) =>
+            lockBtn.IsCheckedChanged += (_, __) =>
             {
+                if (lockBtn.IsChecked == true)
+                {
                 _isLocked = true;    // freeze current view (either asset inspector or selection inspector)
-            };
-            lockBtn.Unchecked += (_, __) =>
-            {
+                    return;
+                }
                 _isLocked = false;
                 if (_assetInspectorActive)
                 {
@@ -3281,8 +3282,7 @@ public partial class InspectorPanel : UserControl
         var sCutoff = new Slider { Minimum = 0, Maximum = 1, Value = cutoff, Width = 180, IsEnabled = (chkTransparent.IsChecked == true) };
         var lblCut = (TextBlock)MakeValueLabel(sCutoff.Value);
         sCutoff.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) lblCut.Text = sCutoff.Value.ToString("0.00"); };
-        chkTransparent.Checked += (_, __) => sCutoff.IsEnabled = true;
-        chkTransparent.Unchecked += (_, __) => sCutoff.IsEnabled = false;
+        chkTransparent.IsCheckedChanged += (_, __) => sCutoff.IsEnabled = chkTransparent.IsChecked == true;
         var cutRowInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         cutRowInner.Children.Add(sCutoff);
         cutRowInner.Children.Add(lblCut);
@@ -3317,7 +3317,7 @@ public partial class InspectorPanel : UserControl
             // Accept: Explorer/File tree via FileNames; also Files (IStorageItem) from other sources
             drop.AddHandler(DragDrop.DragOverEvent, (s, e) =>
             {
-                if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+                if (e.Payload().HasFiles)
                     e.DragEffects = DragDropEffects.Copy;
                 else
                     e.DragEffects = DragDropEffects.None;
@@ -3329,16 +3329,16 @@ public partial class InspectorPanel : UserControl
                 string pickedPath = null;
 
                 // Plain filenames (also set by our ProjectPanel when dragging files)
-                if (e.Data.Contains(DataFormats.FileNames))
+                if (e.Payload().HasFiles)
                 {
-                    var names = e.Data.GetFileNames();
+                    var names = e.Payload().GetFilePaths();
                     if (names != null) pickedPath = names.FirstOrDefault();
                 }
 
                 // Storage items (other apps / some OS paths)
-                if (pickedPath == null && e.Data.Contains(DataFormats.Files))
+                if (pickedPath == null && e.Payload().HasFiles)
                 {
-                    var asEnum = e.Data.Get(DataFormats.Files) as IEnumerable<IStorageItem>;
+                    var asEnum = e.Payload().GetStorageItems() as IEnumerable<IStorageItem>;
                     if (asEnum != null)
                     {
                         var it = asEnum.FirstOrDefault();
@@ -4601,7 +4601,7 @@ public partial class InspectorPanel : UserControl
 
         drop.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
-            if (e.Data.Contains(DataFormats.FileNames) || e.Data.Contains(DataFormats.Files))
+            if (e.Payload().HasFiles)
             {
                 e.DragEffects = DragDropEffects.Copy;
                 e.Handled = true;
@@ -4610,12 +4610,12 @@ public partial class InspectorPanel : UserControl
         drop.AddHandler(DragDrop.DropEvent, async (s, e) =>
         {
             string picked = null;
-            if (e.Data.Contains(DataFormats.FileNames))
-                picked = e.Data.GetFileNames()?.FirstOrDefault();
+            if (e.Payload().HasFiles)
+                picked = e.Payload().GetFilePaths()?.FirstOrDefault();
 
-            if (picked == null && e.Data.Contains(DataFormats.Files))
+            if (picked == null && e.Payload().HasFiles)
             {
-                var items = e.Data.Get(DataFormats.Files) as IEnumerable<IStorageItem>;
+                var items = e.Payload().GetStorageItems() as IEnumerable<IStorageItem>;
                 var it = items != null ? items.FirstOrDefault() as IStorageFile : null;
                 if (it != null)
                 {
@@ -5112,8 +5112,7 @@ public partial class InspectorPanel : UserControl
         row.Children.Add(clear);
 
         var bindChk = new CheckBox { Content = "Bind To Each Target Transform", IsChecked = mc.BindToTargetTransform };
-        bindChk.Checked += (_, __) => { mc.BindToTargetTransform = true; SceneService.NotifyChanged(); };
-        bindChk.Unchecked += (_, __) => { mc.BindToTargetTransform = false; SceneService.NotifyChanged(); };
+        bindChk.IsCheckedChanged += (_, __) => { mc.BindToTargetTransform = bindChk.IsChecked == true; SceneService.NotifyChanged(); };
         row.Children.Add(bindChk);
 
         wrap.Children.Add(row);
@@ -5212,10 +5211,10 @@ public partial class InspectorPanel : UserControl
                 IsChecked = (tool.id == state.ToolIndex)
             };
             ToolTip.SetTip(b, tool.tip);
-            b.Checked += (_, __) => SetTool(tool.id);
-            b.Unchecked += (_, __) =>
+            b.IsCheckedChanged += (_, __) =>
             {
-                if (!bar.Children.OfType<ToggleButton>().Any(x => x.IsChecked == true))
+                if (b.IsChecked == true) SetTool(tool.id);
+                else if (!bar.Children.OfType<ToggleButton>().Any(x => x.IsChecked == true))
                     SetTool(-1);
             };
             bar.Children.Add(b);
@@ -5360,13 +5359,10 @@ public partial class InspectorPanel : UserControl
             ToolTip.SetTip(b, tool.tip);
 
             // When this button is turned on, it's the only one on
-            b.Checked += (_, __) => SetTool(tool.id);
-
-            // If user clicks the already-checked button, it becomes unchecked.
-            // Only set -1 if no other tool is currently checked.
-            b.Unchecked += (_, __) =>
+            b.IsCheckedChanged += (_, __) =>
             {
-                if (!bar.Children.OfType<ToggleButton>().Any(x => x.IsChecked == true))
+                if (b.IsChecked == true) SetTool(tool.id);
+                else if (!bar.Children.OfType<ToggleButton>().Any(x => x.IsChecked == true))
                     SetTool(-1); // OFF
             };
 
@@ -5878,9 +5874,10 @@ public partial class InspectorPanel : UserControl
                 Margin = new Thickness(2)
             };
             tb.IsChecked = idx == state.BrushIndex;
-            tb.Checked += (_, __) => { state.BrushIndex = idx; };
-            tb.Checked += (_, __) =>
+            tb.IsCheckedChanged += (_, __) =>
             {
+                if (tb.IsChecked != true) return;
+                state.BrushIndex = idx;
                 var parent = tb.Parent as Panel;
                 if (parent != null)
                     foreach (var sib in parent.Children.OfType<Border>().Select(b => b.Child).OfType<ToggleButton>())
@@ -7108,16 +7105,16 @@ public partial class InspectorPanel : UserControl
         dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
         {
             // Accept GameObjects from hierarchy
-            if (e.Data.Contains("application/x-gameobject"))
+            if (e.Payload().GetGameObject() != null)
             {
                 e.DragEffects = DragDropEffects.Link;
                 e.Handled = true;
                 return;
             }
             // Accept .prefab files from project panel or OS
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var files = e.Data.GetFileNames()?.ToList();
+                var files = e.Payload().GetFilePaths()?.ToList();
                 if (files != null && files.Any(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
                 {
                     e.DragEffects = DragDropEffects.Copy;
@@ -7125,9 +7122,9 @@ public partial class InspectorPanel : UserControl
                     return;
                 }
             }
-            if (e.Data.Contains("project-node-path"))
+            if (e.Payload().GetProjectNodePath() != null)
             {
-                var path = e.Data.Get("project-node-path") as string;
+                var path = e.Payload().GetProjectNodePath();
                 if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                 {
                     e.DragEffects = DragDropEffects.Copy;
@@ -7142,9 +7139,9 @@ public partial class InspectorPanel : UserControl
         dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
         {
             // Handle GameObject drop from hierarchy
-            if (e.Data.Contains("application/x-gameobject"))
+            if (e.Payload().GetGameObject() != null)
             {
-                var go = e.Data.Get("application/x-gameobject") as GameObject;
+                var go = e.Payload().GetGameObject();
                 if (go != null)
                 {
                     prop.SetValue(target, go);
@@ -7164,14 +7161,14 @@ public partial class InspectorPanel : UserControl
 
             // Handle .prefab file drop — instantiate and assign
             string prefabPath = null;
-            if (e.Data.Contains(DataFormats.FileNames))
+            if (e.Payload().HasFiles)
             {
-                var files = e.Data.GetFileNames()?.ToList();
+                var files = e.Payload().GetFilePaths()?.ToList();
                 prefabPath = files?.FirstOrDefault(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase));
             }
-            if (prefabPath == null && e.Data.Contains("project-node-path"))
+            if (prefabPath == null && e.Payload().GetProjectNodePath() != null)
             {
-                var p2 = e.Data.Get("project-node-path") as string;
+                var p2 = e.Payload().GetProjectNodePath();
                 if (p2 != null && p2.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                     prefabPath = p2;
             }
@@ -9048,14 +9045,9 @@ public partial class InspectorPanel : UserControl
             Content = "Full Biome Populate",
             IsChecked = veg.FullBiomePopulate
         };
-        fullPopulateCb.Checked += (_, _) =>
+        fullPopulateCb.IsCheckedChanged += (_, _) =>
         {
-            veg.FullBiomePopulate = true;
-            SceneService.NotifyChanged();
-        };
-        fullPopulateCb.Unchecked += (_, _) =>
-        {
-            veg.FullBiomePopulate = false;
+            veg.FullBiomePopulate = fullPopulateCb.IsChecked == true;
             SceneService.NotifyChanged();
         };
         panel.Children.Add(fullPopulateCb);
@@ -9065,14 +9057,9 @@ public partial class InspectorPanel : UserControl
             Content = "Use .planet Vegetation Placements",
             IsChecked = veg.UsePlanetAssetPlacements
         };
-        assetPlacementsCb.Checked += (_, _) =>
+        assetPlacementsCb.IsCheckedChanged += (_, _) =>
         {
-            veg.UsePlanetAssetPlacements = true;
-            SceneService.NotifyChanged();
-        };
-        assetPlacementsCb.Unchecked += (_, _) =>
-        {
-            veg.UsePlanetAssetPlacements = false;
+            veg.UsePlanetAssetPlacements = assetPlacementsCb.IsChecked == true;
             SceneService.NotifyChanged();
         };
         panel.Children.Add(assetPlacementsCb);
@@ -9082,14 +9069,9 @@ public partial class InspectorPanel : UserControl
             Content = "Auto-use saved placements when .planet has entries",
             IsChecked = veg.AutoUseSavedPlacementsWhenPresent
         };
-        autoUseSavedCb.Checked += (_, _) =>
+        autoUseSavedCb.IsCheckedChanged += (_, _) =>
         {
-            veg.AutoUseSavedPlacementsWhenPresent = true;
-            SceneService.NotifyChanged();
-        };
-        autoUseSavedCb.Unchecked += (_, _) =>
-        {
-            veg.AutoUseSavedPlacementsWhenPresent = false;
+            veg.AutoUseSavedPlacementsWhenPresent = autoUseSavedCb.IsChecked == true;
             SceneService.NotifyChanged();
         };
         panel.Children.Add(autoUseSavedCb);
@@ -9099,14 +9081,9 @@ public partial class InspectorPanel : UserControl
             Content = "Auto-enable streaming spawn when saved placements load",
             IsChecked = veg.AutoSpawnWhenUsingSavedPlacements
         };
-        autoSpawnSavedCb.Checked += (_, _) =>
+        autoSpawnSavedCb.IsCheckedChanged += (_, _) =>
         {
-            veg.AutoSpawnWhenUsingSavedPlacements = true;
-            SceneService.NotifyChanged();
-        };
-        autoSpawnSavedCb.Unchecked += (_, _) =>
-        {
-            veg.AutoSpawnWhenUsingSavedPlacements = false;
+            veg.AutoSpawnWhenUsingSavedPlacements = autoSpawnSavedCb.IsChecked == true;
             SceneService.NotifyChanged();
         };
         panel.Children.Add(autoSpawnSavedCb);
@@ -9116,14 +9093,9 @@ public partial class InspectorPanel : UserControl
             Content = "Cull when leaf leaves stream (LOD; can reset vegetation)",
             IsChecked = veg.CullVegetationWhenLeafNotActive
         };
-        cullLeafCb.Checked += (_, _) =>
+        cullLeafCb.IsCheckedChanged += (_, _) =>
         {
-            veg.CullVegetationWhenLeafNotActive = true;
-            SceneService.NotifyChanged();
-        };
-        cullLeafCb.Unchecked += (_, _) =>
-        {
-            veg.CullVegetationWhenLeafNotActive = false;
+            veg.CullVegetationWhenLeafNotActive = cullLeafCb.IsChecked == true;
             SceneService.NotifyChanged();
         };
         panel.Children.Add(cullLeafCb);
@@ -9133,14 +9105,9 @@ public partial class InspectorPanel : UserControl
             Content = "Remove when ecosystem vitality exhausted",
             IsChecked = veg.RemoveVegetationWhenVitalityExhausted
         };
-        vitalityRemoveCb.Checked += (_, _) =>
+        vitalityRemoveCb.IsCheckedChanged += (_, _) =>
         {
-            veg.RemoveVegetationWhenVitalityExhausted = true;
-            SceneService.NotifyChanged();
-        };
-        vitalityRemoveCb.Unchecked += (_, _) =>
-        {
-            veg.RemoveVegetationWhenVitalityExhausted = false;
+            veg.RemoveVegetationWhenVitalityExhausted = vitalityRemoveCb.IsChecked == true;
             SceneService.NotifyChanged();
         };
         panel.Children.Add(vitalityRemoveCb);

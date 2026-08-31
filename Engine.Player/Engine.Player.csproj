@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <RootNamespace>Game_Engine</RootNamespace>
     <AssemblyName>Engine.Player</AssemblyName>
     <OutputType>WinExe</OutputType>
@@ -55,20 +56,20 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
 
-    <PackageReference Include="Avalonia" Version="11.*" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.*" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
 
-    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="NAudio" Version="3.0.1" />
 
     <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
-    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.11.0" />
+    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.16.0" />
 
     <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
-    <PackageReference Include="SkiaSharp" Version="3.119.2" />
-    <PackageReference Include="System.Reactive" Version="6.1.0" />
+    <PackageReference Include="SkiaSharp" Version="4.151.1" />
+    <PackageReference Include="System.Reactive" Version="7.0.0" />
 
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.3233" Condition="'$(TargetFramework)'=='net9.0-windows10.0.19041.0'" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" Condition="'$(TargetFramework)'=='net9.0-windows10.0.19041.0'" />
   </ItemGroup>
 </Project>

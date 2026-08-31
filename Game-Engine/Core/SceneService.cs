@@ -47,6 +47,47 @@ namespace Game_Engine.Core
         /// <summary>True while Game view is in Play. Transform motion must not fire <see cref="Changed"/>.</summary>
         public static bool PlayMode { get; set; }
 
+        static readonly List<Behavior> s_behaviorScratch = new(256);
+
+        /// <summary>
+        /// Walk enabled, visible scene behaviors without allocating per node.
+        /// Snapshot first so Update can spawn/despawn safely.
+        /// </summary>
+        public static void ForEachActiveBehavior(Action<Behavior> action)
+        {
+            s_behaviorScratch.Clear();
+            var roots = _root;
+            for (int i = 0; i < roots.Count; i++)
+                CollectActiveBehaviors(roots[i], s_behaviorScratch);
+            for (int i = 0; i < s_behaviorScratch.Count; i++)
+                action(s_behaviorScratch[i]);
+        }
+
+        /// <summary>
+        /// Tick every active behavior for one phase. When script sampling is on,
+        /// costs are attributed per type for the profiler breakdown.
+        /// </summary>
+        public static void TickActiveBehaviors(Profiler.ScriptPhase phase)
+        {
+            s_behaviorScratch.Clear();
+            var roots = _root;
+            for (int i = 0; i < roots.Count; i++)
+                CollectActiveBehaviors(roots[i], s_behaviorScratch);
+            for (int i = 0; i < s_behaviorScratch.Count; i++)
+                Profiler.InvokeAndRecord(s_behaviorScratch[i], phase);
+        }
+
+        static void CollectActiveBehaviors(GameObject go, List<Behavior> dst)
+        {
+            if (!go.Enabled || go.HideInHierarchy) return;
+            var behaviors = go.Behaviors;
+            for (int i = 0; i < behaviors.Count; i++)
+                dst.Add(behaviors[i]);
+            var children = go.Children;
+            for (int i = 0; i < children.Count; i++)
+                CollectActiveBehaviors(children[i], dst);
+        }
+
         /// <summary>Signal listeners that something in the scene changed.</summary>
         public static void NotifyChanged() => RaiseChanged(markDirty: true);
 

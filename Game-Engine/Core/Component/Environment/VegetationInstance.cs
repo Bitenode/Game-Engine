@@ -880,9 +880,11 @@ namespace Game_Engine.Core.Component
             SN.Vector3 centerAccum = SN.Vector3.Zero;
             float localPatch = Math.Max(0.05f, planet.WorldToLocalLength(Math.Max(0.05f, patchRadius)));
             float localH = planet.WorldToLocalLength(Math.Clamp(GrassHeight, 0.5f, 4.5f));
-            SN.Vector3 centerBase = planet.SampleVegetationAnchorLocal(n);
+            SN.Vector3 centerBase;
             if (sourceLeaf != null && planet.TrySampleRenderedCrustPoint(n, out var leafBase, sourceLeaf))
                 centerBase = leafBase;
+            else
+                centerBase = planet.SampleLocalCrustPoint(n);
             float rootEmbed = planet.WorldToLocalLength(0.08f);
             for (int bi = 0; bi < bladeCount; bi++)
             {
@@ -1235,6 +1237,7 @@ namespace Game_Engine.Core.Component
         public override void Update()
         {
             if (_chunks.Count == 0) return;
+            if ((Time.frameCount & 3) != 0) return;
             if (gameObject?.Name?.StartsWith("BiomeGrassBatch", StringComparison.Ordinal) == true)
                 return;
             if (_chunks.Count == 1 && _chunks[0].ChunkGO?.Name?.StartsWith("planet_grass_", StringComparison.Ordinal) == true)

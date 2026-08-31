@@ -82,6 +82,6 @@ public partial class GamePanel : UserControl
     private void OnStopClicked(object? s, RoutedEventArgs e)
     {
         if (State != GameState.Stopped)
-            State = GameState.Stopped; // this “unpauses” by leaving Paused state
+            State = GameState.Stopped; // this ï¿½unpausesï¿½ by leaving Paused state
     }
 }

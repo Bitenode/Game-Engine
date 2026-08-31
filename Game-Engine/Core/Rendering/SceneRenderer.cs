@@ -6,6 +6,7 @@ using System.Threading;
 using Avalonia;
 using Silk.NET.OpenGL;
 using Game_Engine.Core.Component;
+using Game_Engine.Core.Planet;
 using Game_Engine.Core.Rendering.GPU;
 using SN = System.Numerics;
 
@@ -3136,6 +3137,11 @@ namespace Game_Engine.Core
             if (planet.gameObject == null || !planet.IsActiveAndEnabled || !planet.EnableWater)
                 return;
 
+            // Slope-clip puts the eye inside crust. Drawing ocean from there
+            // stacks sheets through the hole and leaves TAA ghosts after you pop out.
+            if (planet.TrySampleWorldDensity(camPos, out float camDensity) && camDensity <= 0f)
+                return;
+
             var waterObj = planet.WaterGO;
             var parentWorld = TransformUtil.WorldFromTransform(planet.gameObject.Transform);
             var world = waterObj != null
@@ -3265,8 +3271,8 @@ namespace Game_Engine.Core
             waterShader.SetVector4("uFoamColor", 0.9f, 0.95f, 1.0f, 1.0f);
 
             gl.Enable(EnableCap.DepthTest);
-            gl.DepthFunc(DepthFunction.Lequal);
-            gl.DepthMask(false);
+            gl.DepthFunc(DepthFunction.Less);
+            gl.DepthMask(true);
             gl.Enable(EnableCap.Blend);
             gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             gl.Disable(EnableCap.CullFace);
@@ -3280,6 +3286,18 @@ namespace Game_Engine.Core
                 SN.Matrix4x4.Invert(parentWorld, out var invParent);
                 waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invParent));
 
+                var vp = view * proj;
+                ExtractFrustumPlanes(vp, out var frustumPlanes);
+                var camRadial = camPos - resolvedPlanetCenter;
+                float camRadialLen = camRadial.Length();
+                if (camRadialLen > 1e-6f)
+                    camRadial /= camRadialLen;
+
+                float oceanWorld = planet.Config != null
+                    ? PlanetWaterSampler.GetOceanFillRadius(planet.Config) * radiusScale
+                    : seaLevelWorld;
+                bool camAboveOcean = camRadialLen > oceanWorld + 2f;
+
                 for (int i = 0; i < leaves.Count; i++)
                 {
                     var leaf = leaves[i];
@@ -3290,8 +3308,29 @@ namespace Game_Engine.Core
                     float cell = leafSize / chunkSize;
                     var leafCenter = SN.Vector3.Transform(leaf.WorldCentre(localRadius), parentWorld);
                     float leafDist = SN.Vector3.Distance(camPos, leafCenter);
+
+                    // Other-side ocean used to composite as stacked horizontal
+                    // sheets (depth write was off). Skip the far hemisphere.
+                    var leafDir = leafCenter - resolvedPlanetCenter;
+                    if (leafDir.LengthSquared() > 1e-8f
+                        && SN.Vector3.Dot(SN.Vector3.Normalize(leafDir), camRadial) < -0.15f)
+                        continue;
+
+                    var waterSphere = GetMeshSphere(waterMesh);
+                    var worldCenter = SN.Vector3.Transform(waterSphere.Center, parentWorld);
+                    float waterRad = waterSphere.Radius * radiusScale;
+                    float leafRadius = waterRad + MathF.Max(4f, leafSize * 0.2f);
+                    if (!SphereInFrustum(frustumPlanes, worldCenter, leafRadius))
+                        continue;
+
                     // Coarse parent patches under the camera are the shard/spike source.
-                    if (cell > 14f && leafDist < leafSize * 1.6f)
+                    if (cell > 6f && leafDist < MathF.Max(leafSize * 3.2f, 140f))
+                        continue;
+
+                    // Standing on a hill: a coarse ocean leaf's bounding sphere
+                    // swallows the camera and its sphere-chord tris cut the slope.
+                    if (camAboveOcean && cell > 4.5f
+                        && leafDist < MathF.Max(leafSize * 2.4f, waterRad * 0.9f))
                         continue;
 
                     cache.GetMesh(waterMesh).Draw();

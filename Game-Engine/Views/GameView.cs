@@ -90,6 +90,9 @@ namespace Game_Engine.Views
         private int _gbufferW, _gbufferH;
         private SN.Matrix4x4 _prevViewProj = SN.Matrix4x4.Identity;
         private bool _taaResetHistory = true;
+        private SN.Vector3 _taaLook;
+        private bool _hasTaaLook;
+        private bool _taaCamInSolid;
         private int _taaFrameCounter;
         private TiledLightTextureSystem? _tiledLights;
         #endregion
@@ -153,6 +156,8 @@ namespace Game_Engine.Views
         const float PLANET_LOD_MOVE_THRESHOLD = 2.0f;
         const float PLAY_PLANET_LOD_MOVE_THRESHOLD = 18f;
         const float PLANET_FAST_APPROACH_SPEED = 40f;
+        const double MAX_RENDER_DT_SEC = 0.10;
+        const double RENDER_GAP_LOD_PAUSE_SEC = 0.25;
         const int PLAYMODE_MAX_PLANET_LOD_DEPTH = 5;
         double _lodAccumSec;
         double _planetLodAccumSec;
@@ -166,10 +171,12 @@ namespace Game_Engine.Views
         SN.Vector3 _lastShadowCamPos = new(float.NaN);
         bool _hasShadowMap;
         int _gpuCacheMaintainCounter;
+        bool _underwaterFxLatch;
+        UnderwaterState? _underwaterFxCached;
         #endregion
 
-        // Render gating: prevent InvalidateVisual() from piling up.
-        // Avalonia's OpenGlControlBase compositing is very expensive (~500ms on some systems).
+        // Render gating: prevent RequestNextFrameRendering() from piling up.
+        // Avalonia's OpenGlControlBase compositing is expensive if frames queue.
         // We only request a new render after OnOpenGlRender has completed the previous one.
         private volatile bool _renderInFlight;
         TopLevel? _playKeyHost;
@@ -188,7 +195,7 @@ namespace Game_Engine.Views
                 if (!_renderInFlight)
                 {
                     _renderInFlight = true;
-                    InvalidateVisual();
+                    RequestNextFrameRendering();
                 }
             };
             _fixedTimer.Interval = TimeSpan.FromMilliseconds(8);
@@ -201,7 +208,7 @@ namespace Game_Engine.Views
                 RebuildSceneCaches();
                 _needsWarm = true;
                 _cache?.InvalidateAll();
-                InvalidateVisual();
+                RequestNextFrameRendering();
             };
 
             // Full scene replacement: request a full GPU cache flush on the next render pass
@@ -209,7 +216,7 @@ namespace Game_Engine.Views
             {
                 if (_cache != null) _cache.FlushRequested = true;
                 SceneRenderer.ResetBiomeTexDebug();
-                Avalonia.Threading.Dispatcher.UIThread.Post(InvalidateVisual,
+                Avalonia.Threading.Dispatcher.UIThread.Post(RequestNextFrameRendering,
                     Avalonia.Threading.DispatcherPriority.Render);
             };
 
@@ -439,7 +446,7 @@ namespace Game_Engine.Views
             if (!SceneRenderer.TryBeginViewRender())
             {
                 _renderInFlight = false;
-                Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+                Dispatcher.UIThread.Post(RequestNextFrameRendering, DispatcherPriority.Render);
                 return;
             }
             try
@@ -459,14 +466,16 @@ namespace Game_Engine.Views
             _frameWatch.Restart();
             var sec = Stopwatch.StartNew();
 
-            double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
+            double rawDt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
             _fpsTick.Restart();
+            bool renderGap = rawDt > RENDER_GAP_LOD_PAUSE_SEC;
+            double dt = Math.Min(Math.Max(0.0, rawDt), MAX_RENDER_DT_SEC);
             UpdateFps(dt);
 
             // Wind system update
             WindSystem.Update((float)Math.Min(dt, 0.1));
 
-            double scaling = VisualRoot?.RenderScaling ?? 1.0;
+            double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
             double Wdip = Math.Max(1.0, Bounds.Width);
             double Hdip = Math.Max(1.0, Bounds.Height);
             int W = Math.Max(1, (int)(Wdip * scaling));
@@ -675,7 +684,20 @@ namespace Game_Engine.Views
             _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
             // --- UNDERWATER DETECTION ---
-            var underwater = UnderwaterQuery.GetState(camPos);
+            var rawUnderwater = UnderwaterQuery.GetState(camPos);
+            if (rawUnderwater.HasValue)
+            {
+                if (rawUnderwater.Value.Depth >= 0.42f)
+                    _underwaterFxLatch = true;
+                else if (rawUnderwater.Value.Depth <= 0.12f)
+                    _underwaterFxLatch = false;
+                _underwaterFxCached = rawUnderwater;
+            }
+            else
+            {
+                _underwaterFxLatch = false;
+            }
+            var underwater = _underwaterFxLatch ? _underwaterFxCached : null;
 
             // --- POST-PROCESSING setup ---
             var postVolume = PostProcessVolume.GetActive();
@@ -744,11 +766,12 @@ namespace Game_Engine.Views
             {
                 _planetLodAccumSec = 0.0;
                 _lastPlanetLodCamPos = camPos;
+                bool allowPlanetLodChanges = !renderGap;
                 foreach (var planet in PlanetTerrain.ActivePlanets)
                 {
                     if (planet?.Config != null)
                         planet.Config.MaxLodDepth = Math.Clamp(planet.Config.MaxLodDepth, 4, PLAYMODE_MAX_PLANET_LOD_DEPTH);
-                    planet?.RefreshLodAroundCamera(camPos);
+                    planet?.RefreshLodAroundCamera(camPos, allowPlanetLodChanges);
                 }
             }
 
@@ -757,6 +780,24 @@ namespace Game_Engine.Views
 
             bool useDeferred = ProjectRenderingSettings.UseDeferredRendering;
             bool useTaa = postVolume?.TAAEnabled == true && useDeferred;
+            if (cam != null && cam.InvalidateTemporalHistory)
+            {
+                _taaResetHistory = true;
+                cam.InvalidateTemporalHistory = false;
+            }
+            bool camInSolid = CameraInsidePlanetSolid(camPos);
+            if (camInSolid || _taaCamInSolid)
+                _taaResetHistory = true;
+            _taaCamInSolid = camInSolid;
+            var camLook = new SN.Vector3(-invView.M31, -invView.M32, -invView.M33);
+            if (camLook.LengthSquared() > 1e-8f)
+            {
+                camLook = SN.Vector3.Normalize(camLook);
+                if (useTaa && _hasTaaLook && SN.Vector3.Dot(_taaLook, camLook) < 0.93f)
+                    _taaResetHistory = true;
+                _taaLook = camLook;
+                _hasTaaLook = true;
+            }
             if (useTaa)
             {
                 _taaFrameCounter++;
@@ -1261,7 +1302,7 @@ namespace Game_Engine.Views
             // Material warm-up runs outside GL context to avoid blocking GPU work
             MaterialRebind.RepairScene();
             if (MaterialRebind.NeedsMoreFrames)
-                Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+                Dispatcher.UIThread.Post(RequestNextFrameRendering, DispatcherPriority.Render);
 
             base.Render(ctx);
             DrawFpsHud(ctx);
@@ -1270,13 +1311,22 @@ namespace Game_Engine.Views
         void DrawFpsHud(DrawingContext ctx)
         {
             string line1 = $"FPS:{_fpsDisplay:F0}  GL:{_msFrameEma:F1}ms  Sh:{_tShadow:F0} M:{_tScene:F0}";
+            string? line2 = null;
+            if (Profiler.SampleScripts && Profiler.LatestTopScriptCount > 0)
+            {
+                var top = Profiler.GetLatestTopScript(0);
+                line2 = $"Scripts:{Profiler.LatestScriptsMs:F1}ms  {top.TypeName} {top.Ms:F1}";
+            }
             const double font = 12, padX = 8, padY = 6;
-            double est = line1.Length * font * 0.62;
+            int lines = line2 == null ? 1 : 2;
+            double est = Math.Max(line1.Length, line2?.Length ?? 0) * font * 0.62;
             double lineH = font * 1.4;
-            double w = est + padX * 2, h = lineH + padY * 2;
+            double w = est + padX * 2, h = lineH * lines + padY * 2;
             var bg = new Rect(6, 6, Math.Ceiling(w), Math.Ceiling(h));
             ctx.FillRectangle(HudBg, bg);
             new TextLayout(line1, HudTypeface, font, HudText).Draw(ctx, new Point(bg.X + padX, bg.Y + padY));
+            if (line2 != null)
+                new TextLayout(line2, HudTypeface, font, HudText).Draw(ctx, new Point(bg.X + padX, bg.Y + padY + lineH));
         }
         #endregion
 
@@ -1303,6 +1353,20 @@ namespace Game_Engine.Views
                 i /= b;
             }
             return r;
+        }
+
+        static bool CameraInsidePlanetSolid(SN.Vector3 camPos)
+        {
+            var planets = PlanetTerrain.ActivePlanets;
+            for (int i = 0; i < planets.Count; i++)
+            {
+                var p = planets[i];
+                if (p?.gameObject == null || !p.IsActiveAndEnabled)
+                    continue;
+                if (p.TrySampleWorldDensity(camPos, out float d) && d <= 0f)
+                    return true;
+            }
+            return false;
         }
 
         void UpdateFps(double dt)
@@ -1557,7 +1621,7 @@ namespace Game_Engine.Views
                 }
             }
             _renderInFlight = false; // Reset gate so first frame renders immediately
-            InvalidateVisual();
+            RequestNextFrameRendering();
         }
 
         void EnsurePlaySnapshot()
@@ -1695,8 +1759,8 @@ namespace Game_Engine.Views
 
         void EnsureAwakeStart()
         {
-            if (!_awakened) { ForEachBehavior(b => b.__Awake()); _awakened = true; }
-            if (!_started) { ForEachBehavior(b => b.__Start()); _started = true; }
+            if (!_awakened) { SceneService.ForEachActiveBehavior(b => b.__Awake()); _awakened = true; }
+            if (!_started) { SceneService.ForEachActiveBehavior(b => b.__Start()); _started = true; }
         }
 
         void WarmAllColliders()
@@ -1717,6 +1781,16 @@ namespace Game_Engine.Views
                     }
                 });
             _collidersWarm = true;
+        }
+
+        static void Traverse(GameObject go, Action<Behavior> a)
+        {
+            var behaviors = go.Behaviors;
+            for (int i = 0; i < behaviors.Count; i++)
+                a(behaviors[i]);
+            var children = go.Children;
+            for (int i = 0; i < children.Count; i++)
+                Traverse(children[i], a);
         }
         #endregion
 
@@ -1781,8 +1855,9 @@ namespace Game_Engine.Views
                 NetworkManager.Update();
 
             Profiler.Begin("Scripts");
-            ForEachBehavior(b => b.__Update());
-            ForEachBehavior(b => b.__LateUpdate());
+            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.Update);
+            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.LateUpdate);
+            Profiler.PublishScriptCosts();
             Profiler.End();
 
             Profiler.Begin("Audio");
@@ -1808,34 +1883,14 @@ namespace Game_Engine.Views
                 Profiler.Begin("Physics");
                 Core.Time.BeginFixedUpdate(FIXED_DT);
                 Core.Physics.PhysicsCache.Tick();
-                ForEachBehavior(b => b.__FixedUpdate());
+                SceneService.TickActiveBehaviors(Profiler.ScriptPhase.FixedUpdate);
                 Profiler.End();
                 _fixedAccum -= FIXED_DT;
                 physicsSteps++;
             }
         }
 
-        void CallOnDestroyAll() => ForEachBehavior(b => b.__OnDestroy());
-
-        // Snapshot lists: Awake/Start (Require, spawners) add/remove behaviors and children.
-        static void ForEachBehavior(Action<Behavior> a)
-        {
-            var roots = SceneService.Root.ToArray();
-            for (int i = 0; i < roots.Length; i++)
-                Traverse(roots[i], a);
-        }
-
-        static void Traverse(GameObject go, Action<Behavior> a)
-        {
-            if (!go.Enabled) return;
-            if (go.HideInHierarchy) return;
-            var behaviors = go.Behaviors.ToArray();
-            for (int i = 0; i < behaviors.Length; i++)
-                a(behaviors[i]);
-            var children = go.Children.ToArray();
-            for (int i = 0; i < children.Length; i++)
-                Traverse(children[i], a);
-        }
+        void CallOnDestroyAll() => SceneService.ForEachActiveBehavior(b => b.__OnDestroy());
         #endregion
     }
 }

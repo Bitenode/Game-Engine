@@ -113,7 +113,7 @@ public static class UsingImportQuickFix
     {
         if (hits.Count >= maxTotal) return;
         if (t.Name != simpleName) return;
-        if (t.DeclaredAccessibility != Accessibility.Public) return;
+        if (t.DeclaredAccessibility != Microsoft.CodeAnalysis.Accessibility.Public) return;
         if (t.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface or TypeKind.Enum or TypeKind.Delegate))
             return;
         // "using N;" does not import nested types as unqualified names.

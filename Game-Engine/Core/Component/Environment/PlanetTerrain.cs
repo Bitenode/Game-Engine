@@ -75,6 +75,7 @@ public sealed class PlanetTerrain : Behavior
     bool _pendingVoxelMeshRefresh;
     PlanetWater? _planetWater;
     PlanetVegetationAssetData? _pendingVegetationAssetData;
+    bool? _wiredStreamClient;
 
     /// <summary>
     /// When vegetation is read from disk but not yet applied to <see cref="PlanetVegetationSystem"/>
@@ -145,6 +146,9 @@ public sealed class PlanetTerrain : Behavior
     // Per-frame cache for expensive rendered-crust samples (grass batches call this thousands of times).
     int _vegCrustCacheFrame = -1;
     readonly Dictionary<long, SN.Vector3> _vegCrustCache = new(256);
+    int _worldXformFrame = int.MinValue;
+    SN.Vector3 _worldCenterCached;
+    float _worldScaleCached = 1f;
 
     public override void Awake()
     {
@@ -252,6 +256,7 @@ public sealed class PlanetTerrain : Behavior
                 edgeDistortionFreq: _config.EdgeDistortionFreq,
                 edgeDistortionAmp: _config.EdgeDistortionAmp);
             _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
+            _wiredStreamClient = null;
             RebuildPhysicsNoise();
         }
         else if (_riverNoisePrimary == null && _config.NeedsRiverNoise)
@@ -285,6 +290,8 @@ public sealed class PlanetTerrain : Behavior
     {
         if (_chunkManager == null) return;
         bool streamClient = NetworkManager.IsActive && NetworkManager.IsClient && StreamSurfaceFromServerWhenClient;
+        if (_wiredStreamClient == streamClient) return;
+        _wiredStreamClient = streamClient;
         _chunkManager.SetClientStreamingMode(streamClient, streamClient ? OnClientChunkMeshRequested : null);
     }
 
@@ -489,6 +496,19 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
+    /// Player stand radius: heightfield plus the live chunk mesh, so LOD
+    /// T-junction ramps that stitch two chunks are in the collider.
+    /// </summary>
+    public float SampleCollisionRadius(SN.Vector3 sphereDir)
+    {
+        float hf = SampleHeightfieldRadius(sphereDir);
+        float meshLocal = _chunkManager?.SampleCollisionLocalRadius(sphereDir) ?? 0f;
+        if (meshLocal <= 1e-4f)
+            return hf;
+        return MathF.Max(hf, meshLocal * GetWorldRadiusScale());
+    }
+
+    /// <summary>
     /// Local unscaled crust radius matching the visible shell mesh
     /// (<see cref="PlanetDensitySampler.SampleEditedSurfaceRadius"/>), not the
     /// volumetric isosurface which can sit far outside the heightfield.
@@ -531,14 +551,18 @@ public sealed class PlanetTerrain : Behavior
         if (_vegCrustCache.TryGetValue(key, out var cached))
             return cached;
 
-        SN.Vector3 local;
-        if (TrySampleRenderedCrustPoint(sphereDir, out local))
+        SN.Vector3 local = SampleLocalCrustPoint(sphereDir);
+        var leaf = _chunkManager?.FindLeafAtDirection(sphereDir);
+        if (leaf != null)
         {
-            _vegCrustCache[key] = local;
-            return local;
+            float bestR = 0f;
+            if (TrySampleRenderedCrustPointFromLeaf(sphereDir, leaf, ref local, ref bestR))
+            {
+                _vegCrustCache[key] = local;
+                return local;
+            }
         }
 
-        local = SampleLocalCrustPoint(sphereDir);
         _vegCrustCache[key] = local;
         return local;
     }
@@ -566,18 +590,10 @@ public sealed class PlanetTerrain : Behavior
         sphereDir = SN.Vector3.Normalize(sphereDir);
 
         float bestR = 0f;
-        bool found = false;
-        if (preferLeaf != null)
-            return TrySampleRenderedCrustPointFromLeaf(sphereDir, preferLeaf, ref localPoint, ref bestR);
-
-        var leaves = _chunkManager.GetRenderableLeaves();
-        for (int li = 0; li < leaves.Count; li++)
-        {
-            if (TrySampleRenderedCrustPointFromLeaf(sphereDir, leaves[li], ref localPoint, ref bestR))
-                found = true;
-        }
-
-        return found;
+        var leaf = preferLeaf ?? _chunkManager.FindLeafAtDirection(sphereDir);
+        if (leaf == null)
+            return false;
+        return TrySampleRenderedCrustPointFromLeaf(sphereDir, leaf, ref localPoint, ref bestR);
     }
 
     static bool TrySampleRenderedCrustPointFromLeaf(
@@ -789,13 +805,17 @@ public sealed class PlanetTerrain : Behavior
             _playEditLodCooldown -= dt;
             bool pendingEdits = _chunkManager.PendingEditCommands > 0;
             bool pendingApplies = _chunkManager.PendingCompletedJobs > 0;
-            if ((_playEditRefreshQueued || pendingEdits || pendingApplies)
+            if ((_playEditRefreshQueued || pendingEdits)
                 && LastCameraPosition.LengthSquared() > 1e-6f
                 && (_playEditLodCooldown <= 0f || _playEditRefreshQueued))
             {
                 RefreshLodAroundCamera(LastCameraPosition);
                 _playEditRefreshQueued = false;
                 _playEditLodCooldown = pendingEdits ? 0.12f : 0.20f;
+            }
+            else if (pendingApplies)
+            {
+                _chunkManager.ApplyCompletedMeshJobs();
             }
             return;
         }
@@ -832,10 +852,8 @@ public sealed class PlanetTerrain : Behavior
         {
             _chunkUpdateAccumSec = 0f;
             _lastChunkUpdateCamPos = LastCameraPosition;
-            if (_config != null)
-                _config.WorldRadiusScale = GetWorldRadiusScale();
-            var planetCenter = GetWorldCenter();
-            _chunkManager.Update(LastCameraPosition, planetCenter);
+            SyncLodCameraState(LastCameraPosition);
+            _chunkManager.Update(LastCameraPosition, GetWorldCenter());
         }
     }
 
@@ -866,21 +884,64 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>Refine chunks around a world-space camera (editor or play).</summary>
-    public void RefreshLodAroundCamera(SN.Vector3 cameraPos)
+    public void RefreshLodAroundCamera(SN.Vector3 cameraPos, bool allowLodChanges = true)
     {
         LastCameraPosition = cameraPos;
         if (_chunkManager == null || gameObject == null) return;
 
-        if (_config != null)
-        {
-            _config.WorldRadiusScale = GetWorldRadiusScale();
-            float wr = MathF.Max(1f, _config.EffectiveWorldRadius);
-            bool cameraInside = (cameraPos - GetWorldCenter()).Length() < wr * 1.08f;
-            ApplyChunkBudgets(SceneService.PlayMode, cameraInside);
-        }
-
-        _chunkManager.Update(cameraPos, GetWorldCenter());
+        SyncLodCameraState(cameraPos);
+        _chunkManager.Update(cameraPos, GetWorldCenter(), allowLodChanges);
         _skipLodChunkUpdate = true;
+    }
+
+    bool _cameraBelowCrustLatch;
+    float _lodCaveCheckAccum;
+    SN.Vector3 _lastLodDensityCam = new(float.NaN);
+
+    void SyncLodCameraState(SN.Vector3 cameraPos)
+    {
+        if (_config == null) return;
+        _config.WorldRadiusScale = GetWorldRadiusScale();
+        bool belowCrust = _cameraBelowCrustLatch;
+        if (_config.EnableCaves && ShouldRecheckCaveLod(cameraPos))
+        {
+            if (TrySampleWorldDensity(cameraPos, out float density))
+            {
+                if (density < -0.08f)
+                    belowCrust = true;
+                else if (density > -0.03f)
+                    belowCrust = false;
+            }
+            else
+            {
+                float coreR = _config.EffectiveWorldRadius * 0.82f;
+                belowCrust = (cameraPos - GetWorldCenter()).Length() < coreR;
+            }
+        }
+        else if (!_config.EnableCaves)
+        {
+            belowCrust = false;
+        }
+        _cameraBelowCrustLatch = belowCrust;
+        _config.CameraBelowCrust = belowCrust;
+        ApplyChunkBudgets(SceneService.PlayMode, belowCrust);
+    }
+
+    bool ShouldRecheckCaveLod(SN.Vector3 cameraPos)
+    {
+        _lodCaveCheckAccum += Math.Max(0f, (float)Time.deltaTime);
+        if (float.IsNaN(_lastLodDensityCam.X) || _lodCaveCheckAccum >= 0.25f)
+        {
+            _lodCaveCheckAccum = 0f;
+            _lastLodDensityCam = cameraPos;
+            return true;
+        }
+        if (SN.Vector3.DistanceSquared(cameraPos, _lastLodDensityCam) > 36f)
+        {
+            _lastLodDensityCam = cameraPos;
+            return true;
+        }
+        return false;
     }
 
     void ApplyChunkBudgets(bool play, bool cameraInside = false)
@@ -948,22 +1009,36 @@ public sealed class PlanetTerrain : Behavior
         return proj != null ? System.IO.Path.Combine(proj.RootPath, path) : path;
     }
 
+    void RefreshWorldXformCache()
+    {
+        int f = Time.frameCount;
+        if (f == _worldXformFrame && f != 0)
+            return;
+        _worldXformFrame = f;
+        if (gameObject == null)
+        {
+            _worldCenterCached = SN.Vector3.Zero;
+            _worldScaleCached = 1f;
+            return;
+        }
+        var world = SceneGraphUtil.AccumulateWorld(gameObject);
+        _worldCenterCached = new SN.Vector3(world.M41, world.M42, world.M43);
+        float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+        float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+        float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+        _worldScaleCached = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+    }
+
     public SN.Vector3 GetWorldCenter()
     {
-        if (gameObject == null) return SN.Vector3.Zero;
-        var world = SceneGraphUtil.AccumulateWorld(gameObject);
-        return new SN.Vector3(world.M41, world.M42, world.M43);
+        RefreshWorldXformCache();
+        return _worldCenterCached;
     }
 
     public float GetWorldRadiusScale()
     {
-        if (gameObject == null) return 1f;
-        var world = SceneGraphUtil.AccumulateWorld(gameObject);
-        float sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
-        float sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
-        float sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
-        float uniform = (sx + sy + sz) / 3f;
-        return MathF.Max(0.0001f, uniform);
+        RefreshWorldXformCache();
+        return _worldScaleCached;
     }
 
     /// <summary>
@@ -1096,13 +1171,13 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>Push <paramref name="worldPos"/> out of solid density by at least <paramref name="worldClearance"/>.</summary>
-    public bool ResolveDensityPenetration(ref SN.Vector3 worldPos, float worldClearance)
+    public bool ResolveDensityPenetration(ref SN.Vector3 worldPos, float worldClearance, int maxIters = 10)
     {
         var sampler = CreateDensitySampler();
         if (sampler == null)
             return false;
         return PlanetDensityRaycast.ResolvePenetration(
-            sampler, GetWorldCenter(), GetWorldRadiusScale(), ref worldPos, worldClearance);
+            sampler, GetWorldCenter(), GetWorldRadiusScale(), ref worldPos, worldClearance, maxIters);
     }
 
     /// <summary>
@@ -1647,6 +1722,7 @@ public sealed class PlanetTerrain : Behavior
             edgeDistortionFreq: _config.EdgeDistortionFreq,
             edgeDistortionAmp: _config.EdgeDistortionAmp);
         _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
+        _wiredStreamClient = null;
         RebuildPhysicsNoise();
         RebuildWater();
         _chunkManager.RequestFullShellRebuild(16);
@@ -1695,6 +1771,7 @@ public sealed class PlanetTerrain : Behavior
 
         _chunkManager?.Dispose();
         _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
+        _wiredStreamClient = null;
         RebuildPhysicsNoise();
 
         SceneRenderer.ResetBiomeTexDebug();

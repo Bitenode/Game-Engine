@@ -378,6 +378,7 @@ SceneRenderer.RenderGPU()
     │
     ├─► Material Warm-Up (MaterialRebind.RepairScene)
     ├─► TerrainStreamer.SyncAll + Terrain LOD Update (streaming tiles, per-chunk distance LOD)
+    ├─► Planet LOD (Game View in Play: throttled RefreshLodAroundCamera; Scene View when editing)
     ├─► Shadow Pass (4096x4096 depth-only FBO, front-face culling)
     ├─► Sky Pass (gradient + equirectangular texture + sun glow)
     ├─► Grid Pass (infinite ground grid with distance fade)
@@ -397,7 +398,7 @@ SceneRenderer.RenderGPU()
 
 | Data Type       | Format      | Location                                     | Notes |
 |-----------------|-------------|----------------------------------------------|-------|
-| Project         | JSON        | `project.json` in project root               | ID, name, paths, timestamps |
+| Project         | JSON        | `project.json` in project root               | ID, name, paths, timestamps; atomic save + crash recovery |
 | Scenes          | JSON        | `Scenes/*.scene`                             | Full hierarchy + component data |
 | Materials       | JSON        | `Assets/**/*.material`                       | PBR properties + texture paths |
 | Terrain         | JSON / binary | `Assets/Terrain/*.terrain.json` or `.terrain.bin` | JSON default; binary optional; brush strokes; `TerrainStreamer` tile unload |

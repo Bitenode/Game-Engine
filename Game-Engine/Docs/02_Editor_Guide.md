@@ -157,7 +157,7 @@ Play-mode **PlanetTool** (Standard Assets): LMB dig / RMB build along the camera
 
 The Game View shows the game as it would appear to the player, rendered through the first enabled Camera component in the scene.
 
-During Play mode, Scene View remains live and renders the same runtime world from the editor camera. This lets you inspect and interact with runtime objects while the game is running.
+During Play mode, Scene View remains live and renders the same runtime world from the editor camera (throttled preview). **Planet chunk LOD split/merge is owned by Game View during Play** — Scene View does not drive quadtree updates while playing, which keeps chunk stitching stable when switching focus or taking screenshots.
 
 ### Play Controls
 | Button    | Function                                           |
@@ -188,7 +188,7 @@ During Play mode, Scene View remains live and renders the same runtime world fro
 4. Material textures are restored
 5. Terrain data is reloaded from per-tile terrain asset files (`.terrain.json` or `.terrain.bin` per `TerrainAssetPath`)
 
-The Game View also displays an FPS counter next to the stop button for performance monitoring.
+The Game View also displays an FPS counter next to the stop button. When script sampling is enabled, the HUD overlay can show GL frame ms, planet chunk/triangle counts, and top script costs for quick play-mode profiling.
 
 ### Input During Play Mode
 During play mode, the Game View captures input and feeds it to the `Input` system:
@@ -710,7 +710,7 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 
 ## Profiler Panel
 
-The Profiler panel displays real-time performance metrics:
+The Profiler panel and Game View HUD display real-time performance metrics:
 
 ### Metrics Displayed
 | Metric | Description |
@@ -720,8 +720,10 @@ The Profiler panel displays real-time performance metrics:
 | **Draw Calls** | Number of GPU draw calls per frame |
 | **Vertices** | Total vertex count rendered |
 | **Triangles** | Total triangle count rendered |
+| **Planet Chunks** | Active planet quadtree leaves with meshes (Game View HUD when playing) |
+| **Script costs** | Per-behavior Update ms when sampling is enabled (Game View HUD + Profiler) |
 
-Access via **Window > Profiler**.
+Access the full Profiler panel via **Window > Profiler**.
 
 ---
 

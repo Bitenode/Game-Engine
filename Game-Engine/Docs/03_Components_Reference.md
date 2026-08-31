@@ -466,8 +466,9 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 | `DefaultManipulationFalloff` | `float` | `0.6` | Default brush falloff used by dig/build APIs |
 
 **Runtime config (via `PlanetConfig`, adjusted by `ApplyChunkBudgets`):**
-- `VolumetricMaxCellSize` — **3.5** at orbit; **11** when the camera is inside the planet (`camR < 1.08 × EffectiveWorldRadius`) in **Play and editor**
-- Play interior (inside crust): `MaxLodDepth` up to **6**, leaf cap **~120–160**, **~14** generation schedules per update; orbit play uses lower caps
+- `VolumetricMaxCellSize` — **3.5** at orbit; **11** when `CameraBelowCrust` latch is true (density probe + hysteresis at camera)
+- Play interior (inside crust latch): `MaxLodDepth` up to **6**, leaf cap **~120–160**, **~14** generation schedules per update; orbit play uses **32–64** leaves, depth **4–5**, **6** schedules
+- Play LOD is driven by **Game View only**; Scene View renders but does not split/merge during Play
 - `EnableTransvoxelTransitions` — when **true** (default), volumetric leaves emit Lengyel transition cells on LOD seam edges
 - Coarse leaves above that cell size use a smooth heightfield shell; finer leaves stack 1–4 radial transvoxel shells from near the core to the surface
 - Play dig/build remeshes overlapping volumetric leaves (no global heightfield flatten after the first edit); coarse shells may get a one-frame shell deform preview
@@ -486,8 +487,8 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 - `SampleWaterSurface(sphereDir)` — local water table sample (radius, mask, kind, body index) for rendering and underwater queries
 - `SampleWaterMask(sphereDir)` — shorthand water coverage mask
 - `UpdateLOD(cameraPos)` — camera position for the chunk streamer
-- `RefreshLodAroundCamera(cameraPos)` — editor/play LOD refresh with interior chunk budgets
-- `UpdateSceneViewLod(cameraPos)` — Scene View always runs real quadtree LOD
+- `RefreshLodAroundCamera(cameraPos, allowLodChanges = true)` — editor/play LOD refresh with interior chunk budgets; Game View may pass `allowLodChanges: false` after a render-gap frame to apply meshes without split/merge
+- `UpdateSceneViewLod(cameraPos)` — Scene View LOD when **not** playing (Scene View does not drive LOD during Play)
 - `DigSphere(worldCenter, radius, strength, falloff)` — subtract density (world brush; stored local)
 - `BuildSphere(worldCenter, radius, strength, falloff)` — add density
 - `SmoothSphere(worldCenter, radius, strength, falloff)` — blend neighborhood density toward a local average
@@ -1336,7 +1337,7 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 | `JumpBufferSeconds` | `float`   | `0.12`           | Jump input buffer                    |
 
 **Features:**
-- **Swimming** — automatic underwater movement when the Rigidbody detects submersion
+- **Swimming** — flat-world swim via `Rigidbody` underwater state; **planet swim** via `SwimOnPlanet()` when `UnderwaterQuery` depth ≥ **0.35 m** (buoyancy, dive controls, tangent movement)
 - **Momentum-based** — natural sliding, pushing, and inertia
 - **Planet movement** — tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
@@ -2007,7 +2008,9 @@ Key runtime controls:
 
 Root sinking uses trunk-up **and** radial passes so tilted trees don’t “pick” the wrong vertex along radial alone. Tree spawn rotation calls **`TransformUtil.AlignLocalUp`** (same path as the planet player capsule) so local **+Y** follows blended trunk-up on slopes everywhere on the sphere—not world Y.
 
-**Imported FBX orientation:** before spawn, non-grass models are reoriented so the tallest AABB axis is **+Y** (common Z-up Unity exports get Rx(-90°)). Grass is detected by **filename** (`grass`, `meadow`, `fern`, …), not folder path—pines in a `new trees and grass` pack must not be classified as grass. Cached import templates key off model path + `|hier_v25_filename`; restart the editor after engine updates so stale sideways bakes are dropped.
+**Imported FBX orientation:** before spawn, non-grass models are reoriented so the tallest AABB axis is **+Y** (common Z-up Unity exports get Rx(-90°)). Grass is detected by **filename** (`grass`, `meadow`, `fern`, …), not folder path—pines in a `new trees and grass` pack must not be classified as grass. Cached import templates key off model path + `|hier_v25_filename`; templates load on a **background thread** in play so the main thread does not stall on FBX import. Restart the editor after engine updates so stale sideways bakes are dropped.
+
+**Play performance:** procedural spawn caps ~**24** trees / **~32** grass batches, ~**220 m** activation; `RefreshVegetation` ~**4 ms**/frame budget in play; deferred spawn until imported template is ready.
 
 **Streaming keys:** vegetation groups use a fixed **18×18 face/UV cell** (`face:iu:iv`), not quadtree leaf IDs, so LOD split/merge does not pop plants. Despawn radius uses ~**1.45×** spawn radius hysteresis. With `BatchGrassPerLeaf`, up to **4** profile grass types can share one leaf as separate patches.
 

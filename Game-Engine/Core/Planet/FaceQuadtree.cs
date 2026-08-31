@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Game_Engine.Core;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Planet;
@@ -27,6 +28,27 @@ public sealed class FaceQuadtree
         UpdateRecursive(Root, cameraPos, config, approachSpeed, ref remainingSplitBudget);
     }
 
+    /// <summary>Promote prefetch children to visible leaves when all four meshes are ready (no new splits/merges).</summary>
+    public void CommitReadySplits(ref int remainingSplitBudget)
+    {
+        CommitReadySplitsRecursive(Root, ref remainingSplitBudget);
+    }
+
+    void CommitReadySplitsRecursive(QuadNode node, ref int remainingSplitBudget)
+    {
+        if (node.IsLeaf && node.HasPrefetchChildren && remainingSplitBudget > 0)
+        {
+            if (node.TryCommitSplit())
+                remainingSplitBudget = Math.Max(0, remainingSplitBudget - 3);
+        }
+
+        if (!node.IsLeaf)
+        {
+            for (int i = 0; i < 4; i++)
+                CommitReadySplitsRecursive(node.Children![i]!, ref remainingSplitBudget);
+        }
+    }
+
     void UpdateRecursive(QuadNode node, SN.Vector3 cameraPos, PlanetConfig config, float approachSpeed, ref int remainingSplitBudget)
     {
         float worldRadius = Math.Max(0.001f, config.EffectiveWorldRadius);
@@ -37,8 +59,7 @@ public sealed class FaceQuadtree
 
         // Inside the crust, refine a wide neighborhood so cave walls exist before
         // you walk up to them (otherwise heightfield parents pop to transvoxel late).
-        float camR = cameraPos.Length();
-        if (config.EnableCaves && camR < worldRadius * 1.08f)
+        if (config.EnableCaves && config.CameraBelowCrust)
         {
             splitMult *= 2.3f;
             prefetchMult *= 2.0f;
@@ -162,7 +183,10 @@ public sealed class FaceQuadtree
             {
                 leaf.TransitionMask = mask;
                 leaf.TransitionStride = strides;
-                leaf.NeedsMeshRebuild = true;
+                // Play mode: record the new stitch mask for the next natural rebuild only.
+                // Forcing a live remesh while standing still was collapsing slopes/peaks under the player.
+                if (!SceneService.PlayMode)
+                    leaf.NeedsMeshRebuild = true;
             }
         }
     }

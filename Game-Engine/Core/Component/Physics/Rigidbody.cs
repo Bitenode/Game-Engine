@@ -48,6 +48,9 @@ namespace Game_Engine.Core.Component
         /// <summary>Local "up" direction: toward planet surface if on a planet, else world +Y.</summary>
         public SN.Vector3 LocalUp { get; private set; } = SN.Vector3.UnitY;
 
+        RigidbodyPlayer? _playerMotor;
+        bool _playerMotorResolved;
+
         private SN.Vector3 _forceAccum = SN.Vector3.Zero;
         private SN.Vector3 _impulseAccum = SN.Vector3.Zero;
         private float _sleepTimer;
@@ -71,13 +74,39 @@ namespace Game_Engine.Core.Component
         public override void OnEnable()
         {
             base.OnEnable();
+            _playerMotorResolved = false;
+            _playerMotor = null;
             if (!_all.Contains(this)) _all.Add(this);
         }
 
         public override void OnDisable()
         {
             _all.Remove(this);
+            _playerMotorResolved = false;
+            _playerMotor = null;
             base.OnDisable();
+        }
+
+        RigidbodyPlayer? PlayerMotor
+        {
+            get
+            {
+                if (!_playerMotorResolved)
+                {
+                    _playerMotor = GetComponent<RigidbodyPlayer>();
+                    _playerMotorResolved = true;
+                }
+                return _playerMotor;
+            }
+        }
+
+        internal void ApplyPlayerPlanetStand(bool grounded, SN.Vector3 groundNormal, SN.Vector3 localUp)
+        {
+            IsGrounded = grounded;
+            GroundNormal = groundNormal;
+            LocalUp = localUp;
+            if (grounded && PlayerMotor?.IsPlanetSwimming != true)
+                IsUnderwater = false;
         }
 
         /// <summary>Apply a force (continuous, multiplied by dt in FixedUpdate).</summary>
@@ -105,7 +134,7 @@ namespace Game_Engine.Core.Component
             float dt = (float)Time.fixedDeltaTime;
             if (dt <= 0f) return;
 
-            if (GetComponent<RigidbodyPlayer>() != null)
+            if (PlayerMotor != null)
                 IsSleeping = false;
 
             // Refresh shared physics cache (only rebuilds once per tick)
@@ -127,9 +156,19 @@ namespace Game_Engine.Core.Component
 
             // ── Underwater detection ──
             var pos0 = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
-            var underwaterState = UnderwaterQuery.GetState(pos0);
-            IsUnderwater = underwaterState.HasValue;
-            UnderwaterDepth = underwaterState?.Depth ?? 0f;
+            UnderwaterState? underwaterState;
+            if (PlayerMotor != null && IsGrounded && PlayerMotor.IsPlanetSwimming != true)
+            {
+                IsUnderwater = false;
+                UnderwaterDepth = 0f;
+                underwaterState = null;
+            }
+            else
+            {
+                underwaterState = UnderwaterQuery.GetState(pos0);
+                IsUnderwater = underwaterState.HasValue;
+                UnderwaterDepth = underwaterState?.Depth ?? 0f;
+            }
 
             // ── Planet detection ──
             var planet = FindNearestPlanet(pos0, out var planetCenter, out float planetSurfaceR);
@@ -141,39 +180,33 @@ namespace Game_Engine.Core.Component
                 float dist = toBody.Length();
                 LocalUp = dist > 1e-6f ? toBody / dist : SN.Vector3.UnitY;
 
-                float halfH = GetColliderHalfHeight();
-                float radius = GetColliderRadius();
-
-                // RigidbodyPlayer writes planet position itself. Integrating here
-                // (gravity / mesh triangles / radial snap) cancels tangent WASD.
-                if (GetComponent<RigidbodyPlayer>() != null)
+                // RigidbodyPlayer already stood this frame. A second Spherecast
+                // here was the 16ms / 1.7s spike (same density field, twice).
+                if (PlayerMotor != null)
                 {
-                    bool densityStand = TryDensityGroundProbe(
-                        planet!, pos0, LocalUp, radius,
-                        halfH + PlanetWalkStepUp + PlanetWalkGroundSnap, out var playerHit);
-                    if (densityStand && !playerHit.StartedInside)
+                    if (PlayerMotor.IsPlanetSwimming)
                     {
-                        var feet = pos0 - LocalUp * halfH;
-                        float diff = SN.Vector3.Dot(feet - playerHit.Point, LocalUp);
-                        IsGrounded = diff >= -0.02f && diff <= PlanetWalkStepUp + 0.02f;
-                        GroundNormal = playerHit.Normal.LengthSquared() > 1e-8f
-                            ? SN.Vector3.Normalize(playerHit.Normal)
-                            : LocalUp;
+                        IsUnderwater = PlayerMotor.IsPlanetSubmerged;
+                        UnderwaterDepth = PlayerMotor.PlanetSubmergeDepth;
+                        if (!IsUnderwater)
+                            underwaterState = null;
+                        else
+                            underwaterState = UnderwaterQuery.GetState(pos0);
                     }
                     else
                     {
-                        IsGrounded = false;
-                        GroundNormal = LocalUp;
+                        underwaterState = UnderwaterQuery.GetState(pos0);
+                        IsUnderwater = underwaterState.HasValue;
+                        UnderwaterDepth = underwaterState?.Depth ?? 0f;
                     }
-
-                    if (IsGrounded)
-                        IsUnderwater = false;
-
                     _forceAccum = SN.Vector3.Zero;
                     _impulseAccum = SN.Vector3.Zero;
                     CheckTriggersOnly();
                     return;
                 }
+
+                float halfH = GetColliderHalfHeight();
+                float radius = GetColliderRadius();
 
                 // Islands sit inside the water sphere. Density stand is land so
                 // buoyancy does not fight gravity on the crust.
@@ -745,8 +778,7 @@ namespace Game_Engine.Core.Component
                 var pt = PlanetTerrain.ActivePlanets[i];
                 if (pt?.Config == null || pt.gameObject == null) continue;
 
-                var W = SceneGraphUtil.AccumulateWorld(pt.gameObject);
-                var pc = new SN.Vector3(W.M41, W.M42, W.M43);
+                var pc = pt.GetWorldCenter();
                 float d2 = (worldPos - pc).LengthSquared();
                 if (d2 < bestDist2)
                 {
@@ -755,18 +787,13 @@ namespace Game_Engine.Core.Component
                     center = pc;
 
                     float maxAmp = 0f;
-                    foreach (var b in pt.Config.Biomes)
-                        maxAmp = Math.Max(maxAmp, b.HeightAmplitude);
-                    float scale = 1f;
-                    if (pt.gameObject != null)
+                    var biomes = pt.Config.Biomes;
+                    if (biomes != null)
                     {
-                        var scaleW = SceneGraphUtil.AccumulateWorld(pt.gameObject);
-                        float sx = new SN.Vector3(scaleW.M11, scaleW.M12, scaleW.M13).Length();
-                        float sy = new SN.Vector3(scaleW.M21, scaleW.M22, scaleW.M23).Length();
-                        float sz = new SN.Vector3(scaleW.M31, scaleW.M32, scaleW.M33).Length();
-                        scale = MathF.Max(0.0001f, (sx + sy + sz) / 3f);
+                        for (int b = 0; b < biomes.Length; b++)
+                            maxAmp = Math.Max(maxAmp, biomes[b].HeightAmplitude);
                     }
-                    surfaceRadius = (pt.Config.Radius + maxAmp) * scale;
+                    surfaceRadius = (pt.Config.Radius + maxAmp) * pt.GetWorldRadiusScale();
                 }
             }
             return best;

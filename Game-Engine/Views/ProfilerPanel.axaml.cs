@@ -20,6 +20,10 @@ public partial class ProfilerPanel : UserControl
         {
             Profiler.Enabled = EnableToggle.IsChecked == true;
         };
+        ScriptSampleToggle.IsCheckedChanged += (_, _) =>
+        {
+            Profiler.SampleScripts = ScriptSampleToggle.IsChecked == true;
+        };
 
         // Refresh the UI at ~10 Hz to avoid excessive overhead
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
@@ -29,6 +33,8 @@ public partial class ProfilerPanel : UserControl
 
     private void RefreshUI()
     {
+        RefreshScriptBreakdown();
+
         if (!Profiler.Enabled || Profiler.FrameCount == 0)
         {
             FpsLabel.Text = "FPS: --";
@@ -45,7 +51,10 @@ public partial class ProfilerPanel : UserControl
 
         RenderLabel.Text = $"Render: {latest.RenderMs:F2} ms";
         PhysicsLabel.Text = $"Physics: {latest.PhysicsMs:F2} ms";
-        ScriptsLabel.Text = $"Scripts: {latest.ScriptsMs:F2} ms";
+        string topHint = Profiler.LatestTopScriptCount > 0
+            ? $"  [{Profiler.GetLatestTopScript(0).TypeName}]"
+            : "";
+        ScriptsLabel.Text = $"Scripts: {latest.ScriptsMs:F2} ms{topHint}";
         AudioLabel.Text = $"Audio: {latest.AudioMs:F2} ms";
         AnimLabel.Text = $"Anim: {latest.AnimationMs:F2} ms";
 
@@ -63,6 +72,49 @@ public partial class ProfilerPanel : UserControl
         PlanetMsLabel.Text = $"Planet LOD/Render: {latest.PlanetLodMs:F2}/{latest.PlanetRenderMs:F2} ms";
 
         DrawGraph();
+    }
+
+    private void RefreshScriptBreakdown()
+    {
+        if (!Profiler.SampleScripts)
+        {
+            ScriptFrameLabel.Text = "Script sampling is off.";
+            return;
+        }
+
+        if (Profiler.LatestTopScriptCount == 0)
+        {
+            ScriptFrameLabel.Text = "Play the scene to see which behaviors use Update time.";
+        }
+        else
+        {
+            var sb = new System.Text.StringBuilder(256);
+            sb.Append("Total  ").Append(Profiler.LatestScriptsMs.ToString("F2")).Append(" ms");
+            for (int i = 0; i < Profiler.LatestTopScriptCount; i++)
+            {
+                sb.AppendLine();
+                sb.Append(Profiler.FormatScriptCost(Profiler.GetLatestTopScript(i)));
+            }
+            ScriptFrameLabel.Text = sb.ToString();
+        }
+
+        if (Profiler.SpikeTopScriptCount == 0)
+        {
+            ScriptSpikeTitle.Text = "Last script spike";
+            ScriptSpikeLabel.Text = "No spike over 8 ms yet.";
+            return;
+        }
+
+        double age = Profiler.SpikeAgeSeconds;
+        string ago = age < 0 ? "" : age < 1.0 ? "just now" : $"{age:F1}s ago";
+        ScriptSpikeTitle.Text = $"Last script spike  {Profiler.SpikeScriptsMs:F1} ms  ({ago})";
+        var spike = new System.Text.StringBuilder(256);
+        for (int i = 0; i < Profiler.SpikeTopScriptCount; i++)
+        {
+            if (i > 0) spike.AppendLine();
+            spike.Append(Profiler.FormatScriptCost(Profiler.GetSpikeTopScript(i)));
+        }
+        ScriptSpikeLabel.Text = spike.ToString();
     }
 
     private void DrawGraph()

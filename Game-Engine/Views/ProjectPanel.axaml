@@ -1,6 +1,9 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="Game_Engine.Views.ProjectPanel">
+             xmlns:local="clr-namespace:Game_Engine.Views"
+             x:Class="Game_Engine.Views.ProjectPanel"
+             x:CompileBindings="False"
+             x:DataType="local:ProjectPanel">
 	<DockPanel>
 		<!-- Header / toolbar -->
 		<StackPanel DockPanel.Dock="Top" Margin="8,6" Spacing="6">
