@@ -531,6 +531,27 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
+    /// Visible crust point from live chunk stand grids, including LOD transition neighbors.
+    /// Grass-only — do not use for tree anchors (trees use <see cref="SampleVegetationAnchorLocal"/>).
+    /// </summary>
+    public SN.Vector3 SampleRenderedCrustLocal(SN.Vector3 sphereDir)
+    {
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        if (_chunkManager != null)
+        {
+            float r = _chunkManager.SampleCollisionLocalRadius(sphereDir);
+            if (r > 1e-3f)
+                return sphereDir * r;
+        }
+
+        return SampleLocalCrustPoint(sphereDir);
+    }
+
+    /// <summary>
     /// Vegetation anchor in planet-local space. Prefers the outermost generated chunk vertex
     /// along <paramref name="sphereDir"/> so plants sit on the visible transvoxel/shell mesh,
     /// not only the analytical heightfield sample (which can sit inside after cave meshing).

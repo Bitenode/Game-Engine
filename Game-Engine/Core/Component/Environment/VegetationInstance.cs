@@ -815,13 +815,11 @@ namespace Game_Engine.Core.Component
 
             ClearAll();
 
-            // Always use lightweight cross-blades on planets — not meadow FBX clumps.
-            var grassMesh = CreateGrassBladeMesh();
+            // Unit blade mesh; final size comes from planet-local height scaling below.
+            var grassMesh = CreateUnitGrassBladeMesh();
             var srcTex = ResolvedTexture;
             Texture2D? grassTex;
-            if (srcTex != null && MaterialUtil.TextureHasMeaningfulAlpha(srcTex))
-                grassTex = srcTex;
-            else if (srcTex != null && !SceneService.PlayMode)
+            if (srcTex != null)
                 grassTex = PrepareGrassTextureForCutout(srcTex);
             else
                 grassTex = CreateFallbackGrassCutoutTexture();
@@ -858,17 +856,9 @@ namespace Game_Engine.Core.Component
             int vPerBlade = srcVerts.Length;
             int tPerBlade = srcTris.Length;
             if (vPerBlade == 0 || tPerBlade == 0) return 0;
-            float srcMinY = srcVerts[0].Y;
-            float srcMaxY = srcVerts[0].Y;
-            for (int vi = 1; vi < vPerBlade; vi++)
-            {
-                if (srcVerts[vi].Y < srcMinY) srcMinY = srcVerts[vi].Y;
-                if (srcVerts[vi].Y > srcMaxY) srcMaxY = srcVerts[vi].Y;
-            }
-            // Imported FBX tufts can be tiny in source units; normalize to GrassHeight using real mesh bounds.
-            float srcH = MathF.Max(1e-4f, srcMaxY - srcMinY);
-            if (ResolvedMesh == null)
-                srcH = MathF.Max(srcH, MathF.Max(1e-4f, GrassHeight));
+            float srcMinY = 0f;
+            float srcMaxY = 1f;
+            float srcH = 1f;
 
             int totalV = bladeCount * vPerBlade;
             int totalT = bladeCount * tPerBlade;
@@ -879,21 +869,18 @@ namespace Game_Engine.Core.Component
 
             SN.Vector3 centerAccum = SN.Vector3.Zero;
             float localPatch = Math.Max(0.05f, planet.WorldToLocalLength(Math.Max(0.05f, patchRadius)));
-            float localH = planet.WorldToLocalLength(Math.Clamp(GrassHeight, 0.5f, 4.5f));
-            SN.Vector3 centerBase;
-            if (sourceLeaf != null && planet.TrySampleRenderedCrustPoint(n, out var leafBase, sourceLeaf))
-                centerBase = leafBase;
-            else
-                centerBase = planet.SampleLocalCrustPoint(n);
-            float rootEmbed = planet.WorldToLocalLength(0.08f);
+            float worldGrassH = Math.Clamp(GrassHeight, 1.5f, 10f);
+            float localH = planet.WorldToLocalLength(worldGrassH);
+            SN.Vector3 centerBase = planet.SampleRenderedCrustLocal(n);
+            float rootEmbed = planet.WorldToLocalLength(0.04f);
             for (int bi = 0; bi < bladeCount; bi++)
             {
                 float ang = (float)rng.NextDouble() * MathF.Tau;
                 float rad = MathF.Sqrt((float)rng.NextDouble()) * localPatch;
                 var offset = t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
                 var dir = SN.Vector3.Normalize(centerBase + offset);
-                var baseLocal = planet.SampleLocalCrustPoint(dir);
-                var placeUp = dir;
+                var baseLocal = planet.SampleRenderedCrustLocal(dir);
+                var placeUp = SamplePlanetSurfaceNormal(planet, SN.Vector3.Zero, dir);
 
                 var side = SN.Vector3.Cross(MathF.Abs(placeUp.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, placeUp);
                 if (side.LengthSquared() < 1e-8f) side = SN.Vector3.UnitX;
@@ -913,7 +900,7 @@ namespace Game_Engine.Core.Component
                 {
                     var sv = srcVerts[vi];
                     var lv = new SN.Vector3(sv.X * hMul, (sv.Y - srcMinY) * hMul, sv.Z * hMul);
-                    mergedVerts[vOff + vi] = (baseLocal - dir * rootEmbed) + xAxis * lv.X + placeUp * lv.Y + zAxis * lv.Z;
+                    mergedVerts[vOff + vi] = (baseLocal - placeUp * rootEmbed) + xAxis * lv.X + placeUp * lv.Y + zAxis * lv.Z;
 
                     var ln = vi < srcNorms.Length ? srcNorms[vi] : SN.Vector3.UnitY;
                     var wn = xAxis * ln.X + placeUp * ln.Y + zAxis * ln.Z;
@@ -968,9 +955,9 @@ namespace Game_Engine.Core.Component
             var dirT = SN.Vector3.Normalize(dir + t * eps);
             var dirB = SN.Vector3.Normalize(dir + b * eps);
 
-            var lp0 = planet.SampleLocalCrustPoint(dir);
-            var lpT = planet.SampleLocalCrustPoint(dirT);
-            var lpB = planet.SampleLocalCrustPoint(dirB);
+            var lp0 = planet.SampleRenderedCrustLocal(dir);
+            var lpT = planet.SampleRenderedCrustLocal(dirT);
+            var lpB = planet.SampleRenderedCrustLocal(dirB);
 
             var p0 = planet.LocalToWorld(lp0);
             var pT = planet.LocalToWorld(lpT);
@@ -1269,6 +1256,34 @@ namespace Game_Engine.Core.Component
                         mr.SetEnabledSilent(visible);
                 }
             }
+        }
+
+        /// <summary>Unit-height cross blade used by <see cref="BuildOnPlanetPatch"/>.</summary>
+        static Mesh CreateUnitGrassBladeMesh()
+        {
+            const float halfW = 0.22f;
+            const float h = 1f;
+            var vertices = new SN.Vector3[]
+            {
+                new(-halfW, 0f, 0f), new(halfW, 0f, 0f), new(halfW, h, 0f), new(-halfW, h, 0f),
+                new(0f, 0f, -halfW), new(0f, 0f, halfW), new(0f, h, halfW), new(0f, h, -halfW),
+            };
+            var normals = new SN.Vector3[]
+            {
+                new(0,0,1), new(0,0,1), new(0,0,1), new(0,0,1),
+                new(1,0,0), new(1,0,0), new(1,0,0), new(1,0,0),
+            };
+            var uvs = new SN.Vector2[]
+            {
+                new(0,1), new(1,1), new(1,0), new(0,0),
+                new(0,1), new(1,1), new(1,0), new(0,0),
+            };
+            var tris = new int[]
+            {
+                0,1,2, 0,2,3, 0,2,1, 0,3,2,
+                4,5,6, 4,6,7, 4,6,5, 4,7,6,
+            };
+            return new Mesh(vertices, Array.Empty<int>(), tris) { Normals = normals, UVs = uvs };
         }
 
         /// <summary>Create a simple cross-billboard grass mesh as fallback.</summary>

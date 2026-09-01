@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using Game_Engine.Core;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -89,6 +90,14 @@ namespace Game_Engine.Core.Component
         {
             base.OnEnable();
             if (!_all.Contains(this)) _all.Add(this);
+
+            if (gameObject != null)
+            {
+                if (gameObject.Tag == "Untagged")
+                    gameObject.Tag = SceneTags.Water;
+                if (gameObject.Layer == SceneLayers.Default)
+                    gameObject.Layer = SceneLayers.Water;
+            }
 
             // Build mesh immediately so water is visible in the editor (SceneView)
             // without needing Play-mode Awake/Update calls.
@@ -221,6 +230,9 @@ namespace Game_Engine.Core.Component
             {
                 var w = _all[i];
                 if (!w.IsActiveAndEnabled || w.gameObject == null) continue;
+
+                if (!SceneIdentity.IsWater(w.gameObject))
+                    continue;
 
                 // Check if the point is within the water plane's XZ bounds
                 var wPos = new SN.Vector3(
