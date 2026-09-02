@@ -2735,6 +2735,9 @@ uniform int uHasShadow;
 out vec4 FragColor;
 
 uniform float uPlanetRadius;
+uniform float uWetness;
+uniform float uSnowCoverage;
+uniform float uWeatherEnabled;
 
 vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 ba, float t)
 {
@@ -2864,6 +2867,24 @@ void main()
     if (totalWeight > 0.0) finalColor /= totalWeight;
     else finalColor = vec3(0.5);
 
+    float distFromCenter = length(vWorldPos - uPlanetCenter);
+    float interior = 1.0 - smoothstep(uPlanetRadius - 2.0, uPlanetRadius, distFromCenter);
+    float outdoor = 1.0 - interior;
+    float weatherOn = clamp(uWeatherEnabled, 0.0, 1.0) * outdoor;
+
+    // Stable hash in meters. Never replace albedo with a constant color.
+    vec3 q = (vWorldPos - uPlanetCenter) * 0.028;
+    vec2 wuv = fract(vec2(dot(q, vec3(0.17, 0.08, 0.13)), dot(q, vec3(0.11, 0.19, 0.06))));
+    float nA = fract(sin(dot(wuv, vec2(12.9898, 78.233))) * 43758.5453);
+    float nB = fract(sin(dot(wuv + vec2(0.17, 0.31), vec2(39.346, 11.135))) * 23421.631);
+    float slopeOk = smoothstep(0.18, 0.58, abs(nDotRadial));
+    float wetAmt = clamp(uWetness, 0.0, 1.0) * weatherOn;
+    float snowAmt = clamp(uSnowCoverage, 0.0, 1.0) * weatherOn;
+    float puddleMask = smoothstep(0.36, 0.66, nA * 0.7 + nB * 0.3);
+    float puddle = wetAmt * slopeOk * puddleMask * (1.0 - snowAmt);
+    finalColor *= mix(vec3(1.0), vec3(0.80, 0.88, 0.90), wetAmt * slopeOk * 0.4);
+    finalColor *= mix(vec3(1.0), vec3(0.58, 0.70, 0.76), puddle * 0.5);
+
     vec3 L = normalize(-uLightDir);
     float NdotL = max(dot(N, L), 0.0);
     float diffuse = NdotL * uDiffuseK;
@@ -2871,16 +2892,19 @@ void main()
     vec3 V = normalize(uCamPos - vWorldPos);
     vec3 H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
+    spec += pow(max(dot(N, H), 0.0), 18.0) * puddle * 0.55;
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 2.8) * puddle * 0.35;
 
     float shadow = shadowFactor(vShadowCoord);
     float ao = mix(1.0, 0.35, clamp(-nDotRadial, 0.0, 1.0));
-    float distFromCenter = length(vWorldPos - uPlanetCenter);
-    float interior = 1.0 - smoothstep(uPlanetRadius - 2.0, uPlanetRadius, distFromCenter);
     float ambient = uAmbient * mix(1.0, 0.7, interior);
-    vec3 lit = finalColor * (ambient + diffuse * shadow) * ao + vec3(spec * shadow * ao);
+    vec3 lit = finalColor * (ambient + diffuse * shadow) * ao + vec3((spec + fres) * shadow * ao);
     lit += evalAtmosphere(vWorldPos, V, radialDir);
-
     lit = lit / (lit + vec3(1.0));
+
+    lit += vec3(0.14, 0.17, 0.20) * pow(max(dot(N, H), 0.0), 26.0) * puddle * shadow;
+    lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * slopeOk * mix(0.2, 0.5, nB));
+
     FragColor = vec4(lit, 1.0);
 }
 ";
@@ -3075,7 +3099,8 @@ void main()
     vec4 deepestCol = uDeepestColor;
     float waterMask = clamp(vUV.y, 0.0, 1.0);
     if (waterMask < 0.02) discard;
-    if (uWaterBodyCount > 0)
+    bool isLava = bodyIdx == 6;
+    if (uWaterBodyCount > 0 && !isLava)
     {
         int clampedBody = clamp(bodyIdx, 0, min(7, uWaterBodyCount - 1));
         if (clampedBody == 0) { shallowCol = uBodyShallow[0]; deepCol = uBodyDeep[0]; deepestCol = uBodyDeepest[0]; }
@@ -3086,6 +3111,12 @@ void main()
         else if (clampedBody == 5) { shallowCol = uBodyShallow[5]; deepCol = uBodyDeep[5]; deepestCol = uBodyDeepest[5]; }
         else if (clampedBody == 6) { shallowCol = uBodyShallow[6]; deepCol = uBodyDeep[6]; deepestCol = uBodyDeepest[6]; }
         else { shallowCol = uBodyShallow[7]; deepCol = uBodyDeep[7]; deepestCol = uBodyDeepest[7]; }
+    }
+    if (isLava)
+    {
+        shallowCol = vec4(1.00, 0.62, 0.12, 1.0);
+        deepCol    = vec4(0.85, 0.18, 0.03, 1.0);
+        deepestCol = vec4(0.22, 0.03, 0.01, 1.0);
     }
 
     vec3 waterColor;
@@ -3109,8 +3140,18 @@ void main()
         waterColor = mix(waterColor, texCol, 0.15);
     }
 
+    float lavaPulse = 0.55 + 0.45 * sin(uTime * 1.8 + tCoord * 0.07 + bCoord * 0.05);
+    if (isLava)
+    {
+        vec3 lavaHot = vec3(1.0, 0.72, 0.16);
+        waterColor = mix(deepestCol.rgb, mix(deepCol.rgb, lavaHot, lavaPulse), 0.55 + apparentDepth * 0.35);
+        waterColor += lavaHot * (0.18 + 0.14 * lavaPulse);
+    }
+
     // Fresnel: strong reflection at grazing angles
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), uFresnelPower);
+    if (isLava)
+        fresnel *= 0.18;
 
     vec3 R = reflect(-V, N);
     float skyFactor = clamp(dot(R, radialDir) * 0.5 + 0.5, 0.0, 1.0);
@@ -3145,6 +3186,8 @@ void main()
 
     float alpha = mix(uTransparency, 0.98, fresnel * 0.6);
     alpha *= mix(0.75, 1.0, shoreWetness);
+    if (isLava)
+        alpha = 0.96;
     if (alpha < 0.02) discard;
     FragColor = vec4(color, alpha);
 }

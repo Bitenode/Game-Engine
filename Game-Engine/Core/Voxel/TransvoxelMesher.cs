@@ -82,8 +82,11 @@ public sealed class TransvoxelMeshData
         );
         mesh.Normals = Normals.ToArray();
         mesh.UVs = UVs.ToArray();
-        mesh.PlanetBlendIndices = BlendIndices.ToArray();
-        mesh.PlanetBlendWeights = BlendWeights.ToArray();
+        if (BlendIndices.Count > 0)
+        {
+            mesh.PlanetBlendIndices = BlendIndices.ToArray();
+            mesh.PlanetBlendWeights = BlendWeights.ToArray();
+        }
         return mesh;
     }
 

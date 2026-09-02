@@ -101,6 +101,7 @@ public sealed class PlanetTerrain : Behavior
     // Cached noise / sampler for runtime height queries (same cache shape as mesh generator)
     PlanetNoiseCache? _noiseCache;
     PlanetDensitySampler? _densitySampler;
+    PlanetClimateAtlas? _climateAtlas;
     Noise.FractalNoise[]? _biomeNoises;
     Noise.FractalNoise? _erosionNoise;
     Noise.FractalNoise? _ridgeNoise;
@@ -118,6 +119,7 @@ public sealed class PlanetTerrain : Behavior
 
     public PlanetConfig? Config => _config;
     public BiomeMap? Map => _biomeMap;
+    public PlanetClimateAtlas? ClimateAtlas => _climateAtlas;
     public PlanetChunkManager? ChunkManager => _chunkManager;
     public int ActiveGenerationJobs => _chunkManager?.ActiveJobs ?? 0;
     public int PendingMeshJobs => _chunkManager?.PendingCompletedJobs ?? 0;
@@ -247,14 +249,7 @@ public sealed class PlanetTerrain : Behavior
         {
             RecalcSeaLevel();
 
-            _biomeMap = new BiomeMap(_config.Seed, _config.Biomes,
-                noiseScale: 2f,
-                tempLatWeight: _config.TemperatureLatWeight,
-                tempNoiseWeight: _config.TemperatureNoiseWeight,
-                moistureNoiseScale: _config.MoistureNoiseScale,
-                altitudeWeight: _config.AltitudeWeight,
-                edgeDistortionFreq: _config.EdgeDistortionFreq,
-                edgeDistortionAmp: _config.EdgeDistortionAmp);
+            _biomeMap = CreateBiomeMap();
             _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
             _wiredStreamClient = null;
             RebuildPhysicsNoise();
@@ -409,26 +404,54 @@ public sealed class PlanetTerrain : Behavior
             _erosionNoise = _noiseCache.ErosionNoise;
             _ridgeNoise = _noiseCache.RidgeNoise;
             _basinNoise = _noiseCache.BasinNoise;
+            _riverNoisePrimary = _noiseCache.RiverPrimary;
+            _riverNoiseMeander = _noiseCache.RiverMeander;
+            // Bind climate coupling before atlas bake so lapse / water / rain-shadow land in the LUT.
+            _biomeMap.BindClimateCoupling(_config, _riverNoisePrimary, _riverNoiseMeander, _ridgeNoise);
+            _config.GeologyNoise = new Noise.SimplexNoise(seed + 11000);
             _densitySampler = new PlanetDensitySampler(_config, _biomeMap, _noiseCache, _voxelEditStore);
+            try
+            {
+                _climateAtlas = PlanetClimateAtlas.Bake(_config, _biomeMap, _noiseCache, 256);
+                _densitySampler?.SetClimateAtlas(_climateAtlas);
+                _chunkManager?.SetClimateAtlas(_climateAtlas);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[PlanetTerrain] Climate atlas bake failed: {ex.Message}");
+                _climateAtlas = null;
+            }
         }
-
-        _riverNoisePrimary = _noiseCache?.RiverPrimary
-            ?? (_config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 10000) : null);
-        _riverNoiseMeander = _noiseCache?.RiverMeander
-            ?? (_config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 11000) : null);
+        else
+        {
+            _riverNoisePrimary = _config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 10000) : null;
+            _riverNoiseMeander = _config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 11000) : null;
+        }
     }
 
     PlanetWaterCarveContext CreateWaterCarveContext() => new()
     {
         Config = _config!,
         RiverPrimary = _riverNoisePrimary,
-        RiverMeander = _riverNoiseMeander
+        RiverMeander = _riverNoiseMeander,
+        ClimateAtlas = _climateAtlas
     };
 
     float SampleCarvedHeight(SN.Vector3 sphereDir)
     {
         if (_config == null || _biomeMap == null || _biomeNoises == null)
             return 0f;
+
+        // Macro height from climate LUT when available; detail noise still applied via full sample
+        // for water carving / edits. LUT path is the hot query for vegetation radial estimates.
+        if (_climateAtlas != null)
+        {
+            float macro = _climateAtlas.SampleMacroHeight(sphereDir);
+            var carve = CreateWaterCarveContext();
+            return PlanetWaterSampler.ApplyWaterCarving(
+                macro, sphereDir, carve.Config, _biomeMap, carve.RiverPrimary, carve.RiverMeander, carve.ClimateAtlas);
+        }
+
         return PlanetSurfaceUtility.SampleHeight(
             _config,
             _biomeMap,
@@ -449,7 +472,9 @@ public sealed class PlanetTerrain : Behavior
             return PlanetWaterSurfaceSample.Empty;
 
         sphereDir = SN.Vector3.Normalize(sphereDir);
-        float terrainR = _config.Radius + SampleCarvedHeight(sphereDir);
+        // Must match chunk water meshing (SampleEditedSurfaceRadius), not the
+        // climate-atlas macro shortcut used for vegetation estimates.
+        float terrainR = SampleLocalCrustRadius(sphereDir);
         return PlanetWaterSampler.SampleWaterSurface(
             sphereDir,
             _config,
@@ -458,6 +483,59 @@ public sealed class PlanetTerrain : Behavior
             _riverNoisePrimary,
             _riverNoiseMeander,
             FindBiomeIndex);
+    }
+
+    /// <summary>
+    /// Shared water-column test for swimming and underwater FX.
+    /// Occupant can be the capsule or the camera. Lava bowls are not swim water.
+    /// </summary>
+    public bool TryGetWaterColumn(
+        SN.Vector3 sphereDir,
+        float occupantRadius,
+        out float waterWorldR,
+        out float crustWorldR,
+        out PlanetWaterSurfaceSample sample)
+    {
+        waterWorldR = 0f;
+        crustWorldR = 0f;
+        sample = PlanetWaterSurfaceSample.Empty;
+        if (_config == null || sphereDir.LengthSquared() < 1e-8f)
+            return false;
+
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        float scale = GetWorldRadiusScale();
+        crustWorldR = SampleCollisionRadius(sphereDir);
+        sample = SampleWaterSurface(sphereDir);
+
+        if (sample.Kind == PlanetWaterKind.Lava)
+        {
+            waterWorldR = sample.Radius * scale;
+            return false;
+        }
+
+        float waterR = sample.Mask >= 0.04f ? sample.Radius * scale : 0f;
+        float seaR = PlanetWaterSampler.GetOceanFillRadius(_config) * scale;
+        if (waterR < 1f && crustWorldR < seaR - 0.2f
+            && PlanetSurfaceUtility.SampleMagmaBowl(_config, sphereDir) < 0.18f)
+        {
+            waterR = seaR;
+            sample = new PlanetWaterSurfaceSample(
+                seaR / MathF.Max(1e-4f, scale), 1f, 0, PlanetWaterKind.Ocean, 0);
+        }
+
+        if (waterR < 1f)
+            return false;
+
+        waterWorldR = waterR;
+        if (waterR < crustWorldR + 0.05f)
+            return false;
+        // Jump-in from a bank, or stand on a wet seabed — both are swim water.
+        if (occupantRadius > waterR + 2.4f)
+            return false;
+        // Deep cave under the crust, not a seabed stand.
+        if (occupantRadius < crustWorldR - 8f)
+            return false;
+        return true;
     }
 
     /// <summary>
@@ -496,16 +574,27 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
-    /// Player stand radius: heightfield plus the live chunk mesh, so LOD
-    /// T-junction ramps that stitch two chunks are in the collider.
+    /// Player stand radius on the visible chunk mesh. Never Max with the
+    /// climate-atlas heightfield — that LUT is a coarser LOD and lifts the
+    /// capsule into the air over the rendered crust.
     /// </summary>
     public float SampleCollisionRadius(SN.Vector3 sphereDir)
     {
-        float hf = SampleHeightfieldRadius(sphereDir);
+        float worldScale = GetWorldRadiusScale();
+        float crustLocal = _config != null
+            ? SampleLocalCrustRadius(sphereDir)
+            : Radius;
         float meshLocal = _chunkManager?.SampleCollisionLocalRadius(sphereDir) ?? 0f;
         if (meshLocal <= 1e-4f)
-            return hf;
-        return MathF.Max(hf, meshLocal * GetWorldRadiusScale());
+            return crustLocal * worldScale;
+
+        // Cave / empty-bin samples sit tens of meters inside the shell — treat as missing.
+        // Small undershoot (bilinear) may pull up a couple of meters toward the mesher crust.
+        // Do not ride the analytical peak when it is far above the visible LOD triangle.
+        if (meshLocal < crustLocal - 50f)
+            return crustLocal * worldScale;
+        float pulled = MathF.Max(meshLocal, MathF.Min(crustLocal, meshLocal + 3f));
+        return pulled * worldScale;
     }
 
     /// <summary>
@@ -731,7 +820,8 @@ public sealed class PlanetTerrain : Behavior
         if (sample.Mask > 0.01f)
             return sample.ShoreBiomeIndex;
 
-        var blends = _biomeMap.GetBiomes(sphereDir);
+        float alt = _biomeMap.NormalizeAltitude(SampleCarvedHeight(sphereDir));
+        var blends = _biomeMap.GetBiomes(sphereDir, alt);
         if (blends == null || blends.Length == 0)
             return 0f;
 
@@ -768,6 +858,7 @@ public sealed class PlanetTerrain : Behavior
     void RecalcSeaLevel()
     {
         if (_config == null) return;
+        float prevSea = _config.SeaLevel;
         float maxAmp = 0f;
         foreach (var b in _config.Biomes)
             maxAmp = MathF.Max(maxAmp, b.HeightAmplitude);
@@ -776,6 +867,12 @@ public sealed class PlanetTerrain : Behavior
         float terrainMax = Radius + maxAmp;
         _config.SeaLevel = PlanetWaterSampler.ResolveSeaLevel(_config, SeaLevelFraction);
         Log.Info($"[PlanetTerrain] SeaLevel={_config.SeaLevel:F1} (Radius={Radius}, maxAmp={maxAmp:F1}, frac={SeaLevelFraction}, range={terrainMin:F1}-{terrainMax:F1})");
+
+        if (_chunkManager != null && MathF.Abs(_config.SeaLevel - prevSea) > 0.05f)
+        {
+            RebuildWater();
+            _chunkManager.RequestFullShellRebuild(16);
+        }
     }
 
     void SetupWater()
@@ -793,6 +890,7 @@ public sealed class PlanetTerrain : Behavior
         mf.Mesh = _planetWater.WaterMesh;
 
         var mr = new MeshRenderer();
+        mr.Enabled = false;
         WaterGO.AddBehavior(mr);
 
         gameObject.AddChild(WaterGO);
@@ -811,6 +909,7 @@ public sealed class PlanetTerrain : Behavior
         _planetWater = null;
 
         SetupWater();
+        _chunkManager?.RequestFullShellRebuild(16);
     }
 
     public override void Update()
@@ -1086,7 +1185,12 @@ public sealed class PlanetTerrain : Behavior
     /// floors, walls, and ceilings on any hemisphere. For editor picking, prefer this
     /// over <see cref="SampleSurfaceRadius"/>.
     /// </summary>
-    public bool RaycastDensity(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
+    public bool RaycastDensity(
+        SN.Vector3 worldOrigin,
+        SN.Vector3 worldDirection,
+        float maxDistance,
+        out PlanetDensityHit hit,
+        PlanetDensityProbeQuality quality = default)
     {
         hit = default;
         var sampler = CreateDensitySampler();
@@ -1094,10 +1198,14 @@ public sealed class PlanetTerrain : Behavior
             return false;
         return PlanetDensityRaycast.Raycast(
             sampler, GetWorldCenter(), GetWorldRadiusScale(),
-            worldOrigin, worldDirection, maxDistance, out hit);
+            worldOrigin, worldDirection, maxDistance, out hit, quality);
     }
 
-    /// <summary>Same as <see cref="RaycastDensity"/> — alias for Scene View brushes (Phase 5).</summary>
+    /// <summary>Player/gameplay ray: 32 steps / 4 refine (editor picking stays 96/10).</summary>
+    public bool RaycastDensityGameplay(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
+        => RaycastDensity(worldOrigin, worldDirection, maxDistance, out hit, PlanetDensityProbeQuality.Gameplay);
+
+    /// <summary>Same as <see cref="RaycastDensity"/> — alias for Scene View brushes.</summary>
     public bool Raycast(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
         => RaycastDensity(worldOrigin, worldDirection, maxDistance, out hit);
 
@@ -1165,7 +1273,8 @@ public sealed class PlanetTerrain : Behavior
         SN.Vector3 worldDirection,
         float worldRadius,
         float maxDistance,
-        out PlanetDensityHit hit)
+        out PlanetDensityHit hit,
+        PlanetDensityProbeQuality quality = default)
     {
         hit = default;
         var sampler = CreateDensitySampler();
@@ -1173,8 +1282,17 @@ public sealed class PlanetTerrain : Behavior
             return false;
         return PlanetDensityRaycast.Spherecast(
             sampler, GetWorldCenter(), GetWorldRadiusScale(),
-            worldOrigin, worldDirection, worldRadius, maxDistance, out hit);
+            worldOrigin, worldDirection, worldRadius, maxDistance, out hit, quality);
     }
+
+    /// <summary>Player/gameplay spherecast: 32 steps / 4 refine (editor picking stays 96/10).</summary>
+    public bool SpherecastGameplay(
+        SN.Vector3 worldOrigin,
+        SN.Vector3 worldDirection,
+        float worldRadius,
+        float maxDistance,
+        out PlanetDensityHit hit)
+        => Spherecast(worldOrigin, worldDirection, worldRadius, maxDistance, out hit, PlanetDensityProbeQuality.Gameplay);
 
     /// <summary>
     /// Local isosurface along a cube-sphere direction (painted pits, cave mouths).
@@ -1297,7 +1415,7 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
-    /// Writes the <c>.planetvox</c> sidecar. Safe for editor stroke-end auto-save (Phase 5).
+    /// Writes the <c>.planetvox</c> sidecar. Safe for editor stroke-end auto-save.
     /// Clients skip persist; the server writes when it owns the asset.
     /// </summary>
     public bool SaveVoxelEdits()
@@ -1535,6 +1653,9 @@ public sealed class PlanetTerrain : Behavior
             TemperatureLatWeight = src.TemperatureLatWeight,
             TemperatureNoiseWeight = src.TemperatureNoiseWeight,
             MoistureNoiseScale = src.MoistureNoiseScale,
+            UseSelectClassifier = src.UseSelectClassifier,
+            AltitudeSeaLevel = src.AltitudeSeaLevel,
+            AltitudeMaxHeight = src.AltitudeMaxHeight,
             MacroFrequency = src.MacroFrequency,
             RidgeStrength = src.RidgeStrength,
             BasinStrength = src.BasinStrength,
@@ -1653,6 +1774,25 @@ public sealed class PlanetTerrain : Behavior
         _config.RiverAllowedBiomes = result.RiverAllowedBiomes ?? Array.Empty<string>();
         _config.WaterBodies = CloneWaterBodies(result.WaterBodies);
         _config.WaterPaths = CloneWaterPaths(result.WaterPaths);
+        _config.RecipeHash = result.RecipeHash;
+        _config.Continents = result.Continents ?? Array.Empty<Biome.Graph.ContinentRecipe>();
+        _config.Craters = result.Craters ?? Array.Empty<Biome.Graph.CraterRecipe>();
+        _config.Volcanoes = result.Volcanoes ?? Array.Empty<Biome.Graph.VolcanoRecipe>();
+        _config.Cliffs = result.Cliffs ?? Array.Empty<Biome.Graph.CliffRecipe>();
+        _config.DomainWarps = result.DomainWarps ?? Array.Empty<Biome.Graph.DomainWarpRecipe>();
+        _config.LatitudeBands = result.LatitudeBands ?? Array.Empty<Biome.Graph.LatitudeBandRecipe>();
+
+        // Climate coupling from compiled recipe / Climate+RainShadow nodes.
+        var climate = result.Recipe?.Climate;
+        if (climate != null)
+        {
+            if (climate.AltitudeLapseRate > 0f)
+                _config.AltitudeLapseRate = climate.AltitudeLapseRate;
+            if (climate.RainShadowStrength > 0f)
+                _config.RainShadowStrength = climate.RainShadowStrength;
+            if (climate.WaterMoistureBoost > 0f)
+                _config.WaterMoistureBoost = climate.WaterMoistureBoost;
+        }
 
         if (result.WaterBodies is { Length: > 0 })
         {
@@ -1661,72 +1801,102 @@ public sealed class PlanetTerrain : Behavior
                 SeaLevelFraction = ocean.FillFraction;
         }
 
-        float ampScale = result.HeightAmplitude / 50f;
-        float freqScale = result.NoiseFrequency / 0.005f;
+        _config.UseSelectClassifier = result.UseBiomeSelect;
+        _config.AltitudeSeaLevel = result.AltitudeSeaLevel;
+        _config.AltitudeMaxHeight = result.AltitudeMaxHeight > 0f ? result.AltitudeMaxHeight : 1f;
+        if (result.UseBiomeSelect)
+            _config.AltitudeWeight = MathF.Max(_config.AltitudeWeight, result.SelectAltitudeWeight);
 
-        for (int i = 0; i < _config.Biomes.Length && i < result.Layers.Length; i++)
+        int layerCount = result.Layers.Length;
+        if (layerCount > 0)
         {
-            var layer = result.Layers[i];
-            var biome = _config.Biomes[i];
-
-            if (!string.IsNullOrEmpty(layer.BiomeName))
-                biome.Name = layer.BiomeName;
-
-            biome.BaseColorR = layer.BaseColorR;
-            biome.BaseColorG = layer.BaseColorG;
-            biome.BaseColorB = layer.BaseColorB;
-            biome.TopTexturePath = layer.AlbedoPath;
-            biome.TopNormalMapPath = layer.NormalPath;
-            biome.TopTiling = layer.Tiling;
-
-            if (!string.IsNullOrEmpty(layer.UnderTexturePath))
-                biome.UnderTexturePath = layer.UnderTexturePath;
-            if (!string.IsNullOrEmpty(layer.UnderNormalPath))
-                biome.UnderNormalMapPath = layer.UnderNormalPath;
-            if (layer.UnderTiling > 0f)
-                biome.UnderTiling = layer.UnderTiling;
-
-            if (!string.IsNullOrEmpty(layer.NoiseMode))
-                biome.NoiseMode = layer.NoiseMode;
-            if (layer.NoiseOctaves > 0)
-                biome.NoiseOctaves = layer.NoiseOctaves;
-            if (layer.ErosionStrength >= 0f)
-                biome.ErosionStrength = layer.ErosionStrength;
-            if (layer.ErosionFrequency > 0f)
-                biome.ErosionFrequency = layer.ErosionFrequency;
-            biome.SpawnWater = layer.SpawnWater;
-
-            if (layer.SpawnWater)
+            var next = new BiomeDefinition[layerCount];
+            var presets = BiomeDefinition.AllPresets;
+            for (int i = 0; i < layerCount; i++)
             {
-                biome.WaterShallowColorR = layer.WaterShallowR;
-                biome.WaterShallowColorG = layer.WaterShallowG;
-                biome.WaterShallowColorB = layer.WaterShallowB;
-                biome.WaterDeepColorR = layer.WaterDeepR;
-                biome.WaterDeepColorG = layer.WaterDeepG;
-                biome.WaterDeepColorB = layer.WaterDeepB;
+                var layer = result.Layers[i];
+                var preset = MatchPreset(layer.BiomeName, i);
+                var biome = CloneBiomeDefinition(preset);
+                biome.BiomeIndex = (byte)Math.Min(i, 255);
+
+                if (!string.IsNullOrEmpty(layer.BiomeName))
+                    biome.Name = layer.BiomeName;
+
+                biome.BaseColorR = layer.BaseColorR;
+                biome.BaseColorG = layer.BaseColorG;
+                biome.BaseColorB = layer.BaseColorB;
+                biome.TopTexturePath = layer.AlbedoPath;
+                biome.TopNormalMapPath = layer.NormalPath;
+                biome.TopTiling = layer.Tiling;
+
+                if (!string.IsNullOrEmpty(layer.UnderTexturePath))
+                    biome.UnderTexturePath = layer.UnderTexturePath;
+                if (!string.IsNullOrEmpty(layer.UnderNormalPath))
+                    biome.UnderNormalMapPath = layer.UnderNormalPath;
+                if (layer.UnderTiling > 0f)
+                    biome.UnderTiling = layer.UnderTiling;
+
+                if (!string.IsNullOrEmpty(layer.NoiseMode))
+                    biome.NoiseMode = layer.NoiseMode;
+                if (layer.NoiseOctaves > 0)
+                    biome.NoiseOctaves = layer.NoiseOctaves;
+                if (layer.HasErosionInput || layer.ErosionStrength >= 0f)
+                    biome.ErosionStrength = layer.ErosionStrength;
+                if (layer.HasErosionInput || layer.ErosionFrequency > 0f)
+                    biome.ErosionFrequency = layer.ErosionFrequency;
+                biome.SpawnWater = layer.SpawnWater;
+                if (layer.SpawnWater)
+                    biome.MaxAltitude = MathF.Min(biome.MaxAltitude, 0.10f);
+
+                if (layer.SpawnWater)
+                {
+                    biome.WaterShallowColorR = layer.WaterShallowR;
+                    biome.WaterShallowColorG = layer.WaterShallowG;
+                    biome.WaterShallowColorB = layer.WaterShallowB;
+                    biome.WaterDeepColorR = layer.WaterDeepR;
+                    biome.WaterDeepColorG = layer.WaterDeepG;
+                    biome.WaterDeepColorB = layer.WaterDeepB;
+                }
+
+                biome.VegetationDensity = Math.Max(0f, layer.VegetationDensity);
+                biome.TreeDensity = Math.Max(0f, layer.TreeDensity);
+                biome.VegetationProfileId = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
+                biome.VegetationPatchiness = Math.Clamp(layer.VegetationPatchiness, 0f, 1f);
+                biome.WeatherProfileId = string.IsNullOrWhiteSpace(layer.WeatherProfileId) ? "Temperate" : layer.WeatherProfileId;
+                biome.RainChance = Math.Clamp(layer.RainChance, 0f, 1f);
+                biome.SnowChance = Math.Clamp(layer.SnowChance, 0f, 1f);
+                biome.StormChance = Math.Clamp(layer.StormChance, 0f, 1f);
+                biome.WindBias = Math.Max(0f, layer.WindBias);
+                biome.CloudCoverageBias = Math.Max(0f, layer.CloudCoverageBias);
+                biome.FogDensityBias = Math.Max(0f, layer.FogDensityBias);
+                biome.SeasonalGrowthMultiplier = Math.Max(0f, layer.SeasonalGrowthMultiplier);
+                biome.GrowthTemperatureMin = layer.GrowthTemperatureMin;
+                biome.GrowthTemperatureMax = layer.GrowthTemperatureMax;
+                biome.GrowthMoistureMin = layer.GrowthMoistureMin;
+                biome.GrowthMoistureMax = layer.GrowthMoistureMax;
+                biome.TreeMinSlope = layer.TreeMinSlope;
+                biome.TreeMaxSlope = layer.TreeMaxSlope;
+                biome.TreeMinAltitude = layer.TreeMinAltitude;
+                biome.TreeMaxAltitude = layer.TreeMaxAltitude;
+
+                // Graph height/noise win only when that layer has a height/noise input.
+                // Presets stay as-is otherwise — no global amp/freq scale overwrite.
+                if (layer.HasHeightInput && layer.HeightAmplitude > 0f)
+                    biome.HeightAmplitude = layer.HeightAmplitude;
+                if (layer.HasNoiseInput && layer.NoiseFrequency > 0f)
+                    biome.NoiseFrequency = MathF.Max(0.0001f, layer.NoiseFrequency);
+
+                next[i] = biome;
             }
+            _config.Biomes = next;
+            if (layerCount > Biome.Graph.BiomeOutputNode.MaxLayerSlots)
+                Log.Info($"[PlanetTerrain] Graph has {layerCount} layers; shader binds 8 albedo slots (index >= 7 uses uBiomeTex7).");
 
-            biome.VegetationDensity = Math.Max(0f, layer.VegetationDensity);
-            biome.TreeDensity = Math.Max(0f, layer.TreeDensity);
-            biome.VegetationProfileId = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
-            biome.VegetationPatchiness = Math.Clamp(layer.VegetationPatchiness, 0f, 1f);
-            biome.WeatherProfileId = string.IsNullOrWhiteSpace(layer.WeatherProfileId) ? "Temperate" : layer.WeatherProfileId;
-            biome.RainChance = Math.Clamp(layer.RainChance, 0f, 1f);
-            biome.SnowChance = Math.Clamp(layer.SnowChance, 0f, 1f);
-            biome.StormChance = Math.Clamp(layer.StormChance, 0f, 1f);
-            biome.WindBias = Math.Max(0f, layer.WindBias);
-            biome.CloudCoverageBias = Math.Max(0f, layer.CloudCoverageBias);
-            biome.FogDensityBias = Math.Max(0f, layer.FogDensityBias);
-            biome.SeasonalGrowthMultiplier = Math.Max(0f, layer.SeasonalGrowthMultiplier);
-        }
-
-        var presets = BiomeDefinition.AllPresets;
-        for (int i = 0; i < _config.Biomes.Length; i++)
-        {
-            var biome = _config.Biomes[i];
-            var preset = presets[Math.Min(i, presets.Length - 1)];
-            biome.HeightAmplitude = preset.HeightAmplitude * ampScale;
-            biome.NoiseFrequency = MathF.Max(0.0001f, preset.NoiseFrequency * freqScale);
+            if (result.Recipe.Geology.MacroFrequency > 0f)
+            {
+                MacroFrequency = result.Recipe.Geology.MacroFrequency;
+                _config.MacroFrequency = MacroFrequency;
+            }
         }
 
         RecalcSeaLevel();
@@ -1734,24 +1904,68 @@ public sealed class PlanetTerrain : Behavior
         _chunkManager?.Dispose();
         _chunkManager = null;
 
-        _biomeMap = new BiomeMap(_config.Seed, _config.Biomes,
-            noiseScale: 2f,
-            tempLatWeight: _config.TemperatureLatWeight,
-            tempNoiseWeight: _config.TemperatureNoiseWeight,
-            moistureNoiseScale: _config.MoistureNoiseScale,
-            altitudeWeight: _config.AltitudeWeight,
-            edgeDistortionFreq: _config.EdgeDistortionFreq,
-            edgeDistortionAmp: _config.EdgeDistortionAmp);
+        _biomeMap = CreateBiomeMap();
         _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
         _wiredStreamClient = null;
         RebuildPhysicsNoise();
         RebuildWater();
         _chunkManager.RequestFullShellRebuild(16);
 
+        // Bind compiled life/scatter/fauna tables onto companion components when present.
+        var flora = GetComponent<PlanetFloraSpawner>();
+        flora?.ApplyRecipes(result.FloraLayers);
+        var scatter = GetComponent<PlanetScatterRenderer>();
+        scatter?.ApplyRecipes(result.ScatterLayers);
+        var fauna = GetComponent<PlanetFaunaTableBehavior>();
+        fauna?.Bind(result.FaunaLayers);
+
         SceneRenderer.ResetBiomeTexDebug();
         SavePlanetAsset();
         SceneService.NotifyChanged();
     }
+
+    static BiomeDefinition CloneBiomeDefinition(BiomeDefinition src) => new()
+    {
+        Name = src.Name,
+        BiomeIndex = src.BiomeIndex,
+        BaseColorR = src.BaseColorR,
+        BaseColorG = src.BaseColorG,
+        BaseColorB = src.BaseColorB,
+        HeightAmplitude = src.HeightAmplitude,
+        NoiseFrequency = src.NoiseFrequency,
+        NoiseLacunarity = src.NoiseLacunarity,
+        NoiseOctaves = src.NoiseOctaves,
+        NoiseMode = src.NoiseMode,
+        ErosionStrength = src.ErosionStrength,
+        ErosionFrequency = src.ErosionFrequency,
+        MinAltitude = src.MinAltitude,
+        MaxAltitude = src.MaxAltitude,
+        MinTemperature = src.MinTemperature,
+        MaxTemperature = src.MaxTemperature,
+        MinMoisture = src.MinMoisture,
+        MaxMoisture = src.MaxMoisture,
+        TopTexturePath = src.TopTexturePath,
+        TopNormalMapPath = src.TopNormalMapPath,
+        TopTiling = src.TopTiling,
+        UnderTexturePath = src.UnderTexturePath,
+        UnderNormalMapPath = src.UnderNormalMapPath,
+        UnderTiling = src.UnderTiling,
+        CavesEnabled = src.CavesEnabled,
+        VegetationDensity = src.VegetationDensity,
+        TreeDensity = src.TreeDensity,
+        VegetationProfileId = src.VegetationProfileId,
+        VegetationPatchiness = src.VegetationPatchiness,
+        WeatherProfileId = src.WeatherProfileId,
+        GrowthTemperatureMin = src.GrowthTemperatureMin,
+        GrowthTemperatureMax = src.GrowthTemperatureMax,
+        GrowthMoistureMin = src.GrowthMoistureMin,
+        GrowthMoistureMax = src.GrowthMoistureMax,
+        SeasonalGrowthMultiplier = src.SeasonalGrowthMultiplier,
+        TreeMinSlope = src.TreeMinSlope,
+        TreeMaxSlope = src.TreeMaxSlope,
+        TreeMinAltitude = src.TreeMinAltitude,
+        TreeMaxAltitude = src.TreeMaxAltitude,
+    };
 
     public void ApplyRuntimeTuning()
     {
@@ -1781,14 +1995,7 @@ public sealed class PlanetTerrain : Behavior
         _config.MaxVegetationInstances = Math.Max(1024, MaxVegetationInstances);
         _config.MaxVegetationSpawnsPerUpdate = Math.Max(8, MaxVegetationSpawnsPerUpdate);
 
-        _biomeMap = new BiomeMap(_config.Seed, _config.Biomes,
-            noiseScale: 2f,
-            tempLatWeight: _config.TemperatureLatWeight,
-            tempNoiseWeight: _config.TemperatureNoiseWeight,
-            moistureNoiseScale: _config.MoistureNoiseScale,
-            altitudeWeight: _config.AltitudeWeight,
-            edgeDistortionFreq: _config.EdgeDistortionFreq,
-            edgeDistortionAmp: _config.EdgeDistortionAmp);
+        _biomeMap = CreateBiomeMap();
 
         _chunkManager?.Dispose();
         _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
@@ -1798,6 +2005,46 @@ public sealed class PlanetTerrain : Behavior
         SceneRenderer.ResetBiomeTexDebug();
         SavePlanetAsset();
         SceneService.NotifyChanged();
+    }
+
+    BiomeMap CreateBiomeMap()
+    {
+        float refAmp = 50f;
+        if (_config?.Biomes != null)
+        {
+            foreach (var b in _config.Biomes)
+                refAmp = MathF.Max(refAmp, b.HeightAmplitude);
+        }
+        var map = new BiomeMap(
+            _config!.Seed,
+            _config.Biomes,
+            noiseScale: 2f,
+            tempLatWeight: _config.TemperatureLatWeight,
+            tempNoiseWeight: _config.TemperatureNoiseWeight,
+            moistureNoiseScale: _config.MoistureNoiseScale,
+            altitudeWeight: _config.AltitudeWeight,
+            edgeDistortionFreq: _config.EdgeDistortionFreq,
+            edgeDistortionAmp: _config.EdgeDistortionAmp,
+            altitudeSeaLevel: _config.AltitudeSeaLevel,
+            altitudeMaxHeight: _config.AltitudeMaxHeight,
+            heightAmplitudeRef: refAmp);
+        map.UseSelectClassifier = _config.UseSelectClassifier;
+        map.BindClimateCoupling(_config, _riverNoisePrimary, _riverNoiseMeander, _ridgeNoise);
+        return map;
+    }
+
+    static BiomeDefinition MatchPreset(string name, int index)
+    {
+        var presets = BiomeDefinition.AllPresets;
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            foreach (var p in presets)
+            {
+                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return p;
+            }
+        }
+        return presets[Math.Min(index, presets.Length - 1)];
     }
 
     public void DigSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)

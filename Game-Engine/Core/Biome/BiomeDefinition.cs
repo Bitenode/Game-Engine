@@ -118,6 +118,12 @@ public sealed class BiomeDefinition
     public float GrowthMoistureMin { get; set; } = 0.2f;
     public float GrowthMoistureMax { get; set; } = 0.9f;
     public float SeasonalGrowthMultiplier { get; set; } = 1f;
+    /// <summary>Tree slope reject band (degrees). Used by PlanetVegetationSystem.</summary>
+    public float TreeMinSlope { get; set; }
+    public float TreeMaxSlope { get; set; } = 35f;
+    /// <summary>Normalized altitude treeline band for trees.</summary>
+    public float TreeMinAltitude { get; set; }
+    public float TreeMaxAltitude { get; set; } = 0.85f;
 
     // --- Built-in presets ---
 

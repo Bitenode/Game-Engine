@@ -488,10 +488,12 @@ namespace Game_Engine.Core
                 postShader.SetInt("uFXAAEnabled", volume.FXAAEnabled ? 1 : 0);
             }
 
-            // Underwater
+            // Underwater. Land weather fog must not run in this pass — it tints
+            // and wobbles like the underwater shader when rain is on.
             if (underwater.HasValue)
             {
                 var uw = underwater.Value;
+                postShader.SetInt("uFogEnabled", 0);
                 postShader.SetInt("uUnderwaterEnabled", 1);
                 postShader.SetVector3("uUnderwaterTint", uw.Tint);
                 postShader.SetFloat("uUnderwaterFogDensity", uw.FogDensity);
@@ -2891,6 +2893,10 @@ namespace Game_Engine.Core
             if (radiusWorld < 2f)
                 radiusWorld = MathF.Max(1f, atmo.GroundRadius);
             planetShader.SetFloat("uPlanetRadius", radiusWorld);
+            ResolveWeatherOverlays(planet, out float wetness, out float snowCoverage, out float weatherOn);
+            planetShader.SetFloat("uWetness", wetness);
+            planetShader.SetFloat("uSnowCoverage", snowCoverage);
+            planetShader.SetFloat("uWeatherEnabled", weatherOn);
 
             planetShader.SetInt("uAtmoEnabled", atmo.Enabled ? 1 : 0);
             planetShader.SetVector3("uAtmoSunDir", atmo.SunDir);
@@ -3004,6 +3010,34 @@ namespace Game_Engine.Core
 
         public static void ResetBiomeTexDebug() { _biomeTexDirty = true; }
 
+        static void ResolveWeatherOverlays(PlanetTerrain planet, out float wetness, out float snowCoverage, out float weatherOn)
+        {
+            wetness = 0f;
+            snowCoverage = 0f;
+            weatherOn = 0f;
+            if (UnderwaterQuery.AnyPlayerPlanetSubmerged())
+                return;
+
+            wetness = BiomeWeatherRuntime.Wetness;
+            snowCoverage = BiomeWeatherRuntime.SnowCoverage;
+            var behaviors = planet.gameObject?.Behaviors;
+            if (behaviors == null)
+            {
+                weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;
+                return;
+            }
+            for (int i = 0; i < behaviors.Count; i++)
+            {
+                if (behaviors[i] is not PlanetWeatherController wx || !wx.EnableWeather || !wx.IsActiveAndEnabled)
+                    continue;
+                wetness = Math.Max(wetness, wx.Wetness);
+                snowCoverage = Math.Max(snowCoverage, wx.SnowCoverage);
+                weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;
+                return;
+            }
+            weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;
+        }
+
         private static void BindBiomeTextures(GL gl, ShaderProgram shader, ResourceCache cache,
             Game_Engine.Core.Biome.BiomeDefinition[] biomes)
         {
@@ -3100,19 +3134,22 @@ namespace Game_Engine.Core
                 _biomeTexDirty = false;
             }
 
-            for (int i = 0; i < 8 && i < biomes.Length; i++)
+            for (int i = 0; i < 8; i++)
             {
-                var tex2d = _boundBiomeTex2D![i];
+                var tex2d = i < biomes.Length ? _boundBiomeTex2D![i] : null;
                 var gpu = tex2d != null ? cache.GetTexture(tex2d) : cache.GetWhiteTexture();
                 gpu.Bind((TextureUnit)((int)TextureUnit.Texture0 + i));
                 shader.SetTexture($"uBiomeTex{i}", i);
             }
 
-            for (int i = 0; i < 8 && i < biomes.Length; i++)
+            for (int i = 0; i < 8; i++)
             {
-                shader.SetFloat($"uBiomeTiling[{i}]", _cachedTiling![i]);
-                shader.SetVector3($"uBiomeBaseColor[{i}]", _cachedBaseColor![i]);
-                shader.SetVector3($"uBiomeUnderColor[{i}]", _cachedUnderColor![i]);
+                float tiling = i < biomes.Length ? Math.Max(0.25f, _cachedTiling![i]) : 24f;
+                var baseCol = i < biomes.Length ? _cachedBaseColor![i] : new SN.Vector3(0.5f);
+                var underCol = i < biomes.Length ? _cachedUnderColor![i] : new SN.Vector3(0.22f);
+                shader.SetFloat($"uBiomeTiling[{i}]", tiling);
+                shader.SetVector3($"uBiomeBaseColor[{i}]", baseCol);
+                shader.SetVector3($"uBiomeUnderColor[{i}]", underCol);
             }
         }
 
@@ -3137,10 +3174,7 @@ namespace Game_Engine.Core
             if (planet.gameObject == null || !planet.IsActiveAndEnabled || !planet.EnableWater)
                 return;
 
-            // Slope-clip puts the eye inside crust. Drawing ocean from there
-            // stacks sheets through the hole and leaves TAA ghosts after you pop out.
-            if (planet.TrySampleWorldDensity(camPos, out float camDensity) && camDensity <= 0f)
-                return;
+            bool camInsideCrust = planet.TrySampleWorldDensity(camPos, out float camDensity) && camDensity <= 0f;
 
             var waterObj = planet.WaterGO;
             var parentWorld = TransformUtil.WorldFromTransform(planet.gameObject.Transform);
@@ -3215,6 +3249,7 @@ namespace Game_Engine.Core
                         wb.DeepR, wb.DeepG, wb.DeepB,
                         wb.DeepestR, wb.DeepestG, wb.DeepestB);
                 }
+                SetBodyColor(6, 1.00f, 0.55f, 0.10f, 0.82f, 0.16f, 0.03f, 0.20f, 0.03f, 0.01f);
                 SetBodyColor(7, 0.12f, 0.35f, 0.28f, 0.04f, 0.12f, 0.14f, 0.02f, 0.05f, 0.08f);
             }
             waterShader.SetInt("uWaterBodyCount", waterBodyCount);
@@ -3271,32 +3306,22 @@ namespace Game_Engine.Core
             waterShader.SetVector4("uFoamColor", 0.9f, 0.95f, 1.0f, 1.0f);
 
             gl.Enable(EnableCap.DepthTest);
-            gl.DepthFunc(DepthFunction.Less);
-            gl.DepthMask(true);
+            gl.DepthFunc(DepthFunction.Lequal);
+            gl.DepthMask(false);
             gl.Enable(EnableCap.Blend);
             gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             gl.Disable(EnableCap.CullFace);
 
             var leaves = planet.ChunkManager?.GetRenderableLeaves();
-            if (nearSurface && leaves != null)
+            int chunkWaterDrawn = 0;
+            if (leaves != null)
             {
-                float chunkSize = MathF.Max(1f, planet.Config?.ChunkSize ?? 32);
-                float localRadius = MathF.Max(1f, planet.Config?.Radius ?? planetRadiusWorld);
+                // Always prefer chunk patches when they exist. The PlanetWater
+                // GameObject is a full sea-level sphere — Scene view draws it as
+                // water over grassland/forest the moment the camera is "orbit".
                 waterShader.SetMatrix4("uModel", parentWorld);
                 SN.Matrix4x4.Invert(parentWorld, out var invParent);
                 waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invParent));
-
-                var vp = view * proj;
-                ExtractFrustumPlanes(vp, out var frustumPlanes);
-                var camRadial = camPos - resolvedPlanetCenter;
-                float camRadialLen = camRadial.Length();
-                if (camRadialLen > 1e-6f)
-                    camRadial /= camRadialLen;
-
-                float oceanWorld = planet.Config != null
-                    ? PlanetWaterSampler.GetOceanFillRadius(planet.Config) * radiusScale
-                    : seaLevelWorld;
-                bool camAboveOcean = camRadialLen > oceanWorld + 2f;
 
                 for (int i = 0; i < leaves.Count; i++)
                 {
@@ -3304,40 +3329,14 @@ namespace Game_Engine.Core
                     var waterMesh = leaf.GeneratedWaterMesh;
                     if (waterMesh == null) continue;
 
-                    float leafSize = leaf.WorldSize(localRadius) * radiusScale;
-                    float cell = leafSize / chunkSize;
-                    var leafCenter = SN.Vector3.Transform(leaf.WorldCentre(localRadius), parentWorld);
-                    float leafDist = SN.Vector3.Distance(camPos, leafCenter);
-
-                    // Other-side ocean used to composite as stacked horizontal
-                    // sheets (depth write was off). Skip the far hemisphere.
-                    var leafDir = leafCenter - resolvedPlanetCenter;
-                    if (leafDir.LengthSquared() > 1e-8f
-                        && SN.Vector3.Dot(SN.Vector3.Normalize(leafDir), camRadial) < -0.15f)
-                        continue;
-
-                    var waterSphere = GetMeshSphere(waterMesh);
-                    var worldCenter = SN.Vector3.Transform(waterSphere.Center, parentWorld);
-                    float waterRad = waterSphere.Radius * radiusScale;
-                    float leafRadius = waterRad + MathF.Max(4f, leafSize * 0.2f);
-                    if (!SphereInFrustum(frustumPlanes, worldCenter, leafRadius))
-                        continue;
-
-                    // Coarse parent patches under the camera are the shard/spike source.
-                    if (cell > 6f && leafDist < MathF.Max(leafSize * 3.2f, 140f))
-                        continue;
-
-                    // Standing on a hill: a coarse ocean leaf's bounding sphere
-                    // swallows the camera and its sphere-chord tris cut the slope.
-                    if (camAboveOcean && cell > 4.5f
-                        && leafDist < MathF.Max(leafSize * 2.4f, waterRad * 0.9f))
-                        continue;
-
                     cache.GetMesh(waterMesh).Draw();
+                    chunkWaterDrawn++;
                 }
             }
 
-            if (!nearSurface)
+            // Far-orbit silhouette only. Never a fallback for missing shoreline.
+            if (!camInsideCrust && !nearSurface && chunkWaterDrawn == 0
+                && camDist > planetRadiusWorld * 1.6f)
             {
                 var mf = waterObj?.Behaviors.OfType<MeshFilter>().FirstOrDefault();
                 if (mf?.Mesh != null)

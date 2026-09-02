@@ -17,7 +17,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Gameplay** | PlanetPlayerSpawner | `Core/Component/Gameplay/` |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
@@ -344,6 +344,8 @@ Called from `FixedUpdate`. Performs the full physics simulation step:
 - CCD max iterations: `4`
 - Skin thickness: `radius * 0.2f` (minimum `0.01f`)
 
+**Planet walking:** uses the same **surface mode** hysteresis as `Rigidbody` (`RefreshPlanetSurfaceMode`: enter when radial ≥ crust − 6 m, leave when radial < crust − 10 m or `CameraBelowCrust`). On the outer crust it stands on `PlanetTerrain.SampleCollisionRadius` (visible leaf). Caves use `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine), not the editor 96-step pick.
+
 **Requires:** CapsuleCollider (auto-added via `[Require]`)
 
 ---
@@ -411,10 +413,11 @@ Physics body component with force/impulse integration, trigger events, collider 
 - `LocalUp` — world up relative to nearest planet (falls back to global +Y)
 
 **Planet integration:**
-- Finds nearest active `PlanetTerrain`
+- Finds nearest active `PlanetTerrain` (`FindNearestPlanetCached` — rebind after ~48 m or planet-count change)
 - Applies gravity along `-LocalUp`
-- Grounds with `Spherecast` / `RaycastDensity` along `-LocalUp` and `ResolveDensityPenetration` (floors, walls, ceilings throughout the interior)
-- Uses `UnderwaterQuery` for swim physics and post FX (local water table, ≥ 0.35 m submersion, open water column; caves and dry slopes stay dry)
+- **Surface mode** on the outer crust (enter crust − 6 m, leave crust − 10 m or `CameraBelowCrust`); caves stay on density probes
+- Grounds with `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` and `ResolveDensityPenetration` (floors, walls, ceilings throughout the interior)
+- Uses `UnderwaterQuery` for post FX (camera under the local water table). Planet swim movement is `RigidbodyPlayer.SwimOnPlanet()`; caves, dry slopes, and surface float stay dry
 
 **Events:**
 - `OnTriggerEnter(Collider)`, `OnTriggerStay(Collider)`, `OnTriggerExit(Collider)`
@@ -477,8 +480,11 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 - `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON (`PlanetAssetData` version 2) and the `.planetvox` sidecar
 - `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read planet-local strokes (and optional baked cells). Sidecar path defaults to `<name>.planetvox` beside the `.planet`
 - `WorldToLocal` / `LocalToWorld` / `WorldToLocalLength` / `LocalToWorldLength` — `PlanetSpace` conversion (density, edits, and meshes use local unscaled space)
-- `RaycastDensity` / `Raycast` — density ray-march; fills `PlanetDensityHit` (`Point`, `Normal`, `Distance`, `StartedInside`)
+- `RaycastDensity` / `Raycast` — density ray-march (editor quality 96/10); fills `PlanetDensityHit` (`Point`, `Normal`, `Distance`, `StartedInside`)
+- `RaycastDensityGameplay` / `SpherecastGameplay` — same field, gameplay quality 32/4 (player motors)
+- `RaycastPaintSurface` — play-mode tool pick (iso crossing, then geometric fallback)
 - `Spherecast(worldOrigin, worldDirection, worldRadius, maxDistance, out hit)` — thick density query
+- `SampleCollisionRadius(sphereDir)` — stand radius on the **visible** leaf (`FindRenderableAtDirection`)
 - `TrySampleLocalIsosurface(sphereDir, ...)` — first inward isosurface (pits / cave mouths), not outer crust
 - `ResolveDensityPenetration(ref worldPos, worldClearance)`
 - `TryLoadBiomeGraph()` — load, compile, and apply graph data
@@ -497,9 +503,10 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 - `ClearVoxelEdits(rebuildNow)` — clears the live overlay; sidecar updates on the next save
 
 **Runtime rendering note:**
-- Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches.
-- **Planet water (two-tier):** near the camera, each renderable leaf may draw `GeneratedWaterMesh` built from the same patch grid as terrain; from orbit or when far, the uniform sea-level shell on `WaterGO` is used instead.
-- Water is drawn after planet atmosphere and clouds; chunk patches skip very coarse parent cells under the camera to avoid shard artifacts.
+- Planet chunk child GameObjects are not spawned; terrain is rendered from chunk-manager leaf mesh caches (`PlanetChunkMeshCache` keyed by `RecipeHash` + edit stamp).
+- **Planet water (two-tier):** chunk `GeneratedWaterMesh` patches are **always preferred**. The uniform `WaterGO` orbit shell is a far-orbit silhouette only (no chunk patches, camera farther than ~1.6× radius, not inside crust). Inland lakes sit in the hole; oceans skip continent land; volcano calderas can be lava (slot 6).
+- Water is drawn after planet atmosphere and clouds; depth write off, `DepthFunc.Lequal`.
+- Graph compile bakes a `PlanetClimateAtlas` and binds flora/scatter/fauna companions when present.
 - Interior cave lighting skips atmosphere below crust, applies cavity AO, and planet leaves participate in the shadow depth pass.
 
 See the Planet System doc for full pipeline details.
@@ -1323,9 +1330,10 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 | `GroundDrag`        | `float`   | `5`              | Ground friction                      |
 | `AirDrag`           | `float`   | `0.5`            | Air resistance                       |
 | `SwimForce`         | `float`   | `30`             | Swimming movement force              |
-| `SwimMaxSpeed`      | `float`   | `4`              | Maximum swim speed                   |
-| `SwimVerticalSpeed` | `float`   | `3`              | Vertical swim speed                  |
-| `SwimDrag`          | `float`   | `4`              | Underwater drag                      |
+| `SwimMaxSpeed`      | `float`   | `4.5`            | Max speed while diving               |
+| `SwimVerticalSpeed` | `float`   | `8`              | Dive / surface radial speed          |
+| `SwimDrag`          | `float`   | `3.2`            | Underwater drag                      |
+| `PlanetSurfaceSwimSpeed` | `float` | `6.5`         | Max tangent speed while floating on the waterline |
 | `LookSensitivity`   | `float`   | `90`             | Mouse look speed                     |
 | `FirstPerson`       | `bool`    | `true`           | First-person camera mode             |
 | `FirstPersonOffset` | `Vector3` | `(0, 1.7, 0)`    | First-person camera offset           |
@@ -1337,11 +1345,11 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 | `JumpBufferSeconds` | `float`   | `0.12`           | Jump input buffer                    |
 
 **Features:**
-- **Swimming** — flat-world swim via `Rigidbody` underwater state; **planet swim** via `SwimOnPlanet()` when `UnderwaterQuery` depth ≥ **0.35 m** (buoyancy, dive controls, tangent movement)
+- **Swimming** — flat-world swim via `Rigidbody` underwater state; **planet swim** via `SwimOnPlanet()` when `TryGetWaterColumn` hits a basin. Surface float (head/camera dry), **Ctrl** dive, **Space** rise, release Ctrl to hover. Underwater post only after the head is ≥ **0.30 m** under the water table
 - **Momentum-based** — natural sliding, pushing, and inertia
 - **Planet movement** — tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
-- **Density grounding on planets** — `ResolveDensityPenetration`, short `Spherecast` / `RaycastDensity` along `-LocalUp` for cave floors/ceilings; `SampleHeightfieldRadius` only as outer-shell fallback
+- **Density grounding on planets** — `ResolveDensityPenetration`, short `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` for cave floors/ceilings; outer crust uses **surface mode** + `SampleCollisionRadius` (visible leaf); heightfield radius only as last-resort fallback
 - **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
 - **Pole stability** — avoids pole-only movement mode toggles that can flip controls
@@ -1373,7 +1381,8 @@ Play-mode helper that creates or reuses a `RigidbodyPlayer` on `PlanetTerrain` a
 | `FirstPerson` | `bool` | `true` | Passed to `RigidbodyPlayer` |
 
 **Behavior:**
-- Resolves the nearest/active `PlanetTerrain`, samples the density isosurface with `TrySampleLocalIsosurface` / density raycast, and places the player feet-down using explicit quaternion alignment
+- Resolves the nearest/active `PlanetTerrain` and stands the player on `SampleCollisionRadius` (same radius the motor snaps to). Isosurface / density rays can hit a pit or cave mouth and are not used for spawn
+- `EnsureSunLight` **enables** an existing directional light and turns on `CastShadows`; it only creates a new Sun if the scene has none
 - Retries spawn for up to **12 seconds** while waiting for renderable leaves (`ActiveChunkCount > 0`); after timeout falls back without the leaf requirement
 - Adds `Rigidbody`, `CapsuleCollider`, and `RigidbodyPlayer` if missing
 
@@ -1940,9 +1949,9 @@ Biome-driven runtime weather controller for planets (`Clear`, `Cloudy`, `Rain`, 
 Primary responsibilities:
 
 - biome-blended weather target selection and transition timing
-- camera-anchored precipitation with visibility polling/culling
-- optional driving of atmosphere, post-process fog, and wind systems
-- weather coupling output for vegetation (`Wetness`, `SnowCoverage`, wind response)
+- camera-anchored precipitation with visibility polling/culling (volumes within `PrecipitationHeight` of the camera are always visible — a FOV test treated “straight up” as off-screen and killed rain)
+- optional driving of atmosphere, post-process fog, and wind systems (land fog/lighting **off** while `UnderwaterQuery.AnyPlayerPlanetSubmerged`)
+- weather coupling output for vegetation and the terrain shader (`BiomeWeatherRuntime.Wetness` / `SnowCoverage`, published every frame). Rain/storm holds wetness ≥ 0.9; snow holds coverage ≥ 0.85. The terrain shader **tints** albedo — it does not replace grass with a flat puddle/snow color
 
 Key toggles:
 
@@ -2026,9 +2035,23 @@ Manual spawn behavior:
 
 Profile-backed data source:
 
-- `Assets/Biomes/vegetation-profiles.json`
+- `Assets/Biomes/vegetation-profiles.json` (also `Standard Assets/Biomes/vegetation-profiles.json`)
 - multiple grass/tree item entries per profile with per-item:
   - model path
   - weight
   - density multiplier
   - scale multipliers
+- built-in ids: `Default`, `Universal`, `Forest`, `Grassland`, `Desert`, `Alpine`, `Tundra`, `Volcanic`, `Ocean`
+
+---
+
+## PlanetLifeStreaming / PlanetFloraSpawner / PlanetScatterRenderer / PlanetFaunaTableBehavior
+
+Optional Environment companions on the planet root. Graph compile binds flora/scatter/fauna tables when the components exist.
+
+| Type | Role |
+|------|------|
+| `PlanetLifeStreaming` | Shared 18×18 face/UV cell keys with vegetation. `BindRecipe` holds fauna / underwater-life / vein tables for later consumers |
+| `PlanetFloraSpawner` | Caps unique imported tree mesh paths (`MaxUniqueMeshes`, default 24) so the FBX template cache does not thrash |
+| `PlanetScatterRenderer` | GPU-instanced rock/grass buffer hook (`MaxInstances` 8192). Companion storage — does not replace CPU grass merge yet |
+| `PlanetFaunaTableBehavior` | Compiled herd/species tables. AI locomotion must use `StandRadiusGrid`, never density marches |

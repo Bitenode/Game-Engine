@@ -23,6 +23,8 @@ public sealed class PlanetChunkManager
 
     readonly PlanetMeshGenerator _meshGen;
     readonly PlanetVoxelEditStore? _editStore;
+    readonly PlanetChunkMeshCache _meshCache = new(256);
+    PlanetClimateAtlas? _climateAtlas;
     bool _clientStreaming;
     Action<QuadNode>? _clientMeshRequested;
     readonly ConcurrentQueue<MeshJob> _completed = new();
@@ -58,6 +60,14 @@ public sealed class PlanetChunkManager
             Faces[f] = new FaceQuadtree(f);
     }
 
+    public void SetClimateAtlas(PlanetClimateAtlas? atlas)
+    {
+        _climateAtlas = atlas;
+        _meshGen.SetClimateAtlas(atlas);
+    }
+
+    public void ClearMeshCache() => _meshCache.Clear();
+
     /// <summary>
     /// When enabled, <see cref="ScheduleGeneration"/> does not run local jobs; it invokes <paramref name="onMeshRequested"/> instead (network client streaming).
     /// </summary>
@@ -85,7 +95,8 @@ public sealed class PlanetChunkManager
     public void ApplyNetworkMesh(QuadNode node, TransvoxelMeshData meshData)
     {
         var water = _meshGen.GenerateWaterPatch(
-            node.Face, node.U0, node.V0, node.U1, node.V1, Config.ChunkSize);
+            node.Face, node.U0, node.V0, node.U1, node.V1, Config.ChunkSize,
+            node.TransitionMask, node.TransitionStride);
         var stand = QuadNode.BuildStandRadiusGrid(
             node.Face, node.U0, node.V0, node.U1, node.V1, meshData.Positions);
         ApplyMesh(node, meshData, null, water, stand);
@@ -102,6 +113,14 @@ public sealed class PlanetChunkManager
         public float[]? StandGrid;
     }
 
+    sealed class CachedMeshPayload
+    {
+        public TransvoxelMeshData MeshData = null!;
+        public TransvoxelMeshData? WaterData;
+        public VoxelChunk? Chunk;
+        public float[]? StandGrid;
+    }
+
     readonly struct EditCommand
     {
         public SN.Vector3 Center { get; init; }
@@ -112,6 +131,7 @@ public sealed class PlanetChunkManager
 
     public void RequestFullShellRebuild(int frames = 8)
     {
+        _meshCache.Clear();
         _forceShellRebuildFrames = Math.Max(_forceShellRebuildFrames, Math.Max(1, frames));
         for (int f = 0; f < Faces.Length; f++)
         {
@@ -790,6 +810,25 @@ public sealed class PlanetChunkManager
         int lodLevel = node.LodLevel;
 
         int token = node.GenerationToken;
+        ulong editStamp = (ulong)(_editStore?.SphereEditCount ?? 0)
+            + (ulong)(_editStore?.BakedCellCount ?? 0) * 1000003UL;
+        var cacheKey = new PlanetChunkMeshCache.Key(
+            face, lodLevel, u0, v0, u1, v1, Config.Seed, Config.RecipeHash, editStamp);
+
+        if (_meshCache.TryGet(cacheKey, out var cachedObj) && cachedObj is CachedMeshPayload payload)
+        {
+            _completed.Enqueue(new MeshJob
+            {
+                Node = node,
+                GenerationToken = token,
+                MeshData = payload.MeshData,
+                WaterData = payload.WaterData,
+                Chunk = payload.Chunk,
+                StandGrid = payload.StandGrid,
+            });
+            Interlocked.Decrement(ref _activeJobs);
+            return;
+        }
 
         Task.Run(() =>
         {
@@ -797,6 +836,13 @@ public sealed class PlanetChunkManager
             {
                 var result = _meshGen.Generate(face, u0, v0, u1, v1, resolution, transitionMask, lodLevel, transitionStride);
                 var standGrid = QuadNode.BuildStandRadiusGrid(face, u0, v0, u1, v1, result.Mesh.Positions);
+                _meshCache.Put(cacheKey, new CachedMeshPayload
+                {
+                    MeshData = result.Mesh,
+                    WaterData = result.Water,
+                    Chunk = result.Chunk,
+                    StandGrid = standGrid,
+                });
                 _completed.Enqueue(new MeshJob
                 {
                     Node = node,
@@ -853,6 +899,7 @@ public sealed class PlanetChunkManager
         node.GeneratedMesh = meshData.ToEngineMesh();
         node.StandRadiusGrid = standGrid
             ?? QuadNode.BuildStandRadiusGrid(node.Face, node.U0, node.V0, node.U1, node.V1, meshData.Positions);
+        QuadNode.EnsureStandRadiusGrid(node.StandRadiusGrid);
         node.GeneratedWaterMesh = waterData != null && !waterData.IsEmpty
             ? waterData.ToEngineMesh()
             : null;
@@ -879,8 +926,8 @@ public sealed class PlanetChunkManager
     }
 
     /// <summary>
-    /// Local mesh radius under <paramref name="sphereDir"/>, including LOD
-    /// join ramps on this leaf and any coarser neighbor it stitches to.
+    /// Local mesh radius under <paramref name="sphereDir"/> on the chunk the
+    /// player can see (not a finer prefetch leaf or a coarser neighbor peak).
     /// </summary>
     public float SampleCollisionLocalRadius(SN.Vector3 sphereDir)
     {
@@ -889,24 +936,22 @@ public sealed class PlanetChunkManager
         else
             sphereDir = SN.Vector3.Normalize(sphereDir);
 
-        float best = 0f;
-        var leaf = FindLeafAtDirection(sphereDir);
-        if (leaf != null && leaf.TrySampleStandLocalRadius(sphereDir, out float r))
-            best = r;
+        var node = FindRenderableAtDirection(sphereDir);
+        if (node != null && node.TrySampleStandLocalRadius(sphereDir, out float r))
+            return r;
+        return 0f;
+    }
 
-        if (leaf != null && leaf.TransitionMask != 0)
-        {
-            for (int dir = 0; dir < 4; dir++)
-            {
-                if ((leaf.TransitionMask & (1 << dir)) == 0)
-                    continue;
-                var neighbor = Faces[leaf.Face].FindNeighbor(leaf, dir, Faces);
-                if (neighbor != null && neighbor.TrySampleStandLocalRadius(sphereDir, out float nr) && nr > best)
-                    best = nr;
-            }
-        }
-
-        return best;
+    public QuadNode? FindRenderableAtDirection(SN.Vector3 sphereDir)
+    {
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+        var (face, u, v) = CubeSphereMath.SphereToCube(sphereDir);
+        if ((uint)face >= 6)
+            return null;
+        return Faces[face].Root.FindRenderableAtUv(Math.Clamp(u, 0f, 1f), Math.Clamp(v, 0f, 1f));
     }
 
     public QuadNode? FindLeafAtDirection(SN.Vector3 sphereDir)

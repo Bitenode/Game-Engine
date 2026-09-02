@@ -28,6 +28,8 @@ public sealed class VegetationProfile
     public string TreeModelPath { get; set; } = "";
     public List<VegetationProfileItem> GrassItems { get; set; } = new();
     public List<VegetationProfileItem> TreeItems { get; set; } = new();
+    public List<VegetationProfileItem> BushItems { get; set; } = new();
+    public List<VegetationProfileItem> RockItems { get; set; } = new();
 }
 
 public static class VegetationProfileLibrary
@@ -112,6 +114,8 @@ public static class VegetationProfileLibrary
             TreeModelPath = p.TreeModelPath?.Trim() ?? "",
             GrassItems = SanitizeItems(p.GrassItems),
             TreeItems = SanitizeItems(p.TreeItems),
+            BushItems = SanitizeItems(p.BushItems),
+            RockItems = SanitizeItems(p.RockItems),
         };
         EnsureLegacyCompatibility(safe);
         return safe;
@@ -151,6 +155,8 @@ public static class VegetationProfileLibrary
     {
         p.GrassItems ??= new List<VegetationProfileItem>();
         p.TreeItems ??= new List<VegetationProfileItem>();
+        p.BushItems ??= new List<VegetationProfileItem>();
+        p.RockItems ??= new List<VegetationProfileItem>();
 
         // Migrate old single-path fields into first list item.
         if (!string.IsNullOrWhiteSpace(p.GrassModelPath) && !p.GrassItems.Any(i => string.Equals(i.ModelPath, p.GrassModelPath, StringComparison.OrdinalIgnoreCase)))

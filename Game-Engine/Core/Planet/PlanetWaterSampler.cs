@@ -21,9 +21,36 @@ public static class PlanetWaterSampler
         return (config.Radius - maxAmp, config.Radius + maxAmp);
     }
 
+    /// <summary>
+    /// Coastal / basin band for water fill. Upper bound stays near Radius so
+    /// fillFraction cannot climb mid-elevation hills (mountain amp must not apply).
+    /// </summary>
+    public static (float min, float max) GetOceanTerrainRange(PlanetConfig config)
+    {
+        float amp = 5f;
+        if (config.Biomes != null)
+        {
+            for (int i = 0; i < config.Biomes.Length; i++)
+            {
+                var b = config.Biomes[i];
+                if (b.SpawnWater || string.Equals(b.Name, "Beach", StringComparison.OrdinalIgnoreCase))
+                    amp = MathF.Max(amp, MathF.Min(b.HeightAmplitude, 12f));
+            }
+        }
+        // High end at Radius: fillFraction 0.55 sits near the basin lip so the
+        // water sheet can stretch to the ocean cutout walls (not stop meters inland).
+        return (config.Radius - amp, config.Radius + 1.25f);
+    }
+
     public static float FillRadius(PlanetConfig config, float fillFraction)
     {
         var (min, max) = GetTerrainRange(config);
+        return min + Math.Clamp(fillFraction, 0f, 1f) * (max - min);
+    }
+
+    public static float FillOceanRadius(PlanetConfig config, float fillFraction)
+    {
+        var (min, max) = GetOceanTerrainRange(config);
         return min + Math.Clamp(fillFraction, 0f, 1f) * (max - min);
     }
 
@@ -32,7 +59,7 @@ public static class PlanetWaterSampler
 
     public static float GetOceanFillRadius(PlanetConfig config)
     {
-        float authored = config.SeaLevel;
+        float fillFraction = 0.55f;
         var bodies = config.WaterBodies;
         if (bodies != null)
         {
@@ -40,31 +67,26 @@ public static class PlanetWaterSampler
             {
                 if (bodies[i].Kind == PlanetWaterBodyKind.Ocean)
                 {
-                    authored = FillRadius(config, bodies[i].FillFraction);
+                    fillFraction = bodies[i].FillFraction;
                     break;
                 }
             }
         }
 
-        // Ocean / beach live near Radius (±small amp). A fill taken from the
-        // global mountain range (e.g. 0.38 of Radius±80) sits below the ocean
-        // floor, so the mesh never meets the shoreline even though the
-        // underwater query can still hit isolated basins / rivers.
-        float oceanAmp = 5f;
+        float amp = 5f;
         if (config.Biomes != null)
         {
             for (int i = 0; i < config.Biomes.Length; i++)
             {
                 var b = config.Biomes[i];
                 if (b.SpawnWater)
-                    oceanAmp = MathF.Max(oceanAmp, b.HeightAmplitude);
+                    amp = MathF.Max(amp, MathF.Min(b.HeightAmplitude, 10f));
             }
         }
 
-        float minCover = config.Radius + oceanAmp + 1.5f;
-        if (authored > 1f)
-            return MathF.Max(authored, minCover);
-        return minCover;
+        // 0.5 = Radius. Small nudge only — one constant sphere for the whole planet.
+        float t = Math.Clamp(fillFraction, 0f, 1f);
+        return config.Radius + (t - 0.5f) * MathF.Max(4f, amp * 0.75f);
     }
 
     public static float ResolveSeaLevel(PlanetConfig config, float seaLevelFraction)
@@ -72,9 +94,7 @@ public static class PlanetWaterSampler
         if (UsesMultiLevelWater(config))
             return GetOceanFillRadius(config);
 
-        var (min, max) = GetTerrainRange(config);
-        float authored = min + Math.Clamp(seaLevelFraction, 0f, 1f) * (max - min);
-        return MathF.Max(authored, GetOceanFillRadius(config));
+        return FillOceanRadius(config, seaLevelFraction);
     }
 
     public static float SampleRiverMask(
@@ -82,7 +102,7 @@ public static class PlanetWaterSampler
         PlanetWaterPath path,
         SimplexNoise? primary,
         SimplexNoise? meander,
-        BiomeMap biomeMap,
+        BiomeMap? biomeMap,
         float widthOverride = -1f)
     {
         if (primary == null)
@@ -109,7 +129,7 @@ public static class PlanetWaterSampler
             return 0f;
 
         var allowed = path.AllowedBiomes;
-        if (allowed == null || allowed.Length == 0)
+        if (allowed == null || allowed.Length == 0 || biomeMap == null)
             return riverWater;
 
         return riverWater * AllowedBiomeWeight(biomeMap.GetBiomes(sphereDir), allowed);
@@ -172,10 +192,18 @@ public static class PlanetWaterSampler
 
     static float BodyMatchWeight(PlanetWaterBody body, BiomeBlend[] blends)
     {
+        if (body.Kind == PlanetWaterBodyKind.Ocean)
+        {
+            float oceanW = body.MaskBiomes is { Length: > 0 }
+                ? MaskBiomeWeight(blends, body.MaskBiomes)
+                : SpawnWaterWeight(blends);
+            // Beach only extends an existing ocean shoreline — never creates ocean alone.
+            if (oceanW <= 0.05f)
+                return oceanW;
+            return MathF.Max(oceanW, AllowedBiomeWeight(blends, new[] { "Beach" }));
+        }
         if (body.MaskBiomes is { Length: > 0 })
             return MaskBiomeWeight(blends, body.MaskBiomes);
-        if (body.Kind == PlanetWaterBodyKind.Ocean)
-            return SpawnWaterWeight(blends);
         return 1f;
     }
 
@@ -185,7 +213,8 @@ public static class PlanetWaterSampler
         PlanetConfig config,
         BiomeMap biomeMap,
         SimplexNoise? riverPrimary,
-        SimplexNoise? riverMeander)
+        SimplexNoise? riverMeander,
+        PlanetClimateAtlas? climateAtlas = null)
     {
         float height = baseHeight;
         var paths = config.WaterPaths;
@@ -204,6 +233,14 @@ public static class PlanetWaterSampler
             float mask = SampleLegacyRiverMask(sphereDir, config, riverPrimary, riverMeander, biomeMap);
             if (mask > 0f)
                 height -= config.RiverDepth * Smooth01(0f, 1f, mask);
+        }
+
+        // Optional compile-time flow-accumulation channels (bake once on the height LUT).
+        if (config.UseFlowAccumulationRivers && climateAtlas is { HasFlowRivers: true })
+        {
+            float flow = climateAtlas.SampleFlowRiver(sphereDir);
+            if (flow > 0.01f)
+                height -= config.FlowRiverDepth * Smooth01(0f, 1f, flow);
         }
 
         var bodies = config.WaterBodies;
@@ -244,7 +281,21 @@ public static class PlanetWaterSampler
             return PlanetWaterSurfaceSample.Empty;
 
         sphereDir = SN.Vector3.Normalize(sphereDir);
-        var blends = biomeMap.GetBiomes(sphereDir);
+        if (PlanetSurfaceUtility.TryGetLavaLake(config, sphereDir, terrainRadius, out float lavaR, out float magma)
+            && magma > 0.18f
+            && lavaR > terrainRadius + 0.2f)
+        {
+            int shoreIdx = resolveBiomeIndex("Mountains");
+            if (shoreIdx < 0) shoreIdx = resolveBiomeIndex("Beach");
+            if (shoreIdx < 0) shoreIdx = 0;
+            return new PlanetWaterSurfaceSample(
+                lavaR, Math.Clamp(magma, 0.4f, 1f), shoreIdx, PlanetWaterKind.Lava, 6);
+        }
+
+        // Altitude matters: Ocean is MaxAltitude ~0.2. Ignoring it classifies wet
+        // midland as Ocean and floods hillsides around the deep basins.
+        float alt = biomeMap.NormalizeAltitude(terrainRadius - config.Radius);
+        var blends = biomeMap.GetBiomes(sphereDir, alt);
 
         if (!UsesMultiLevelWater(config))
         {
@@ -279,6 +330,7 @@ public static class PlanetWaterSampler
         int bestShore = 0;
         PlanetWaterKind bestKind = PlanetWaterKind.None;
         int bestBodyIndex = -1;
+        float bestScore = 0f;
         float oceanFillR = GetOceanFillRadius(config);
 
         var bodies = config.WaterBodies!;
@@ -289,21 +341,31 @@ public static class PlanetWaterSampler
             if (match <= 0.05f)
                 continue;
 
-            float fillR = body.Kind == PlanetWaterBodyKind.Ocean
-                ? GetOceanFillRadius(config)
-                : FillRadius(config, body.FillFraction);
+            float fillR = oceanFillR;
+            if (body.Kind == PlanetWaterBodyKind.Ocean)
+            {
+                // Continents stay dry even when the classifier still says Ocean.
+                float land = PlanetSurfaceUtility.SampleContinentLand(config, sphereDir);
+                if (config.Continents is { Length: > 0 } && land > 0.38f)
+                    continue;
+                if (alt > 0.11f)
+                    continue;
+            }
+            else
+            {
+                // Inland water sits in the hole — it must not fill up to global
+                // sea level or every grassland valley becomes a second ocean.
+                float hole = oceanFillR - terrainRadius;
+                if (hole < body.MinBasinDepth)
+                    continue;
+                fillR = terrainRadius + MathF.Min(4.5f, hole * 0.22f);
+            }
             if (terrainRadius >= fillR)
                 continue;
 
             float basinDepth = fillR - terrainRadius;
-            if (body.Kind != PlanetWaterBodyKind.Ocean && basinDepth < body.MinBasinDepth)
+            if (body.Kind != PlanetWaterBodyKind.Ocean && basinDepth < 0.4f)
                 continue;
-
-            // Ocean is a geometric flood of anything below the water table so the
-            // shoreline follows terrain, not the Ocean-biome mask (which stops
-            // short of beaches and made the mesh look detached).
-            if (body.Kind == PlanetWaterBodyKind.Ocean)
-                match = MathF.Max(match, 0.45f);
 
             float mask = body.Kind == PlanetWaterBodyKind.Ocean
                 ? Math.Clamp(match, 0.35f, 1f)
@@ -312,8 +374,14 @@ public static class PlanetWaterSampler
             int shoreIdx = resolveBiomeIndex(body.ShoreBiomeName);
             if (shoreIdx < 0) shoreIdx = 0;
 
-            if (fillR > bestRadius)
+            // Score by how well the body fits this column — not by who has the
+            // highest water table (that always picked lakes at mountain mid-height).
+            float score = match * (1f + basinDepth * 0.05f);
+            if (body.Kind == PlanetWaterBodyKind.Ocean)
+                score += 0.5f;
+            if (score >= bestScore)
             {
+                bestScore = score;
                 bestRadius = fillR;
                 bestMask = mask;
                 bestShore = shoreIdx;
@@ -339,7 +407,8 @@ public static class PlanetWaterSampler
 
                 float riverR = terrainRadius + 0.35f;
                 if (path.FlowToOcean && terrainRadius < oceanFillR)
-                    riverR = oceanFillR;
+                    riverR = terrainRadius + 0.35f
+                        + (oceanFillR - terrainRadius - 0.35f) * riverMask * 0.25f;
 
                 int sandIdx = resolveBiomeIndex(path.SandBiomeName);
                 if (sandIdx < 0) sandIdx = bestShore;
@@ -361,7 +430,7 @@ public static class PlanetWaterSampler
             {
                 float riverR = terrainRadius + 0.35f;
                 if (terrainRadius < oceanFillR)
-                    riverR = oceanFillR;
+                    riverR = terrainRadius + 0.35f;
                 if (riverR >= bestRadius || bestKind == PlanetWaterKind.None)
                 {
                     bestRadius = riverR;
@@ -404,11 +473,11 @@ public static class PlanetWaterSampler
                 float core = SampleRiverMask(sphereDir, path, riverPrimary, riverMeander, biomeMap);
                 float sandW = MathF.Max(path.Width, path.SandWidth);
                 float bank = SampleRiverMask(sphereDir, path, riverPrimary, riverMeander, biomeMap, sandW);
-                float w = MathF.Max(0f, bank - core);
-                w = MathF.Max(w, core * (1f - core) * 2f);
-                if (w > bestW)
+                float bandW = MathF.Max(0f, bank - core);
+                bandW = MathF.Max(bandW, core * (1f - core) * 2f);
+                if (bandW > bestW)
                 {
-                    bestW = w;
+                    bestW = bandW;
                     int idx = resolveBiomeIndex(path.SandBiomeName);
                     if (idx >= 0) bestIdx = idx;
                 }
@@ -441,14 +510,22 @@ public static class PlanetWaterSampler
                 if (BodyMatchWeight(body, blends) <= 0.05f && body.Kind != PlanetWaterBodyKind.Ocean)
                     continue;
 
-                float fillR = FillRadius(config, body.FillFraction);
-                float dist = MathF.Abs(terrainRadius - fillR);
+                float fillR = body.Kind == PlanetWaterBodyKind.Ocean
+                    ? GetOceanFillRadius(config)
+                    : FillOceanRadius(config, body.FillFraction);
                 float band = MathF.Max(2f, body.ShoreWidth * MathF.Max(1f, config.Radius));
-                float w = 1f - Math.Clamp(dist / band, 0f, 1f);
-                w = Smooth01(0.2f, 1f, w);
-                if (w > bestW)
+
+                // Beach sand is dry shoreline only. Anything submerged is covered by
+                // the water mesh — painting Beach there is the tan "fake water" users see.
+                if (terrainRadius < fillR - 0.25f)
+                    continue;
+
+                float distAbove = terrainRadius - fillR;
+                float shoreW = 1f - Math.Clamp(distAbove / band, 0f, 1f);
+                shoreW = Smooth01(0.2f, 1f, shoreW);
+                if (shoreW > bestW)
                 {
-                    bestW = w;
+                    bestW = shoreW;
                     int idx = resolveBiomeIndex(body.ShoreBiomeName);
                     if (idx >= 0) bestIdx = idx;
                 }
@@ -458,14 +535,19 @@ public static class PlanetWaterSampler
         {
             float dist = MathF.Abs(terrainRadius - config.SeaLevel);
             float band = MathF.Max(2f, 0.03f * MathF.Max(1f, config.Radius));
-            float w = Smooth01(0.2f, 1f, 1f - Math.Clamp(dist / band, 0f, 1f));
+            float seaShoreW = Smooth01(0.2f, 1f, 1f - Math.Clamp(dist / band, 0f, 1f));
             if (SpawnWaterWeight(blends) > 0.05f)
-                bestW = MathF.Max(bestW, w);
+                bestW = MathF.Max(bestW, seaShoreW);
         }
 
         if (bestW <= 0.02f)
             return null;
-        return (bestIdx, Math.Clamp(bestW * 0.9f, 0f, 1f));
+
+        float climateScale = biomeMap.SampleShoreClimateWeight(sphereDir);
+        float finalW = Math.Clamp(bestW * 0.9f * climateScale, 0f, 1f);
+        if (finalW <= 0.02f)
+            return null;
+        return (bestIdx, finalW);
     }
 
     public static void ApplySandBlend(ref SN.Vector4 blendIdx, ref SN.Vector4 blendWt, int sandIndex, float sandWeight)

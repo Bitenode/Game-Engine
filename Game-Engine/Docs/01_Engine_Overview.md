@@ -74,8 +74,13 @@ Game-Engine/
 │   │   │   ├── Terrain.cs       # Heightmap terrain with splatmaps
 │   │   │   ├── TerrainStreamer.cs # Camera-centered terrain tile streaming
 │   │   │   ├── PlanetTerrain.cs # Cube-sphere planet with stacked voxel interior + caves
+│   │   │   ├── PlanetAtmosphere.cs # Per-planet atmosphere / clouds / day-night
 │   │   │   ├── PlanetVegetationSystem.cs # Biome vegetation streaming
 │   │   │   ├── PlanetWeatherController.cs # Biome-blended weather
+│   │   │   ├── PlanetLifeStreaming.cs # Face/UV cell keys + fauna/vein recipe bind
+│   │   │   ├── PlanetFloraSpawner.cs # Unique imported-mesh cap for trees
+│   │   │   ├── PlanetScatterRenderer.cs # Instanced rock/grass buffer hook
+│   │   │   ├── PlanetFaunaTableBehavior.cs # Compiled fauna tables (AI later)
 │   │   │   ├── Tree.cs          # Procedural/imported trees with wind
 │   │   │   ├── TreeLOD.cs       # Tree level-of-detail management
 │   │   │   ├── VegetationPainter.cs # GPU-instanced vegetation
@@ -151,10 +156,16 @@ Game-Engine/
 │   │   ├── PlanetMeshGenerator.cs # Heightfield shell + stacked transvoxel
 │   │   ├── PlanetNoiseCache.cs  # Shared per-planet noise instances
 │   │   ├── PlanetSpace.cs       # World ↔ local unscaled transforms
+│   │   ├── PlanetSurfaceUtility.cs # Continent/crater/volcano/cliff height + lava lakes
+│   │   ├── PlanetClimateAtlas.cs # Baked 6-face climate/height/biome LUTs
+│   │   ├── PlanetChunkMeshCache.cs # RecipeHash-keyed in-memory mesh cache
 │   │   ├── PlanetWater.cs       # Orbit sea-level shell; chunk patches in PlanetMeshGenerator
-│   │   ├── PlanetWaterSampler.cs # Water table, carving, shore sand
-│   │   ├── PlanetWaterTypes.cs  # WaterBody / WaterPath graph compile types
+│   │   ├── PlanetWaterSampler.cs # Water table, carving, dry-only shore sand, lava
+│   │   ├── PlanetWaterTypes.cs  # WaterBody / WaterPath / Lava graph compile types
 │   │   └── QuadNode.cs          # Quadtree node state + interior LOD priority
+│   ├── Biome/                   # Biome map + graph compile
+│   │   ├── BiomeMap.cs          # Altitude-aware blends, lapse / rain shadow / shore climate
+│   │   └── Graph/               # BiomeGraph, BiomeNode, BiomeGraphEvaluator, PlanetRecipe
 │   ├── Noise/                   # Procedural noise utilities
 │   │   ├── SimplexNoise.cs      # Base 2D/3D simplex noise
 │   │   └── FractalNoise.cs      # FBM/ridged/billow noise wrapper

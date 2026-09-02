@@ -1,8 +1,8 @@
 [
   {
     "Id": "Default",
-    "VegetationDensity": 0,
-    "TreeDensity": 0,
+    "VegetationDensity": 0.6,
+    "TreeDensity": 0.15,
     "VegetationPatchiness": 0.45,
     "SeasonalGrowthMultiplier": 1,
     "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
@@ -23,6 +23,357 @@
         "MaxScale": 1.1
       }
     ],
-    "TreeItems": []
+    "TreeItems": [],
+    "BushItems": [],
+    "RockItems": []
+  },
+  {
+    "Id": "Universal",
+    "VegetationDensity": 0.85,
+    "TreeDensity": 0.45,
+    "VegetationPatchiness": 0.4,
+    "SeasonalGrowthMultiplier": 1,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "TreeModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 1,
+        "MinScale": 0.8,
+        "MaxScale": 1.2
+      },
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+        "Weight": 0.7,
+        "DensityMultiplier": 0.9,
+        "MinScale": 0.85,
+        "MaxScale": 1.15
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.6,
+        "MinScale": 2.5,
+        "MaxScale": 4.0
+      }
+    ],
+    "BushItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.5,
+        "MinScale": 1.2,
+        "MaxScale": 1.8
+      }
+    ],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.3,
+        "MinScale": 0.4,
+        "MaxScale": 1.0
+      }
+    ]
+  },
+  {
+    "Id": "Forest",
+    "VegetationDensity": 0.9,
+    "TreeDensity": 1.0,
+    "VegetationPatchiness": 0.35,
+    "SeasonalGrowthMultiplier": 1.1,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "TreeModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.8,
+        "MinScale": 0.7,
+        "MaxScale": 1.1
+      },
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+        "Weight": 0.6,
+        "DensityMultiplier": 0.7,
+        "MinScale": 0.75,
+        "MaxScale": 1.1
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 1,
+        "MinScale": 3.0,
+        "MaxScale": 5.0
+      }
+    ],
+    "BushItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.7,
+        "MinScale": 1.3,
+        "MaxScale": 2.0
+      }
+    ],
+    "RockItems": []
+  },
+  {
+    "Id": "Grassland",
+    "VegetationDensity": 1.0,
+    "TreeDensity": 0.2,
+    "VegetationPatchiness": 0.3,
+    "SeasonalGrowthMultiplier": 1.15,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "TreeModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+        "Weight": 1,
+        "DensityMultiplier": 1.2,
+        "MinScale": 0.9,
+        "MaxScale": 1.3
+      },
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 0.8,
+        "DensityMultiplier": 1,
+        "MinScale": 0.85,
+        "MaxScale": 1.2
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.35,
+        "MinScale": 2.2,
+        "MaxScale": 3.5
+      }
+    ],
+    "BushItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 0.5,
+        "DensityMultiplier": 0.4,
+        "MinScale": 1.0,
+        "MaxScale": 1.5
+      }
+    ],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 0.4,
+        "DensityMultiplier": 0.25,
+        "MinScale": 0.35,
+        "MaxScale": 0.9
+      }
+    ]
+  },
+  {
+    "Id": "Desert",
+    "VegetationDensity": 0.15,
+    "TreeDensity": 0.05,
+    "VegetationPatchiness": 0.7,
+    "SeasonalGrowthMultiplier": 0.6,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+    "TreeModelPath": "",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+        "Weight": 1,
+        "DensityMultiplier": 0.35,
+        "MinScale": 0.5,
+        "MaxScale": 0.85
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.15,
+        "MinScale": 1.5,
+        "MaxScale": 2.5
+      }
+    ],
+    "BushItems": [],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.8,
+        "MinScale": 0.5,
+        "MaxScale": 1.4
+      }
+    ]
+  },
+  {
+    "Id": "Alpine",
+    "VegetationDensity": 0.35,
+    "TreeDensity": 0.25,
+    "VegetationPatchiness": 0.55,
+    "SeasonalGrowthMultiplier": 0.75,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "TreeModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.5,
+        "MinScale": 0.55,
+        "MaxScale": 0.9
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.45,
+        "MinScale": 2.0,
+        "MaxScale": 3.2
+      }
+    ],
+    "BushItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.35,
+        "MinScale": 0.9,
+        "MaxScale": 1.4
+      }
+    ],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.7,
+        "MinScale": 0.6,
+        "MaxScale": 1.6
+      }
+    ]
+  },
+  {
+    "Id": "Tundra",
+    "VegetationDensity": 0.25,
+    "TreeDensity": 0.08,
+    "VegetationPatchiness": 0.6,
+    "SeasonalGrowthMultiplier": 0.55,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+    "TreeModelPath": "",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+        "Weight": 1,
+        "DensityMultiplier": 0.4,
+        "MinScale": 0.45,
+        "MaxScale": 0.75
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.2,
+        "MinScale": 1.2,
+        "MaxScale": 2.0
+      }
+    ],
+    "BushItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 0.6,
+        "DensityMultiplier": 0.3,
+        "MinScale": 0.7,
+        "MaxScale": 1.1
+      }
+    ],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 0.8,
+        "DensityMultiplier": 0.5,
+        "MinScale": 0.4,
+        "MaxScale": 1.1
+      }
+    ]
+  },
+  {
+    "Id": "Volcanic",
+    "VegetationDensity": 0.08,
+    "TreeDensity": 0.02,
+    "VegetationPatchiness": 0.75,
+    "SeasonalGrowthMultiplier": 0.4,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+    "TreeModelPath": "",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd",
+        "Weight": 1,
+        "DensityMultiplier": 0.2,
+        "MinScale": 0.4,
+        "MaxScale": 0.7
+      }
+    ],
+    "TreeItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.1,
+        "MinScale": 1.5,
+        "MaxScale": 2.4
+      }
+    ],
+    "BushItems": [],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 1.1,
+        "MinScale": 0.7,
+        "MaxScale": 2.0
+      }
+    ]
+  },
+  {
+    "Id": "Ocean",
+    "VegetationDensity": 0.5,
+    "TreeDensity": 0,
+    "VegetationPatchiness": 0.4,
+    "SeasonalGrowthMultiplier": 1,
+    "GrassModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+    "TreeModelPath": "",
+    "GrassItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.7,
+        "MinScale": 0.8,
+        "MaxScale": 1.4
+      }
+    ],
+    "TreeItems": [],
+    "BushItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 1,
+        "DensityMultiplier": 0.5,
+        "MinScale": 1.0,
+        "MaxScale": 1.8
+      }
+    ],
+    "RockItems": [
+      {
+        "ModelPath": "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX",
+        "Weight": 0.5,
+        "DensityMultiplier": 0.3,
+        "MinScale": 0.4,
+        "MaxScale": 1.0
+      }
+    ]
   }
 ]

@@ -684,18 +684,23 @@ namespace Game_Engine.Views
             _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
             // --- UNDERWATER DETECTION ---
+            // Surface swim stays dry. Planet post only once the head is under
+            // the water table — not while floating on the crust waterline.
             var rawUnderwater = UnderwaterQuery.GetState(camPos);
+            if (!UnderwaterQuery.PlanetSwimFxActive())
+                rawUnderwater = null;
             if (rawUnderwater.HasValue)
             {
-                if (rawUnderwater.Value.Depth >= 0.42f)
+                if (rawUnderwater.Value.Depth >= 0.28f)
                     _underwaterFxLatch = true;
-                else if (rawUnderwater.Value.Depth <= 0.12f)
+                else if (rawUnderwater.Value.Depth <= 0.10f)
                     _underwaterFxLatch = false;
                 _underwaterFxCached = rawUnderwater;
             }
             else
             {
                 _underwaterFxLatch = false;
+                _underwaterFxCached = null;
             }
             var underwater = _underwaterFxLatch ? _underwaterFxCached : null;
 

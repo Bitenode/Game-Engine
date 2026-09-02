@@ -651,6 +651,70 @@ namespace Game_Engine.Core.Component
         /// </summary>
         internal const float PlanetWalkStepUp = 0.5f;
         internal const float PlanetWalkGroundSnap = 0.7f;
+        internal const float PlanetSurfaceEnterSlack = 6f;
+        internal const float PlanetSurfaceExitSlack = 10f;
+        internal const float PlanetBindRecheckMeters = 48f;
+
+        /// <summary>
+        /// CameraBelowCrust-style hysteresis for outer-crust walking.
+        /// Enter when radial &gt;= crustR - 6; leave when radial &lt; crustR - 10 or CameraBelowCrust.
+        /// </summary>
+        internal static void RefreshPlanetSurfaceMode(ref bool surfaceMode, float dist, float crustR, bool cameraBelowCrust)
+        {
+            if (cameraBelowCrust)
+            {
+                surfaceMode = false;
+                return;
+            }
+
+            if (surfaceMode)
+            {
+                if (dist < crustR - PlanetSurfaceExitSlack)
+                    surfaceMode = false;
+            }
+            else if (dist >= crustR - PlanetSurfaceEnterSlack)
+            {
+                surfaceMode = true;
+            }
+        }
+
+        internal static PlanetTerrain? FindNearestPlanetCached(
+            SN.Vector3 worldPos,
+            ref PlanetTerrain? cached,
+            ref SN.Vector3 cachedCenter,
+            ref SN.Vector3 cachedQueryPos,
+            ref int cachedPlanetCount,
+            out SN.Vector3 center)
+        {
+            int count = PlanetTerrain.ActivePlanets.Count;
+            float threshSq = PlanetBindRecheckMeters * PlanetBindRecheckMeters;
+            bool movedFar = (worldPos - cachedQueryPos).LengthSquared() >= threshSq;
+            bool countChanged = count != cachedPlanetCount;
+
+            if (cached != null
+                && !countChanged
+                && !movedFar
+                && cached.Config != null
+                && cached.gameObject != null
+                && PlanetTerrain.ActivePlanets.Contains(cached))
+            {
+                center = cached.GetWorldCenter();
+                cachedCenter = center;
+                return cached;
+            }
+
+            if (cached == null && !countChanged && !movedFar && cachedPlanetCount >= 0)
+            {
+                center = cachedCenter;
+                return null;
+            }
+
+            cached = FindNearestPlanet(worldPos, out center, out _);
+            cachedCenter = center;
+            cachedQueryPos = worldPos;
+            cachedPlanetCount = count;
+            return cached;
+        }
 
         internal static bool TryDensityGroundProbe(
             PlanetTerrain planet,
@@ -664,8 +728,8 @@ namespace Game_Engine.Core.Component
             float lift = MathF.Max(PlanetWalkStepUp, 0.2f) + 0.002f;
             var rayStart = pos + up * lift;
             float sphereR = MathF.Max(0.01f, capsuleRadius * 0.2f);
-            return planet.Spherecast(rayStart, -up, sphereR, maxDistance, out hit)
-                || planet.RaycastDensity(rayStart, -up, maxDistance, out hit);
+            return planet.SpherecastGameplay(rayStart, -up, sphereR, maxDistance, out hit)
+                || planet.RaycastDensityGameplay(rayStart, -up, maxDistance, out hit);
         }
 
         internal static bool IsNearOuterHeightfield(

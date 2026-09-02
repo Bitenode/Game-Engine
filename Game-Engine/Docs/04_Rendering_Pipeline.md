@@ -187,7 +187,7 @@ Full-screen post-processing composite pass.
 | **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |
 | **Tone Mapping** | HDR to LDR conversion — Reinhard or ACES filmic methods |
 | **Vignette** | Darkened edges — configurable intensity and smoothness |
-| **Underwater** | Wave distortion, underwater fog, caustic patterns, color absorption (blue channel boosted, red absorbed) |
+| **Underwater** | Wave distortion, underwater fog, caustic patterns, color absorption (blue channel boosted, red absorbed). Planet Game View enables this only while `RigidbodyPlayer` is swimming **and** the head/camera is under the water table — surface float and weather fog do not turn it on |
 
 ### Volumetric Fog Shader (VolumetricFogVert + VolumetricFogFrag)
 
@@ -570,10 +570,10 @@ Planet atmosphere rendering is now an isolated path and does not depend on `Skyb
 
 - **Planet data source:** `PlanetTerrain` + `PlanetAtmosphere` component state
 - **Resolver:** `SceneRenderer.ResolvePlanetAtmosphere(...)` produces per-planet render params
-- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls
+- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls. **Weather overlays** (`uWetness` / `uSnowCoverage` / `uWeatherEnabled`) tint and add puddle spec / light snow on the **lit texel** — they never replace grass with a flat color. Overlays are off while any player is planet-submerged. The renderer always binds **8** biome albedo slots (white + default tiling when a layer is missing)
 - **Interior rendering:** when the camera is inside the crust band, backface and frustum culling are disabled so cave interiors stay visible while LOD refines
 - **Planet shadows:** renderable planet leaf meshes are drawn in the shadow depth pass (`RenderPlanetLeafShadows`) for form shadows at cave mouths and rims
-- **Planet water pass:** `PlanetWaterFrag` — atmosphere-driven reflection, per-body tint arrays, shore biome blend, mask discard. **Near camera:** draws `QuadNode.GeneratedWaterMesh` patches (same LOD grid as terrain). **Far / orbit:** draws the uniform `PlanetWater` orbit shell on `PlanetTerrain.WaterGO`. Rendered **after** planet atmosphere and clouds so haze does not cover the surface. Double-sided, alpha blend, `DepthFunc.Lequal`, reduced wave amplitude when near the crust.
+- **Planet water pass:** `PlanetWaterFrag` — atmosphere-driven reflection, per-body tint arrays (slot **6** = lava), shore biome blend, mask discard. **Always prefers** `QuadNode.GeneratedWaterMesh` patches (same LOD grid as terrain, shoreline on the visible edge). The uniform `PlanetWater` orbit shell is a **far-orbit silhouette only** (no chunk patches, camera farther than ~1.6× radius, not inside crust) — it is not a fallback that floods grassland. Rendered **after** planet atmosphere and clouds so haze does not cover the surface. Double-sided, alpha blend, `DepthFunc.Lequal`, **depth write off**, reduced wave amplitude when near the crust. Standalone `PlayerView` compiles the same planet terrain / atmosphere / cloud / water shaders and calls `RefreshLodAroundCamera` plus these passes (the old player only drew heightmap terrain + planar water).
 - **Cloud pass:** `PlanetCloudsFrag` is rendered as a dedicated planet pass
 
 `Skybox` still controls only the world background sky pass. Changing `Skybox` values should not change planet terrain/water/cloud shading.

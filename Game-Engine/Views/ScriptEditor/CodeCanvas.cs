@@ -21,7 +21,7 @@ public sealed class CodeCanvas : Control
     public TextBuffer? Buffer { get; set; }
     public CaretState? Caret { get; set; }
 
-    /// <summary>Classified spans for syntax colouring (Phase 2+).</summary>
+    /// <summary>Classified spans for syntax colouring.</summary>
     public IReadOnlyList<EditorClassifiedSpan>? ClassifiedSpans { get; set; }
 
     /// <summary>Search match positions for find highlighting.</summary>
@@ -521,7 +521,7 @@ public sealed class CodeCanvas : Control
         }
     }
 
-    // ── Text drawing (Phase 1: single colour; Phase 2 overrides) ─
+    // ── Text drawing ─
 
     private void DrawTextLines(DrawingContext ctx, int firstLine, int lastLine)
     {

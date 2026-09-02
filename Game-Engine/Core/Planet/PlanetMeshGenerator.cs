@@ -33,6 +33,7 @@ public sealed class PlanetMeshGenerator
     readonly PlanetNoiseCache _noise;
     readonly DensityGenerator _densityGen;
     readonly PlanetDensitySampler _sampler;
+    PlanetClimateAtlas? _climateAtlas;
 
     public PlanetDensitySampler Sampler => _sampler;
     public PlanetNoiseCache Noise => _noise;
@@ -45,6 +46,15 @@ public sealed class PlanetMeshGenerator
         _noise = PlanetNoiseCache.Create(config);
         _densityGen = new DensityGenerator(config, biomeMap, _noise);
         _sampler = new PlanetDensitySampler(config, biomeMap, _noise, editStore);
+        // Ensure biome map has climate coupling even when constructed outside PlanetTerrain rebuild.
+        _biomeMap.BindClimateCoupling(config, _noise.RiverPrimary, _noise.RiverMeander, _noise.RidgeNoise);
+    }
+
+    public void SetClimateAtlas(PlanetClimateAtlas? atlas)
+    {
+        _climateAtlas = atlas;
+        _sampler.SetClimateAtlas(atlas);
+        _densityGen.SetClimateAtlas(atlas);
     }
 
     public PlanetChunkBuildResult Generate(
@@ -58,7 +68,7 @@ public sealed class PlanetMeshGenerator
         int lodLevel = 0,
         int transitionStride = 0)
     {
-        var water = GenerateWaterPatch(face, u0, v0, u1, v1, resolution);
+        var water = GenerateWaterPatch(face, u0, v0, u1, v1, resolution, transitionMask, transitionStride);
 
         if (!ShouldUseVolumetric(face, u0, v0, u1, v1, resolution, lodLevel))
         {
@@ -113,17 +123,24 @@ public sealed class PlanetMeshGenerator
     /// Vertices sit on the water table (same sampler as underwater), so the
     /// shoreline matches the visible LOD instead of a planet-wide 48-subdiv mesh.
     /// </summary>
-    public TransvoxelMeshData? GenerateWaterPatch(int face, float u0, float v0, float u1, float v1, int resolution)
+    public TransvoxelMeshData? GenerateWaterPatch(
+        int face, float u0, float v0, float u1, float v1, int resolution,
+        byte transitionMask = 0, int transitionStride = 0)
     {
         int size = Math.Max(1, resolution);
         int n = size + 1;
         float vertexSpacing = EstimateCell(face, u0, v0, u1, v1, resolution);
-        float maxSpan = MathF.Max(3f, vertexSpacing * 1.75f);
+        // Rivers follow the bed, so adjacent verts can differ by many meters.
+        // A tight span cull deleted those faces (holes in the river sheet).
+        float maxSpan = MathF.Max(48f, vertexSpacing * 12f);
         float oceanFillR = PlanetWaterSampler.GetOceanFillRadius(_config);
 
         var positions = new SN.Vector3[n * n];
+        var terrainPos = new SN.Vector3[n * n];
         var uvs = new SN.Vector2[n * n];
         var wet = new bool[n * n];
+        var terrainRAt = new float[n * n];
+        var waterRAt = new float[n * n];
 
         int ResolveBiomeIndex(string name)
         {
@@ -163,21 +180,25 @@ public sealed class PlanetMeshGenerator
                     ResolveBiomeIndex);
 
                 int idx = iy * n + ix;
+                terrainRAt[idx] = terrainR;
+                terrainPos[idx] = dir * MathF.Max(1f, terrainR);
                 if (sample.Mask >= 0.01f && sample.Radius > terrainR + 0.05f)
                 {
-                    // Ocean must be a constant sphere. Lifting verts to
-                    // terrain+offset made adjacent LODs disagree and stacked
-                    // as flickering sheets after look / LOD changes.
-                    float radius = sample.Kind switch
-                    {
-                        PlanetWaterKind.Ocean => oceanFillR,
-                        PlanetWaterKind.River => MathF.Max(sample.Radius, terrainR + 0.2f),
-                        _ => sample.Radius
-                    };
+                    // Oceans share one sea-level sphere. Lakes/ponds keep the
+                    // sampler radius so they stay in the hole instead of flooding
+                    // the continent at sea level. Rivers follow the bed.
+                    float radius = sample.Kind == PlanetWaterKind.Ocean
+                        ? oceanFillR
+                        : sample.Kind == PlanetWaterKind.Lava
+                            ? sample.Radius
+                            : MathF.Max(sample.Radius, terrainR + 0.2f);
                     positions[idx] = dir * radius;
-                    int packedId = sample.Kind == PlanetWaterKind.River
-                        ? 7
-                        : Math.Clamp(sample.BodyIndex, 0, 6);
+                    waterRAt[idx] = radius;
+                    int packedId = sample.Kind == PlanetWaterKind.Lava
+                        ? 6
+                        : sample.Kind == PlanetWaterKind.River
+                            ? 7
+                            : Math.Clamp(sample.BodyIndex, 0, 5);
                     uvs[idx] = new SN.Vector2(
                         Math.Clamp(sample.ShoreBiomeIndex, 0, 7) + packedId * 8f,
                         Math.Clamp(sample.Mask, 0.35f, 1f));
@@ -185,90 +206,161 @@ public sealed class PlanetMeshGenerator
                 }
                 else
                 {
-                    positions[idx] = dir * MathF.Max(1f, terrainR);
+                    positions[idx] = terrainPos[idx];
+                    waterRAt[idx] = 0f;
                     uvs[idx] = SN.Vector2.Zero;
                 }
             }
         }
 
+        // Match the terrain shell's T-junction ramps so water corners sit on
+        // the same stretched LOD edge the player sees.
+        SnapWaterTerrainLod(terrainPos, terrainRAt, n, size, transitionMask, transitionStride);
+        for (int i = 0; i < terrainPos.Length; i++)
+        {
+            if (!wet[i] || (int)(uvs[i].X / 8f) >= 7)
+                continue;
+            var dir = terrainPos[i].LengthSquared() > 1e-8f
+                ? SN.Vector3.Normalize(terrainPos[i])
+                : SN.Vector3.UnitY;
+            positions[i] = dir * waterRAt[i];
+        }
+
+        // Biome classification stops at Ocean/Beach cells. The visible crest is
+        // further inland on the interpolated slope (biome height stretch). Walk
+        // ocean water along that ramp until terrain actually leaves the sea.
+        int sealPasses = vertexSpacing > 8f ? 4 : 7;
+        for (int pass = 0; pass < sealPasses; pass++)
+        {
+            int grown = 0;
+            var grow = new bool[n * n];
+            for (int iy = 0; iy < n; iy++)
+            {
+                for (int ix = 0; ix < n; ix++)
+                {
+                    int idx = iy * n + ix;
+                    if (wet[idx]) continue;
+                    if (terrainRAt[idx] >= oceanFillR - 0.02f) continue;
+
+                    bool nearOcean = false;
+                    SN.Vector2 neighborUv = default;
+                    for (int dy = -1; dy <= 1 && !nearOcean; dy++)
+                    {
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = ix + dx, ny = iy + dy;
+                            if ((uint)nx >= (uint)n || (uint)ny >= (uint)n) continue;
+                            int nidx = ny * n + nx;
+                            if (!wet[nidx] || waterRAt[nidx] <= 1e-4f) continue;
+                            if ((int)(uvs[nidx].X / 8f) >= 6) continue;
+                            nearOcean = true;
+                            neighborUv = uvs[nidx];
+                            break;
+                        }
+                    }
+                    if (!nearOcean) continue;
+
+                    var dir = terrainPos[idx].LengthSquared() > 1e-8f
+                        ? SN.Vector3.Normalize(terrainPos[idx])
+                        : SN.Vector3.UnitY;
+                    if (PlanetSurfaceUtility.SampleMagmaBowl(_config, dir) > 0.18f)
+                        continue;
+                    positions[idx] = dir * oceanFillR;
+                    waterRAt[idx] = oceanFillR;
+                    uvs[idx] = new SN.Vector2(neighborUv.X, MathF.Max(0.35f, neighborUv.Y));
+                    grow[idx] = true;
+                    grown++;
+                }
+            }
+            for (int i = 0; i < grow.Length; i++)
+            {
+                if (grow[i])
+                    wet[i] = true;
+            }
+            if (grown == 0)
+                break;
+        }
+
         var data = new TransvoxelMeshData();
+
+        int AddVert(SN.Vector3 pos, SN.Vector2 uv)
+        {
+            int i = data.Positions.Count;
+            data.Positions.Add(pos);
+            var nrm = pos.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(pos) : SN.Vector3.UnitY;
+            data.Normals.Add(nrm);
+            data.UVs.Add(uv);
+            return i;
+        }
+
         var remap = new int[n * n];
         Array.Fill(remap, -1);
         for (int i = 0; i < positions.Length; i++)
         {
             if (!wet[i]) continue;
-            remap[i] = data.Positions.Count;
-            data.Positions.Add(positions[i]);
-            var nrm = positions[i].LengthSquared() > 1e-8f
-                ? SN.Vector3.Normalize(positions[i])
-                : SN.Vector3.UnitY;
-            data.Normals.Add(nrm);
-            data.UVs.Add(uvs[i]);
-            data.BlendIndices.Add(SN.Vector4.Zero);
-            data.BlendWeights.Add(SN.Vector4.UnitX);
+            remap[i] = AddVert(positions[i], uvs[i]);
         }
 
         if (data.Positions.Count < 3)
             return null;
 
-        bool WaterBuried(SN.Vector3 pa, SN.Vector3 pb)
+        // Place the shore on the visible terrain-edge / sea-sphere intersection.
+        // Direction-lerp onto the sphere misses the stretched biome ramp, so
+        // water corners sat off the crest the player sees.
+        int ShoreEdgeVert(int wetIdx, int dryIdx)
         {
-            var mid = pa + pb;
-            if (mid.LengthSquared() < 1e-8f)
-                return true;
-            var dir = SN.Vector3.Normalize(mid);
-            float terrainR = _sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
-            float waterR = (pa.Length() + pb.Length()) * 0.5f;
-            return terrainR > waterR + 0.35f;
-        }
+            float wr = waterRAt[wetIdx] > 1e-4f ? waterRAt[wetIdx] : oceanFillR;
+            var pW = terrainPos[wetIdx];
+            var pD = terrainPos[dryIdx];
+            if (pW.LengthSquared() < 1e-8f) pW = positions[wetIdx];
+            if (pD.LengthSquared() < 1e-8f) pD = positions[dryIdx];
+            float trW = terrainRAt[wetIdx];
+            float trD = terrainRAt[dryIdx];
+            bool riverEdge = (int)(uvs[wetIdx].X / 8f) >= 7;
 
-        bool TriangleOk(int a, int b, int c)
-        {
-            if (!wet[a] || !wet[b] || !wet[c])
-                return false;
-            float ra = positions[a].Length();
-            float rb = positions[b].Length();
-            float rc = positions[c].Length();
-            float span = MathF.Max(ra, MathF.Max(rb, rc)) - MathF.Min(ra, MathF.Min(rb, rc));
-            if (span > maxSpan)
-                return false;
-
-            // Ocean verts sit on a constant sphere. A coarse tri can connect
-            // three wet shoreline verts around a hill and chord through crust.
-            var mid = positions[a] + positions[b] + positions[c];
-            if (mid.LengthSquared() < 1e-8f)
-                return false;
-            var dir = SN.Vector3.Normalize(mid);
-            float terrainR = _sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
-            float waterR = (ra + rb + rc) * (1f / 3f);
-            if (terrainR > waterR + 0.35f)
-                return false;
-            if (vertexSpacing > 6f
-                && (WaterBuried(positions[a], positions[b])
-                    || WaterBuried(positions[b], positions[c])
-                    || WaterBuried(positions[c], positions[a])))
-                return false;
-            return true;
-        }
-
-        void AddTri(int a, int b, int c)
-        {
-            if (!TriangleOk(a, b, c))
-                return;
-            data.Indices.Add(remap[a]);
-            data.Indices.Add(remap[b]);
-            data.Indices.Add(remap[c]);
-        }
-
-        bool flip = false;
-        if (n >= 2)
-        {
-            int ia = 0, ib = 1, ic = n;
-            if (wet[ia] && wet[ib] && wet[ic])
+            float t;
+            bool lavaEdge = (int)(uvs[wetIdx].X / 8f) == 6;
+            if (!TryTerrainEdgeSeaT(pW, pD, wr, trW, trD, out t))
             {
-                var nrm = SN.Vector3.Cross(positions[ib] - positions[ia], positions[ic] - positions[ia]);
-                flip = SN.Vector3.Dot(nrm, positions[ia]) < 0f;
+                if (trD < wr - 0.02f && !riverEdge && !lavaEdge)
+                {
+                    var dirD = pD.LengthSquared() > 1e-8f
+                        ? SN.Vector3.Normalize(pD)
+                        : SN.Vector3.Normalize(pW);
+                    var uvFill = uvs[wetIdx];
+                    uvFill.Y = MathF.Max(0.35f, uvFill.Y * 0.8f);
+                    return AddVert(dirD * wr, uvFill);
+                }
+                t = lavaEdge ? 0.18f : (riverEdge ? 0.62f : 0.7f);
             }
+            if (riverEdge)
+                t = Math.Clamp(MathF.Max(t, 0.55f), 0.08f, 0.92f);
+            if (lavaEdge)
+                t = Math.Clamp(t, 0.04f, 0.35f);
+
+            var shorePos = ProjectToRadius(SN.Vector3.Lerp(pW, pD, t), wr);
+            var uv = uvs[wetIdx];
+            uv.Y = MathF.Max(0.35f, uv.Y * 0.75f);
+            return AddVert(shorePos, uv);
+        }
+
+        // Wind every tri so its face points outward (seam was flipping "up" on mixed cells).
+        void AddTriIds(int ia, int ib, int ic)
+        {
+            if (ia < 0 || ib < 0 || ic < 0) return;
+            var pa = data.Positions[ia];
+            var pb = data.Positions[ib];
+            var pc = data.Positions[ic];
+            float ra = pa.Length(), rb = pb.Length(), rc = pc.Length();
+            float span = MathF.Max(ra, MathF.Max(rb, rc)) - MathF.Min(ra, MathF.Min(rb, rc));
+            if (span > maxSpan) return;
+            var nrm = SN.Vector3.Cross(pb - pa, pc - pa);
+            if (SN.Vector3.Dot(nrm, pa) < 0f)
+                (ib, ic) = (ic, ib);
+            data.Indices.Add(ia);
+            data.Indices.Add(ib);
+            data.Indices.Add(ic);
         }
 
         for (int iy = 0; iy < size; iy++)
@@ -279,16 +371,34 @@ public sealed class PlanetMeshGenerator
                 int b = a + 1;
                 int c = a + n;
                 int d = c + 1;
-                if (flip)
+                int mask = (wet[a] ? 1 : 0) | (wet[b] ? 2 : 0) | (wet[c] ? 4 : 0) | (wet[d] ? 8 : 0);
+                if (mask == 0) continue;
+
+                if (mask == 15)
                 {
-                    AddTri(a, c, b);
-                    AddTri(b, c, d);
+                    AddTriIds(remap[a], remap[b], remap[c]);
+                    AddTriIds(remap[b], remap[d], remap[c]);
+                    continue;
                 }
-                else
-                {
-                    AddTri(a, b, c);
-                    AddTri(b, d, c);
-                }
+
+                var poly = new int[8];
+                int pc = 0;
+                if (wet[a]) poly[pc++] = remap[a];
+                if (wet[a] != wet[b])
+                    poly[pc++] = ShoreEdgeVert(wet[a] ? a : b, wet[a] ? b : a);
+                if (wet[b]) poly[pc++] = remap[b];
+                if (wet[b] != wet[d])
+                    poly[pc++] = ShoreEdgeVert(wet[b] ? b : d, wet[b] ? d : b);
+                if (wet[d]) poly[pc++] = remap[d];
+                if (wet[d] != wet[c])
+                    poly[pc++] = ShoreEdgeVert(wet[d] ? d : c, wet[d] ? c : d);
+                if (wet[c]) poly[pc++] = remap[c];
+                if (wet[c] != wet[a])
+                    poly[pc++] = ShoreEdgeVert(wet[c] ? c : a, wet[c] ? a : c);
+
+                if (pc < 3) continue;
+                for (int t = 1; t < pc - 1; t++)
+                    AddTriIds(poly[0], poly[t], poly[t + 1]);
             }
         }
 
@@ -311,7 +421,8 @@ public sealed class PlanetMeshGenerator
             var p = data.Positions[i];
             float len = p.Length();
             var dir = len > 1e-8f ? p / len : SN.Vector3.UnitY;
-            var blends = _biomeMap.GetBiomes(dir);
+            float alt = _biomeMap.NormalizeAltitude(len - _config.Radius);
+            var blends = _biomeMap.GetBiomes(dir, alt);
             var blendIdx = SN.Vector4.Zero;
             var blendWt = SN.Vector4.Zero;
             for (int b = 0; b < blends.Length && b < 4; b++)
@@ -367,6 +478,101 @@ public sealed class PlanetMeshGenerator
         return cell <= maxCell;
     }
 
+    static void SnapWaterTerrainLod(
+        SN.Vector3[] terrainPos, float[] terrainRAt,
+        int n, int size, byte mask, int stridePacked)
+    {
+        if (mask == 0 || size < 2) return;
+
+        void SnapCol(int ix, int stride)
+        {
+            if (stride < 2) stride = 2;
+            for (int iy = 1; iy < size; iy++)
+            {
+                if (iy % stride == 0) continue;
+                int y0 = (iy / stride) * stride;
+                int y1 = Math.Min(size, y0 + stride);
+                float t = (iy - y0) / (float)(y1 - y0);
+                int i = iy * n + ix;
+                var p = SN.Vector3.Lerp(terrainPos[y0 * n + ix], terrainPos[y1 * n + ix], t);
+                terrainPos[i] = p;
+                terrainRAt[i] = p.Length();
+            }
+        }
+
+        void SnapRow(int iy, int stride)
+        {
+            if (stride < 2) stride = 2;
+            for (int ix = 1; ix < size; ix++)
+            {
+                if (ix % stride == 0) continue;
+                int x0 = (ix / stride) * stride;
+                int x1 = Math.Min(size, x0 + stride);
+                float t = (ix - x0) / (float)(x1 - x0);
+                int i = iy * n + ix;
+                var p = SN.Vector3.Lerp(terrainPos[iy * n + x0], terrainPos[iy * n + x1], t);
+                terrainPos[i] = p;
+                terrainRAt[i] = p.Length();
+            }
+        }
+
+        if ((mask & 1) != 0) SnapCol(0, (stridePacked >> 0) & 0xFF);
+        if ((mask & 2) != 0) SnapCol(size, (stridePacked >> 8) & 0xFF);
+        if ((mask & 4) != 0) SnapRow(0, (stridePacked >> 16) & 0xFF);
+        if ((mask & 8) != 0) SnapRow(size, (stridePacked >> 24) & 0xFF);
+    }
+
+    static bool TryTerrainEdgeSeaT(
+        SN.Vector3 pW, SN.Vector3 pD, float wr, float trW, float trD, out float t)
+    {
+        var d = pD - pW;
+        float a = SN.Vector3.Dot(d, d);
+        if (a > 1e-10f)
+        {
+            float b = 2f * SN.Vector3.Dot(pW, d);
+            float c = SN.Vector3.Dot(pW, pW) - wr * wr;
+            float disc = b * b - 4f * a * c;
+            if (disc >= 0f)
+            {
+                float s = MathF.Sqrt(disc);
+                float inv = 0.5f / a;
+                float t0 = (-b - s) * inv;
+                float t1 = (-b + s) * inv;
+                bool t0ok = t0 >= 0f && t0 <= 1f;
+                bool t1ok = t1 >= 0f && t1 <= 1f;
+                if (t0ok || t1ok)
+                {
+                    if (t0ok && t1ok)
+                        t = trW <= trD ? MathF.Max(t0, t1) : MathF.Min(t0, t1);
+                    else
+                        t = t0ok ? t0 : t1;
+                    t = Math.Clamp(t, 0.04f, 0.96f);
+                    return true;
+                }
+            }
+        }
+
+        float denom = trD - trW;
+        if (MathF.Abs(denom) < 1e-5f)
+        {
+            t = 0.7f;
+            return trW < wr && trD > wr;
+        }
+        t = (wr - trW) / denom;
+        if (t < 0f || t > 1f)
+            return false;
+        t = Math.Clamp(t, 0.04f, 0.96f);
+        return true;
+    }
+
+    static SN.Vector3 ProjectToRadius(SN.Vector3 p, float radius)
+    {
+        float len = p.Length();
+        if (len < 1e-8f)
+            return SN.Vector3.UnitY * radius;
+        return p * (radius / len);
+    }
+
     float EstimateCell(int face, float u0, float v0, float u1, float v1, int resolution)
     {
         int size = Math.Max(1, resolution);
@@ -403,10 +609,11 @@ public sealed class PlanetMeshGenerator
                 if (u1 >= 1f && ix == size) u = 1f;
 
                 var sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
-                var blends = _biomeMap.GetBiomes(sphereDir);
                 // Always sample the authored surface (no LOD-scaled brush). Adjacent
                 // chunks then agree on shared cube-sphere edges.
                 float surfaceR = _sampler.SampleEditedSurfaceRadius(sphereDir, vertexSpacing);
+                float alt = _biomeMap.NormalizeAltitude(surfaceR - _config.Radius);
+                var blends = _biomeMap.GetBiomes(sphereDir, alt);
                 var pos = sphereDir * surfaceR;
                 var normal = EstimateShellNormal(sphereDir, vertexSpacing);
 
@@ -630,6 +837,18 @@ public sealed class PlanetMeshGenerator
 
     void ApplyShoreSand(SN.Vector3 sphereDir, float terrainRadius, ref SN.Vector4 blendIdx, ref SN.Vector4 blendWt)
     {
+        // Never stamp beach onto crust that sits below the local water table.
+        var water = PlanetWaterSampler.SampleWaterSurface(
+            sphereDir,
+            _config,
+            _biomeMap,
+            terrainRadius,
+            _noise.RiverPrimary,
+            _noise.RiverMeander,
+            FindBiomeIndex);
+        if (water.Mask > 0.01f && terrainRadius < water.Radius - 0.25f)
+            return;
+
         var sand = PlanetWaterSampler.SampleSandWeight(
             sphereDir,
             _config,
@@ -640,6 +859,7 @@ public sealed class PlanetMeshGenerator
             FindBiomeIndex);
         if (sand is not { weight: > 0.01f } s)
             return;
+        // SampleSandWeight already applies ShoreClimateBias via BiomeMap moisture.
         PlanetWaterSampler.ApplySandBlend(ref blendIdx, ref blendWt, s.biomeIndex, s.weight);
     }
 

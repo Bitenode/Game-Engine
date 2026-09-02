@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Game_Engine.Core.Physics;
+using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component
@@ -66,6 +67,18 @@ namespace Game_Engine.Core.Component
         /// <summary>Local "up" for this controller: away from planet center, or world +Y.</summary>
         public SN.Vector3 LocalUp { get; private set; } = SN.Vector3.UnitY;
 
+        /// <summary>
+        /// Latched outer-crust walking: stand-grid only, zero density marches.
+        /// Same hysteresis as <see cref="RigidbodyPlayer.SurfaceMode"/>.
+        /// </summary>
+        public bool SurfaceMode => _surfaceMode;
+
+        bool _surfaceMode = true;
+        PlanetTerrain? _boundPlanet;
+        SN.Vector3 _boundPlanetCenter;
+        SN.Vector3 _boundPlanetQueryPos;
+        int _boundPlanetCount = -1;
+
         float _coyoteTimer = 0f;
         float _lastHitDist = float.NegativeInfinity;
         SN.Vector3 _lastHitN = SN.Vector3.UnitY;
@@ -109,7 +122,9 @@ namespace Game_Engine.Core.Component
             var pos = new SN.Vector3((float)tr.Position.X, (float)tr.Position.Y, (float)tr.Position.Z);
 
             // ── Planet detection ──
-            var planet = Rigidbody.FindNearestPlanet(pos, out var planetCenter, out float planetSurfaceR);
+            var planet = Rigidbody.FindNearestPlanetCached(
+                pos, ref _boundPlanet, ref _boundPlanetCenter, ref _boundPlanetQueryPos, ref _boundPlanetCount,
+                out var planetCenter);
             bool onPlanet = planet != null;
 
             if (onPlanet)
@@ -121,6 +136,7 @@ namespace Game_Engine.Core.Component
             else
             {
                 LocalUp = SN.Vector3.UnitY;
+                _surfaceMode = false;
             }
 
             float capsuleH = CapsuleHalfCylinder + CapsuleRadius;
@@ -202,11 +218,18 @@ namespace Game_Engine.Core.Component
             if (onPlanet)
             {
                 LocalUp = SN.Vector3.Normalize(pos - planetCenter);
-                planet!.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                float crustR = planet!.SampleCollisionRadius(LocalUp);
+                float radial = (pos - planetCenter).Length();
+                Rigidbody.RefreshPlanetSurfaceMode(ref _surfaceMode, radial, crustR,
+                    planet.Config != null && planet.Config.CameraBelowCrust);
+                if (!_surfaceMode)
+                    planet.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                else
+                    pos = planetCenter + LocalUp * (crustR + capsuleH);
                 ProbePlanetGround(planet, planetCenter, pos, capsuleH, minSlopeUpDot,
                     GroundSnapDistance + StepUpMax + CapsuleRadius + 0.75f,
                     out _, out float diff2, out var hitN2);
-                IsGrounded = diff2 >= -0.02f && diff2 <= StepUpMax + 0.02f;
+                IsGrounded = _surfaceMode || (diff2 >= -0.02f && diff2 <= StepUpMax + 0.02f);
                 GroundNormal = IsGrounded ? hitN2 : LocalUp;
                 if (IsGrounded) _lastHitN = hitN2;
             }
@@ -232,7 +255,7 @@ namespace Game_Engine.Core.Component
                     float h = Math.Max(0.01f, JumpHeight);
                     VerticalVelocity = MathF.Sqrt(2f * g * h);
 
-                    if (onPlanet)
+                    if (onPlanet && !_surfaceMode)
                         planet!.ResolveDensityPenetration(ref pos, CapsuleRadius);
                     else if (_lastHitDist > float.NegativeInfinity)
                     {
@@ -246,10 +269,19 @@ namespace Game_Engine.Core.Component
                 {
                     if (onPlanet)
                     {
-                        var rayStart = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
-                        if (planet!.RaycastDensity(rayStart, -LocalUp, capsuleH + StepUpMax + GroundSnapDistance, out var snapHit))
-                            pos = snapHit.Point + LocalUp * capsuleH;
-                        planet.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                        float crustR = planet!.SampleCollisionRadius(LocalUp);
+                        float radial = (pos - planetCenter).Length();
+                        Rigidbody.RefreshPlanetSurfaceMode(ref _surfaceMode, radial, crustR,
+                            planet.Config != null && planet.Config.CameraBelowCrust);
+                        if (_surfaceMode)
+                            pos = planetCenter + LocalUp * (crustR + capsuleH);
+                        else
+                        {
+                            var rayStart = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
+                            if (planet.RaycastDensityGameplay(rayStart, -LocalUp, capsuleH + StepUpMax + GroundSnapDistance, out var snapHit))
+                                pos = snapHit.Point + LocalUp * capsuleH;
+                            planet.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                        }
                     }
                     else if (_lastHitDist > float.NegativeInfinity)
                         pos.Y = _lastHitDist + capsuleH;
@@ -266,20 +298,39 @@ namespace Game_Engine.Core.Component
                 if (onPlanet)
                 {
                     LocalUp = SN.Vector3.Normalize(pos - planetCenter);
-                    bool wasInside = planet!.ResolveDensityPenetration(ref pos, CapsuleRadius);
-                    var rayStart = pos + LocalUp * 0.02f;
-                    float probe = capsuleH + 0.05f;
-                    if (!wasInside &&
-                        (planet.Spherecast(rayStart, -LocalUp, CapsuleRadius * 0.25f, probe, out var hit) ||
-                         planet.RaycastDensity(rayStart, -LocalUp, probe, out hit)))
+                    float crustR = planet!.SampleCollisionRadius(LocalUp);
+                    float radial = (pos - planetCenter).Length();
+                    Rigidbody.RefreshPlanetSurfaceMode(ref _surfaceMode, radial, crustR,
+                        planet.Config != null && planet.Config.CameraBelowCrust);
+                    if (_surfaceMode)
                     {
-                        if (!hit.StartedInside && hit.Distance < capsuleH)
+                        float stand = crustR + capsuleH;
+                        if (radial <= stand + 0.02f && VerticalVelocity <= 0f)
                         {
-                            pos = hit.Point + LocalUp * capsuleH;
+                            pos = planetCenter + LocalUp * stand;
                             if (VerticalVelocity < 0f) VerticalVelocity = 0f;
                             IsGrounded = true;
-                            GroundNormal = hit.Normal;
-                            _lastHitN = hit.Normal;
+                            GroundNormal = LocalUp;
+                            _lastHitN = LocalUp;
+                        }
+                    }
+                    else
+                    {
+                        bool wasInside = planet.ResolveDensityPenetration(ref pos, CapsuleRadius);
+                        var rayStart = pos + LocalUp * 0.02f;
+                        float probe = capsuleH + 0.05f;
+                        if (!wasInside &&
+                            (planet.SpherecastGameplay(rayStart, -LocalUp, CapsuleRadius * 0.25f, probe, out var hit) ||
+                             planet.RaycastDensityGameplay(rayStart, -LocalUp, probe, out hit)))
+                        {
+                            if (!hit.StartedInside && hit.Distance < capsuleH)
+                            {
+                                pos = hit.Point + LocalUp * capsuleH;
+                                if (VerticalVelocity < 0f) VerticalVelocity = 0f;
+                                IsGrounded = true;
+                                GroundNormal = hit.Normal;
+                                _lastHitN = hit.Normal;
+                            }
                         }
                     }
                 }
@@ -429,9 +480,26 @@ namespace Game_Engine.Core.Component
             diff = float.PositiveInfinity;
             groundHit = false;
 
+            float crustR = planet.SampleCollisionRadius(LocalUp);
+            float dist = (pos - planetCenter).Length();
+            Rigidbody.RefreshPlanetSurfaceMode(ref _surfaceMode, dist, crustR,
+                planet.Config != null && planet.Config.CameraBelowCrust);
+            if (_surfaceMode)
+            {
+                float stand = crustR + capsuleH;
+                float feetR = dist - capsuleH;
+                diff = feetR - crustR;
+                hitN = LocalUp;
+                groundHit = MathF.Abs(diff) <= MathF.Max(StepUpMax, GroundSnapDistance) + 0.05f
+                    || dist <= stand + 0.05f;
+                if (groundHit && MathF.Abs(diff) > 0.5f)
+                    diff = 0f;
+                return;
+            }
+
             var rayStart = pos + LocalUp * (Math.Max(StepUpMax, 0.2f) + 0.002f);
-            if (!planet.Spherecast(rayStart, -LocalUp, CapsuleRadius * 0.2f, maxDist, out var hit) &&
-                !planet.RaycastDensity(rayStart, -LocalUp, maxDist, out hit))
+            if (!planet.SpherecastGameplay(rayStart, -LocalUp, CapsuleRadius * 0.2f, maxDist, out var hit) &&
+                !planet.RaycastDensityGameplay(rayStart, -LocalUp, maxDist, out hit))
                 return;
 
             var feet = pos - LocalUp * capsuleH;
@@ -439,7 +507,6 @@ namespace Game_Engine.Core.Component
             hitN = hit.Normal.LengthSquared() > 1e-8f ? hit.Normal : LocalUp;
             bool slopeOk = SN.Vector3.Dot(hitN, LocalUp) >= minSlopeUpDot * 0.5f;
             groundHit = slopeOk || hit.StartedInside;
-            _ = planetCenter;
         }
 
         bool RaycastGround(SN.Vector3 start, SN.Vector3 dir, float maxDist, out float groundY, out SN.Vector3 groundN)

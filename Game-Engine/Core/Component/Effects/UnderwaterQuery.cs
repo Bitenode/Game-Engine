@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using SN = System.Numerics;
 using Game_Engine.Core;
 using Game_Engine.Core.Planet;
@@ -26,7 +27,6 @@ namespace Game_Engine.Core.Component
             UnderwaterState? best = null;
             float bestDepth = 0f;
 
-            // Planar water volumes.
             var planarWater = Water.GetUnderwaterWater(worldPos);
             if (planarWater != null)
             {
@@ -48,11 +48,13 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            // Planet oceans, lakes, ponds, and rivers.
             for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
             {
                 var planet = PlanetTerrain.ActivePlanets[i];
                 if (planet?.gameObject == null || !planet.IsActiveAndEnabled || !planet.EnableWater || planet.Config == null)
+                    continue;
+
+                if (!PlanetSwimFxActive())
                     continue;
 
                 var center = planet.GetWorldCenter();
@@ -61,33 +63,23 @@ namespace Game_Engine.Core.Component
                 if (distToCenter <= 1e-5f)
                     continue;
 
-                float radiusScale = planet.GetWorldRadiusScale();
                 var dir = toPos / distToCenter;
-                float crustWorld = planet.SampleHeightfieldRadius(dir);
-
-                if (planet.TrySampleWorldDensity(worldPos, out float density))
-                {
-                    // Negative density is solid crust. Do not treat buried cameras as swimming.
-                    if (density <= 0f)
-                        continue;
-                }
-
                 var waterSample = planet.SampleWaterSurface(dir);
-                if (waterSample.Mask < 0.2f)
+                if (waterSample.Kind == PlanetWaterKind.Lava)
                     continue;
 
-                float waterLevelWorld = waterSample.Radius * radiusScale;
+                float scale = planet.GetWorldRadiusScale();
+                float waterLevelWorld = waterSample.Mask >= 0.04f ? waterSample.Radius * scale : 0f;
+                if (waterLevelWorld < 1f)
+                    continue;
+
+                float crustWorld = planet.SampleCollisionRadius(dir);
+                // Camera vs the water table at the crust — not the seabed and not
+                // the swim capsule test (that only went true on the ocean floor).
                 float depth = waterLevelWorld - distToCenter;
-                // Require a real submersion so looking down a bank / grazing the
-                // surface cannot flip the full-screen underwater post.
-                if (depth < 0.35f || depth <= bestDepth)
+                if (depth < 0.28f || depth <= bestDepth)
                     continue;
-
-                // Must be in the open water column (above the bed, below the surface).
-                // The old 32 m "clipped into water" test fired on dry slopes.
-                if (distToCenter < crustWorld - 0.75f)
-                    continue;
-                if (crustWorld > waterLevelWorld + 0.5f)
+                if (distToCenter < crustWorld - 2.5f)
                     continue;
 
                 var tintSource = ResolveWaterTint(planet, waterSample);
@@ -130,6 +122,36 @@ namespace Game_Engine.Core.Component
             }
 
             return planet.OceanBiome;
+        }
+
+        /// <summary>
+        /// Planet underwater post only while a player is actually diving/submerged.
+        /// Scene-view cameras with no player still get camera-based water FX.
+        /// </summary>
+        public static bool PlanetSwimFxActive()
+        {
+            var players = SceneQuery.FindBehaviors<RigidbodyPlayer>();
+            bool any = false;
+            foreach (var p in players)
+            {
+                if (p == null || !p.IsActiveAndEnabled)
+                    continue;
+                any = true;
+                if (p.IsPlanetSwimming && p.IsPlanetSubmerged)
+                    return true;
+            }
+            return !any;
+        }
+
+        /// <summary>True when a live player is under the planet water surface.</summary>
+        public static bool AnyPlayerPlanetSubmerged()
+        {
+            foreach (var p in SceneQuery.FindBehaviors<RigidbodyPlayer>())
+            {
+                if (p != null && p.IsActiveAndEnabled && p.IsPlanetSubmerged)
+                    return true;
+            }
+            return false;
         }
     }
 }

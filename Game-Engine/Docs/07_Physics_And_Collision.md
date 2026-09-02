@@ -94,7 +94,7 @@ Planet broad-phase collider shell for planetary worlds.
 
 **Purpose:** Supplies a stable world-space AABB and visual shell bounds for planets.
 
-**Important:** `PlanetCollider` is **broad-phase only**. Exact contact on a planet uses the volumetric density field: `PlanetTerrain.Spherecast` / `RaycastDensity` (and `ResolveDensityPenetration`) so bodies can stand on cave floors and hit walls/ceilings. `SampleSurfaceRadius` is the outermost crust only (water, orbit, gizmos) — not interior contact. See [Planet System](13_Planet_System.md).
+**Important:** `PlanetCollider` is **broad-phase only**. Outer-crust walking uses `SampleCollisionRadius` on the visible leaf. Caves use `SpherecastGameplay` / `RaycastDensityGameplay` (and `ResolveDensityPenetration`). `SampleSurfaceRadius` is the outermost crust only (water, orbit, gizmos) — not interior contact. See [Planet System](13_Planet_System.md).
 
 ---
 
@@ -182,7 +182,7 @@ The `Simulate(Vector3 desiredHorizontalDelta, bool jump)` method runs the full p
 ```
 
 ### Terrain Integration
-The CharacterController uses the terrain's O(1) `SampleHeightWorld()` for ground detection on terrain surfaces. Per-frame caches of terrain objects and other colliders are maintained. Terrain `MeshCollider` objects are explicitly skipped in ray-triangle tests — only the heightmap lookup is used.
+The CharacterController uses the terrain's O(1) `SampleHeightWorld()` for ground detection on heightmap terrain surfaces. On `PlanetTerrain` it uses **surface mode** + `SampleCollisionRadius` on the outer crust, and gameplay density probes underground. Per-frame caches of terrain objects and other colliders are maintained. Terrain `MeshCollider` objects are explicitly skipped in ray-triangle tests — only the heightmap lookup is used.
 
 **MeshCollider detail:** On each `Terrain`, the **`MeshFilter`** keeps a **full-resolution** mesh for editor picking. The **`MeshCollider`** may use a **subsampled** mesh when **`CollisionLodStep` > 1**, reducing physics triangle count without affecting `SampleHeightWorld`.
 
@@ -438,11 +438,11 @@ The `BVH` class provides spatial acceleration for collision queries. Instead of 
 
 An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-based feel. Features include:
 - **Force-based movement** with configurable ground/air drag
-- **Swimming physics** — automatic 3D underwater movement when `UnderwaterQuery` reports submersion (local water table + depth/column checks; land caves stay dry). On planets, **`SwimOnPlanet()`** runs when depth ≥ **0.35 m** — buoyancy at the water surface, tangent WASD swim, Space up, Ctrl/Crouch dive
+- **Swimming physics** — automatic 3D movement when in a water column (land caves stay dry). On planets, **`SwimOnPlanet()`** runs from `TryGetWaterColumn`: surface float on the waterline, tangent WASD, **Space** up, **Ctrl** dive (look-down + W is not dive). Releasing Ctrl hovers at depth
 - **Jump impulse** — physics-driven jumping with buffered input
 - **Natural push interactions** — momentum transfer between objects
 - **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing
-- **Cave-aware grounding** — short density probe along `-LocalUp` after penetration resolve; heightfield radius only as outer-shell fallback when the probe misses
+- **Cave-aware grounding** — short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` after penetration resolve (32 steps / 4 refine). Outer crust uses **surface mode** + `SampleCollisionRadius` on the visible leaf; heightfield radius only as last-resort fallback when the probe misses
 
 Pair with **`PlanetPlayerSpawner`** for quick play-mode setup (retries spawn up to **12 s** while waiting for renderable leaves), or add manually with `Rigidbody` + `CapsuleCollider`.
 
@@ -454,14 +454,15 @@ See the [Components Reference](03_Components_Reference.md) for full property det
 
 The planet pipeline integrates directly with runtime rigidbody and character physics:
 
-1. `Rigidbody` / `CharacterController` find the nearest active `PlanetTerrain` each tick
+1. `Rigidbody` / `CharacterController` find the nearest active `PlanetTerrain` (`FindNearestPlanetCached` — rebind after ~48 m or planet-count change)
 2. `LocalUp` is computed from planet center to body position (radial gravity)
 3. Gravity is applied along `-LocalUp` (fallback is world `-Y` when no planet is active)
-4. Grounding and walls use `Spherecast` / `RaycastDensity` along `-LocalUp` against the **same density field as meshing** (multi-scale caves, overhangs, full interior). `ResolveDensityPenetration` pushes the body out of solid. `RigidbodyPlayer` uses a **short** downward probe (capsule height + step-up + ground snap), not a full radial ray to the core, so standing on outer crust does not snap into the first air pocket below
-5. On contact, the into-surface velocity component is removed and tangent motion is preserved
-6. **Underwater:** `UnderwaterQuery` uses the **local water table** (`SampleWaterSurface`), not a single global sea radius. Requires ≥ **0.35 m** submersion below the surface and an open water column (camera above the bed, crust not blocking). Solid density and cave air below the crust skip ocean tint/swim. On planets, `RigidbodyPlayer.SwimOnPlanet()` handles movement while submerged; `Rigidbody` preserves underwater state when `IsPlanetSwimming` is true. See [Planet System — Planet water](13_Planet_System.md#planet-water).
+4. **Surface mode** (`RefreshPlanetSurfaceMode`): walk the visible-leaf stand radius when radial ≥ crust − **6 m**; leave when radial < crust − **10 m** or `CameraBelowCrust`. Collision radius comes from `FindRenderableAtDirection` (the chunk you see), not a finer prefetch leaf or a coarser neighbor peak
+5. Interior / cave grounding uses `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine) against the **same density field as meshing**. Editor brushes keep the 96/10 pick. `ResolveDensityPenetration` pushes the body out of solid. `RigidbodyPlayer` uses a **short** downward probe (capsule height + step-up + ground snap), not a full radial ray to the core
+6. On contact, the into-surface velocity component is removed and tangent motion is preserved
+7. **Underwater:** `UnderwaterQuery` uses the **local water table** (`SampleWaterSurface`), not a single global sea radius. Planet **movement** starts when the body is in a basin (`TryGetWaterColumn`; lava is not swim water). The **underwater post pass** requires the camera/head ≥ **0.28–0.30 m** under that table and `IsPlanetSubmerged`. Surface float keeps the camera above the mesh (no crust-stand eye snap). Cave air below the crust stays dry. `Rigidbody` preserves underwater state only while actually submerged. See [Planet System — Planet water](13_Planet_System.md#planet-water).
 
-`SampleSurfaceRadius` is **not** used for this contact; it remains the outer-crust radius for water/orbit/atmosphere/vegetation estimates.
+`SampleSurfaceRadius` is **not** used for this contact; it remains the outer-crust radius for water/orbit/atmosphere/vegetation estimates. `PlanetPlayerSpawner` also stands on `SampleCollisionRadius`, not an isosurface that can land in a pit.
 
 `RigidbodyPlayer` uses `Rigidbody.LocalUp` for movement and jumping:
 - Movement direction is projected onto the local tangent plane

@@ -18,6 +18,7 @@ public sealed class DensityGenerator
     readonly BiomeMap _biomeMap;
     readonly PlanetConfig _config;
     readonly PlanetNoiseCache _noise;
+    PlanetClimateAtlas? _climateAtlas;
 
     public DensityGenerator(PlanetConfig config, BiomeMap biomeMap, PlanetNoiseCache? noise = null)
     {
@@ -25,6 +26,8 @@ public sealed class DensityGenerator
         _biomeMap = biomeMap;
         _noise = noise ?? PlanetNoiseCache.Create(config);
     }
+
+    public void SetClimateAtlas(PlanetClimateAtlas? atlas) => _climateAtlas = atlas;
 
     public static float MaxAmplitude(PlanetConfig config)
     {
@@ -130,7 +133,36 @@ public sealed class DensityGenerator
             return CubeSphereMath.FaceUVToDirection(face, u, v) * r;
         };
 
-        for (int z = 0; z < n; z++)
+        // One GetBiomes per UV column, reused across radial Z. Parallel over V rows.
+        var columnBiome = new byte[n * n];
+        System.Threading.Tasks.Parallel.For(0, n, y =>
+        {
+            float v = v0 + y * vStep;
+            for (int x = 0; x < n; x++)
+            {
+                float u = u0 + x * uStep;
+                SN.Vector3 sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
+                float surfaceH = PlanetSurfaceUtility.SampleHeight(
+                    _config, _biomeMap, _noise.BiomeNoises, _noise.ErosionNoise,
+                    _noise.RidgeNoise, _noise.BasinNoise, sphereDir);
+                float alt = _biomeMap.NormalizeAltitude(surfaceH);
+                BiomeBlend[] blends = _biomeMap.GetBiomes(sphereDir, alt);
+                byte dominantMat = 0;
+                float dominantWeight = 0f;
+                for (int b = 0; b < blends.Length; b++)
+                {
+                    float w = blends[b].Weight;
+                    if (w > dominantWeight)
+                    {
+                        dominantWeight = w;
+                        dominantMat = blends[b].Biome.BiomeIndex;
+                    }
+                }
+                columnBiome[y * n + x] = dominantMat;
+            }
+        });
+
+        System.Threading.Tasks.Parallel.For(0, n, z =>
         {
             float rT = (float)z / size;
             float rDist = radialBase + rT * radialSpan;
@@ -141,11 +173,7 @@ public sealed class DensityGenerator
                 for (int x = 0; x < n; x++)
                 {
                     float u = u0 + x * uStep;
-
                     SN.Vector3 sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
-
-                    BiomeBlend[] blends = _biomeMap.GetBiomes(sphereDir);
-
                     SN.Vector3 localPos = sphereDir * rDist;
                     float density = sampler != null
                         ? sampler.SampleProceduralDensity(localPos)
@@ -161,30 +189,19 @@ public sealed class DensityGenerator
                             {
                                 Config = _config,
                                 RiverPrimary = _noise.RiverPrimary,
-                                RiverMeander = _noise.RiverMeander
+                                RiverMeander = _noise.RiverMeander,
+                                ClimateAtlas = _climateAtlas
                             }));
-                    byte dominantMat = 0;
-                    float dominantWeight = 0f;
-
-                    for (int b = 0; b < blends.Length; b++)
-                    {
-                        var biome = blends[b].Biome;
-                        float w = blends[b].Weight;
-                        if (w > dominantWeight)
-                        {
-                            dominantWeight = w;
-                            dominantMat = biome.BiomeIndex;
-                        }
-                    }
 
                     if (sampler != null)
                         density = sampler.ApplyCaveCarve(localPos, density);
 
+                    byte dominantMat = columnBiome[y * n + x];
                     chunk.Set(x, y, z, density);
                     chunk.SetMaterial(x, y, z, dominantMat);
                 }
             }
-        }
+        });
     }
 
     static float EstimateCellSize(int face, float u0, float v0, float u1, float v1, float radius, int chunkSize)

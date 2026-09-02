@@ -122,7 +122,7 @@ public sealed class PlanetVegetationSystem : Behavior
     /// <summary>
     /// When true, all land biomes share <see cref="UniversalVegetationProfileId"/> plant images.
     /// </summary>
-    [Persist] public bool UseUniversalLandVegetation { get; set; } = true;
+    [Persist] public bool UseUniversalLandVegetation { get; set; } = false;
 
     /// <summary>Shared grass/tree catalog for every land biome when <see cref="UseUniversalLandVegetation"/> is on.</summary>
     [Persist] public string UniversalVegetationProfileId { get; set; } = "Universal";
@@ -539,8 +539,9 @@ public sealed class PlanetVegetationSystem : Behavior
             if (!cellBestLeaf.TryGetValue(cellKey, out var picked))
                 continue;
             EnsureLeafEntries(picked.leaf, cellKey);
-            if (!SceneService.PlayMode || RemoveVegetationWhenVitalityExhausted)
-                UpdateLeafVitality(cellKey);
+            // Always drive vitality/regrowth from authored VegetationRegrowthRate/DecayRate
+            // (weather wetness/snow modulate harshness via ApplyWeather).
+            UpdateLeafVitality(cellKey);
             if (!fullPopulate && LastSpawnedThisUpdate >= spawnTickCap)
                 break;
         }
@@ -863,6 +864,10 @@ public sealed class PlanetVegetationSystem : Behavior
         biome = ResolveLandVegetationBiome(biome, leafDir);
         var profile = ResolveVegetationProfile(biome);
 
+        if (!PassesGrowthAndPatchiness(biome, leafDir, isTree: false) &&
+            !PassesGrowthAndPatchiness(biome, leafDir, isTree: true))
+            return;
+
         float treeDensityMul = GetAverageDensityMultiplier(profile?.TreeItems);
         float grassDensityMul = GetAverageDensityMultiplier(profile?.GrassItems);
         float leafArea01 = MathF.Max(1e-5f, MathF.Abs((leaf.U1 - leaf.U0) * (leaf.V1 - leaf.V0)));
@@ -1067,9 +1072,13 @@ public sealed class PlanetVegetationSystem : Behavior
         for (int i = entries.Count - 1; i >= 0; i--)
         {
             var e = entries[i];
-            float harshness = Math.Clamp(_snow * 0.6f + _wetness * 0.2f, 0f, 1f);
-            float growth = e.Biome.VegetationRegrowthRate * Math.Max(0.1f, e.Biome.SeasonalGrowthMultiplier) * (1f - harshness);
-            float decay = e.Biome.VegetationDecayRate * harshness;
+            // Mild wetness helps growth; heavy snow / storms still stress plants.
+            float stress = Math.Clamp(_snow * 0.65f + MathF.Max(0f, _wetness - 0.55f) * 0.35f, 0f, 1f);
+            float moistureHelp = Math.Clamp(_wetness * 0.35f, 0f, 0.35f);
+            float growth = e.Biome.VegetationRegrowthRate
+                * Math.Max(0.1f, e.Biome.SeasonalGrowthMultiplier)
+                * (1f - stress + moistureHelp);
+            float decay = e.Biome.VegetationDecayRate * stress;
             e.Vitality = Math.Clamp(e.Vitality + (growth - decay) * Math.Max(0.05f, UpdateIntervalSeconds), 0f, 1f);
 
             if (e.GameObject?.Behaviors?.OfType<Tree>().FirstOrDefault() is Tree t)
@@ -1229,6 +1238,9 @@ public sealed class PlanetVegetationSystem : Behavior
         float u = Random01(HashLeaf(leaf, 11 + seedOffset));
         float v = Random01(HashLeaf(leaf, 31 + seedOffset));
         var dir = CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
+        if (!PassesGrowthAndPatchiness(biome, dir, isTree: !isGrass))
+            return null;
+
         var planetW = GetPlanetWorldMatrix();
         float approxTreeScale = isGrass ? 1f : (biome.TreeMinScale + biome.TreeMaxScale) * 0.5f;
         float treePad = GetTreeRadialOutwardPadding(approxTreeScale);
@@ -1246,6 +1258,15 @@ public sealed class PlanetVegetationSystem : Behavior
         float yawDeg = Random01(HashLeaf(leaf, 53 + seedOffset)) * 360f;
 
         var item = ChooseItem(profile, isGrass, HashLeaf(leaf, 197 + seedOffset));
+        if (!isGrass)
+        {
+            var flora = GetComponent<PlanetFloraSpawner>();
+            if (flora != null && item != null && !flora.TryRegisterMesh(item.ModelPath))
+            {
+                go.RemoveFromParent();
+                return null;
+            }
+        }
         string prefabPath = item?.PrefabPath ?? "";
         if (string.IsNullOrWhiteSpace(prefabPath) && !string.IsNullOrWhiteSpace(item?.ModelPath) && IsPrefabPath(item.ModelPath))
             prefabPath = item.ModelPath;
@@ -3034,6 +3055,59 @@ public sealed class PlanetVegetationSystem : Behavior
         return IsAboveSea(dir);
     }
 
+    /// <summary>
+    /// Honors VegetationPatchiness (clustered noise threshold), growth temp/moisture,
+    /// and for trees slope + altitude treeline reject.
+    /// </summary>
+    bool PassesGrowthAndPatchiness(BiomeDefinition biome, SN.Vector3 dir, bool isTree)
+    {
+        if (_terrain == null) return true;
+
+        float patchiness = Math.Clamp(biome.VegetationPatchiness, 0f, 1f);
+        // Higher patchiness => larger empty gaps (clustered Poisson-style threshold).
+        float threshold = patchiness * 0.55f;
+        float n = PlanetLifeStreaming.PatchNoise01(dir, isTree ? 917 : 311);
+        if (n < threshold)
+            return false;
+
+        if (_terrain.Map != null)
+        {
+            float temp = _terrain.Map.GetTemperature(dir);
+            float moist = _terrain.Map.GetMoisture(dir);
+            float tMin = Math.Min(biome.GrowthTemperatureMin, biome.GrowthTemperatureMax);
+            float tMax = Math.Max(biome.GrowthTemperatureMin, biome.GrowthTemperatureMax);
+            float mMin = Math.Min(biome.GrowthMoistureMin, biome.GrowthMoistureMax);
+            float mMax = Math.Max(biome.GrowthMoistureMin, biome.GrowthMoistureMax);
+            if (temp < tMin || temp > tMax) return false;
+            if (moist < mMin || moist > mMax) return false;
+        }
+
+        if (!isTree) return true;
+
+        var planetW = GetPlanetWorldMatrix();
+        var radialW = LocalDirectionToWorld(planetW, dir);
+        var surfN = SamplePlanetSurfaceNormal(_terrain, planetW, dir);
+        float align = Math.Clamp(SN.Vector3.Dot(SafeNormalize(surfN, radialW), SafeNormalize(radialW, SN.Vector3.UnitY)), -1f, 1f);
+        float slopeDeg = MathF.Acos(align) * (180f / MathF.PI);
+        float minSlope = biome.TreeMinSlope;
+        float maxSlope = biome.TreeMaxSlope > 0f ? biome.TreeMaxSlope : 35f;
+        if (slopeDeg < minSlope || slopeDeg > maxSlope)
+            return false;
+
+        float sea = _terrain.Config?.SeaLevel ?? 0.35f;
+        float surf = _terrain.WorldToLocalLength(_terrain.SampleHeightfieldRadius(SafeNormalize(dir, SN.Vector3.UnitY)));
+        float amp = MathF.Max(1f, _terrain.Config?.Biomes?.Length > 0
+            ? MathF.Max(1f, biome.HeightAmplitude)
+            : 50f);
+        float alt01 = Math.Clamp((surf - sea) / amp, 0f, 1f);
+        float minAlt = biome.TreeMinAltitude;
+        float maxAlt = biome.TreeMaxAltitude > 0f ? biome.TreeMaxAltitude : 0.85f;
+        if (alt01 < minAlt || alt01 > maxAlt)
+            return false;
+
+        return true;
+    }
+
     bool IsAboveSea(SN.Vector3 dir)
     {
         if (_terrain?.Config == null) return true;
@@ -3049,7 +3123,14 @@ public sealed class PlanetVegetationSystem : Behavior
         float u = Random01(HashLeaf(leaf, 101 + seedOffset));
         float v = Random01(HashLeaf(leaf, 131 + seedOffset));
         var dir = CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
-        return _terrain!.Map?.GetDominantBiome(dir);
+        float height = 0f;
+        if (_terrain!.Config != null)
+        {
+            float r = _terrain.WorldToLocalLength(_terrain.SampleHeightfieldRadius(dir));
+            height = r - _terrain.Config.Radius;
+        }
+        float alt = _terrain.Map?.NormalizeAltitude(height) ?? -1f;
+        return _terrain.Map?.GetDominantBiome(dir, alt);
     }
 
     VegetationProfile? ResolveVegetationProfile(BiomeDefinition biome)

@@ -88,8 +88,13 @@ public sealed class PlanetDensitySampler
     {
         Config = _config,
         RiverPrimary = _riverPrimary,
-        RiverMeander = _riverMeander
+        RiverMeander = _riverMeander,
+        ClimateAtlas = _climateAtlas
     };
+
+    PlanetClimateAtlas? _climateAtlas;
+
+    public void SetClimateAtlas(PlanetClimateAtlas? atlas) => _climateAtlas = atlas;
 
     float SampleCarvedHeight(SN.Vector3 sphereDir) =>
         PlanetSurfaceUtility.SampleHeight(
@@ -118,10 +123,25 @@ public sealed class PlanetDensitySampler
     /// <summary>
     /// Same field used for transvoxel meshing: crust + worm caves + edit deltas.
     /// <paramref name="localPos"/> is planet-local unscaled space.
+    /// Outer-crust samples (within ~12 m of the procedural surface) skip cave carve
+    /// and biome lookups entirely — walking never pays worm-noise cost.
     /// </summary>
     public float SampleDensity(SN.Vector3 localPos)
     {
         float density = SampleProceduralDensity(localPos);
+        float len = localPos.Length();
+        if (len >= 1e-5f)
+        {
+            // density = len - surfaceRadius  ⇒  surfaceRadius = len - density
+            float surfaceRadius = len - density;
+            if (len >= surfaceRadius - 12f)
+            {
+                if (_editStore != null)
+                    density += _editStore.SampleDensityDelta(localPos);
+                return density;
+            }
+        }
+
         density = ApplyCaveCarve(localPos, density);
         if (_editStore != null)
             density += _editStore.SampleDensityDelta(localPos);
@@ -216,6 +236,10 @@ public sealed class PlanetDensitySampler
         if (len < 1e-5f)
             return density;
 
+        float surfaceRadiusEarly = len - density;
+        if (len >= surfaceRadiusEarly - 12f)
+            return density;
+
         var sphereDir = localPos / len;
         var blends = _biomeMap.GetBiomes(sphereDir);
 
@@ -238,9 +262,6 @@ public sealed class PlanetDensitySampler
 
         float surfaceRadius = len - density;
         float below = surfaceRadius - len;
-        // Thin roof so the outer crust stays intact; caves start just under it.
-        if (below < 12f)
-            return density;
         // Leave a tiny solid core so cube-sphere samples never collapse at r=0.
         if (len < MathF.Max(16f, _config.Radius * 0.035f))
             return density;

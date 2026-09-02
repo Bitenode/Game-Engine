@@ -4,7 +4,7 @@ using System.Collections.Generic;
 
 namespace Game_Engine.Core.Biome.Graph;
 
-public enum BiomeDataType { Float, Vec2, Vec3, BiomeLayer, Water }
+public enum BiomeDataType { Float, Vec2, Vec3, BiomeLayer, Water, Climate, Life, Scatter, Atmosphere }
 
 public sealed class BiomePort
 {
@@ -49,9 +49,17 @@ public abstract class BiomeNode
     }
 
     public float GetInputValue(int index) =>
-        Inputs.Count > index && Inputs[index].Connection != null
-            ? Inputs[index].DefaultValue[0]
-            : (Inputs.Count > index ? Inputs[index].DefaultValue[0] : 0f);
+        index >= 0 && index < Inputs.Count ? BiomeGraph.EvaluateFloat(Inputs[index]) : 0f;
+
+    public BiomePort? FindInput(string name)
+    {
+        for (int i = 0; i < Inputs.Count; i++)
+        {
+            if (Inputs[i].Name == name)
+                return Inputs[i];
+        }
+        return null;
+    }
 }
 
 // ── Coordinate Node ──
@@ -121,7 +129,7 @@ public sealed class BiomeSelectNode : BiomeNode
         AddInput("Temperature", BiomeDataType.Float, 0.5f);
         AddInput("Moisture", BiomeDataType.Float, 0.5f);
         AddInput("Altitude", BiomeDataType.Float, 0f);
-        AddOutput("BiomeIndex", BiomeDataType.Float);
+        AddOutput("BiomeIndex", BiomeDataType.Climate);
         AddOutput("BlendWeights", BiomeDataType.Vec3);
     }
 }
@@ -167,9 +175,22 @@ public sealed class BiomeLayerNode : BiomeNode
     public float FogDensityBias { get; set; } = 1f;
     public float SeasonalGrowthMultiplier { get; set; } = 1f;
 
+    /// <summary>Graph-authored height amplitude. &lt;= 0 means fall back to preset.</summary>
+    public float HeightAmplitude { get; set; } = -1f;
+    /// <summary>Graph-authored noise frequency. &lt;= 0 means fall back to preset.</summary>
+    public float NoiseFrequency { get; set; } = -1f;
+
+    public float GrowthTemperatureMin { get; set; } = 0.2f;
+    public float GrowthTemperatureMax { get; set; } = 0.8f;
+    public float GrowthMoistureMin { get; set; } = 0.2f;
+    public float GrowthMoistureMax { get; set; } = 0.9f;
+
     public BiomeLayerNode()
     {
         Name = "Biome Layer";
+        AddInput("HeightAmp", BiomeDataType.Float, -1f);
+        AddInput("NoiseFreq", BiomeDataType.Float, -1f);
+        AddInput("Erosion", BiomeDataType.Float, -1f);
         AddOutput("Layer", BiomeDataType.BiomeLayer);
     }
 }
@@ -237,20 +258,20 @@ public sealed class BiomeCaveNode : BiomeNode
 // ── Output Node (terminal) ──
 public sealed class BiomeOutputNode : BiomeNode
 {
+    public const int MaxLayerSlots = 16;
+
     public BiomeOutputNode()
     {
         Name = "Output";
         AddInput("Height", BiomeDataType.Float, 50f);
         AddInput("CaveMask", BiomeDataType.Float, 0f);
-        AddInput("Layer0", BiomeDataType.BiomeLayer);
-        AddInput("Layer1", BiomeDataType.BiomeLayer);
-        AddInput("Layer2", BiomeDataType.BiomeLayer);
-        AddInput("Layer3", BiomeDataType.BiomeLayer);
-        AddInput("Layer4", BiomeDataType.BiomeLayer);
-        AddInput("Layer5", BiomeDataType.BiomeLayer);
-        AddInput("Layer6", BiomeDataType.BiomeLayer);
-        AddInput("Layer7", BiomeDataType.BiomeLayer);
+        for (int i = 0; i < MaxLayerSlots; i++)
+            AddInput($"Layer{i}", BiomeDataType.BiomeLayer);
         AddInput("Water", BiomeDataType.Water);
+        AddInput("Climate", BiomeDataType.Climate);
+        AddInput("Life", BiomeDataType.Life);
+        AddInput("Scatter", BiomeDataType.Scatter);
+        AddInput("Atmosphere", BiomeDataType.Atmosphere);
     }
 }
 
@@ -411,5 +432,341 @@ public sealed class BiomeWaterMergeNode : BiomeNode
         AddInput("A", BiomeDataType.Water);
         AddInput("B", BiomeDataType.Water);
         AddOutput("Water", BiomeDataType.Water);
+    }
+}
+
+// ── Geology: Continent ──
+public sealed class BiomeContinentNode : BiomeNode
+{
+    public float Frequency { get; set; } = 0.0015f;
+    public float Threshold { get; set; } = 0.45f;
+    public float Strength { get; set; } = 1f;
+    public int Seed { get; set; }
+
+    public BiomeContinentNode()
+    {
+        Name = "Continent";
+        AddInput("Frequency", BiomeDataType.Float, 0.0015f);
+        AddInput("Threshold", BiomeDataType.Float, 0.45f);
+        AddOutput("LandMask", BiomeDataType.Float);
+    }
+}
+
+// ── Geology: Crater ──
+public sealed class BiomeCraterNode : BiomeNode
+{
+    public float Radius { get; set; } = 0.08f;
+    public float Depth { get; set; } = 25f;
+    public float RimHeight { get; set; } = 8f;
+    public float Density { get; set; } = 0.35f;
+    public int Seed { get; set; }
+
+    public BiomeCraterNode()
+    {
+        Name = "Crater";
+        AddInput("Radius", BiomeDataType.Float, 0.08f);
+        AddInput("Depth", BiomeDataType.Float, 25f);
+        AddOutput("HeightDelta", BiomeDataType.Float);
+    }
+}
+
+// ── Geology: Volcano ──
+public sealed class BiomeVolcanoNode : BiomeNode
+{
+    public float Radius { get; set; } = 0.06f;
+    public float Height { get; set; } = 80f;
+    public float CalderaRadius { get; set; } = 0.015f;
+    public string LavaBiomeName { get; set; } = "Volcanic";
+    public float Density { get; set; } = 0.2f;
+    public int Seed { get; set; }
+
+    public BiomeVolcanoNode()
+    {
+        Name = "Volcano";
+        AddInput("Radius", BiomeDataType.Float, 0.06f);
+        AddInput("Height", BiomeDataType.Float, 80f);
+        AddOutput("HeightDelta", BiomeDataType.Float);
+    }
+}
+
+// ── Geology: Cliff ──
+public sealed class BiomeCliffNode : BiomeNode
+{
+    public float Strength { get; set; } = 1.5f;
+    public float Frequency { get; set; } = 0.01f;
+    public float SlopeBias { get; set; } = 0.6f;
+
+    public BiomeCliffNode()
+    {
+        Name = "Cliff";
+        AddInput("Strength", BiomeDataType.Float, 1.5f);
+        AddInput("Frequency", BiomeDataType.Float, 0.01f);
+        AddOutput("Escarpment", BiomeDataType.Float);
+    }
+}
+
+// ── Geology: Domain Warp ──
+public sealed class BiomeDomainWarpNode : BiomeNode
+{
+    public float Strength { get; set; } = 0.15f;
+    public float Frequency { get; set; } = 0.004f;
+    public int Octaves { get; set; } = 3;
+    public int Seed { get; set; }
+
+    public BiomeDomainWarpNode()
+    {
+        Name = "Domain Warp";
+        AddInput("Value", BiomeDataType.Float, 0f);
+        AddInput("Strength", BiomeDataType.Float, 0.15f);
+        AddOutput("Warped", BiomeDataType.Float);
+    }
+}
+
+// ── Climate: Climate ──
+public sealed class BiomeClimateNode : BiomeNode
+{
+    public float LatitudeWeight { get; set; } = 1f;
+    public float AltitudeLapse { get; set; } = 0.45f;
+    public float MoistureWeight { get; set; } = 1f;
+    public float NoiseWeight { get; set; } = 0.12f;
+
+    public BiomeClimateNode()
+    {
+        Name = "Climate";
+        AddInput("Temperature", BiomeDataType.Float, 0.5f);
+        AddInput("Moisture", BiomeDataType.Float, 0.5f);
+        AddInput("Altitude", BiomeDataType.Float, 0.35f);
+        AddOutput("Climate", BiomeDataType.Climate);
+    }
+}
+
+// ── Climate: Rain Shadow ──
+public sealed class BiomeRainShadowNode : BiomeNode
+{
+    public float Strength { get; set; } = 0.55f;
+    public float Width { get; set; } = 0.12f;
+    public float RidgeFrequency { get; set; } = 0.008f;
+
+    public BiomeRainShadowNode()
+    {
+        Name = "Rain Shadow";
+        AddInput("Moisture", BiomeDataType.Float, 0.5f);
+        AddInput("Strength", BiomeDataType.Float, 0.55f);
+        AddOutput("Moisture", BiomeDataType.Float);
+    }
+}
+
+// ── Climate: Season ──
+public sealed class BiomeSeasonNode : BiomeNode
+{
+    public float GrowthMultiplier { get; set; } = 1f;
+    public float SnowLineAltitude { get; set; } = 0.72f;
+    public float SeasonPhase { get; set; }
+
+    public BiomeSeasonNode()
+    {
+        Name = "Season";
+        AddInput("Phase", BiomeDataType.Float, 0f);
+        AddOutput("GrowthMul", BiomeDataType.Float);
+        AddOutput("SnowLine", BiomeDataType.Float);
+    }
+}
+
+// ── Climate: Latitude Band ──
+public sealed class BiomeLatitudeBandNode : BiomeNode
+{
+    public float MinLatitude { get; set; } = -0.35f;
+    public float MaxLatitude { get; set; } = 0.35f;
+    public float TemperatureBias { get; set; }
+    public float MoistureBias { get; set; }
+    public string BandName { get; set; } = "Temperate";
+
+    public BiomeLatitudeBandNode()
+    {
+        Name = "Latitude Band";
+        AddOutput("Mask", BiomeDataType.Float);
+        AddOutput("Climate", BiomeDataType.Climate);
+    }
+}
+
+// ── Life: Flora Layer ──
+public sealed class BiomeFloraLayerNode : BiomeNode
+{
+    public string ProfileId { get; set; } = "Forest";
+    public string TargetBiome { get; set; } = "";
+    public float GrassDensity { get; set; } = 0.8f;
+    public float BushDensity { get; set; } = 0.25f;
+    public float TreeDensity { get; set; } = 0.6f;
+    public float Patchiness { get; set; } = 0.45f;
+    public float MinSlope { get; set; }
+    public float MaxSlope { get; set; } = 35f;
+    public float MinAltitude { get; set; }
+    public float MaxAltitude { get; set; } = 0.85f;
+    public float GrowthTemperatureMin { get; set; } = 0.2f;
+    public float GrowthTemperatureMax { get; set; } = 0.8f;
+    public float GrowthMoistureMin { get; set; } = 0.2f;
+    public float GrowthMoistureMax { get; set; } = 0.9f;
+
+    public BiomeFloraLayerNode()
+    {
+        Name = "Flora Layer";
+        AddInput("Mask", BiomeDataType.Float, 1f);
+        AddOutput("Life", BiomeDataType.Life);
+    }
+}
+
+// ── Life: Scatter Layer ──
+public sealed class BiomeScatterLayerNode : BiomeNode
+{
+    public string ProfileId { get; set; } = "Default";
+    public string TargetBiome { get; set; } = "";
+    public float RockDensity { get; set; } = 0.4f;
+    public float DebrisDensity { get; set; } = 0.2f;
+    public float MinSlope { get; set; }
+    public float MaxSlope { get; set; } = 55f;
+    public float MinAltitude { get; set; }
+    public float MaxAltitude { get; set; } = 1f;
+    public string ScatterType { get; set; } = "Rock";
+
+    public BiomeScatterLayerNode()
+    {
+        Name = "Scatter Layer";
+        AddInput("Mask", BiomeDataType.Float, 1f);
+        AddOutput("Scatter", BiomeDataType.Scatter);
+    }
+}
+
+// ── Life: Fauna Layer ──
+public sealed class BiomeFaunaLayerNode : BiomeNode
+{
+    public string SpeciesId { get; set; } = "Deer";
+    public string TargetBiome { get; set; } = "";
+    public float HerdSpacing { get; set; } = 18f;
+    public float Density { get; set; } = 0.15f;
+    public bool Diurnal { get; set; } = true;
+    public string BiomeMask { get; set; } = "";
+
+    public BiomeFaunaLayerNode()
+    {
+        Name = "Fauna Layer";
+        AddInput("Mask", BiomeDataType.Float, 1f);
+        AddOutput("Life", BiomeDataType.Life);
+    }
+}
+
+// ── Life: Underwater Life ──
+public sealed class BiomeUnderwaterLifeNode : BiomeNode
+{
+    public string ProfileId { get; set; } = "Ocean";
+    public float KelpDensity { get; set; } = 0.4f;
+    public float CoralDensity { get; set; } = 0.2f;
+    public float FishDensity { get; set; } = 0.25f;
+    public float MinDepth { get; set; } = 2f;
+    public float MaxDepth { get; set; } = 80f;
+    public bool RequireWaterPlanet { get; set; }
+
+    public BiomeUnderwaterLifeNode()
+    {
+        Name = "Underwater Life";
+        AddInput("Mask", BiomeDataType.Float, 1f);
+        AddOutput("Life", BiomeDataType.Life);
+    }
+}
+
+// ── Life: Resource Vein ──
+public sealed class BiomeResourceVeinNode : BiomeNode
+{
+    public string ResourceId { get; set; } = "Ore";
+    public float Density { get; set; } = 0.35f;
+    public float Frequency { get; set; } = 0.025f;
+    public float CaveOnlyBias { get; set; } = 1f;
+    public int Seed { get; set; }
+
+    public BiomeResourceVeinNode()
+    {
+        Name = "Resource Vein";
+        AddInput("CaveMask", BiomeDataType.Float, 1f);
+        AddOutput("Density", BiomeDataType.Float);
+    }
+}
+
+// ── Atmosphere ──
+public sealed class BiomeAtmosphereNode : BiomeNode
+{
+    public string Preset { get; set; } = "EarthLike";
+    public float RayleighStrength { get; set; } = 1f;
+    public float MieStrength { get; set; } = 0.3f;
+    public float DayLengthMinutes { get; set; } = 20f;
+    public float AtmosphereHeight { get; set; } = 220f;
+
+    public BiomeAtmosphereNode()
+    {
+        Name = "Atmosphere";
+        AddOutput("Atmosphere", BiomeDataType.Atmosphere);
+    }
+}
+
+public sealed class BiomeWeatherProfileNode : BiomeNode
+{
+    public string ProfileId { get; set; } = "Temperate";
+    public float RainChance { get; set; } = 0.15f;
+    public float SnowChance { get; set; } = 0.04f;
+    public float StormChance { get; set; } = 0.01f;
+    public float WindBias { get; set; } = 1f;
+    public float CloudCoverageBias { get; set; } = 1f;
+    public float FogDensityBias { get; set; } = 1f;
+
+    public BiomeWeatherProfileNode()
+    {
+        Name = "Weather Profile";
+        AddOutput("Climate", BiomeDataType.Climate);
+    }
+}
+
+public sealed class BiomeCloudLayerNode : BiomeNode
+{
+    public float Coverage { get; set; } = 0.46f;
+    public float Density { get; set; } = 1f;
+    public float BaseHeight { get; set; } = 120f;
+    public float TopHeight { get; set; } = 220f;
+    public string CloudType { get; set; } = "Cumulus";
+
+    public BiomeCloudLayerNode()
+    {
+        Name = "Cloud Layer";
+        AddInput("Coverage", BiomeDataType.Float, 0.46f);
+        AddOutput("Atmosphere", BiomeDataType.Atmosphere);
+    }
+}
+
+// ── Water extras ──
+public sealed class BiomeIceSheetNode : BiomeNode
+{
+    public float MaxTemperature { get; set; } = 0.28f;
+    public float Thickness { get; set; } = 12f;
+    public float Coverage { get; set; } = 0.7f;
+    public string TargetWaterKind { get; set; } = "Ocean";
+
+    public BiomeIceSheetNode()
+    {
+        Name = "Ice Sheet";
+        AddInput("Temperature", BiomeDataType.Float, 0.2f);
+        AddOutput("Water", BiomeDataType.Water);
+    }
+}
+
+public sealed class BiomeWetlandNode : BiomeNode
+{
+    public float FloodDepth { get; set; } = 1.5f;
+    public float ReedDensity { get; set; } = 0.55f;
+    public float MoistureBoost { get; set; } = 0.35f;
+    public string TargetBiome { get; set; } = "Grassland";
+
+    public BiomeWetlandNode()
+    {
+        Name = "Wetland";
+        AddInput("Moisture", BiomeDataType.Float, 0.7f);
+        AddOutput("Water", BiomeDataType.Water);
+        AddOutput("Life", BiomeDataType.Life);
     }
 }

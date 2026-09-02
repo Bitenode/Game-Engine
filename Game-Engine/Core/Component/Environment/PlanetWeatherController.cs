@@ -78,7 +78,7 @@ public sealed class PlanetWeatherController : Behavior
     float _precipVisibilityAccum;
     float _precipHiddenAccum;
     float _seasonT;
-    float _stateHoldRemaining;
+    float _stateHoldUntil;
     bool _precipitationVisible = true;
     string _lastDominantBiomeName = "";
     float _lastDominantBiomeWeight;
@@ -117,6 +117,7 @@ public sealed class PlanetWeatherController : Behavior
         _precipVisibilityAccum = 0f;
         _precipHiddenAccum = 0f;
         _precipitationVisible = true;
+        _stateHoldUntil = 0f;
         CaptureBaselines();
     }
 
@@ -144,11 +145,15 @@ public sealed class PlanetWeatherController : Behavior
         PollPrecipitationVisibility(frameDt);
 
         _updateAccum += frameDt;
-        if (_updateAccum < Math.Max(0.05f, UpdateIntervalSeconds))
-            return;
-
-        _updateAccum = 0f;
-        StepWeather();
+        if (_updateAccum >= Math.Max(0.05f, UpdateIntervalSeconds))
+        {
+            _updateAccum = 0f;
+            StepWeather();
+        }
+        else
+        {
+            PublishRuntimeWeather(1f);
+        }
     }
 
     public override void OnDestroy()
@@ -167,7 +172,12 @@ public sealed class PlanetWeatherController : Behavior
         var cfg = _terrain!.Config!;
         var camPos = ResolveCameraPosition();
         if (!_terrain.TryGetBiomeBlendsAtWorldPos(camPos, out var blends) || blends.Length == 0)
+        {
+            ApplyHeldWeatherIntensities(Math.Max(UpdateIntervalSeconds, 0.05f), 0.5f, 1f);
+            ApplyPrecipitation(camPos);
+            ApplyVegetationCoupling(1f, 1f);
             return;
+        }
 
         float avgRain = 0f, avgSnow = 0f, avgStorm = 0f, avgWindBias = 1f, avgCloudBias = 1f, avgFogBias = 1f;
         float avgTempCenter = 0.5f, growthMul = 1f;
@@ -212,33 +222,51 @@ public sealed class PlanetWeatherController : Behavior
         else if (choice < 0.58f + avgCloudBias * 0.14f)
             target = PlanetWeatherState.Cloudy;
 
-        float dt = Math.Max(UpdateIntervalSeconds, 0.05f);
-        _stateHoldRemaining = Math.Max(0f, _stateHoldRemaining - dt);
-        if (_stateHoldRemaining <= 0f && target != CurrentState)
+        float now = Time.time;
+        if (now >= _stateHoldUntil && target != CurrentState)
         {
             CurrentState = target;
-            _stateHoldRemaining = GetStateHoldDuration(target);
+            _stateHoldUntil = now + GetStateHoldDuration(target);
+            StateBlend = 0f;
+            if (CurrentState is PlanetWeatherState.Rain or PlanetWeatherState.Storm)
+                Wetness = Math.Max(Wetness, 0.9f);
+            if (CurrentState == PlanetWeatherState.Snow)
+                SnowCoverage = Math.Max(SnowCoverage, 0.85f);
         }
 
+        float dt = Math.Max(UpdateIntervalSeconds, 0.05f);
         float blendRate = Math.Max(0.05f, StateBlendSpeed);
         StateBlend = Math.Clamp(StateBlend + blendRate * dt, 0f, 1f);
 
-        float rainTarget = target is PlanetWeatherState.Rain or PlanetWeatherState.Storm ? 1f : 0f;
-        float snowTarget = target == PlanetWeatherState.Snow ? 1f : 0f;
-        RainIntensity = Damp(RainIntensity, rainTarget, 5.5f, dt);
-        SnowIntensity = Damp(SnowIntensity, snowTarget, 5.5f, dt);
-        Cloudiness = Damp(Cloudiness, target == PlanetWeatherState.Clear ? 0.25f : (target == PlanetWeatherState.Cloudy ? 0.55f : 0.88f), 2.6f, dt);
-        Wetness = Damp(Wetness, Math.Clamp(RainIntensity * 0.85f + (target == PlanetWeatherState.Storm ? 0.35f : 0f), 0f, 1f), 1.8f, dt);
-        SnowCoverage = Damp(SnowCoverage, Math.Clamp(SnowIntensity * (0.5f + coldness * 0.5f), 0f, 1f), 0.7f * Math.Max(0.35f, growthMul), dt);
+        ApplyHeldWeatherIntensities(dt, coldness, growthMul);
 
-        if (DriveAtmosphere) ApplyAtmosphere(avgCloudBias);
+        bool submerged = UnderwaterQuery.AnyPlayerPlanetSubmerged();
+        if (DriveAtmosphere) ApplyAtmosphere(avgCloudBias, submerged);
         if (DriveWind) ApplyWind(cfg, avgWindBias);
-        ApplyPostFog(avgFogBias);
+        ApplyPostFog(avgFogBias, submerged);
         ApplyPrecipitation(camPos);
         ApplyVegetationCoupling(growthMul, avgWindBias);
     }
 
-    void ApplyAtmosphere(float cloudBias)
+    void ApplyHeldWeatherIntensities(float dt, float coldness, float growthMul)
+    {
+        bool raining = CurrentState is PlanetWeatherState.Rain or PlanetWeatherState.Storm;
+        bool snowing = CurrentState == PlanetWeatherState.Snow;
+        float rainTarget = raining ? 1f : 0f;
+        float snowTarget = snowing ? 1f : 0f;
+        RainIntensity = raining ? 1f : Damp(RainIntensity, rainTarget, 5.5f, dt);
+        SnowIntensity = snowing ? 1f : Damp(SnowIntensity, snowTarget, 5.5f, dt);
+        Cloudiness = Damp(Cloudiness, CurrentState == PlanetWeatherState.Clear ? 0.25f : (CurrentState == PlanetWeatherState.Cloudy ? 0.55f : 0.88f), 2.6f, dt);
+        Wetness = raining
+            ? Math.Max(Wetness, 0.9f)
+            : Damp(Wetness, 0f, 0.7f, dt);
+        SnowCoverage = snowing
+            ? Math.Max(SnowCoverage, 0.85f)
+            : Damp(SnowCoverage, 0f, 0.45f * Math.Max(0.35f, growthMul), dt);
+        _ = coldness;
+    }
+
+    void ApplyAtmosphere(float cloudBias, bool submerged = false)
     {
         _atmo ??= gameObject?.Behaviors.OfType<PlanetAtmosphere>().FirstOrDefault();
         if (_atmo == null) return;
@@ -255,7 +283,7 @@ public sealed class PlanetWeatherController : Behavior
         _atmo.CloudDensity = Damp(_atmo.CloudDensity, denTarget, 2.0f, Math.Max(UpdateIntervalSeconds, 0.05f));
         _atmo.CloudSpeed = Math.Clamp(_baseAtmoCloudSpeed + precip * 0.035f, 0.005f, 0.16f);
 
-        if (DriveAtmosphereLighting)
+        if (DriveAtmosphereLighting && !submerged)
         {
             // Keep cloud cover from crushing scene brightness: mild sun attenuation + slight sky fill boost.
             float sunMul = 1f - (weatherCloud * 0.35f + precip * 0.12f) * lightInf;
@@ -263,6 +291,11 @@ public sealed class PlanetWeatherController : Behavior
             float ambientTarget = Math.Clamp(_baseAtmoAmbient + weatherCloud * 0.03f * lightInf, 0.08f, 0.40f);
             _atmo.SunIntensity = Damp(_atmo.SunIntensity, sunTarget, 2.0f, Math.Max(UpdateIntervalSeconds, 0.05f));
             _atmo.Ambient = Damp(_atmo.Ambient, ambientTarget, 2.2f, Math.Max(UpdateIntervalSeconds, 0.05f));
+        }
+        else if (submerged && DriveAtmosphereLighting)
+        {
+            _atmo.SunIntensity = _baseAtmoSunIntensity;
+            _atmo.Ambient = _baseAtmoAmbient;
         }
         else
         {
@@ -281,17 +314,33 @@ public sealed class PlanetWeatherController : Behavior
         _effectsApplied = true;
     }
 
-    void ApplyPostFog(float fogBias)
+    void ApplyPostFog(float fogBias, bool submerged = false)
     {
         if (!DrivePostProcessFog) return;
         _post ??= PostProcessVolume.GetActive();
         if (_post == null) return;
 
+        if (submerged)
+        {
+            if (_capturedPost)
+            {
+                _post.FogEnabled = _basePostFogEnabled;
+                _post.FogDensity = _basePostFogDensity;
+                _post.FogStart = _basePostFogStart;
+                _post.FogEnd = _basePostFogEnd;
+                _post.VolumetricFogEnabled = _basePostVolFogEnabled;
+                _post.VolumetricFogDensity = _basePostVolFogDensity;
+                _post.VolumetricFogMaxDistance = _basePostVolFogMaxDistance;
+            }
+            return;
+        }
+
         _post.FogEnabled = true;
+        _post.FogColor = new SN.Vector3(0.62f, 0.64f, 0.66f);
         _post.FogDensity = Math.Clamp(0.004f + Cloudiness * 0.012f * fogBias, 0.0005f, 0.04f);
         _post.FogStart = 8f;
         _post.FogEnd = 320f - Cloudiness * 90f;
-        _post.VolumetricFogEnabled = Cloudiness > 0.45f;
+        _post.VolumetricFogEnabled = false;
         _post.VolumetricFogDensity = Math.Clamp(_post.FogDensity * 0.45f, 0.0005f, 0.02f);
         _post.VolumetricFogMaxDistance = Math.Clamp(360f - Cloudiness * 100f, 120f, 360f);
         _effectsApplied = true;
@@ -440,11 +489,12 @@ public sealed class PlanetWeatherController : Behavior
         var center = camPos + up * (Math.Max(0f, PrecipitationHeight) + heightSpan * 0.5f);
         var toVolume = center - camPos;
         float distSq = toVolume.LengthSquared();
-        float maxDist = Math.Max(24f, PrecipitationVisibilityMaxDistance) + radius;
-        if (distSq > maxDist * maxDist)
-            return false;
-
         float dist = MathF.Sqrt(Math.Max(1e-8f, distSq));
+
+        // Rain/snow follow the camera just above the player. A FOV test treats
+        // "straight up the radial" as off-screen and killed rain in under a second.
+        if (dist <= Math.Max(PrecipitationHeight, 8f) + radius)
+            return true;
         float near = Math.Max(0.01f, camera.Near);
         float far = Math.Max(near + 0.1f, camera.Far);
         if (dist + radius < near || dist - radius > far)
@@ -508,6 +558,11 @@ public sealed class PlanetWeatherController : Behavior
         if (_vegetation != null)
             _vegetation.ApplyWeather(Wetness, SnowCoverage, Math.Max(0.25f, windBias));
 
+        PublishRuntimeWeather(growthMul);
+    }
+
+    void PublishRuntimeWeather(float growthMul)
+    {
         BiomeWeatherRuntime.Wetness = Wetness;
         BiomeWeatherRuntime.SnowCoverage = SnowCoverage;
         BiomeWeatherRuntime.CloudTint = SN.Vector3.Lerp(new SN.Vector3(1f, 1f, 1f), new SN.Vector3(0.88f, 0.92f, 1f), Cloudiness)

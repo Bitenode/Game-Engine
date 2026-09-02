@@ -15,7 +15,8 @@ public enum PlanetWaterKind
     Ocean = 1,
     Lake = 2,
     Pond = 3,
-    River = 4
+    River = 4,
+    Lava = 5
 }
 
 public sealed class PlanetWaterBody
@@ -109,4 +110,5 @@ public sealed class PlanetWaterCarveContext
     public PlanetConfig Config { get; init; } = null!;
     public Noise.SimplexNoise? RiverPrimary { get; init; }
     public Noise.SimplexNoise? RiverMeander { get; init; }
+    public PlanetClimateAtlas? ClimateAtlas { get; init; }
 }

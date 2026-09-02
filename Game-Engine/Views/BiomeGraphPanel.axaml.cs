@@ -381,6 +381,16 @@ public partial class BiomeGraphPanel : UserControl
         BiomeWaterPathNode => Color.Parse("#2D4555"),
         BiomeShoreNode => Color.Parse("#554D2D"),
         BiomeWaterMergeNode => Color.Parse("#3D3D55"),
+        BiomeContinentNode or BiomeCraterNode or BiomeVolcanoNode or BiomeCliffNode or BiomeDomainWarpNode
+            => Color.Parse("#44382D"),
+        BiomeClimateNode or BiomeRainShadowNode or BiomeSeasonNode or BiomeLatitudeBandNode
+            => Color.Parse("#2D4440"),
+        BiomeFloraLayerNode or BiomeFaunaLayerNode or BiomeUnderwaterLifeNode or BiomeResourceVeinNode
+            => Color.Parse("#2D442D"),
+        BiomeScatterLayerNode => Color.Parse("#3D3D2D"),
+        BiomeAtmosphereNode or BiomeWeatherProfileNode or BiomeCloudLayerNode
+            => Color.Parse("#2D3544"),
+        BiomeIceSheetNode or BiomeWetlandNode => Color.Parse("#2D4050"),
         _ => Color.Parse("#2D2D44"),
     };
 
@@ -399,6 +409,16 @@ public partial class BiomeGraphPanel : UserControl
         BiomeWaterPathNode => Color.Parse("#4088AA"),
         BiomeShoreNode => Color.Parse("#AA8840"),
         BiomeWaterMergeNode => Color.Parse("#6666AA"),
+        BiomeContinentNode or BiomeCraterNode or BiomeVolcanoNode or BiomeCliffNode or BiomeDomainWarpNode
+            => Color.Parse("#886644"),
+        BiomeClimateNode or BiomeRainShadowNode or BiomeSeasonNode or BiomeLatitudeBandNode
+            => Color.Parse("#448866"),
+        BiomeFloraLayerNode or BiomeFaunaLayerNode or BiomeUnderwaterLifeNode or BiomeResourceVeinNode
+            => Color.Parse("#448844"),
+        BiomeScatterLayerNode => Color.Parse("#888844"),
+        BiomeAtmosphereNode or BiomeWeatherProfileNode or BiomeCloudLayerNode
+            => Color.Parse("#446688"),
+        BiomeIceSheetNode or BiomeWetlandNode => Color.Parse("#4488AA"),
         _ => Color.Parse("#404060"),
     };
 
@@ -408,6 +428,10 @@ public partial class BiomeGraphPanel : UserControl
     {
         BiomeDataType.Water => Color.Parse("#44CCDD"),
         BiomeDataType.BiomeLayer => Color.Parse("#66CC66"),
+        BiomeDataType.Climate => Color.Parse("#88CCFF"),
+        BiomeDataType.Life => Color.Parse("#88DD66"),
+        BiomeDataType.Scatter => Color.Parse("#DDBB55"),
+        BiomeDataType.Atmosphere => Color.Parse("#AAAADD"),
         _ => isOutput ? Color.Parse("#FF8844") : Color.Parse("#4488FF"),
     };
 
@@ -669,6 +693,25 @@ public partial class BiomeGraphPanel : UserControl
             16 => new BiomeWaterPathNode(),
             17 => new BiomeShoreNode(),
             18 => new BiomeWaterMergeNode(),
+            19 => new BiomeContinentNode(),
+            20 => new BiomeCraterNode(),
+            21 => new BiomeVolcanoNode(),
+            22 => new BiomeCliffNode(),
+            23 => new BiomeDomainWarpNode(),
+            24 => new BiomeClimateNode(),
+            25 => new BiomeRainShadowNode(),
+            26 => new BiomeSeasonNode(),
+            27 => new BiomeLatitudeBandNode(),
+            28 => new BiomeFloraLayerNode(),
+            29 => new BiomeScatterLayerNode(),
+            30 => new BiomeFaunaLayerNode(),
+            31 => new BiomeUnderwaterLifeNode(),
+            32 => new BiomeResourceVeinNode(),
+            33 => new BiomeAtmosphereNode(),
+            34 => new BiomeWeatherProfileNode(),
+            35 => new BiomeCloudLayerNode(),
+            36 => new BiomeIceSheetNode(),
+            37 => new BiomeWetlandNode(),
             _ => new BiomeNoiseNode(),
         };
 
@@ -748,7 +791,7 @@ public partial class BiomeGraphPanel : UserControl
         }
 
         var result = _graph.Compile();
-        Core.Log.Info($"[BiomeGraph] Compiled: Height={result.HeightAmplitude}, Caves={result.EnableCaves}, Layers={result.Layers.Length}");
+        Core.Log.Info($"[BiomeGraph] Compiled: Height={result.HeightAmplitude}, Caves={result.EnableCaves}, Layers={result.Layers.Length}, Select={result.UseBiomeSelect}, Climate={result.HasClimatePort}");
         for (int i = 0; i < result.Layers.Length; i++)
         {
             var ly = result.Layers[i];
@@ -868,7 +911,12 @@ public partial class BiomeGraphPanel : UserControl
             noiseScale: 2f,
             tempLatWeight: result.TemperatureLatWeight,
             tempNoiseWeight: result.TemperatureNoiseWeight,
-            moistureNoiseScale: result.MoistureNoiseScale);
+            moistureNoiseScale: result.MoistureNoiseScale,
+            altitudeWeight: result.UseBiomeSelect ? result.SelectAltitudeWeight : 0.3f,
+            altitudeSeaLevel: result.AltitudeSeaLevel,
+            altitudeMaxHeight: result.AltitudeMaxHeight,
+            heightAmplitudeRef: result.HeightAmplitude);
+        biomeMap.UseSelectClassifier = result.UseBiomeSelect;
 
         var pixelData = new byte[width * height * 4];
 
@@ -885,7 +933,7 @@ public partial class BiomeGraphPanel : UserControl
                 float cz = cxz * MathF.Sin(lon);
 
                 var dir = new System.Numerics.Vector3(cx, cy, cz);
-                var blends = biomeMap.GetBiomes(dir);
+                var blends = biomeMap.GetBiomes(dir, result.CompiledAltitudeHint);
 
                 float r = 0, g = 0, b = 0;
                 for (int bi = 0; bi < blends.Length; bi++)
@@ -1251,6 +1299,8 @@ public partial class BiomeGraphPanel : UserControl
                 AddPropFilePicker("Under Norm", n.UnderNormalPath, v => n.UnderNormalPath = v);
                 AddPropFloat("Under Tiling", n.UnderTiling, v => n.UnderTiling = v);
                 AddPropSeparator("Terrain Shaping");
+                AddPropFloat("Height Amp", n.HeightAmplitude, v => n.HeightAmplitude = v);
+                AddPropFloat("Noise Freq", n.NoiseFrequency, v => n.NoiseFrequency = v);
                 AddPropCombo("Noise Mode", new[] { "FBM", "Ridged", "Billow" }, n.NoiseMode, v => n.NoiseMode = v);
                 AddPropInt("Octaves", n.NoiseOctaves, v => n.NoiseOctaves = v);
                 AddPropFloat("Erosion Str", n.ErosionStrength, v => n.ErosionStrength = v);
@@ -1348,6 +1398,145 @@ public partial class BiomeGraphPanel : UserControl
                 AddPropFloat("Shore Width", n.ShoreWidth, v => n.ShoreWidth = v);
                 AddPropText("Texture Path", n.TexturePath, v => n.TexturePath = v);
                 AddPropFloat("Tiling", n.Tiling, v => n.Tiling = v);
+                break;
+            case BiomeContinentNode n:
+                AddPropFloat("Frequency", n.Frequency, v => n.Frequency = v);
+                AddPropFloat("Threshold", n.Threshold, v => n.Threshold = v);
+                AddPropFloat("Strength", n.Strength, v => n.Strength = v);
+                AddPropInt("Seed", n.Seed, v => n.Seed = v);
+                break;
+            case BiomeCraterNode n:
+                AddPropFloat("Radius", n.Radius, v => n.Radius = v);
+                AddPropFloat("Depth", n.Depth, v => n.Depth = v);
+                AddPropFloat("Rim Height", n.RimHeight, v => n.RimHeight = v);
+                AddPropFloat("Density", n.Density, v => n.Density = v);
+                AddPropInt("Seed", n.Seed, v => n.Seed = v);
+                break;
+            case BiomeVolcanoNode n:
+                AddPropFloat("Radius", n.Radius, v => n.Radius = v);
+                AddPropFloat("Height", n.Height, v => n.Height = v);
+                AddPropFloat("Caldera", n.CalderaRadius, v => n.CalderaRadius = v);
+                AddPropText("Lava Biome", n.LavaBiomeName, v => n.LavaBiomeName = v);
+                AddPropFloat("Density", n.Density, v => n.Density = v);
+                AddPropInt("Seed", n.Seed, v => n.Seed = v);
+                break;
+            case BiomeCliffNode n:
+                AddPropFloat("Strength", n.Strength, v => n.Strength = v);
+                AddPropFloat("Frequency", n.Frequency, v => n.Frequency = v);
+                AddPropFloat("Slope Bias", n.SlopeBias, v => n.SlopeBias = v);
+                break;
+            case BiomeDomainWarpNode n:
+                AddPropFloat("Strength", n.Strength, v => n.Strength = v);
+                AddPropFloat("Frequency", n.Frequency, v => n.Frequency = v);
+                AddPropInt("Octaves", n.Octaves, v => n.Octaves = v);
+                AddPropInt("Seed", n.Seed, v => n.Seed = v);
+                break;
+            case BiomeClimateNode n:
+                AddPropFloat("Lat Weight", n.LatitudeWeight, v => n.LatitudeWeight = v);
+                AddPropFloat("Alt Lapse", n.AltitudeLapse, v => n.AltitudeLapse = v);
+                AddPropFloat("Moisture W", n.MoistureWeight, v => n.MoistureWeight = v);
+                AddPropFloat("Noise Weight", n.NoiseWeight, v => n.NoiseWeight = v);
+                break;
+            case BiomeRainShadowNode n:
+                AddPropFloat("Strength", n.Strength, v => n.Strength = v);
+                AddPropFloat("Width", n.Width, v => n.Width = v);
+                AddPropFloat("Ridge Freq", n.RidgeFrequency, v => n.RidgeFrequency = v);
+                break;
+            case BiomeSeasonNode n:
+                AddPropFloat("Growth Mul", n.GrowthMultiplier, v => n.GrowthMultiplier = v);
+                AddPropFloat("Snow Line", n.SnowLineAltitude, v => n.SnowLineAltitude = v);
+                AddPropFloat("Phase", n.SeasonPhase, v => n.SeasonPhase = v);
+                break;
+            case BiomeLatitudeBandNode n:
+                AddPropFloat("Min Lat", n.MinLatitude, v => n.MinLatitude = v);
+                AddPropFloat("Max Lat", n.MaxLatitude, v => n.MaxLatitude = v);
+                AddPropFloat("Temp Bias", n.TemperatureBias, v => n.TemperatureBias = v);
+                AddPropFloat("Moist Bias", n.MoistureBias, v => n.MoistureBias = v);
+                AddPropText("Band Name", n.BandName, v => n.BandName = v);
+                break;
+            case BiomeFloraLayerNode n:
+                AddPropText("Profile Id", n.ProfileId, v => n.ProfileId = v);
+                AddPropText("Target Biome", n.TargetBiome, v => n.TargetBiome = v);
+                AddPropFloat("Grass Density", n.GrassDensity, v => n.GrassDensity = v);
+                AddPropFloat("Bush Density", n.BushDensity, v => n.BushDensity = v);
+                AddPropFloat("Tree Density", n.TreeDensity, v => n.TreeDensity = v);
+                AddPropFloat("Patchiness", n.Patchiness, v => n.Patchiness = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Min Slope", n.MinSlope, v => n.MinSlope = v);
+                AddPropFloat("Max Slope", n.MaxSlope, v => n.MaxSlope = v);
+                AddPropFloat("Min Alt", n.MinAltitude, v => n.MinAltitude = v);
+                AddPropFloat("Max Alt", n.MaxAltitude, v => n.MaxAltitude = v);
+                AddPropFloat("Temp Min", n.GrowthTemperatureMin, v => n.GrowthTemperatureMin = v);
+                AddPropFloat("Temp Max", n.GrowthTemperatureMax, v => n.GrowthTemperatureMax = v);
+                AddPropFloat("Moist Min", n.GrowthMoistureMin, v => n.GrowthMoistureMin = v);
+                AddPropFloat("Moist Max", n.GrowthMoistureMax, v => n.GrowthMoistureMax = v);
+                break;
+            case BiomeScatterLayerNode n:
+                AddPropText("Profile Id", n.ProfileId, v => n.ProfileId = v);
+                AddPropText("Target Biome", n.TargetBiome, v => n.TargetBiome = v);
+                AddPropFloat("Rock Density", n.RockDensity, v => n.RockDensity = v);
+                AddPropFloat("Debris Density", n.DebrisDensity, v => n.DebrisDensity = v);
+                AddPropCombo("Type", new[] { "Rock", "Debris", "Prop" }, n.ScatterType, v => n.ScatterType = v);
+                AddPropFloat("Min Slope", n.MinSlope, v => n.MinSlope = v);
+                AddPropFloat("Max Slope", n.MaxSlope, v => n.MaxSlope = v);
+                break;
+            case BiomeFaunaLayerNode n:
+                AddPropText("Species Id", n.SpeciesId, v => n.SpeciesId = v);
+                AddPropText("Target Biome", n.TargetBiome, v => n.TargetBiome = v);
+                AddPropFloat("Herd Spacing", n.HerdSpacing, v => n.HerdSpacing = v);
+                AddPropFloat("Density", n.Density, v => n.Density = v);
+                AddPropCheckbox("Diurnal", n.Diurnal, v => n.Diurnal = v);
+                AddPropText("Biome Mask", n.BiomeMask, v => n.BiomeMask = v);
+                break;
+            case BiomeUnderwaterLifeNode n:
+                AddPropText("Profile Id", n.ProfileId, v => n.ProfileId = v);
+                AddPropFloat("Kelp", n.KelpDensity, v => n.KelpDensity = v);
+                AddPropFloat("Coral", n.CoralDensity, v => n.CoralDensity = v);
+                AddPropFloat("Fish", n.FishDensity, v => n.FishDensity = v);
+                AddPropFloat("Min Depth", n.MinDepth, v => n.MinDepth = v);
+                AddPropFloat("Max Depth", n.MaxDepth, v => n.MaxDepth = v);
+                AddPropCheckbox("Water Planet", n.RequireWaterPlanet, v => n.RequireWaterPlanet = v);
+                break;
+            case BiomeResourceVeinNode n:
+                AddPropText("Resource Id", n.ResourceId, v => n.ResourceId = v);
+                AddPropFloat("Density", n.Density, v => n.Density = v);
+                AddPropFloat("Frequency", n.Frequency, v => n.Frequency = v);
+                AddPropFloat("Cave Bias", n.CaveOnlyBias, v => n.CaveOnlyBias = v);
+                AddPropInt("Seed", n.Seed, v => n.Seed = v);
+                break;
+            case BiomeAtmosphereNode n:
+                AddPropCombo("Preset", new[] { "Custom", "Thin", "EarthLike", "Dense", "AlienViolet" }, n.Preset, v => n.Preset = v);
+                AddPropFloat("Rayleigh", n.RayleighStrength, v => n.RayleighStrength = v);
+                AddPropFloat("Mie", n.MieStrength, v => n.MieStrength = v);
+                AddPropFloat("Day Length", n.DayLengthMinutes, v => n.DayLengthMinutes = v);
+                AddPropFloat("Atm Height", n.AtmosphereHeight, v => n.AtmosphereHeight = v);
+                break;
+            case BiomeWeatherProfileNode n:
+                AddPropText("Profile Id", n.ProfileId, v => n.ProfileId = v);
+                AddPropFloat("Rain", n.RainChance, v => n.RainChance = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Snow", n.SnowChance, v => n.SnowChance = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Storm", n.StormChance, v => n.StormChance = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Wind Bias", n.WindBias, v => n.WindBias = v);
+                AddPropFloat("Cloud Bias", n.CloudCoverageBias, v => n.CloudCoverageBias = v);
+                AddPropFloat("Fog Bias", n.FogDensityBias, v => n.FogDensityBias = v);
+                break;
+            case BiomeCloudLayerNode n:
+                AddPropFloat("Coverage", n.Coverage, v => n.Coverage = v);
+                AddPropFloat("Density", n.Density, v => n.Density = v);
+                AddPropFloat("Base Height", n.BaseHeight, v => n.BaseHeight = v);
+                AddPropFloat("Top Height", n.TopHeight, v => n.TopHeight = v);
+                AddPropText("Cloud Type", n.CloudType, v => n.CloudType = v);
+                break;
+            case BiomeIceSheetNode n:
+                AddPropFloat("Max Temp", n.MaxTemperature, v => n.MaxTemperature = v);
+                AddPropFloat("Thickness", n.Thickness, v => n.Thickness = v);
+                AddPropFloat("Coverage", n.Coverage, v => n.Coverage = v);
+                AddPropText("Water Kind", n.TargetWaterKind, v => n.TargetWaterKind = v);
+                break;
+            case BiomeWetlandNode n:
+                AddPropFloat("Flood Depth", n.FloodDepth, v => n.FloodDepth = v);
+                AddPropFloat("Reed Density", n.ReedDensity, v => n.ReedDensity = v);
+                AddPropFloat("Moisture Boost", n.MoistureBoost, v => n.MoistureBoost = v);
+                AddPropText("Target Biome", n.TargetBiome, v => n.TargetBiome = v);
                 break;
         }
 

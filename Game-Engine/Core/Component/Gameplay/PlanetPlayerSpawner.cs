@@ -123,12 +123,26 @@ namespace Game_Engine.Core.Component
 
         static void EnsureLight()
         {
-            if (SceneQuery.FindBehaviors<Light>().Any())
+            var existing = SceneQuery.FindBehaviors<Light>().ToArray();
+            if (existing.Length > 0)
+            {
+                foreach (var light in existing)
+                {
+                    if (light.gameObject != null)
+                        light.gameObject.Enabled = true;
+                    light.Enabled = true;
+                    if (light.Type == LightType.Directional)
+                        light.CastShadows = true;
+                }
                 return;
+            }
+
             var sun = new GameObject("Sun");
-            var light = sun.AddBehavior<Light>();
-            light.Type = LightType.Directional;
-            light.Intensity = 1.15f;
+            var created = sun.AddBehavior<Light>();
+            created.Type = LightType.Directional;
+            created.Intensity = 1.15f;
+            created.CastShadows = true;
+            created.Enabled = true;
             sun.Transform.Rotation = new Vector3(125, 35, 0);
             SceneService.Add(sun);
         }
@@ -212,31 +226,13 @@ namespace Game_Engine.Core.Component
             up = dir;
             var center = planet.GetWorldCenter();
 
-            if (planet.TrySampleLocalIsosurface(dir, out var localPt, out var localN))
-            {
-                worldPos = planet.LocalToWorld(localPt);
-                var nWorld = planet.LocalToWorld(localPt + localN) - worldPos;
-                up = nWorld.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(nWorld) : dir;
-            }
-            else
-            {
-                float maxR = MathF.Max(10f, planet.Radius) * 4f;
-                var origin = center + dir * maxR;
-                if (planet.Raycast(origin, -dir, maxR * 2f, out PlanetDensityHit hit))
-                {
-                    worldPos = hit.Point;
-                    up = hit.Normal.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(hit.Normal) : dir;
-                    if (SN.Vector3.Dot(up, dir) < 0f)
-                        up = dir;
-                }
-                else
-                {
-                    return false;
-                }
-            }
-
-            if (SN.Vector3.Dot(up, dir) < 0.2f)
-                up = dir;
+            // Same radius the motor snaps to. Isosurface / density rays can hit a
+            // pit or sit above the stand grid — first frame then pulled the body underground.
+            float crustR = planet.SampleCollisionRadius(dir);
+            if (crustR <= 1f)
+                return false;
+            worldPos = center + dir * crustR;
+            up = dir;
 
             float r = (worldPos - center).Length();
             if (preferLand && r < worldSea + 4f)

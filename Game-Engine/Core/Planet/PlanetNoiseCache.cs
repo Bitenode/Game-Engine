@@ -58,6 +58,7 @@ public sealed class PlanetNoiseCache
                 Lacunarity = biomes[i].NoiseLacunarity,
                 Persistence = 0.5f,
                 Mode = ParseMode(biomes[i].NoiseMode),
+                DomainWarpStrength = FirstDomainWarp(config),
             };
         }
 
@@ -149,4 +150,11 @@ public sealed class PlanetNoiseCache
         "Billow" => FractalMode.Billow,
         _ => FractalMode.FBM,
     };
+
+    static float FirstDomainWarp(PlanetConfig config)
+    {
+        if (config.DomainWarps is not { Length: > 0 })
+            return 0f;
+        return MathF.Max(0f, config.DomainWarps[0].Strength) * MathF.Max(8f, config.Radius * 0.04f);
+    }
 }

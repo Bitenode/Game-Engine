@@ -385,7 +385,80 @@ public sealed class QuadNode
                 grid[idx] = r;
         }
 
+        InpaintStandHoles(grid, n);
         return grid;
+    }
+
+    public static void EnsureStandRadiusGrid(float[]? grid)
+    {
+        if (grid == null || grid.Length != StandGridSize * StandGridSize)
+            return;
+        InpaintStandHoles(grid, StandGridSize);
+    }
+
+    /// <summary>
+    /// Empty bins (and single-cell cave dips) borrow a neighbor radius so bilinear
+    /// stand never interpolates toward 0 and pulls the player underground.
+    /// </summary>
+    static void InpaintStandHoles(float[] grid, int n)
+    {
+        var tmp = new float[grid.Length];
+        for (int pass = 0; pass < n; pass++)
+        {
+            int filled = 0;
+            Array.Copy(grid, tmp, grid.Length);
+            for (int y = 0; y < n; y++)
+            {
+                for (int x = 0; x < n; x++)
+                {
+                    int i = y * n + x;
+                    if (tmp[i] > 1e-4f)
+                        continue;
+                    float best = 0f;
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0)
+                                continue;
+                            int nx = x + dx, ny = y + dy;
+                            if ((uint)nx >= (uint)n || (uint)ny >= (uint)n)
+                                continue;
+                            float v = tmp[ny * n + nx];
+                            if (v > best)
+                                best = v;
+                        }
+                    }
+                    if (best > 1e-4f)
+                    {
+                        grid[i] = best;
+                        filled++;
+                    }
+                }
+            }
+            if (filled == 0)
+                break;
+        }
+
+        Array.Copy(grid, tmp, grid.Length);
+        for (int y = 0; y < n; y++)
+        {
+            for (int x = 0; x < n; x++)
+            {
+                int i = y * n + x;
+                float v = tmp[i];
+                if (v <= 1e-4f)
+                    continue;
+                float minN = float.MaxValue;
+                int nCount = 0;
+                if (x > 0) { float a = tmp[i - 1]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
+                if (x + 1 < n) { float a = tmp[i + 1]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
+                if (y > 0) { float a = tmp[i - n]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
+                if (y + 1 < n) { float a = tmp[i + n]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
+                if (nCount >= 3 && v < minN - 10f)
+                    grid[i] = minN;
+            }
+        }
     }
 
     public bool TrySampleStandLocalRadius(SN.Vector3 sphereDir, out float localR)
@@ -414,19 +487,68 @@ public sealed class QuadNode
         int x1 = Math.Min(n - 1, x0 + 1);
         int y1 = Math.Min(n - 1, y0 + 1);
 
-        float best = 0f;
         float s00 = grid[y0 * n + x0];
         float s10 = grid[y0 * n + x1];
         float s01 = grid[y1 * n + x0];
         float s11 = grid[y1 * n + x1];
-        if (s00 > best) best = s00;
-        if (s10 > best) best = s10;
-        if (s01 > best) best = s01;
-        if (s11 > best) best = s11;
-        if (best <= 1e-4f)
+        float sampled = BilinearStand(s00, s10, s01, s11, fx - x0, fy - y0);
+        if (sampled <= 1e-4f)
             return false;
 
-        localR = best;
+        localR = sampled;
         return true;
     }
+
+    static float BilinearStand(float s00, float s10, float s01, float s11, float tx, float ty)
+    {
+        const float eps = 1e-4f;
+        bool a = s00 > eps, b = s10 > eps, c = s01 > eps, d = s11 > eps;
+        if (!a && !b && !c && !d)
+            return 0f;
+
+        float fill = a ? s00 : b ? s10 : c ? s01 : s11;
+        if (!a) s00 = fill;
+        if (!b) s10 = fill;
+        if (!c) s01 = fill;
+        if (!d) s11 = fill;
+
+        float invTx = 1f - tx;
+        float invTy = 1f - ty;
+        return s00 * invTx * invTy + s10 * tx * invTy + s01 * invTx * ty + s11 * tx * ty;
+    }
+
+    /// <summary>
+    /// Node actually drawn under this UV — parent coarse mesh while children
+    /// are still generating, otherwise the finest ready leaf.
+    /// </summary>
+    public QuadNode? FindRenderableAtUv(float u, float v)
+    {
+        if (IsLeaf)
+            return HasStandSurface ? this : Parent;
+
+        if (ChildrenHaveMeshes())
+        {
+            int idx = (u < UCentre ? 0 : 1) + (v < VCentre ? 0 : 2);
+            return Children![idx]!.FindRenderableAtUv(u, v);
+        }
+
+        if (HasStandSurface)
+            return this;
+
+        if (Children != null)
+        {
+            int idx = (u < UCentre ? 0 : 1) + (v < VCentre ? 0 : 2);
+            var child = Children[idx];
+            if (child != null)
+            {
+                var found = child.FindRenderableAtUv(u, v);
+                if (found != null)
+                    return found;
+            }
+        }
+
+        return HasStandSurface ? this : Parent;
+    }
+
+    bool HasStandSurface => StandRadiusGrid != null || GeneratedMesh != null;
 }

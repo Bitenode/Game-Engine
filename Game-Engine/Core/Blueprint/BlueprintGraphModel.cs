@@ -6,7 +6,7 @@ using System.Text;
 
 namespace Game_Engine.Core.Blueprint
 {
-    /// <summary>Spike data model for a future visual scripting graph (Phase 2).</summary>
+    /// <summary>Spike data model for a future visual scripting graph.</summary>
     public sealed class BlueprintGraph
     {
         public List<BlueprintNode> Nodes { get; set; } = new();

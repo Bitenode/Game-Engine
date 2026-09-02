@@ -6,7 +6,7 @@
 		<!-- Toolbar -->
 		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="8">
 			<TextBlock Text="Biome Graph" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
-			<ComboBox x:Name="NodeTypeCombo" Width="148" SelectedIndex="0">
+			<ComboBox x:Name="NodeTypeCombo" Width="168" SelectedIndex="0">
 				<ComboBoxItem Content="Noise" />
 				<ComboBoxItem Content="Coordinate" />
 				<ComboBoxItem Content="Temperature" />
@@ -26,6 +26,25 @@
 				<ComboBoxItem Content="Water Path" />
 				<ComboBoxItem Content="Shore" />
 				<ComboBoxItem Content="Water Merge" />
+				<ComboBoxItem Content="Continent" />
+				<ComboBoxItem Content="Crater" />
+				<ComboBoxItem Content="Volcano" />
+				<ComboBoxItem Content="Cliff" />
+				<ComboBoxItem Content="Domain Warp" />
+				<ComboBoxItem Content="Climate" />
+				<ComboBoxItem Content="Rain Shadow" />
+				<ComboBoxItem Content="Season" />
+				<ComboBoxItem Content="Latitude Band" />
+				<ComboBoxItem Content="Flora Layer" />
+				<ComboBoxItem Content="Scatter Layer" />
+				<ComboBoxItem Content="Fauna Layer" />
+				<ComboBoxItem Content="Underwater Life" />
+				<ComboBoxItem Content="Resource Vein" />
+				<ComboBoxItem Content="Atmosphere" />
+				<ComboBoxItem Content="Weather Profile" />
+				<ComboBoxItem Content="Cloud Layer" />
+				<ComboBoxItem Content="Ice Sheet" />
+				<ComboBoxItem Content="Wetland" />
 			</ComboBox>
 			<Button x:Name="AddNodeBtn" Content="Add Node" Padding="8,4" />
 			<Button x:Name="DeleteNodeBtn" Content="Delete" Padding="8,4" />

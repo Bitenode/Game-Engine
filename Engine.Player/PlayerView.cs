@@ -42,6 +42,10 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private ShaderProgram? _terrainShader;
     private ShaderProgram? _particleShader;
     private ShaderProgram? _waterShader;
+    private ShaderProgram? _planetTerrainShader;
+    private ShaderProgram? _planetWaterShader;
+    private ShaderProgram? _planetAtmosphereShader;
+    private ShaderProgram? _planetCloudShader;
     private ShaderProgram? _postProcessShader;
     private FullscreenQuad? _fsQuad;
     private ResourceCache? _cache;
@@ -165,6 +169,18 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _waterShader = new ShaderProgram(g,
                 ShaderSources.Adapt(ShaderSources.WaterVert, es),
                 ShaderSources.Adapt(ShaderSources.WaterFrag, es));
+            _planetTerrainShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es),
+                ShaderSources.Adapt(ShaderSources.PlanetTerrainFrag, es));
+            _planetWaterShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PlanetWaterVert, es),
+                ShaderSources.Adapt(ShaderSources.PlanetWaterFrag, es));
+            _planetAtmosphereShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PlanetAtmosphereVert, es),
+                ShaderSources.Adapt(ShaderSources.PlanetAtmosphereFrag, es));
+            _planetCloudShader = new ShaderProgram(g,
+                ShaderSources.Adapt(ShaderSources.PlanetCloudsVert, es),
+                ShaderSources.Adapt(ShaderSources.PlanetCloudsFrag, es));
             _postProcessShader = new ShaderProgram(g,
                 ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
                 ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
@@ -187,6 +203,10 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _canvasRenderer = null;
         _postProcessShader?.Dispose(); _postProcessShader = null;
         _waterShader?.Dispose(); _waterShader = null;
+        _planetCloudShader?.Dispose(); _planetCloudShader = null;
+        _planetAtmosphereShader?.Dispose(); _planetAtmosphereShader = null;
+        _planetWaterShader?.Dispose(); _planetWaterShader = null;
+        _planetTerrainShader?.Dispose(); _planetTerrainShader = null;
         _particleShader?.Dispose(); _particleShader = null;
         _terrainShader?.Dispose();
         _shadow?.Dispose();
@@ -380,9 +400,14 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         TerrainStreamer.SyncAll(camPos);
         foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
         foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
+        foreach (var planet in PlanetTerrain.ActivePlanets)
+            planet?.RefreshLodAroundCamera(camPos);
 
         // --- SCENE ---
         var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
+        var fallbackPlanetSunDir = sunSD.LengthSquared() > 1e-8f
+            ? SN.Vector3.Normalize(sunSD)
+            : SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
         SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
             view, proj,
             SN.Vector3.Normalize(-L), DiffuseK, Ambient,
@@ -392,6 +417,20 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             isES: _isES,
             lightColor: lightColorNorm);
 
+        if (_planetTerrainShader != null)
+        {
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null) continue;
+                var tp = planet.gameObject?.Transform?.Position;
+                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
+                SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache!,
+                    view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                    pc, shadowFBO, shadowVP);
+            }
+        }
+
         // --- WATER ---
         if (_waterShader != null)
         {
@@ -400,6 +439,46 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 : new SN.Vector3(0.5f, 0.6f, 0.8f);
             SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
                 SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
+        }
+
+        if (_planetAtmosphereShader != null)
+        {
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null) continue;
+                var tp = planet.gameObject?.Transform?.Position;
+                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
+                SceneRenderer.RenderPlanetAtmosphere(g, _planetAtmosphereShader, _cache!,
+                    view, proj, planet, atmo, camPos, pc);
+            }
+        }
+
+        if (_planetCloudShader != null)
+        {
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null) continue;
+                var tp = planet.gameObject?.Transform?.Position;
+                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
+                SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache!,
+                    view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
+            }
+        }
+
+        if (_planetWaterShader != null)
+        {
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null) continue;
+                var tp = planet.gameObject?.Transform?.Position;
+                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
+                SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache!,
+                    view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
+                    pc, planet.Config.SeaLevel);
+            }
         }
 
         // --- PARTICLES ---

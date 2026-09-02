@@ -226,7 +226,7 @@ Other Standard Assets scripts (gameplay demos, planet tools, etc.) are **not** l
 
 **PlayerView** (standalone build) runs the same class of work as **Game View**: render the 3D frame, then overlay UI, then pump input and networking.
 
-- **OpenGL** — forward path, terrain, optional post-processing
+- **OpenGL** — forward path, heightmap terrain, **planet** terrain / atmosphere / clouds / water (`PlanetTerrain*` / `PlanetAtmosphere*` / `PlanetClouds*` / `PlanetWater*` shaders), `PlanetTerrain.RefreshLodAroundCamera`, optional post-processing
 - **Canvas** — **`CanvasRenderer.RenderOverlays`** draws **Screen Space Overlay** canvases on top of the framebuffer
 - **Input** — **`UIEventSystem.ProcessEvents`**, viewport size, **`Input.FeedMousePosition`** on pointer move
 - **Networking** — **`NetworkManager.Update()`** when `IsActive` ([Game loop integration](09_Scene_And_Project_Management.md#game-loop-integration))

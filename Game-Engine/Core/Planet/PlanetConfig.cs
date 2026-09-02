@@ -1,6 +1,7 @@
 using System;
 using System.Text.Json.Serialization;
 using Game_Engine.Core.Biome;
+using Game_Engine.Core.Biome.Graph;
 
 namespace Game_Engine.Core.Planet;
 
@@ -60,9 +61,30 @@ public sealed class PlanetConfig
     public float BasinStrength { get; set; } = 0f;
     public float TemperatureBias { get; set; } = 0f;
     public float MoistureBias { get; set; } = 0f;
+    /// <summary>Temperature drop over normalized altitude [0,1]. Peaks cool toward tundra/snow.</summary>
+    public float AltitudeLapseRate { get; set; } = 0.35f;
+    /// <summary>Extra moisture near compiled ocean / river / lake (0–1 boost scale).</summary>
+    public float WaterMoistureBoost { get; set; } = 0.35f;
+    /// <summary>Moisture drop on the lee side of ridges (scales with <see cref="RidgeStrength"/>).</summary>
+    public float RainShadowStrength { get; set; } = 0.45f;
+    /// <summary>Scales shore sand blend weight by local climate moisture (0 = geometric only).</summary>
+    public float ShoreClimateBias { get; set; } = 0.35f;
     public float AltitudeWeight { get; set; } = 0.3f;
+    public bool UseSelectClassifier { get; set; }
+    public float AltitudeSeaLevel { get; set; }
+    public float AltitudeMaxHeight { get; set; } = 1f;
     public float EdgeDistortionFreq { get; set; } = 0.01f;
     public float EdgeDistortionAmp { get; set; } = 0.1f;
+
+    /// <summary>
+    /// When true, bake D8 flow-accumulation river channels once from the height LUT.
+    /// Noise rivers remain the default (this flag stays false).
+    /// </summary>
+    public bool UseFlowAccumulationRivers { get; set; } = false;
+    /// <summary>Carve depth for flow-accumulation channels (planet-local units).</summary>
+    public float FlowRiverDepth { get; set; } = 4f;
+    /// <summary>Normalized flow threshold (0–1) before a cell becomes a river channel.</summary>
+    public float FlowRiverThreshold { get; set; } = 0.72f;
 
     public bool EnableAdaptiveScheduling { get; set; } = true;
     public int AdaptiveMinScheduleBudget { get; set; } = 12;
@@ -87,7 +109,9 @@ public sealed class PlanetConfig
     public const int MaxWaterBodies = 8;
     public bool HasCompiledWaterBodies => WaterBodies != null && WaterBodies.Length > 0;
     public bool NeedsRiverNoise =>
-        HasRiver || (WaterPaths != null && WaterPaths.Length > 0);
+        HasRiver
+        || UseFlowAccumulationRivers
+        || (WaterPaths != null && WaterPaths.Length > 0);
 
     /// <summary>
     /// Transvoxel crust is used when a leaf's tangential cell size is at or below this
@@ -121,4 +145,17 @@ public sealed class PlanetConfig
     public float GlobalWindMultiplier { get; set; } = 1f;
     public int MaxVegetationInstances { get; set; } = 20000;
     public int MaxVegetationSpawnsPerUpdate { get; set; } = 256;
+
+    /// <summary>Hash of last compiled biome graph recipe (chunk cache key).</summary>
+    [JsonIgnore]
+    public ulong RecipeHash { get; set; }
+
+    /// <summary>Compiled continent / crater / volcano / cliff tables from the biome graph.</summary>
+    [JsonIgnore] public ContinentRecipe[] Continents { get; set; } = Array.Empty<ContinentRecipe>();
+    [JsonIgnore] public CraterRecipe[] Craters { get; set; } = Array.Empty<CraterRecipe>();
+    [JsonIgnore] public VolcanoRecipe[] Volcanoes { get; set; } = Array.Empty<VolcanoRecipe>();
+    [JsonIgnore] public CliffRecipe[] Cliffs { get; set; } = Array.Empty<CliffRecipe>();
+    [JsonIgnore] public DomainWarpRecipe[] DomainWarps { get; set; } = Array.Empty<DomainWarpRecipe>();
+    [JsonIgnore] public LatitudeBandRecipe[] LatitudeBands { get; set; } = Array.Empty<LatitudeBandRecipe>();
+    [JsonIgnore] public Game_Engine.Core.Noise.SimplexNoise? GeologyNoise { get; set; }
 }
