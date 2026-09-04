@@ -47,6 +47,7 @@ uniform float uWindTime;
 uniform vec3  uWindDir;
 uniform float uWindStrength;
 uniform int   uIsVegetation;  // 1 = apply wind displacement
+uniform float uRain;
 
 // Skeletal animation (GPU skinning)
 uniform int  uHasBones;       // 1 = apply bone skinning
@@ -79,25 +80,25 @@ void main()
 
     vec4 worldPos = uModel * vec4(localPos, 1.0);
 
-    // Wind vertex animation for vegetation
+    // Wind vertex animation for vegetation (slow canopy sway + light leaf flutter)
     if (uIsVegetation == 1 && uWindStrength > 0.0)
     {
-        // Height factor: vertices higher above model origin sway more
-        float localY = aPosition.y;
-        float h = clamp(localY / 6.0, 0.0, 1.0);
-        float h2 = h * h;  // quadratic: tips move much more than base
+        float localY = max(aPosition.y, 0.0);
+        float h = clamp(localY / 5.0, 0.0, 1.0);
+        float side = clamp(length(aPosition.xz) / 3.2, 0.0, 1.0);
+        float leaf = max(h, side * 0.7);
+        float tip = leaf * leaf;
+        float weatherKick = 1.0 + clamp(uRain, 0.0, 1.0) * 0.9;
+        vec3 wdir = normalize(uWindDir + vec3(0.001, 0.0, 0.0));
 
-        // Trunk sway: slow large movement
-        float phase1 = uWindTime * 1.2 + worldPos.x * 0.5 + worldPos.z * 0.3;
-        vec3 trunkSway = uWindDir * uWindStrength * h2 * sin(phase1);
+        float phase1 = uWindTime * 0.48 + worldPos.x * 0.07 + worldPos.z * 0.05;
+        vec3 trunkSway = wdir * uWindStrength * tip * sin(phase1) * weatherKick;
 
-        // Leaf flutter: fast small jitter perpendicular to wind
-        float phase2 = uWindTime * 3.7 + dot(worldPos.xyz, vec3(1.3, 0.7, 2.1));
-        vec3 flutter = uWindDir.zxy * uWindStrength * 0.3 * h * sin(phase2);
+        float phase2 = uWindTime * 1.15 + dot(worldPos.xyz, vec3(0.19, 0.11, 0.16));
+        vec3 flutter = wdir.zxy * uWindStrength * 0.32 * leaf * sin(phase2) * weatherKick;
 
-        // Secondary micro-flutter for realism
-        float phase3 = uWindTime * 5.3 + worldPos.x * 2.7 - worldPos.z * 1.9;
-        flutter += vec3(0.0, 1.0, 0.0) * uWindStrength * 0.15 * h * sin(phase3);
+        float phase3 = uWindTime * 1.85 + worldPos.x * 0.37 - worldPos.z * 0.29;
+        flutter += vec3(0.0, 1.0, 0.0) * uWindStrength * 0.12 * leaf * sin(phase3);
 
         worldPos.xyz += trunkSway + flutter;
     }
@@ -180,6 +181,11 @@ uniform float uDiffuseK;
 uniform float uAmbient;
 uniform float uShadowBias;
 uniform vec3  uSunDir;          // direction FROM sun (for slope bias)
+uniform int   uIsVegetation;
+uniform float uSunIntensity;
+uniform float uWetness;
+uniform float uSnow;
+uniform float uCloudiness;
 
 // Camera
 uniform vec3  uCamPos;
@@ -373,8 +379,10 @@ void main()
     }
 
     float NdotL = max(dot(N, L), 0.0);
-    float diffuse = NdotL * atten;
-    if (diffuse > 1.0) diffuse = 1.0;
+    float card = uIsVegetation == 1 && uAlphaCutoff > 0.05 ? 1.0 : 0.0;
+    float wrap = mix(NdotL, NdotL * 0.5 + 0.5, card);
+    float back = max(dot(-N, L), 0.0) * 0.28 * card;
+    float diffuse = min((wrap + back) * atten, 1.15);
 
     // Shadow — use geometric normal for bias to prevent normal-map shadow acne
     float shadow = ShadowCalc(vShadowCoord, geoN);
@@ -391,16 +399,36 @@ void main()
         specular = pow(NdotH, shininess) * (0.25 + 0.75 * metallic) * diffuse * specMask;
     }
 
-    // ── Combine ──
-    // Shadow attenuates both ambient (sky occlusion) and diffuse
-    // In shadowed areas ambient drops to ~35%, simulating occlusion from the sun/sky
-    float ambShadow = mix(0.35, 1.0, shadow);
-    float shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
-    vec3 color = albedo.rgb * shade + vec3(specular * shadow);
+    vec3 litAlbedo = albedo.rgb;
+    float shade;
+    float aoLit = aoFactor;
+    if (uIsVegetation == 1)
+    {
+        float clouds = clamp(uCloudiness, 0.0, 1.0);
+        float wet = clamp(uWetness, 0.0, 1.0);
+        float snow = clamp(uSnow, 0.0, 1.0);
+        float sunI = max(0.16, uSunIntensity) * mix(1.0, 0.60, clouds);
+        float amb = max(uAmbient, 0.14) * mix(1.0, 0.78, clouds);
+        litAlbedo *= mix(1.0, 0.82, wet);
+        litAlbedo = mix(litAlbedo, litAlbedo * vec3(0.86, 0.92, 0.96), wet * 0.35);
+        litAlbedo = mix(litAlbedo, vec3(0.86, 0.89, 0.93), snow * mix(0.18, 0.42, card));
+        aoLit = mix(0.62, 1.0, aoFactor);
+        float ambShadow = mix(0.42, 1.0, shadow);
+        shade = amb * ambShadow + uDiffuseK * diffuse * sunI * mix(0.40, 1.0, shadow);
+        specular *= wet * 0.45 * sunI;
+    }
+    else
+    {
+        // Shadow attenuates both ambient (sky occlusion) and diffuse
+        float ambShadow = mix(0.35, 1.0, shadow);
+        shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
+    }
+
+    vec3 color = litAlbedo * shade + vec3(specular * shadow);
 
     // AO darkens the entire lit result (ambient + diffuse + specular)
     // Applied before emissive so self-illumination is unaffected by occlusion
-    color *= aoFactor;
+    color *= aoLit;
 
     // ── Emissive (bypasses lighting) ──
     vec3 emissive = uEmissiveColor * uEmissiveIntensity;
@@ -2828,6 +2856,36 @@ vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
     return color * clamp(uAtmoBlend, 0.0, 1.5);
 }
 
+float wetHash(vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float wetValueNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = wetHash(i);
+    float b = wetHash(i + vec2(1.0, 0.0));
+    float c = wetHash(i + vec2(0.0, 1.0));
+    float d = wetHash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float wetFbm(vec2 p)
+{
+    float v = 0.0;
+    float a = 0.55;
+    for (int i = 0; i < 4; i++)
+    {
+        v += a * wetValueNoise(p);
+        p = p * 2.04 + vec2(17.3, 9.1);
+        a *= 0.5;
+    }
+    return v;
+}
+
 void main()
 {
     vec3 N = normalize(vWorldNormal);
@@ -2872,18 +2930,25 @@ void main()
     float outdoor = 1.0 - interior;
     float weatherOn = clamp(uWeatherEnabled, 0.0, 1.0) * outdoor;
 
-    // Stable hash in meters. Never replace albedo with a constant color.
-    vec3 q = (vWorldPos - uPlanetCenter) * 0.028;
-    vec2 wuv = fract(vec2(dot(q, vec3(0.17, 0.08, 0.13)), dot(q, vec3(0.11, 0.19, 0.06))));
-    float nA = fract(sin(dot(wuv, vec2(12.9898, 78.233))) * 43758.5453);
-    float nB = fract(sin(dot(wuv + vec2(0.17, 0.31), vec2(39.346, 11.135))) * 23421.631);
-    float slopeOk = smoothstep(0.18, 0.58, abs(nDotRadial));
+    // Smooth meter-scale puddles on flat ground — no per-pixel hash sparkle.
+    vec3 localPos = vWorldPos - uPlanetCenter;
+    vec3 up = radialDir;
+    vec3 refAxis = abs(up.y) < 0.92 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(refAxis, up));
+    vec3 bitangent = cross(up, tangent);
+    vec2 puddleUv = vec2(dot(localPos, tangent), dot(localPos, bitangent)) * 0.06;
+
+    float nLow = wetFbm(puddleUv);
+    float nDetail = wetFbm(puddleUv * 2.35 + vec2(4.7, 11.2));
+    float groundFlat = smoothstep(0.18, 0.58, slope);
     float wetAmt = clamp(uWetness, 0.0, 1.0) * weatherOn;
     float snowAmt = clamp(uSnowCoverage, 0.0, 1.0) * weatherOn;
-    float puddleMask = smoothstep(0.36, 0.66, nA * 0.7 + nB * 0.3);
-    float puddle = wetAmt * slopeOk * puddleMask * (1.0 - snowAmt);
-    finalColor *= mix(vec3(1.0), vec3(0.80, 0.88, 0.90), wetAmt * slopeOk * 0.4);
-    finalColor *= mix(vec3(1.0), vec3(0.58, 0.70, 0.76), puddle * 0.5);
+    float puddleMask = smoothstep(0.40, 0.68, nLow * 0.72 + nDetail * 0.28) * groundFlat;
+    float wetSheen = wetAmt * groundFlat * (1.0 - snowAmt);
+    float puddle = wetSheen * puddleMask;
+
+    finalColor *= mix(vec3(1.0), vec3(0.84, 0.89, 0.92), wetSheen * 0.32);
+    finalColor *= mix(vec3(1.0), vec3(0.66, 0.76, 0.82), puddle * 0.38);
 
     vec3 L = normalize(-uLightDir);
     float NdotL = max(dot(N, L), 0.0);
@@ -2892,18 +2957,23 @@ void main()
     vec3 V = normalize(uCamPos - vWorldPos);
     vec3 H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
-    spec += pow(max(dot(N, H), 0.0), 18.0) * puddle * 0.55;
-    float fres = pow(1.0 - max(dot(N, V), 0.0), 2.8) * puddle * 0.35;
+    spec += pow(max(dot(N, H), 0.0), mix(24.0, 96.0, puddle)) * (wetSheen * 0.18 + puddle * 0.62);
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0) * (wetSheen * 0.12 + puddle * 0.28);
+
+    vec3 R = reflect(-V, N);
+    vec3 skyRefCol = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(R.y * 0.5 + 0.5, 0.0, 1.0));
+    float skyRef = pow(max(dot(normalize(R), radialDir), 0.0), 1.4) * puddle * 0.42;
 
     float shadow = shadowFactor(vShadowCoord);
     float ao = mix(1.0, 0.35, clamp(-nDotRadial, 0.0, 1.0));
     float ambient = uAmbient * mix(1.0, 0.7, interior);
-    vec3 lit = finalColor * (ambient + diffuse * shadow) * ao + vec3((spec + fres) * shadow * ao);
+    vec3 lit = finalColor * (ambient + diffuse * shadow) * ao;
+    lit += vec3(spec + fres) * shadow * ao;
+    lit += skyRefCol * skyRef * shadow * ao;
     lit += evalAtmosphere(vWorldPos, V, radialDir);
     lit = lit / (lit + vec3(1.0));
 
-    lit += vec3(0.14, 0.17, 0.20) * pow(max(dot(N, H), 0.0), 26.0) * puddle * shadow;
-    lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * slopeOk * mix(0.2, 0.5, nB));
+    lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * groundFlat * mix(0.2, 0.5, nDetail));
 
     FragColor = vec4(lit, 1.0);
 }
@@ -3391,6 +3461,122 @@ void main()
     cloudColor += vec3(1.0, 0.97, 0.92) * silver * 0.35 * uSunIntensity;
 
     FragColor = vec4(cloudColor, clamp(cloudAlpha, 0.0, 0.55));
+}
+";
+
+    // =====================================================================
+    // PLANET GPU GRASS (instanced cross-cards)
+    // =====================================================================
+    public const string PlanetGpuGrassVert = @"
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec2 aUV;
+layout(location = 2) in vec4 aInstPosScale;
+layout(location = 3) in vec4 aInstUpYaw;
+
+uniform mat4 uPlanetWorld;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform float uWindTime;
+uniform float uWindStrength;
+uniform vec3 uWindDir;
+uniform float uRain;
+uniform float uStorm;
+
+out vec2 vUV;
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out float vHeight;
+
+void main()
+{
+    vec3 up = normalize(aInstUpYaw.xyz);
+    vec3 seed = abs(up.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 side = normalize(cross(seed, up));
+    vec3 fwd = normalize(cross(up, side));
+    float cy = cos(aInstUpYaw.w);
+    float sy = sin(aInstUpYaw.w);
+    vec3 xAxis = side * cy + fwd * sy;
+    vec3 zAxis = -side * sy + fwd * cy;
+
+    float h = max(0.05, aInstPosScale.w);
+    vec3 local = aInstPosScale.xyz
+        + xAxis * (aPosition.x * h)
+        + up * (aPosition.y * h)
+        + zAxis * (aPosition.z * h);
+
+    float tip = clamp(aPosition.y, 0.0, 1.0);
+    vec4 world = uPlanetWorld * vec4(local, 1.0);
+    vec3 wdir = normalize(uWindDir + vec3(0.001, 0.0, 0.0));
+    float phase = uWindTime * 1.8 + dot(aInstPosScale.xyz, vec3(0.19, 0.11, 0.17));
+    float gust = sin(phase) * 0.62 + sin(phase * 2.17 + tip * 3.1) * 0.38;
+    float weatherKick = 1.0 + uRain * 1.55 + uStorm * 0.85;
+    world.xyz += wdir * (tip * tip * uWindStrength * weatherKick * gust);
+    world.xyz += wdir.zxy * (tip * uRain * 0.12 * sin(phase * 5.7));
+    world.xyz += normalize(mat3(uPlanetWorld) * up) * (tip * uRain * 0.05 * sin(phase * 7.3));
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(uPlanetWorld) * up);
+    vUV = aUV;
+    vHeight = tip;
+    gl_Position = uProj * uView * world;
+}
+";
+
+    public const string PlanetGpuGrassFrag = @"
+#version 330 core
+in vec2 vUV;
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in float vHeight;
+
+uniform sampler2D uAlbedoTex;
+uniform vec3 uLightDir;
+uniform vec3 uLightColor;
+uniform vec3 uCamPos;
+uniform float uAmbient;
+uniform float uDiffuseK;
+uniform float uSunIntensity;
+uniform float uAlphaCutoff;
+uniform float uWetness;
+uniform float uSnow;
+uniform float uCloudiness;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec4 albedo = texture(uAlbedoTex, vUV);
+    if (albedo.a < uAlphaCutoff)
+        discard;
+
+    vec3 N = normalize(vWorldNormal);
+    // Same convention as planet terrain: uLightDir is FROM the sun.
+    vec3 L = normalize(-uLightDir);
+    float nDotL = max(dot(N, L), 0.0);
+    // Half-Lambert so a horizon / side-lit sun still colors the carpet.
+    float wrap = nDotL * 0.55 + 0.45;
+    float back = max(dot(-N, L), 0.0) * 0.20;
+    float diffuse = min(wrap + back, 1.15);
+
+    float clouds = clamp(uCloudiness, 0.0, 1.0);
+    float sunI = max(0.15, uSunIntensity) * mix(1.0, 0.62, clouds);
+    float amb = max(uAmbient, 0.12) * mix(1.0, 0.80, clouds);
+
+    vec3 color = albedo.rgb;
+    float wet = clamp(uWetness, 0.0, 1.0);
+    color *= mix(1.0, 0.84, wet);
+    color = mix(color, color * vec3(0.88, 0.93, 0.97), wet * 0.30);
+    float snowMask = clamp(uSnow, 0.0, 1.0) * smoothstep(0.28, 1.0, vHeight);
+    color = mix(color, vec3(0.86, 0.89, 0.93), snowMask);
+
+    vec3 lit = color * (amb + uDiffuseK * diffuse * sunI);
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 22.0) * wet * vHeight * 0.20;
+    lit += uLightColor * sunI * spec;
+
+    FragColor = vec4(lit, 1.0);
 }
 ";
 }

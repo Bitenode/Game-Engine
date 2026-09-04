@@ -126,6 +126,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     double _scenePlanetLodAccumSec;
     SN.Vector3 _lastSceneLodCamPos = new(float.NaN);
     SN.Vector3 _lastScenePlanetLodCamPos = new(float.NaN);
+    bool _pendingPlanetAutoFrame;
 
     // Cached scene query results (refreshed on SceneService.Changed, not per-frame)
     private Skybox? _cachedSkybox;
@@ -456,14 +457,110 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     #endregion
 
     #region Constants & terrain tools
+    float GetMaxActivePlanetRadius()
+    {
+        float maxR = 0f;
+        foreach (var p in PlanetTerrain.ActivePlanets)
+        {
+            if (p?.Config == null || !p.IsActiveAndEnabled) continue;
+            maxR = MathF.Max(maxR, p.Config.EffectiveWorldRadius);
+        }
+        return maxR;
+    }
+
+    (float Min, float Max) GetOrbitDistanceLimits()
+    {
+        float r = GetMaxActivePlanetRadius();
+        if (r <= 1f) return (1.5f, 200f);
+        return (r * 1.06f, r * 12f);
+    }
+
+    void ClampOrbitDistance()
+    {
+        var (minD, maxD) = GetOrbitDistanceLimits();
+        _distance = Math.Clamp(_distance, minD, maxD);
+    }
+
+    bool IsOrbitInsideActivePlanet()
+    {
+        var (minD, _) = GetOrbitDistanceLimits();
+        return GetMaxActivePlanetRadius() > 1f && _distance < minD;
+    }
+
+    void TryAutoFrameActivePlanet(bool immediate = false)
+    {
+        PlanetTerrain? best = null;
+        float bestR = 0f;
+        foreach (var p in PlanetTerrain.ActivePlanets)
+        {
+            if (p?.Config == null || !p.IsActiveAndEnabled) continue;
+            float r = p.Config.EffectiveWorldRadius;
+            if (r > bestR) { bestR = r; best = p; }
+        }
+        if (best == null || bestR <= 1f) return;
+
+        var center = best.GetWorldCenter();
+        var (minD, maxD) = GetOrbitDistanceLimits();
+        float desiredDistance = Math.Clamp(bestR * 2.75f, minD, maxD);
+
+        if (immediate)
+        {
+            _target = center;
+            _distance = desiredDistance;
+            _lastScenePlanetLodCamPos = new SN.Vector3(float.NaN, float.NaN, float.NaN);
+            RequestNextFrameRendering();
+            return;
+        }
+
+        if (SN.Vector3.Distance(_target, center) < 0.01f && MathF.Abs(_distance - desiredDistance) < 0.01f)
+        {
+            _target = center;
+            _distance = desiredDistance;
+            RequestNextFrameRendering();
+            return;
+        }
+
+        _frameStartTarget = _target;
+        _frameEndTarget = center;
+        _frameStartDistance = _distance;
+        _frameEndDistance = desiredDistance;
+        _frameLerpWatch.Restart();
+        _frameLerpTimer.Start();
+    }
+
     void FrameSelected(GameObject go)
     {
+        var pt = go.Behaviors.OfType<PlanetTerrain>().FirstOrDefault();
+        if (pt?.Config != null)
+        {
+            var planetCenter = pt.GetWorldCenter();
+            var (minD, maxD) = GetOrbitDistanceLimits();
+            float planetDistance = Math.Clamp(pt.Config.EffectiveWorldRadius * 2.75f, minD, maxD);
+
+            if (SN.Vector3.Distance(_target, planetCenter) < 0.01f && MathF.Abs(_distance - planetDistance) < 0.01f)
+            {
+                _target = planetCenter;
+                _distance = planetDistance;
+                RequestNextFrameRendering();
+                return;
+            }
+
+            _frameStartTarget = _target;
+            _frameEndTarget = planetCenter;
+            _frameStartDistance = _distance;
+            _frameEndDistance = planetDistance;
+            _frameLerpWatch.Restart();
+            _frameLerpTimer.Start();
+            return;
+        }
+
         var (min, max) = SceneGraphUtil.ComputeWorldAABB(go);
         var center = (min + max) * 0.5f;
         float radius = (max - center).Length();
         float fov = 60f * MathF.PI / 180f;
         float fit = radius / MathF.Tan(fov * 0.5f);
-        float desiredDistance = MathF.Max(1.5f, fit * 1.15f);
+        var (orbitMin, orbitMax) = GetOrbitDistanceLimits();
+        float desiredDistance = Math.Clamp(MathF.Max(orbitMin, fit * 1.15f), orbitMin, orbitMax);
 
         if (SN.Vector3.Distance(_target, center) < 0.01f && MathF.Abs(_distance - desiredDistance) < 0.01f)
         {
@@ -1391,6 +1488,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _sceneQueryDirty = true;
             _cachedSkybox = null;
             _cachedLight = null;
+            _pendingPlanetAutoFrame = true;
+            _lastScenePlanetLodCamPos = new SN.Vector3(float.NaN, float.NaN, float.NaN);
 
             // Clear selection to avoid stale references to old scene objects
             SelectionService.Clear();
@@ -1400,6 +1499,11 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             // Request the next GL frame at Render priority after the scene is committed.
             Avalonia.Threading.Dispatcher.UIThread.Post(RequestNextFrameRendering,
                 Avalonia.Threading.DispatcherPriority.Render);
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (!GameView.IsAnyViewPlaying && PlanetTerrain.ActivePlanets.Count > 0)
+                    TryAutoFrameActivePlanet(immediate: true);
+            }, Avalonia.Threading.DispatcherPriority.Loaded);
         };
 
         AffectsRender<SceneView>(GizmoLocalProperty);
@@ -1738,6 +1842,13 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         int W = Math.Max(1, (int)size.Width);
         int H = Math.Max(1, (int)size.Height);
 
+        if (!GameView.IsAnyViewPlaying && !_lookThroughCamera
+            && (_pendingPlanetAutoFrame || IsOrbitInsideActivePlanet()))
+        {
+            TryAutoFrameActivePlanet(immediate: true);
+            _pendingPlanetAutoFrame = false;
+        }
+
         // Active view/proj
         var active = GetActiveViewProj(new Size(W, H));
         var view = active.View;
@@ -1922,6 +2033,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             }
             if (ShouldRefreshScenePlanetLod(camPos, sceneDt))
                 UpdatePlanetLOD(camPos, force: true);
+            if (!GameView.IsAnyViewPlaying)
+            {
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet != null)
+                        planet.LastCameraPosition = camPos;
+                }
+                PlanetVegetationSystem.TickAllStreaming(camPos, sceneDt);
+            }
 
             SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
                 view, proj,
@@ -1944,6 +2064,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                         view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
                         pc, shadowFBO, shadowVP);
                 }
+                SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache,
+                    view, proj, camPos,
+                    SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                    lightIsPoint, lightPosW, lightRange,
+                    shadowFBO, shadowVP, sunSD,
+                    lightColor: lightColorNorm);
             }
 
             // --- WATER ---
@@ -1999,7 +2125,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
             // --- PARTICLES ---
             if (_particleShader != null)
-                SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
+                SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj, pxW, pxH);
 
             // --- WORLD-SPACE UI CANVASES ---
             if (_canvasRenderer != null)
@@ -2900,7 +3026,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         float wheelStep = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 1.03f : 1.08f;
         _distance *= (float)Math.Pow(wheelStep, -e.Delta.Y);
-        _distance = Math.Clamp(_distance, 1.5f, 200f);
+        ClampOrbitDistance();
         UpdateTerrainHover(_last); RequestNextFrameRendering();
     }
     #endregion

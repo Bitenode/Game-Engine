@@ -57,7 +57,7 @@ public sealed class PlanetTerrain : Behavior
     [Persist] public float SeasonLengthMinutes { get; set; } = 18f;
     [Persist] public float GlobalWeatherIntensity { get; set; } = 1f;
     [Persist] public float GlobalWindMultiplier { get; set; } = 1f;
-    [Persist] public int MaxVegetationInstances { get; set; } = 20000;
+    [Persist] public int MaxVegetationInstances { get; set; } = 50000;
     [Persist] public int MaxVegetationSpawnsPerUpdate { get; set; } = 256;
 
     /// <summary>
@@ -1073,7 +1073,8 @@ public sealed class PlanetTerrain : Behavior
             _config.SplitDistanceScale = 0.55f;
             _config.MergeDistanceScale = Math.Max(MergeDistanceScale, 1.8f);
             _config.MaxMeshAppliesPerUpdate = 12;
-            _config.MaxVegetationSpawnsPerUpdate = Math.Min(MaxVegetationSpawnsPerUpdate, 8);
+            int playVegSpawnCap = Math.Clamp(Math.Max(MaxVegetationSpawnsPerUpdate, 32), 32, 128);
+            _config.MaxVegetationSpawnsPerUpdate = playVegSpawnCap;
 
             if (cameraInside)
             {
@@ -1627,6 +1628,33 @@ public sealed class PlanetTerrain : Behavior
         _pendingVegetationAssetData = null;
         // Same warmup as deferred hydrate: small MaxAssetSpawnsPerUpdate can starve grass vs trees.
         veg.WarmSpawnAfterDeferredImport();
+    }
+
+    /// <summary>
+    /// Apply vegetation that is already in memory but not yet on
+    /// <see cref="PlanetVegetationSystem"/> (sync pending block, or disk snapshot
+    /// after async hydrate aborted). Does not wipe the disk snapshot until import
+    /// actually loads rows.
+    /// </summary>
+    internal bool TryApplyPendingOrDeferredVegetation(PlanetVegetationSystem veg)
+    {
+        if (veg == null)
+            return false;
+        if (_pendingVegetationAssetData != null)
+        {
+            var data = _pendingVegetationAssetData;
+            _pendingVegetationAssetData = null;
+            veg.ImportAssetData(data);
+            return veg.StoredPlacementCount > 0;
+        }
+        if (AsyncVegetationHydrationPending)
+            return false;
+        if (veg.StoredPlacementCount > 0)
+            return true;
+        if (_deferredDiskVegetation?.Placements == null || _deferredDiskVegetation.Placements.Length == 0)
+            return false;
+        veg.ImportAssetData(_deferredDiskVegetation.Clone());
+        return veg.StoredPlacementCount > 0;
     }
 
     static PlanetConfig CloneConfig(PlanetConfig src)

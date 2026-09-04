@@ -40,6 +40,41 @@ namespace Game_Engine.Core.Component
 
         public GameObject? SpawnedPlayer => _spawned;
 
+        /// <summary>World position for planet LOD before the play camera exists (slightly above spawn crust).</summary>
+        public SN.Vector3 GetPreviewLodCameraPosition()
+        {
+            var planet = ResolvePlanet();
+            if (planet?.Config == null)
+                return SN.Vector3.Zero;
+
+            var center = planet.GetWorldCenter();
+            var dir = SpawnSphereDir();
+            float crustR = planet.SampleCollisionRadius(dir);
+            if (crustR <= 1f)
+                crustR = planet.Config.EffectiveWorldRadius;
+
+            float sea = planet.Config.SeaLevel * planet.GetWorldRadiusScale();
+            float standR = MathF.Max(crustR, sea + 4f);
+            float lift = MathF.Max(30f, planet.Config.EffectiveWorldRadius * 0.04f);
+            return center + dir * (standR + lift);
+        }
+
+        public static bool TryGetPlayLodSeedPosition(out SN.Vector3 seedPos)
+        {
+            seedPos = SN.Vector3.Zero;
+            foreach (var spawner in SceneQuery.FindBehaviors<PlanetPlayerSpawner>())
+            {
+                if (spawner == null || !spawner.Enabled || !spawner.SpawnOnStart)
+                    continue;
+                var preview = spawner.GetPreviewLodCameraPosition();
+                if (preview.LengthSquared() < 1e-6f)
+                    continue;
+                seedPos = preview;
+                return true;
+            }
+            return false;
+        }
+
         public override void Start()
         {
             if (!SpawnOnStart)

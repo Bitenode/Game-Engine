@@ -429,6 +429,13 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
                     pc, shadowFBO, shadowVP);
             }
+            SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache!,
+                view, proj, camPos,
+                SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunSD,
+                isES: _isES,
+                lightColor: lightColorNorm);
         }
 
         // --- WATER ---
@@ -481,10 +488,6 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             }
         }
 
-        // --- PARTICLES ---
-        if (_particleShader != null)
-            SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
-
         // World-space UI (same stage as GameView — before post blit when using scene FBO)
         if (_canvasRenderer != null && _cache != null)
         {
@@ -515,6 +518,14 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
                 ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+        }
+
+        // --- PARTICLES (full viewport overlay) ---
+        if (_particleShader != null)
+        {
+            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+            g.Viewport(0, 0, (uint)W, (uint)H);
+            SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj, W, H, overlayPass: true);
         }
 
         // Screen-space overlay UI (main menu, etc.) — must draw after final color is on the Avalonia FB

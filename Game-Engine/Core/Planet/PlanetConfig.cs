@@ -143,7 +143,7 @@ public sealed class PlanetConfig
     public float SeasonLengthMinutes { get; set; } = 18f;
     public float GlobalWeatherIntensity { get; set; } = 1f;
     public float GlobalWindMultiplier { get; set; } = 1f;
-    public int MaxVegetationInstances { get; set; } = 20000;
+    public int MaxVegetationInstances { get; set; } = 50000;
     public int MaxVegetationSpawnsPerUpdate { get; set; } = 256;
 
     /// <summary>Hash of last compiled biome graph recipe (chunk cache key).</summary>

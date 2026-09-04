@@ -808,7 +808,7 @@ namespace Game_Engine.Core.Component
         /// Build a single grass patch on a planet surface around a sphere direction.
         /// Keeps Terrain workflow untouched; this is planet-only authoring support.
         /// </summary>
-        public int BuildOnPlanetPatch(PlanetTerrain planet, SN.Vector3 centerDir, float patchRadius, int bladeCount, QuadNode? sourceLeaf = null, bool notifyScene = true)
+        public int BuildOnPlanetPatch(PlanetTerrain planet, SN.Vector3 centerDir, float patchRadius, int bladeCount, QuadNode? sourceLeaf = null, bool notifyScene = true, bool skipWaterCull = false)
         {
             if (planet == null || planet.gameObject == null) return 0;
             if (bladeCount <= 0) return 0;
@@ -828,6 +828,7 @@ namespace Game_Engine.Core.Component
                 : "";
             var grassMat = BuildGrassMaterial(grassTex, relTexPath);
             grassMat.AlphaCutoff = 0.38f;
+            MaterialUtil.EnsureVegetationCardCutout(grassMat);
 
             // Use a non-"chunk_" name so renderer fast-paths meant for flat-terrain grass tiles
             // don't treat planet patches like axis-aligned terrain chunks.
@@ -871,16 +872,20 @@ namespace Game_Engine.Core.Component
             float localPatch = Math.Max(0.05f, planet.WorldToLocalLength(Math.Max(0.05f, patchRadius)));
             float worldGrassH = Math.Clamp(GrassHeight, 1.5f, 10f);
             float localH = planet.WorldToLocalLength(worldGrassH);
-            SN.Vector3 centerBase = planet.SampleRenderedCrustLocal(n);
-            float rootEmbed = planet.WorldToLocalLength(0.04f);
-            for (int bi = 0; bi < bladeCount; bi++)
+            SN.Vector3 centerBase = planet.SampleVegetationAnchorLocal(n);
+            float rootEmbed = planet.WorldToLocalLength(0.03f);
+            int written = 0;
+            int attempts = bladeCount * 3;
+            for (int attempt = 0; attempt < attempts && written < bladeCount; attempt++)
             {
                 float ang = (float)rng.NextDouble() * MathF.Tau;
                 float rad = MathF.Sqrt((float)rng.NextDouble()) * localPatch;
                 var offset = t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
                 var dir = SN.Vector3.Normalize(centerBase + offset);
-                var baseLocal = planet.SampleRenderedCrustLocal(dir);
-                var placeUp = SamplePlanetSurfaceNormal(planet, SN.Vector3.Zero, dir);
+                if (!skipWaterCull && IsPlanetPatchSubmerged(planet, dir))
+                    continue;
+                var baseLocal = planet.SampleVegetationAnchorLocal(dir);
+                var placeUp = SamplePlanetLocalSurfaceUp(planet, dir);
 
                 var side = SN.Vector3.Cross(MathF.Abs(placeUp.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, placeUp);
                 if (side.LengthSquared() < 1e-8f) side = SN.Vector3.UnitX;
@@ -892,8 +897,8 @@ namespace Game_Engine.Core.Component
                 var zAxis = -side * sy + fwd * cy;
 
                 float scale = MinScale + (float)rng.NextDouble() * (MaxScale - MinScale);
-                int vOff = bi * vPerBlade;
-                int triOff = bi * tPerBlade;
+                int vOff = written * vPerBlade;
+                int triOff = written * tPerBlade;
                 float hMul = (localH * scale) / srcH;
 
                 for (int vi = 0; vi < vPerBlade; vi++)
@@ -910,10 +915,24 @@ namespace Game_Engine.Core.Component
                 }
 
                 centerAccum += baseLocal;
-
                 for (int ti = 0; ti < tPerBlade; ti++)
                     mergedTris[triOff + ti] = srcTris[ti] + vOff;
+                written++;
             }
+
+            if (written <= 0)
+            {
+                chunkGO.RemoveFromParent();
+                return 0;
+            }
+            if (written < bladeCount)
+            {
+                Array.Resize(ref mergedVerts, written * vPerBlade);
+                Array.Resize(ref mergedNorms, written * vPerBlade);
+                Array.Resize(ref mergedUVs, written * vPerBlade);
+                Array.Resize(ref mergedTris, written * tPerBlade);
+            }
+            bladeCount = written;
 
             var chunkMesh = new Mesh(mergedVerts, Array.Empty<int>(), mergedTris)
             {
@@ -940,11 +959,30 @@ namespace Game_Engine.Core.Component
             return bladeCount;
         }
 
-        static SN.Vector3 SamplePlanetSurfaceNormal(PlanetTerrain planet, SN.Vector3 planetCenter, SN.Vector3 dir)
+        static bool IsPlanetPatchSubmerged(PlanetTerrain planet, SN.Vector3 dir)
         {
-            _ = planetCenter;
-            dir = SN.Vector3.Normalize(dir);
+            if (planet == null || !planet.EnableWater)
+                return false;
+            var water = planet.SampleWaterSurface(dir);
+            float crust = planet.SampleVegetationAnchorLocal(dir).Length();
+            if (water.Mask >= 0.04f && water.Kind != PlanetWaterKind.Lava && crust < water.Radius - 0.35f)
+                return true;
+            if (planet.Config != null)
+            {
+                float ocean = PlanetWaterSampler.GetOceanFillRadius(planet.Config);
+                if (ocean > 1f && crust < ocean - 0.45f)
+                    return true;
+            }
+            return false;
+        }
 
+        /// <summary>
+        /// Planet-local blade up. World-space normals were previously mixed into local verts,
+        /// which laid PSD cards on their side and floated them off the crust.
+        /// </summary>
+        static SN.Vector3 SamplePlanetLocalSurfaceUp(PlanetTerrain planet, SN.Vector3 dir)
+        {
+            dir = SN.Vector3.Normalize(dir);
             var t = SN.Vector3.Cross(MathF.Abs(dir.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, dir);
             if (t.LengthSquared() < 1e-8f)
                 t = SN.Vector3.UnitX;
@@ -952,24 +990,22 @@ namespace Game_Engine.Core.Component
             var b = SN.Vector3.Normalize(SN.Vector3.Cross(dir, t));
 
             const float eps = 0.0018f;
-            var dirT = SN.Vector3.Normalize(dir + t * eps);
-            var dirB = SN.Vector3.Normalize(dir + b * eps);
+            var lp0 = planet.SampleVegetationAnchorLocal(dir);
+            var lpT = planet.SampleVegetationAnchorLocal(SN.Vector3.Normalize(dir + t * eps));
+            var lpB = planet.SampleVegetationAnchorLocal(SN.Vector3.Normalize(dir + b * eps));
 
-            var lp0 = planet.SampleRenderedCrustLocal(dir);
-            var lpT = planet.SampleRenderedCrustLocal(dirT);
-            var lpB = planet.SampleRenderedCrustLocal(dirB);
-
-            var p0 = planet.LocalToWorld(lp0);
-            var pT = planet.LocalToWorld(lpT);
-            var pB = planet.LocalToWorld(lpB);
-
-            var n = SN.Vector3.Cross(pT - p0, pB - p0);
+            var n = SN.Vector3.Cross(lpT - lp0, lpB - lp0);
             if (n.LengthSquared() < 1e-8f)
                 return dir;
             n = SN.Vector3.Normalize(n);
             if (SN.Vector3.Dot(n, dir) < 0f)
                 n = -n;
-            return n;
+
+            float align = Math.Clamp(SN.Vector3.Dot(n, dir), 0f, 1f);
+            var blended = SN.Vector3.Normalize(SN.Vector3.Lerp(dir, n, 0.88f + (1f - align) * 0.12f));
+            if (SN.Vector3.Dot(blended, dir) < 0f)
+                blended = -blended;
+            return blended;
         }
 
         static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)

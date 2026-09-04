@@ -44,9 +44,11 @@ public partial class ProfilerPanel : UserControl
 
         var latest = Profiler.Latest;
         double fps = Profiler.FPS;
+        if (fps < 0.5 && latest.TotalFrameMs > 0.01)
+            fps = 1000.0 / latest.TotalFrameMs;
         double avgMs = Profiler.AverageFrameMs();
 
-        FpsLabel.Text = $"FPS: {fps:F0}";
+        FpsLabel.Text = $"FPS: {FormatFps(fps)}";
         FrameTimeLabel.Text = $"Frame: {latest.TotalFrameMs:F1} ms";
 
         RenderLabel.Text = $"Render: {latest.RenderMs:F2} ms";
@@ -64,7 +66,7 @@ public partial class ProfilerPanel : UserControl
 
         GameObjectsLabel.Text = $"GameObjects: {latest.ActiveGameObjects}";
         CollidersLabel.Text = $"Colliders: {latest.ActiveColliders}";
-        AvgFpsLabel.Text = $"Avg FPS: {fps:F0}";
+        AvgFpsLabel.Text = $"Avg FPS: {FormatFps(avgMs > 0.01 ? 1000.0 / avgMs : fps)}";
         AvgFrameLabel.Text = $"Avg Frame: {avgMs:F1} ms";
         PlanetCountLabel.Text = $"Planets: {latest.PlanetCount}";
         PlanetChunksLabel.Text = $"Planet Chunks: {latest.PlanetChunkCount}";
@@ -115,6 +117,13 @@ public partial class ProfilerPanel : UserControl
             spike.Append(Profiler.FormatScriptCost(Profiler.GetSpikeTopScript(i)));
         }
         ScriptSpikeLabel.Text = spike.ToString();
+    }
+
+    static string FormatFps(double fps)
+    {
+        if (fps <= 0) return "0.0";
+        if (fps < 10) return fps.ToString("0.0");
+        return fps.ToString("F0");
     }
 
     private void DrawGraph()

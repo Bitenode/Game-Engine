@@ -34,6 +34,26 @@ public sealed class VegetationProfile
 
 public static class VegetationProfileLibrary
 {
+    /// <summary>Heuristic used by planet vegetation to orient imported grass vs upright trees.</summary>
+    public static bool IsGrassVegetationAsset(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string n = path.Replace('\\', '/').ToLowerInvariant();
+        string file = Path.GetFileNameWithoutExtension(n);
+
+        // Pack folder is "new trees and grass" — that must not classify pines as grass.
+        if (file.Contains("tree") || file.Contains("pine") || file.Contains("oak")
+            || file.Contains("fir") || file.Contains("spruce") || file.Contains("birch"))
+            return false;
+
+        if (file.Contains("grass") || file.Contains("meadow") || file.Contains("weed")
+            || file.Contains("fern") || file.Contains("turf") || file.Contains("plant")
+            || file.Contains("flower") || file.Contains("herb"))
+            return true;
+
+        return n.Contains("/grass/") || n.Contains("/flowers/") || n.Contains("/ferns/");
+    }
+
     static readonly JsonSerializerOptions _json = new()
     {
         WriteIndented = true,
@@ -97,7 +117,7 @@ public static class VegetationProfileLibrary
             map["Default"] = new VegetationProfile();
         var d = map["Default"];
         if (string.IsNullOrWhiteSpace(d.GrassModelPath))
-            d.GrassModelPath = "Assets/Standard Assets/Planet Vegetation/Meadow_Grass_01_Var4.FBX";
+            d.GrassModelPath = "Assets/Standard Assets/Planet Vegetation/Grass/Meadow_Grass_01_Var4.FBX";
         EnsureLegacyCompatibility(d);
     }
 
@@ -117,6 +137,12 @@ public static class VegetationProfileLibrary
             BushItems = SanitizeItems(p.BushItems),
             RockItems = SanitizeItems(p.RockItems),
         };
+        PromoteMisclassifiedFromSource(safe, p);
+        safe.TreeItems = PruneNonTreeItems(safe.TreeItems);
+        safe.BushItems = PruneNonTreeItems(safe.BushItems);
+        safe.RockItems = PruneNonTreeItems(safe.RockItems);
+        if (IsGrassVegetationAsset(safe.TreeModelPath))
+            safe.TreeModelPath = "";
         EnsureLegacyCompatibility(safe);
         return safe;
     }
@@ -151,6 +177,65 @@ public static class VegetationProfileLibrary
         return list;
     }
 
+    static List<VegetationProfileItem> PruneNonTreeItems(List<VegetationProfileItem> items)
+    {
+        if (items.Count == 0) return items;
+        var kept = new List<VegetationProfileItem>(items.Count);
+        for (int i = 0; i < items.Count; i++)
+        {
+            var it = items[i];
+            if (IsGrassVegetationAsset(it.ModelPath) || IsGrassVegetationAsset(it.PrefabPath))
+                continue;
+            kept.Add(it);
+        }
+        return kept;
+    }
+
+    static void PromoteMisclassifiedFromSource(VegetationProfile dest, VegetationProfile source)
+    {
+        PromoteGrassItemIfNeeded(dest, source.TreeModelPath);
+        PromoteGrassItemsIfNeeded(dest, source.TreeItems);
+        PromoteGrassItemsIfNeeded(dest, source.BushItems);
+        PromoteGrassItemsIfNeeded(dest, source.RockItems);
+    }
+
+    static void PromoteGrassItemIfNeeded(VegetationProfile p, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !IsGrassVegetationAsset(path)) return;
+        if (p.GrassItems.Any(i => string.Equals(i.ModelPath, path, StringComparison.OrdinalIgnoreCase)))
+            return;
+        p.GrassItems.Add(new VegetationProfileItem
+        {
+            ModelPath = path.Trim(),
+            Weight = 1f,
+            DensityMultiplier = 1f,
+            MinScale = 0.9f,
+            MaxScale = 1.1f
+        });
+    }
+
+    static void PromoteGrassItemsIfNeeded(VegetationProfile p, List<VegetationProfileItem>? source)
+    {
+        if (source == null) return;
+        for (int i = 0; i < source.Count; i++)
+        {
+            var it = source[i];
+            if (it == null) continue;
+            string path = !string.IsNullOrWhiteSpace(it.ModelPath) ? it.ModelPath : it.PrefabPath;
+            if (!IsGrassVegetationAsset(path)) continue;
+            if (p.GrassItems.Any(g => string.Equals(g.ModelPath, path, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            p.GrassItems.Add(new VegetationProfileItem
+            {
+                ModelPath = path,
+                Weight = it.Weight,
+                DensityMultiplier = it.DensityMultiplier,
+                MinScale = it.MinScale,
+                MaxScale = it.MaxScale
+            });
+        }
+    }
+
     static void EnsureLegacyCompatibility(VegetationProfile p)
     {
         p.GrassItems ??= new List<VegetationProfileItem>();
@@ -170,7 +255,9 @@ public static class VegetationProfileLibrary
                 MaxScale = 1.1f
             });
         }
-        if (!string.IsNullOrWhiteSpace(p.TreeModelPath) && !p.TreeItems.Any(i => string.Equals(i.ModelPath, p.TreeModelPath, StringComparison.OrdinalIgnoreCase)))
+        if (!string.IsNullOrWhiteSpace(p.TreeModelPath)
+            && !IsGrassVegetationAsset(p.TreeModelPath)
+            && !p.TreeItems.Any(i => string.Equals(i.ModelPath, p.TreeModelPath, StringComparison.OrdinalIgnoreCase)))
         {
             p.TreeItems.Add(new VegetationProfileItem
             {
@@ -184,6 +271,6 @@ public static class VegetationProfileLibrary
 
         // Keep legacy fields in sync for old consumers.
         p.GrassModelPath = p.GrassItems.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.ModelPath))?.ModelPath ?? p.GrassModelPath;
-        p.TreeModelPath = p.TreeItems.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.ModelPath))?.ModelPath ?? p.TreeModelPath;
+        p.TreeModelPath = p.TreeItems.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.ModelPath) && !IsGrassVegetationAsset(i.ModelPath))?.ModelPath ?? "";
     }
 }

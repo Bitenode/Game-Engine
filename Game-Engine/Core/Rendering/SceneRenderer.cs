@@ -51,6 +51,8 @@ namespace Game_Engine.Core
             public bool IsES;
             /// <summary>When true, skip custom shader detection and always use the standard shader.</summary>
             public bool ForceStandardShader;
+            /// <summary>Planet vegetation forward pass: imported trees get sun/weather/wind.</summary>
+            public bool PlanetFoliagePass;
         }
 
         // ---------- Frustum culling ----------
@@ -204,20 +206,34 @@ namespace Game_Engine.Core
             ShaderProgram particleShader,
             ResourceCache cache,
             in SN.Matrix4x4 view,
-            in SN.Matrix4x4 proj)
+            in SN.Matrix4x4 proj,
+            int viewportW = 0,
+            int viewportH = 0,
+            bool overlayPass = false)
         {
+            if (viewportW > 0 && viewportH > 0)
+                gl.Viewport(0, 0, (uint)viewportW, (uint)viewportH);
+            gl.Disable(EnableCap.ScissorTest);
+            if (overlayPass)
+                gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
+
             var positions = s_particlePositions ??= new SN.Vector4[128];
             var colors = s_particleColors ??= new SN.Vector4[128];
 
             // Find all particle emitters
             foreach (var root in SceneService.Root)
-                RenderParticlesRecursive(gl, particleShader, cache, root, view, proj, positions, colors);
+                RenderParticlesRecursive(gl, particleShader, cache, root, view, proj, positions, colors, overlayPass);
+
+            if (overlayPass)
+                gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.CullFace);
         }
 
         private static void RenderParticlesRecursive(
             GL gl, ShaderProgram shader, ResourceCache cache,
             GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-            SN.Vector4[] positions, SN.Vector4[] colors)
+            SN.Vector4[] positions, SN.Vector4[] colors, bool overlayPass)
         {
             if (!go.Enabled) return;
 
@@ -239,6 +255,9 @@ namespace Game_Engine.Core
                     gl.Enable(EnableCap.Blend);
                     gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                     gl.DepthMask(false);
+                    bool weatherPrecip = go.Name?.StartsWith("BiomeWeatherPrecipitation", StringComparison.Ordinal) == true;
+                    if (weatherPrecip || overlayPass)
+                        gl.Disable(EnableCap.DepthTest);
 
                     int skip = 0;
                     while (true)
@@ -254,16 +273,18 @@ namespace Game_Engine.Core
 
                         DrawBillboardQuads(gl, count);
                         skip += count;
-                        if (count < 128 || skip >= 1024) break;
+                        if (count < 128 || skip >= 4096) break;
                     }
 
+                    if (weatherPrecip || overlayPass)
+                        gl.Enable(EnableCap.DepthTest);
                     gl.DepthMask(true);
                     gl.Disable(EnableCap.Blend);
                 }
             }
 
             foreach (var c in go.Children)
-                RenderParticlesRecursive(gl, shader, cache, c, view, proj, positions, colors);
+                RenderParticlesRecursive(gl, shader, cache, c, view, proj, positions, colors, overlayPass);
         }
 
         static bool IsPlanetVegetationDrawName(string? name)
@@ -274,6 +295,7 @@ namespace Game_Engine.Core
                 || name.StartsWith("BiomeTree", StringComparison.Ordinal)
                 || name.StartsWith("AssetGrass", StringComparison.Ordinal)
                 || name.StartsWith("AssetTree", StringComparison.Ordinal)
+                || name.StartsWith("LocalTree_", StringComparison.Ordinal)
                 || name.StartsWith("planet_grass_", StringComparison.Ordinal)
                 || name == PlanetVegetationSystem.RuntimeRootName;
         }
@@ -683,10 +705,7 @@ namespace Game_Engine.Core
                 }
             }
 
-            RenderPlanetVegetation(
-                gl, standardShader, cache, view, proj, planes, camPos,
-                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunShineDir, in renderCtx);
+            // Planet vegetation is drawn after planet terrain (see RenderPlanetVegetationAfterTerrain).
 
             // --- TRANSPARENT PASS (back-to-front) ---
             if (transparentItems.Count > 0)
@@ -939,6 +958,24 @@ namespace Game_Engine.Core
                 foreach (var b in go.Parent.Behaviors)
                     if (b is Terrain tt && tt.Enabled) { terrain = tt; break; }
             }
+            if (tree == null)
+            {
+                var ancestor = go.Parent;
+                int hops = 0;
+                while (ancestor != null && tree == null && hops < 6)
+                {
+                    foreach (var b in ancestor.Behaviors)
+                    {
+                        if (b is Tree tr && tr.Enabled)
+                        {
+                            tree = tr;
+                            break;
+                        }
+                    }
+                    ancestor = ancestor.Parent;
+                    hops++;
+                }
+            }
 
             // Iterate behaviors once, pairing MeshFilters with MeshRenderers in order.
             // Avoids per-call list allocations — use index tracking instead.
@@ -1122,16 +1159,39 @@ namespace Game_Engine.Core
             }
 
             // Wind / vegetation uniforms
-            if (item.Tree != null && item.Tree.IsVegetation)
+            bool foliage = ctx.PlanetFoliagePass
+                || (item.Tree != null && item.Tree.IsVegetation);
+            if (foliage)
             {
+                PlanetVegetationSystem.TryGetActiveFoliageEnvironment(
+                    out float wetness, out float snow, out float rain, out float cloudiness,
+                    out float windMul, out float sunIntensity, out float atmoAmbient);
+                float sway = item.Tree != null ? item.Tree.WindSway : 0.55f;
+                float speed = item.Tree != null ? item.Tree.WindSpeed : 0.45f;
+                float wind = WindSystem.GetCurrentStrength() * Math.Max(0.25f, sway) * Math.Max(0.35f, windMul);
+                wind *= 1f + rain * 1.15f;
                 shader.SetInt("uIsVegetation", 1);
-                shader.SetFloat("uWindTime", WindSystem.Time * item.Tree.WindSpeed);
-                shader.SetVector3("uWindDir", WindSystem.Direction);
-                shader.SetFloat("uWindStrength", WindSystem.GetCurrentStrength() * item.Tree.WindSway);
+                shader.SetFloat("uWindTime", WindSystem.Time * Math.Max(0.25f, speed) * 0.55f);
+                shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
+                    ? SN.Vector3.Normalize(WindSystem.Direction)
+                    : SN.Vector3.UnitX);
+                shader.SetFloat("uWindStrength", Math.Clamp(wind * 12f, 0.14f, 1.35f));
+                shader.SetFloat("uRain", rain);
+                shader.SetFloat("uWetness", wetness);
+                shader.SetFloat("uSnow", snow);
+                shader.SetFloat("uCloudiness", cloudiness);
+                shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.16f, 2f));
+                shader.SetFloat("uAmbient", Math.Clamp(Math.Max(ctx.Ambient, atmoAmbient), 0.12f, 0.85f));
             }
             else
             {
                 shader.SetInt("uIsVegetation", 0);
+                shader.SetFloat("uRain", 0f);
+                shader.SetFloat("uWetness", 0f);
+                shader.SetFloat("uSnow", 0f);
+                shader.SetFloat("uCloudiness", 0f);
+                shader.SetFloat("uSunIntensity", 1f);
+                shader.SetFloat("uAmbient", ctx.Ambient);
             }
             // Bone skinning matrices
             if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
@@ -2140,10 +2200,7 @@ namespace Game_Engine.Core
                 gl.PolygonOffset(0f, 0f);
             }
 
-            RenderPlanetVegetation(
-                gl, standardShader, cache, view, proj, planes, camPos,
-                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunShineDir, in renderCtx);
+            // Planet vegetation is drawn after planet terrain (see RenderPlanetVegetationAfterTerrain).
 
             // CUSTOM SHADER FORWARD PASS — re-render items that have custom shaders
             // with their actual shaders. They were already written to the G-buffer (for
@@ -2764,6 +2821,56 @@ namespace Game_Engine.Core
                 cloudStepCount: Math.Clamp(atmo?.CloudStepCount ?? 16, 4, 64));
         }
 
+        /// <summary>
+        /// Draw streamed planet grass/trees on top of the planet crust mesh.
+        /// Must run after <see cref="RenderPlanetTerrain"/> so terrain does not overpaint vegetation.
+        /// </summary>
+        public static void RenderPlanetVegetationAfterTerrain(
+            GL gl,
+            ShaderProgram standardShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float diffuseK,
+            float ambient,
+            bool lightIsPoint,
+            SN.Vector3 lightPosW,
+            float lightRange,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            bool isES = true,
+            SN.Vector3 lightColor = default)
+        {
+            if (!PlanetVegetationSystem.AnyUseDedicatedRenderPass)
+                return;
+
+            var viewProj = view * proj;
+            var planes = s_planes ??= new Plane[6];
+            ExtractFrustumPlanes(viewProj, planes);
+            var renderCtx = new RenderContext
+            {
+                View = view,
+                Proj = proj,
+                CamPos = camPos,
+                LightDir = lightDir,
+                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                DiffuseK = diffuseK,
+                Ambient = ambient,
+                ShadowVP = shadowVP,
+                StandardShader = standardShader,
+                Cache = cache,
+                IsES = isES,
+                PlanetFoliagePass = true
+            };
+            RenderPlanetVegetation(
+                gl, standardShader, cache, view, proj, planes, camPos,
+                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunShineDir, in renderCtx);
+        }
+
         static void RenderPlanetVegetation(
             GL gl,
             ShaderProgram standardShader,
@@ -2815,9 +2922,8 @@ namespace Game_Engine.Core
                 SkipPlanetVegetationDraws = prevSkip;
             }
 
-            if (vegOpaque.Count == 0 && vegTransparent.Count == 0)
-                return;
-
+            if (vegOpaque.Count > 0 || vegTransparent.Count > 0)
+            {
             standardShader.Use();
             SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
             standardShader.SetMatrix4("uView", view);
@@ -2840,9 +2946,13 @@ namespace Game_Engine.Core
             gl.Enable(EnableCap.DepthTest);
             gl.DepthMask(true);
             gl.Disable(EnableCap.Blend);
+            gl.Enable(EnableCap.PolygonOffsetFill);
+            gl.PolygonOffset(-1f, -1f);
 
             for (int i = 0; i < vegOpaque.Count; i++)
                 DrawMeshItem(gl, standardShader, cache, vegOpaque[i], in renderCtx);
+
+            gl.Disable(EnableCap.PolygonOffsetFill);
 
             if (vegTransparent.Count > 0)
             {
@@ -2854,6 +2964,31 @@ namespace Game_Engine.Core
                     DrawMeshItem(gl, standardShader, cache, vegTransparent[i], in renderCtx);
                 gl.DepthMask(true);
                 gl.Disable(EnableCap.Blend);
+            }
+            }
+
+            RenderPlanetGpuGrassBatches(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, renderCtx.LightColor);
+        }
+
+        static void RenderPlanetGpuGrassBatches(
+            GL gl,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float ambient,
+            float diffuseK,
+            SN.Vector3 lightColor)
+        {
+            var systems = PlanetVegetationSystem.ActiveSystems;
+            for (int s = 0; s < systems.Count; s++)
+            {
+                var sys = systems[s];
+                if (sys?.TerrainGameObject == null || !sys.IsActiveAndEnabled)
+                    continue;
+                var planetWorld = TransformUtil.WorldFromTransform(sys.TerrainGameObject.Transform);
+                PlanetGpuGrass.Render(gl, cache, sys, planetWorld, view, proj, camPos, lightDir, ambient, diffuseK, lightColor);
             }
         }
 
@@ -3031,8 +3166,9 @@ namespace Game_Engine.Core
                 if (behaviors[i] is not PlanetWeatherController wx || !wx.EnableWeather || !wx.IsActiveAndEnabled)
                     continue;
                 wetness = Math.Max(wetness, wx.Wetness);
+                wetness = Math.Max(wetness, wx.RainIntensity * 0.92f);
                 snowCoverage = Math.Max(snowCoverage, wx.SnowCoverage);
-                weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;
+                weatherOn = (wetness > 0.02f || snowCoverage > 0.02f || wx.RainIntensity > 0.05f) ? 1f : 0f;
                 return;
             }
             weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;

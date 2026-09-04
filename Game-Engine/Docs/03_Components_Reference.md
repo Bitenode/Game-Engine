@@ -741,6 +741,9 @@ Billboard particle system with emission shapes, sub-emitters, and preset configu
   - configurable emission direction (`EmissionDirection`)
   - optional surface termination (`StopOnPlanetSurfaceHit`)
   - nearest-planet lookup for surface checks is resolved once per emitter update and reused across particles
+  - **`SetCameraFrustumSpawn(...)`** — spawn across the active camera frustum (origin/forward/right/up, FOV, aspect, near/far, lift along planet-up). Used by `PlanetWeatherController` for biome rain/snow layers
+  - **`SetViewProjectionSpawn(...)`** — alternate spawn path from view/projection matrices (coverage from projection `M11`/`M22`)
+  - rain streak mode: `StretchAlongVelocity` + `StretchLength` elongate billboards along fall direction
 
 ### Presets
 | Preset   | Description                                |
@@ -1949,9 +1952,10 @@ Biome-driven runtime weather controller for planets (`Clear`, `Cloudy`, `Rain`, 
 Primary responsibilities:
 
 - biome-blended weather target selection and transition timing
-- camera-anchored precipitation with visibility polling/culling (volumes within `PrecipitationHeight` of the camera are always visible — a FOV test treated “straight up” as off-screen and killed rain)
+- camera-anchored precipitation with **frustum spawn** (`SetCameraFrustumSpawn` from inverted `Camera.GetViewMatrix()` + `Input.ViewportSize` aspect) and visibility polling/culling (volumes within `PrecipitationHeight` of the camera are always visible — a FOV test treated “straight up” as off-screen and killed rain)
+- precipitation renders in Game View / PlayerView **after post-processing** as a full-viewport particle overlay (avoids half-width viewport clipping from deferred SSAO/shadow passes)
 - optional driving of atmosphere, post-process fog, and wind systems (land fog/lighting **off** while `UnderwaterQuery.AnyPlayerPlanetSubmerged`)
-- weather coupling output for vegetation and the terrain shader (`BiomeWeatherRuntime.Wetness` / `SnowCoverage`, published every frame). Rain/storm holds wetness ≥ 0.9; snow holds coverage ≥ 0.85. The terrain shader **tints** albedo — it does not replace grass with a flat puddle/snow color
+- weather coupling output for vegetation and the terrain shader: `ApplyHeldWeatherIntensities` + `PublishRuntimeWeather` run **every frame** (wetness tracks live rain between `StepWeather` ticks). Rain/storm holds wetness ≥ 0.9; snow holds coverage ≥ 0.85. `SceneRenderer.ResolveWeatherOverlays` also ties terrain `uWetness` to live `RainIntensity`. The terrain shader uses FBM puddles + spec/Fresnel/sky reflection on flat ground — it **tints** albedo and does not replace grass with a flat puddle/snow color
 
 Key toggles:
 

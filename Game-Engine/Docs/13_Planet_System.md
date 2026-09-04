@@ -627,11 +627,12 @@ Planet ecosystem/weather runtime is implemented with companion components on the
 | `PlanetWeatherController` | Hybrid biome-blended weather state machine (`Clear/Cloudy/Rain/Snow/Storm`) driving atmosphere/fog/wind/precipitation |
 
 Weather ↔ ground coupling:
-- `PlanetWeatherController` writes `BiomeWeatherRuntime.Wetness` / `SnowCoverage` every frame (`PublishRuntimeWeather`), even between `StepWeather` ticks, and calls `PlanetVegetationSystem.ApplyWeather`
+- `PlanetWeatherController` runs `ApplyHeldWeatherIntensities` + `PublishRuntimeWeather` **every frame** (not only on `StepWeather` ~0.3s ticks). `_cachedColdness` / `_cachedGrowthMul` refresh on weather steps; wetness/snow still track live rain between steps
 - Rain / storm **holds** `Wetness ≥ 0.9` and `RainIntensity = 1`; snow holds `SnowCoverage ≥ 0.85`. Leaving the state damps toward 0 (it no longer chases a low intensity target)
+- `SceneRenderer.ResolveWeatherOverlays` also boosts terrain `uWetness` from live `RainIntensity` (`max(wetness, RainIntensity × 0.92)`) and enables overlays when `RainIntensity > 0.05`, so ground wetness appears as soon as rain starts
 - Precipitation volumes **within** `PrecipitationHeight` of the camera are always treated as visible. A FOV test treated “straight up the radial” as off-screen and killed rain in under a second
 - Vegetation vitality always updates using authored `VegetationRegrowthRate` / `VegetationDecayRate` (wetness helps growth; snow stresses plants)
-- Planet terrain shader samples `uWetness` / `uSnowCoverage` / `uWeatherEnabled` for wet tint and puddle spec on flatter ground, and a light snow dusting — it **scales the lit texel** and never replaces grass with a flat color
+- Planet terrain shader (`PlanetTerrainFrag`) samples `uWetness` / `uSnowCoverage` / `uWeatherEnabled` for wet tint, **meter-scale FBM puddles** (`groundFlat = smoothstep(0.18, 0.58, slope)`), spec/Fresnel sheen, and sky-tinted puddle reflections — it **scales the lit texel** and never replaces grass with a flat color or hash sparkle
 - While a player is planet-submerged (`UnderwaterQuery.AnyPlayerPlanetSubmerged`), weather overlay, weather-driven land fog, and atmosphere lighting attenuation are disabled so rain does not drive the underwater post pass. Weather land fog uses a grey color and **does not** enable volumetric fog
 
 ### Vegetation Profiles
@@ -722,8 +723,10 @@ Use **`ImportedTreeMeshEulerCorrection`** only for one-off asset fixes (e.g. tru
 Planet weather precipitation uses layered particle emitters around the camera:
 
 - supports multiple vertical layers for continuous volume coverage
+- **camera-frustum spawn:** when an active `Camera` is resolved, each layer calls `ParticleEmitter.SetCameraFrustumSpawn` with axes from the inverted `GetViewMatrix()` (origin, forward, right, up), `FieldOfView`, aspect from `Input.ViewportSize` (same DIP size Game View uses for projection), and near/far clamped for the layer lift. Particles spawn across the full lens with ~1.18× horizontal/vertical margin — **do not** change the `Camera` projection API for this
+- **render path:** Game View and PlayerView draw precipitation **after post-processing** via `RenderParticles(..., overlayPass: true)` so SSAO/shadow half-width viewports do not clip rain to the left half of the screen. Scene View draws particles in the normal transparent pass and skips `BiomeWeatherPrecipitation_*` GOs while Game View is playing
 - supports visibility polling so precipitation work is skipped when the volume is not near/in view (near-camera overhead rain is always visible — see weather coupling above)
-- rain/snow emission remains continuous while state is active and visible
+- rain/snow emission remains continuous while state is active and visible; rain uses velocity-stretched streaks (`StretchAlongVelocity`)
 - by default, weather uses a performance budget profile (layer cap + particle cap + emission cap)
 - optional planet surface-hit termination can be disabled for weather emitters to reduce script cost
 - emitters support planet gravity alignment (nearest active planet center)

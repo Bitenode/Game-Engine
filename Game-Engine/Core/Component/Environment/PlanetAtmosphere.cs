@@ -39,9 +39,9 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float SunDirectionY { get; set; } = 0.82f;
     [Persist] public float SunDirectionZ { get; set; } = 0.53f;
     [Persist] public float SunIntensity { get; set; } = 1.0f;
-    [Persist] public bool EnableDayNightCycle { get; set; } = false;
+    [Persist] public bool EnableDayNightCycle { get; set; } = true;
     [Persist] public bool AutoAdvanceTime { get; set; } = true;
-    [Persist] public float DayLengthMinutes { get; set; } = 20f;
+    [Persist] public float DayLengthMinutes { get; set; } = 10f;
     [Persist] public float TimeOfDay { get; set; } = 0.25f; // 0..1, wraps
     [Persist] public float AxisX { get; set; } = 0f;
     [Persist] public float AxisY { get; set; } = 1f;
@@ -51,10 +51,10 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float NoonDirectionZ { get; set; } = 0.53f;
     [Persist] public bool AutoAdjustSunIntensity { get; set; } = true;
     [Persist] public float DaySunIntensity { get; set; } = 1.0f;
-    [Persist] public float NightSunIntensity { get; set; } = 0.5f;
+    [Persist] public float NightSunIntensity { get; set; } = 0.28f;
     [Persist] public bool AutoAdjustAmbient { get; set; } = true;
     [Persist] public float DayAmbient { get; set; } = 0.5f;
-    [Persist] public float NightAmbient { get; set; } = 0.5f;
+    [Persist] public float NightAmbient { get; set; } = 0.12f;
     [Persist] public bool AutoAdjustSkyTint { get; set; } = true;
     [Persist] public float NightSkyHueShiftDegrees { get; set; } = -12f;
     [Persist] public float NightSkyBrightness { get; set; } = 0.42f;
@@ -143,7 +143,7 @@ public sealed class PlanetAtmosphere : Behavior
 
         if (AutoAdvanceTime)
         {
-            float seconds = Math.Max(30f, DayLengthMinutes * 60f);
+            float seconds = Math.Max(10f, DayLengthMinutes * 60f);
             TimeOfDay = Wrap01(TimeOfDay + (float)Time.deltaTime / seconds);
         }
 

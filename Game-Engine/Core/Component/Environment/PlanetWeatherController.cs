@@ -102,6 +102,8 @@ public sealed class PlanetWeatherController : Behavior
     float _baseWindAmplitude;
     float _baseWindGustiness;
     float _baseWindTurbulenceFrequency;
+    float _cachedColdness = 0.5f;
+    float _cachedGrowthMul = 1f;
 
     public override void Awake()
     {
@@ -144,6 +146,10 @@ public sealed class PlanetWeatherController : Behavior
 
         PollPrecipitationVisibility(frameDt);
 
+        // Wetness must track live rain every frame — StepWeather only runs every ~0.3s.
+        ApplyHeldWeatherIntensities(frameDt, _cachedColdness, _cachedGrowthMul);
+        PublishRuntimeWeather(_cachedGrowthMul);
+
         _updateAccum += frameDt;
         if (_updateAccum >= Math.Max(0.05f, UpdateIntervalSeconds))
         {
@@ -152,7 +158,7 @@ public sealed class PlanetWeatherController : Behavior
         }
         else
         {
-            PublishRuntimeWeather(1f);
+            ApplyPrecipitation(ResolveCameraPosition());
         }
     }
 
@@ -204,6 +210,8 @@ public sealed class PlanetWeatherController : Behavior
 
         float climateWet = Math.Clamp((avgRain + avgSnow * 0.5f + avgStorm) * cfg.GlobalWeatherIntensity, 0f, 1f);
         float coldness = Math.Clamp(1f - avgTempCenter, 0f, 1f);
+        _cachedColdness = coldness;
+        _cachedGrowthMul = growthMul;
         float stormPreference = Math.Clamp(avgStorm * (0.55f + climateWet * 0.5f), 0f, 0.35f);
         float rainWindow = Math.Clamp(avgRain * Math.Clamp(0.55f + climateWet * 0.5f, 0.5f, 1f), 0.12f, 0.7f);
         // Snow only in actually snowy + cold biomes. Adding coldness onto temperate rain was locking Play into snow.
@@ -357,6 +365,7 @@ public sealed class PlanetWeatherController : Behavior
         if (!wantsPrecipitation)
         {
             _precipHiddenAccum += Math.Max(0.05f, UpdateIntervalSeconds);
+            ClearPrecipitationFrustum();
             SetPrecipEmittersActive(false, clearParticles: _precipHiddenAccum >= Math.Max(0.1f, PrecipitationHiddenClearDelaySeconds));
             return;
         }
@@ -364,6 +373,7 @@ public sealed class PlanetWeatherController : Behavior
         if (EnablePrecipitationVisibilityPolling && !_precipitationVisible)
         {
             _precipHiddenAccum += Math.Max(0.05f, UpdateIntervalSeconds);
+            ClearPrecipitationFrustum();
             SetPrecipEmittersActive(false, clearParticles: _precipHiddenAccum >= Math.Max(0.1f, PrecipitationHiddenClearDelaySeconds));
             return;
         }
@@ -376,21 +386,56 @@ public sealed class PlanetWeatherController : Behavior
         int layerCount = Math.Min(_precipObjects.Count, _precipEmitters.Count);
         int activeLayerCap = Math.Max(1, MaxActivePrecipitationLayers);
         var planetUp = ResolvePlanetUp(cameraPos);
+        var cam = ResolveActiveCamera();
+        if (cam != null && cam.TryGetWorldLookRay(out var lookOrigin, out _))
+            cameraPos = lookOrigin;
+        else if (TryGetCameraLook(out var camPos, out _, out _, out _, out _) && camPos.LengthSquared() > 1e-6f)
+            cameraPos = camPos;
+
+        float lift = Math.Max(8f, PrecipitationHeight);
+        if (emitSnow)
+            lift = Math.Max(lift, 12f);
+
+        bool haveFrustum = false;
+        SN.Vector3 camOrigin = default;
+        SN.Vector3 camForward = new(0f, 0f, -1f);
+        SN.Vector3 camRight = SN.Vector3.UnitX;
+        SN.Vector3 camUp = SN.Vector3.UnitY;
+        float camFov = 60f;
+        float camAspect = 16f / 9f;
+        float camNear = 0.5f;
+        float camFar = 40f;
+        if (cam != null)
+        {
+            var view = cam.GetViewMatrix();
+            if (SN.Matrix4x4.Invert(view, out var invView))
+            {
+                camOrigin = new SN.Vector3(invView.M41, invView.M42, invView.M43);
+                camRight = NormalizeOrFallback(new SN.Vector3(invView.M11, invView.M21, invView.M31), SN.Vector3.UnitX);
+                camUp = NormalizeOrFallback(new SN.Vector3(invView.M12, invView.M22, invView.M32), SN.Vector3.UnitY);
+                camForward = NormalizeOrFallback(new SN.Vector3(-invView.M13, -invView.M23, -invView.M33), new SN.Vector3(0f, 0f, -1f));
+                var vp = Game_Engine.Core.Input.Input.ViewportSize;
+                camAspect = vp.Y > 0.5f ? vp.X / vp.Y : 16f / 9f;
+                camFov = cam.FieldOfView;
+                camNear = Math.Max(0.4f, cam.Near);
+                camFar = Math.Clamp(Math.Min(cam.Far, 48f), camNear + 2f, 48f);
+                haveFrustum = true;
+            }
+        }
+
         for (int i = 0; i < layerCount; i++)
         {
             var go = _precipObjects[i];
             var emitter = _precipEmitters[i];
             float layerH = PrecipitationHeight + i * Math.Max(4f, PrecipitationLayerSpacing);
-            go.Transform.Position = new Vector3(
-                cameraPos.X + planetUp.X * layerH,
-                cameraPos.Y + planetUp.Y * layerH,
-                cameraPos.Z + planetUp.Z * layerH);
+            SceneGraphUtil.SetPositionWorld(go, cameraPos + planetUp * layerH);
 
             float layerFactor = 1f - (i / Math.Max(1f, layerCount - 1f)) * 0.28f;
             bool layerActive = i < activeLayerCap;
             if (!layerActive)
             {
                 emitter.Stop();
+                emitter.ClearCameraFrustumSpawn();
                 if (emitter.Enabled)
                     emitter.SetEnabledSilent(false);
                 continue;
@@ -398,6 +443,14 @@ public sealed class PlanetWeatherController : Behavior
 
             if (!emitter.Enabled)
                 emitter.SetEnabledSilent(true);
+
+            float layerLift = lift + i * Math.Max(4f, PrecipitationLayerSpacing * 0.35f);
+            if (haveFrustum)
+            {
+                emitter.SetCameraFrustumSpawn(
+                    camOrigin, camForward, camRight, camUp, planetUp,
+                    camFov, camAspect, camNear, camFar, layerLift);
+            }
             if (emitSnow)
             {
                 if (emitter.Preset != ParticlePreset.Snow)
@@ -556,7 +609,12 @@ public sealed class PlanetWeatherController : Behavior
     {
         _vegetation ??= gameObject?.Behaviors.OfType<PlanetVegetationSystem>().FirstOrDefault();
         if (_vegetation != null)
-            _vegetation.ApplyWeather(Wetness, SnowCoverage, Math.Max(0.25f, windBias));
+            _vegetation.ApplyWeather(
+                Wetness,
+                SnowCoverage,
+                Math.Max(0.25f, windBias),
+                Math.Max(RainIntensity, CurrentState == PlanetWeatherState.Storm ? 1f : 0f),
+                Cloudiness);
 
         PublishRuntimeWeather(growthMul);
     }
@@ -599,6 +657,9 @@ public sealed class PlanetWeatherController : Behavior
 
     SN.Vector3 ResolveCameraPosition()
     {
+        if (TryGetCameraLook(out var origin, out _, out _, out _, out _) && origin.LengthSquared() > 1e-6f)
+            return origin;
+
         var cam = ResolveActiveCamera();
         var live = cam != null
             ? new SN.Vector3((float)cam.Transform.Position.X, (float)cam.Transform.Position.Y, (float)cam.Transform.Position.Z)
@@ -614,6 +675,56 @@ public sealed class PlanetWeatherController : Behavior
         if ((last - center).LengthSquared() > (radius * 0.45f) * (radius * 0.45f))
             return last;
         return live.LengthSquared() > 1e-6f ? live : last;
+    }
+
+    bool TryGetCameraLook(out SN.Vector3 origin, out SN.Vector3 forward, out SN.Vector3 up, out float fovY, out float aspect)
+    {
+        origin = SN.Vector3.Zero;
+        forward = new SN.Vector3(0f, 0f, -1f);
+        up = SN.Vector3.UnitY;
+        fovY = 60f;
+        aspect = 16f / 9f;
+        var vp = Game_Engine.Core.Input.Input.ViewportSize;
+        if (vp.X > 1f && vp.Y > 1f)
+            aspect = Math.Clamp(vp.X / vp.Y, 0.5f, 3.2f);
+
+        var cam = ResolveActiveCamera();
+        if (cam == null)
+            return false;
+
+        fovY = Math.Clamp(cam.FieldOfView, 20f, 120f);
+        if (!cam.TryGetWorldLookRay(out origin, out forward))
+            return false;
+
+        if (cam.gameObject != null)
+        {
+            if (cam.UseLookOverride)
+            {
+                up = cam.LookUp.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(cam.LookUp) : cam.WorldUp;
+            }
+            else
+            {
+                var world = SceneGraphUtil.AccumulateWorld(cam.gameObject);
+                up = SN.Vector3.TransformNormal(SN.Vector3.UnitY, world);
+            }
+        }
+        if (up.LengthSquared() < 1e-8f)
+            up = cam.WorldUp.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(cam.WorldUp) : SN.Vector3.UnitY;
+        else
+            up = SN.Vector3.Normalize(up);
+
+        up -= forward * SN.Vector3.Dot(up, forward);
+        if (up.LengthSquared() < 1e-8f)
+            up = ResolvePlanetUp(origin);
+        else
+            up = SN.Vector3.Normalize(up);
+        return origin.LengthSquared() > 1e-8f;
+    }
+
+    void ClearPrecipitationFrustum()
+    {
+        for (int i = 0; i < _precipEmitters.Count; i++)
+            _precipEmitters[i].ClearCameraFrustumSpawn();
     }
 
     SN.Vector3 ResolvePlanetUp(SN.Vector3 worldPos)
@@ -652,6 +763,12 @@ public sealed class PlanetWeatherController : Behavior
 
     static float Damp(float current, float target, float speed, float dt)
         => current + (target - current) * (1f - MathF.Exp(-Math.Max(0f, speed) * Math.Max(0f, dt)));
+
+    static SN.Vector3 NormalizeOrFallback(SN.Vector3 v, SN.Vector3 fallback)
+    {
+        float lsq = v.LengthSquared();
+        return lsq > 1e-10f ? v / MathF.Sqrt(lsq) : fallback;
+    }
 
     static float Noise01(int seed, float x)
     {

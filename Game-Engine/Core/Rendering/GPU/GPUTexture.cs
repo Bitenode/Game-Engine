@@ -69,6 +69,39 @@ public sealed class GPUTexture : IDisposable
     }
 
     /// <summary>
+    /// RGBA upload without mipmaps. Required for alpha-tested grass cards — mip
+    /// chains average alpha toward zero and the whole blade discards.
+    /// </summary>
+    public unsafe void UploadLinearClampNoMip(Texture2D tex)
+    {
+        if (tex == null || tex.Rgba == null) return;
+
+        Width = tex.Width;
+        Height = tex.Height;
+
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
+
+        fixed (byte* ptr = tex.Rgba)
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.Rgba8,
+                (uint)Width, (uint)Height, 0,
+                PixelFormat.Rgba, PixelType.UnsignedByte, ptr);
+        }
+
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    /// <summary>
     /// Upload BCn-compressed mips from a DDS face. Returns false on size/GL mismatch (caller should use RGBA path).
     /// <paramref name="stripSidecar"/> is true when DDS mip sizes do not match BCn layout — safe to delete sidecar and re-encode.
     /// </summary>

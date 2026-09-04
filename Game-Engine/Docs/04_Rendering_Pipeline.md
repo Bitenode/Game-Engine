@@ -20,12 +20,14 @@ Each frame, both SceneView and GameView execute these passes in order:
  7. Opaque Pass             (Frustum-culled — standard/terrain/skinned shaders)
  8. Water Pass              (Gerstner wave displacement, Fresnel, foam)
  9. Transparent Pass        (Back-to-front sorted, alpha blending)
-10. Particle Pass           (Billboard quads, instanced rendering)
+10. Particle Pass           (Billboard quads, instanced rendering — **Scene View only**; see Game View note below)
 11. Gizmo Pass              (Editor overlays, collider wireframes — Scene View only)
 12. Volumetric Fog Pass     (Ray-marched scattering with shadow sampling — when enabled)
 13. Post-Processing Pass    (Bloom, Fog, Color Grading, FXAA, Vignette, Underwater)
 14. GL State Cleanup        (Restore Avalonia compositor state)
 ```
+
+**Game View / PlayerView (deferred pipeline):** shadow and SSAO passes can leave `glViewport` at half width. Weather precipitation is therefore drawn **after post-processing** as a full-viewport overlay (`SceneRenderer.RenderParticles(..., overlayPass: true)`). The overlay restores `W×H` viewport, disables scissor/depth/cull for the pass, and draws rain/snow with depth test off so streaks cover the full lens. Scene View keeps the step-10 particle pass in the main transparent pipeline and passes explicit pixel viewport size to `RenderParticles`.
 
 ---
 
@@ -409,8 +411,13 @@ Compiles and links GLSL vertex + fragment shaders. Provides:
 2. For each active `ParticleEmitter`:
    - Upload per-particle data (positions, sizes, colors, alphas) as uniform arrays
    - Set billboard orientation from camera view matrix
+   - Rain presets may stretch quads along velocity (`StretchAlongVelocity`, `StretchLength`)
    - Draw instanced billboard quads
 3. Particles are rendered with alpha blending enabled
+
+**Overlay pass (Game View / PlayerView):** called after post-processing blits to the default framebuffer. `overlayPass: true` sets the full viewport (`viewportW` × `viewportH`), disables scissor/depth/cull for the pass, and skips depth test per weather emitter (`BiomeWeatherPrecipitation_*`) so rain/snow cover the entire screen. Do **not** move weather particles back into the deferred G-buffer path — mid-pipeline draws inherit the half-width viewport from SSAO/shadow FBOs.
+
+**Scene View during Play:** `SkipPlanetVegetationDraws` hides `BiomeWeatherPrecipitation_*` GOs in the editor viewport while Game View is playing so precipitation is not drawn twice.
 
 ### Volumetric Fog Pass
 Rendered when `PostProcessVolume.VolumetricFogEnabled` is `true`. Uses a dedicated ray-marching shader applied as a fullscreen pass between the main scene render and post-processing.
@@ -520,11 +527,12 @@ The engine includes a dedicated GPU-accelerated UI rendering pipeline for in-gam
 ```
 1. Shadow pass (depth-only)
 2. Opaque pass (MeshRenderers, SkinnedMeshRenderers, Terrain)
-3. Transparent pass (Water, Particles, Decals, World-Space Canvases)
+3. Transparent pass (Water, Particles except Game View weather overlay, Decals, World-Space Canvases)
 4. Volumetric Fog pass (ray-marched scattering — when enabled)
 5. Post-processing (Bloom, Fog, Color Grading, Tone Mapping, Vignette, FXAA)
-6. UI Overlay pass (CanvasRenderer — ScreenSpaceOverlay canvases)
-7. Editor overlays (Grid, Gizmos, Collider wireframes)
+6. Particle overlay (Game View / PlayerView weather precipitation only — full viewport, after post)
+7. UI Overlay pass (CanvasRenderer — ScreenSpaceOverlay canvases)
+8. Editor overlays (Grid, Gizmos, Collider wireframes)
 ```
 
 ### Architecture
@@ -570,7 +578,7 @@ Planet atmosphere rendering is now an isolated path and does not depend on `Skyb
 
 - **Planet data source:** `PlanetTerrain` + `PlanetAtmosphere` component state
 - **Resolver:** `SceneRenderer.ResolvePlanetAtmosphere(...)` produces per-planet render params
-- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls. **Weather overlays** (`uWetness` / `uSnowCoverage` / `uWeatherEnabled`) tint and add puddle spec / light snow on the **lit texel** — they never replace grass with a flat color. Overlays are off while any player is planet-submerged. The renderer always binds **8** biome albedo slots (white + default tiling when a layer is missing)
+- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls. **Weather overlays** (`uWetness` / `uSnowCoverage` / `uWeatherEnabled`) tint and add puddle spec / light snow on the **lit texel** — they never replace grass with a flat color. Wetness is resolved every frame in `SceneRenderer.ResolveWeatherOverlays` (including live `RainIntensity`, not only held `Wetness`). Puddles use tangent-space **FBM** (`wetFbm`) at meter scale — not per-pixel hash noise — with `groundFlat = smoothstep(0.18, 0.58, slope)` so planet mesh normals still receive wet sheen. Pooled water adds spec/Fresnel and a simple sky reflection from `uAtmoHorizonTint` / `uAtmoZenithTint`. On OpenGL ES / ANGLE, avoid GLSL identifiers named `flat` (reserved); the terrain shader uses `groundFlat` instead. Overlays are off while any player is planet-submerged. The renderer always binds **8** biome albedo slots (white + default tiling when a layer is missing)
 - **Interior rendering:** when the camera is inside the crust band, backface and frustum culling are disabled so cave interiors stay visible while LOD refines
 - **Planet shadows:** renderable planet leaf meshes are drawn in the shadow depth pass (`RenderPlanetLeafShadows`) for form shadows at cave mouths and rims
 - **Planet water pass:** `PlanetWaterFrag` — atmosphere-driven reflection, per-body tint arrays (slot **6** = lava), shore biome blend, mask discard. **Always prefers** `QuadNode.GeneratedWaterMesh` patches (same LOD grid as terrain, shoreline on the visible edge). The uniform `PlanetWater` orbit shell is a **far-orbit silhouette only** (no chunk patches, camera farther than ~1.6× radius, not inside crust) — it is not a fallback that floods grassland. Rendered **after** planet atmosphere and clouds so haze does not cover the surface. Double-sided, alpha blend, `DepthFunc.Lequal`, **depth write off**, reduced wave amplitude when near the crust. Standalone `PlayerView` compiles the same planet terrain / atmosphere / cloud / water shaders and calls `RefreshLodAroundCamera` plus these passes (the old player only drew heightmap terrain + planar water).

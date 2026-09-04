@@ -78,6 +78,21 @@ namespace Game_Engine.Core.Component
         private float _emitAccum;
         private bool _playing;
         private readonly Random _rng = new();
+        bool _frustumSpawn;
+        bool _unprojSpawn;
+        SN.Matrix4x4 _invView;
+        float _tanHalfX = 1f;
+        float _tanHalfY = 1f;
+        SN.Vector3 _frustumOrigin;
+        SN.Vector3 _frustumForward;
+        SN.Vector3 _frustumRight;
+        SN.Vector3 _frustumCamUp;
+        SN.Vector3 _frustumFallUp;
+        float _frustumFovYRad = 60f * MathF.PI / 180f;
+        float _frustumAspect = 16f / 9f;
+        float _frustumNear = 1.5f;
+        float _frustumFar = 28f;
+        float _frustumLift = 10f;
 
         /// <summary>Whether particles are currently being emitted and simulated.</summary>
         public bool IsPlaying => _playing;
@@ -108,6 +123,73 @@ namespace Game_Engine.Core.Component
         public void Stop() { _playing = false; }
         public void Clear() { AliveCount = 0; for (int i = 0; i < Particles.Length; i++) Particles[i].Active = false; }
 
+        /// <summary>
+        /// Spawn inside the camera view (plus a lift along gravity-up so rain/snow falls through the lens).
+        /// </summary>
+        public void SetCameraFrustumSpawn(
+            SN.Vector3 origin,
+            SN.Vector3 forward,
+            SN.Vector3 right,
+            SN.Vector3 cameraUp,
+            SN.Vector3 fallUp,
+            float fovYDegrees,
+            float aspect,
+            float nearMeters,
+            float farMeters,
+            float liftMeters)
+        {
+            _frustumSpawn = true;
+            _frustumOrigin = origin;
+            _frustumForward = SafeNormalize(forward, new SN.Vector3(0f, 0f, -1f));
+            _frustumRight = SafeNormalize(right, SN.Vector3.UnitX);
+            _frustumCamUp = SafeNormalize(cameraUp, SN.Vector3.UnitY);
+            _frustumFallUp = SafeNormalize(fallUp, SN.Vector3.UnitY);
+            _frustumFovYRad = Math.Clamp(fovYDegrees, 1f, 170f) * MathF.PI / 180f;
+            _frustumAspect = Math.Clamp(aspect, 0.4f, 3.5f);
+            _frustumNear = Math.Max(0.4f, nearMeters);
+            _frustumFar = Math.Max(_frustumNear + 1f, farMeters);
+            _frustumLift = Math.Max(0f, liftMeters);
+        }
+
+        public void ClearCameraFrustumSpawn()
+        {
+            _frustumSpawn = false;
+            _unprojSpawn = false;
+        }
+
+        /// <summary>
+        /// Spawn across the full camera lens using the same view/projection Game view just drew with.
+        /// Horizontal/vertical coverage comes from the projection's width/height (M11/M22), not ViewportW.
+        /// </summary>
+        public void SetViewProjectionSpawn(in SN.Matrix4x4 view, in SN.Matrix4x4 proj, SN.Vector3 fallUp, float liftMeters)
+        {
+            _unprojSpawn = true;
+            _frustumSpawn = false;
+            if (!SN.Matrix4x4.Invert(view, out _invView))
+                _invView = SN.Matrix4x4.Identity;
+            _frustumOrigin = new SN.Vector3(_invView.M41, _invView.M42, _invView.M43);
+            // Numerics perspective: M11 = 1/(aspect*tanHalfFovY), M22 = 1/tanHalfFovY.
+            float m11 = MathF.Abs(proj.M11);
+            float m22 = MathF.Abs(proj.M22);
+            _tanHalfY = m22 > 1e-8f ? 1f / m22 : MathF.Tan(30f * MathF.PI / 180f);
+            _tanHalfX = m11 > 1e-8f ? 1f / m11 : _tanHalfY * (16f / 9f);
+            _frustumFallUp = SafeNormalize(fallUp, SN.Vector3.UnitY);
+            _frustumLift = Math.Max(0f, liftMeters);
+            _frustumNear = 1.2f;
+            _frustumFar = Math.Clamp(10f + liftMeters, 14f, 36f);
+        }
+
+        SN.Vector3 GetWorldPosition()
+        {
+            if (gameObject != null)
+            {
+                var world = SceneGraphUtil.AccumulateWorld(gameObject);
+                return new SN.Vector3(world.M41, world.M42, world.M43);
+            }
+            var p = Transform.Position;
+            return new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+        }
+
         public override void Update()
         {
             float dt = Time.deltaTime;
@@ -122,7 +204,7 @@ namespace Game_Engine.Core.Component
             }
 
             // Simulate existing particles
-            var emitterPos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var emitterPos = (_unprojSpawn || _frustumSpawn) ? _frustumOrigin : GetWorldPosition();
             var gravityDir = ResolveGravityDirection(emitterPos);
             var nearestSurfaceCenter = SN.Vector3.Zero;
             var nearestSurfacePlanet = StopOnPlanetSurfaceHit ? ResolveNearestPlanet(emitterPos, out nearestSurfaceCenter) : null;
@@ -186,10 +268,19 @@ namespace Game_Engine.Core.Component
 
         private void SpawnParticle(ref Particle p)
         {
-            var worldPos = Transform.Position;
-            SN.Vector3 pos = new SN.Vector3((float)worldPos.X, (float)worldPos.Y, (float)worldPos.Z);
+            SN.Vector3 pos = GetWorldPosition();
             SN.Vector3 dir = SafeNormalize(EmissionDirection, SN.Vector3.UnitY);
 
+            if (_unprojSpawn)
+            {
+                pos = SpawnFromViewProjection();
+            }
+            else if (_frustumSpawn)
+            {
+                pos = SpawnInCameraFrustum();
+            }
+            else
+            {
             switch (Shape)
             {
                 case EmitterShape.Sphere:
@@ -222,6 +313,7 @@ namespace Game_Engine.Core.Component
                         pos += localBox;
                     }
                     break;
+            }
             }
             if (AlignEmissionToGravity)
                 dir = ResolveGravityDirection(pos);
@@ -409,6 +501,38 @@ namespace Game_Engine.Core.Component
             return v / MathF.Sqrt(lsq);
         }
 
+        SN.Vector3 SpawnFromViewProjection()
+        {
+            // Full NDC [-1,1] in X and Y — covers the referenced camera width and height.
+            float ndcX = ((float)_rng.NextDouble() * 2f - 1f) * 0.98f;
+            float ndcY = ((float)_rng.NextDouble() * 2f - 1f) * 0.98f;
+            float t = (float)_rng.NextDouble();
+            float z = _frustumNear + (_frustumFar - _frustumNear) * (0.04f + t * 0.38f);
+            float vx = ndcX * _tanHalfX * z;
+            float vy = ndcY * _tanHalfY * z;
+            // Small extra height so streaks fall through the lens, still in view-space Y.
+            vy += _tanHalfY * z * 0.12f * (float)_rng.NextDouble();
+            var viewPos = new SN.Vector3(vx, vy, -z);
+            return SN.Vector3.Transform(viewPos, _invView);
+        }
+
+        SN.Vector3 SpawnInCameraFrustum()
+        {
+            float u = (float)_rng.NextDouble() * 2f - 1f;
+            float v = (float)_rng.NextDouble() * 2f - 1f;
+            float t = (float)_rng.NextDouble();
+            // Bias slightly toward the near field so streaks read in the foreground.
+            float z = _frustumNear + (_frustumFar - _frustumNear) * (t * t * 0.35f + t * 0.65f);
+            float halfH = MathF.Tan(_frustumFovYRad * 0.5f) * z * 1.18f;
+            float halfW = halfH * _frustumAspect * 1.18f;
+            float lift = _frustumLift * (float)_rng.NextDouble();
+            return _frustumOrigin
+                + _frustumForward * z
+                + _frustumRight * (u * halfW)
+                + _frustumCamUp * (v * halfH)
+                + _frustumFallUp * lift;
+        }
+
         static void BuildTangentFrame(SN.Vector3 up, out SN.Vector3 tangent, out SN.Vector3 bitangent)
         {
             up = SafeNormalize(up, SN.Vector3.UnitY);
@@ -426,7 +550,7 @@ namespace Game_Engine.Core.Component
                 if (p.Velocity.LengthSquared() > 1e-8f)
                     return SafeNormalize(p.Velocity, -SN.Vector3.UnitY);
             }
-            return ResolveGravityDirection(new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z));
+            return ResolveGravityDirection((_frustumSpawn || _unprojSpawn) ? _frustumOrigin : GetWorldPosition());
         }
 
         /// <summary>

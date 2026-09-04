@@ -234,7 +234,10 @@ namespace Game_Engine.Views
             fpsDisplayTimer.Tick += (_, __) =>
             {
                 if (!_fpsWindow.IsRunning || _fpsWindow.ElapsedMilliseconds < 400) return;
-                FpsText = $"{_fpsDisplay:F0} FPS";
+                double fps = _fpsDisplay;
+                if (fps < 0.5 && _msFrameEma > 0.01)
+                    fps = 1000.0 / _msFrameEma;
+                FpsText = fps < 10 ? $"{fps:0.0} FPS" : $"{fps:F0} FPS";
             };
             fpsDisplayTimer.Start();
 
@@ -588,13 +591,38 @@ namespace Game_Engine.Views
             }
             else
             {
-                view = SN.Matrix4x4.CreateLookAt(new SN.Vector3(0, 5, 10), SN.Vector3.Zero, SN.Vector3.UnitY);
-                proj = SN.Matrix4x4.CreatePerspectiveFieldOfView(60f * MathF.PI / 180f, (float)(Wdip / Math.Max(1, Hdip)), 0.1f, 1000f);
+                float maxPlanetR = 0f;
+                SN.Vector3 planetCenter = SN.Vector3.Zero;
+                foreach (var p in PlanetTerrain.ActivePlanets)
+                {
+                    if (p?.Config == null || !p.IsActiveAndEnabled) continue;
+                    float r = p.Config.EffectiveWorldRadius;
+                    if (r > maxPlanetR)
+                    {
+                        maxPlanetR = r;
+                        planetCenter = p.GetWorldCenter();
+                    }
+                }
+
+                float aspect = (float)(Wdip / Math.Max(1, Hdip));
+                if (maxPlanetR > 1f)
+                {
+                    var eye = planetCenter + new SN.Vector3(0f, maxPlanetR * 0.35f, maxPlanetR * 2.5f);
+                    view = SN.Matrix4x4.CreateLookAt(eye, planetCenter, SN.Vector3.UnitY);
+                    proj = SN.Matrix4x4.CreatePerspectiveFieldOfView(
+                        60f * MathF.PI / 180f, aspect, 0.1f, MathF.Max(50000f, maxPlanetR * 20f));
+                }
+                else
+                {
+                    view = SN.Matrix4x4.CreateLookAt(new SN.Vector3(0, 5, 10), SN.Vector3.Zero, SN.Vector3.UnitY);
+                    proj = SN.Matrix4x4.CreatePerspectiveFieldOfView(60f * MathF.PI / 180f, aspect, 0.1f, 1000f);
+                }
             }
 
             // Camera position
             SN.Matrix4x4.Invert(view, out var invView);
             var camPos = new SN.Vector3(invView.M41, invView.M42, invView.M43);
+            SN.Vector3 planetLodCamPos = ResolvePlanetLodCameraPos(camPos, cam);
 
             // If camera is inside a planet atmosphere shell, suppress skybox stars/textures.
             foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -739,7 +767,7 @@ namespace Game_Engine.Views
                 shouldUpdatePlanetLod = true;
             if (!float.IsNaN(_lastPlanetLodCamPos.X))
             {
-                var pd = camPos - _lastPlanetLodCamPos;
+                var pd = planetLodCamPos - _lastPlanetLodCamPos;
                 float pDist = pd.Length();
                 if (pDist >= planetLodMove)
                     shouldUpdatePlanetLod = true;
@@ -752,7 +780,7 @@ namespace Game_Engine.Views
                 shouldUpdatePlanetLod = true;
             }
 
-            TerrainStreamer.SyncAll(camPos);
+            TerrainStreamer.SyncAll(planetLodCamPos);
 
             if (shouldUpdateLod)
             {
@@ -770,15 +798,17 @@ namespace Game_Engine.Views
             if (shouldUpdatePlanetLod)
             {
                 _planetLodAccumSec = 0.0;
-                _lastPlanetLodCamPos = camPos;
+                _lastPlanetLodCamPos = planetLodCamPos;
                 bool allowPlanetLodChanges = !renderGap;
                 foreach (var planet in PlanetTerrain.ActivePlanets)
                 {
                     if (planet?.Config != null)
                         planet.Config.MaxLodDepth = Math.Clamp(planet.Config.MaxLodDepth, 4, PLAYMODE_MAX_PLANET_LOD_DEPTH);
-                    planet?.RefreshLodAroundCamera(camPos, allowPlanetLodChanges);
+                    planet?.RefreshLodAroundCamera(planetLodCamPos, allowPlanetLodChanges);
                 }
             }
+
+            PlanetVegetationSystem.TickAllStreaming(planetLodCamPos, (float)dt);
 
             var sunSD = fallbackPlanetSunDir;
             bool isES = _glCtx.IsES;
@@ -857,6 +887,13 @@ namespace Game_Engine.Views
                             view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
                             pc, shadowFBO, shadowVP);
                     }
+                    SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache!,
+                        view, proj, camPos,
+                        SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                        lightIsPoint, lightPosW, lightRange,
+                        shadowFBO, shadowVP, sunSD,
+                        isES: isES,
+                        lightColor: lightColorNorm);
                 }
                 if (_waterShader != null)
                 {
@@ -906,8 +943,6 @@ namespace Game_Engine.Views
                 planetRenderSwF.Stop();
                 planetRenderMs = planetRenderSwF.Elapsed.TotalMilliseconds;
 
-                if (_particleShader != null)
-                    SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
                 if (_canvasRenderer != null && _cache != null)
                 {
                     var viewProj = view * proj;
@@ -926,7 +961,7 @@ namespace Game_Engine.Views
 
             // ═══════════ DEFERRED RENDERING PIPELINE ═══════════
 
-            // 1. G-BUFFER PASS — draw opaque standard geometry to MRT
+            // G-BUFFER PASS — draw opaque standard geometry to MRT
             if (_gbufferFBO == null) _gbufferFBO = new GPUFramebuffer(g);
             if (_gbufferW != W || _gbufferH != H)
             {
@@ -941,7 +976,7 @@ namespace Game_Engine.Views
             SceneRenderer.RenderGBufferPass(g, _gbufferShader!, _cache!,
                 view, proj, camPos, shadowFBO, shadowVP, sunSD, isES);
 
-            // 2. SSAO PASS — screen-space ambient occlusion (half resolution)
+            // SSAO PASS — screen-space ambient occlusion (half resolution)
             GPUTexture? ssaoResult = null;
             if (useSSAO && _ssaoShader != null && _ssaoBlurShader != null)
             {
@@ -979,7 +1014,7 @@ namespace Game_Engine.Views
                 ssaoResult = _ssaoBlurFBO.ColorTexture;
             }
 
-            // 3. SCENE FBO — setup for deferred lighting output + forward overlays
+            // SCENE FBO — setup for deferred lighting output + forward overlays
             if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
             if (_sceneFBO_W != W || _sceneFBO_H != H)
             {
@@ -991,11 +1026,11 @@ namespace Game_Engine.Views
             g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
             g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-            // 4. SKY — render before deferred lighting (preserved because deferred discards sky pixels)
+            // SKY — render before deferred lighting (preserved because deferred discards sky pixels)
             Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
                 skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
 
-            // 5. DEFERRED LIGHTING — fullscreen PBR lighting from G-buffer
+            // DEFERRED LIGHTING — fullscreen PBR lighting from G-buffer
             g.BindVertexArray(_fsQuad!.VAO);
             float ssaoIntensity = postVolume != null ? postVolume.SSAOIntensity : 1f;
             foreach (var rp in ReflectionProbe.ActiveProbes)
@@ -1009,7 +1044,7 @@ namespace Game_Engine.Views
                 probePick?.GpuCubemap, probePick?.Intensity ?? 0f);
             g.BindVertexArray(0);
 
-            // 6. COPY G-BUFFER DEPTH → scene FBO (required before terrain forward pass).
+            //  COPY G-BUFFER DEPTH → scene FBO (required before terrain forward pass).
             // Prefer shader copy: reads the same depth texture the deferred pass uses (texelFetch), so depth matches
             // what lighting sampled. glBlitFramebuffer can report success but mis-copy when one FBO fell back to
             // depth-only attachment and the other uses D24S8 (silent terrain depth-test failure on some drivers).
@@ -1040,7 +1075,7 @@ namespace Game_Engine.Views
             }
             _sceneFBO.Bind();
 
-            // 7. FORWARD OVERLAYS — terrain, custom shaders, transparent objects
+            // FORWARD OVERLAYS — terrain, custom shaders, transparent objects
             SceneRenderer.RenderForwardOverlays(g, _standardShader!, _cache!,
                 view, proj, camPos,
                 SN.Vector3.Normalize(-L), DiffuseK, Ambient,
@@ -1049,7 +1084,7 @@ namespace Game_Engine.Views
                 terrainShader: _terrainShader, isES: isES,
                 lightColor: lightColorNorm);
 
-            // 8. PLANET TERRAIN
+            // PLANET TERRAIN
             var planetRenderSw = Stopwatch.StartNew();
             if (_planetTerrainShader != null)
             {
@@ -1063,9 +1098,16 @@ namespace Game_Engine.Views
                         view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
                         pc, shadowFBO, shadowVP);
                 }
+                SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache!,
+                    view, proj, camPos,
+                    SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                    lightIsPoint, lightPosW, lightRange,
+                    shadowFBO, shadowVP, sunSD,
+                    isES: isES,
+                    lightColor: lightColorNorm);
             }
 
-            // 8b. WATER
+            // WATER
             if (_waterShader != null)
             {
                 var skyC = _sky != null
@@ -1075,7 +1117,7 @@ namespace Game_Engine.Views
                     SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
             }
 
-            // 8c. PLANET ATMOSPHERE SHELL (visible from outside and inside)
+            // PLANET ATMOSPHERE SHELL (visible from outside and inside)
             if (_planetAtmosphereShader != null)
             {
                 foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -1089,7 +1131,7 @@ namespace Game_Engine.Views
                 }
             }
 
-            // 8d. PLANET CLOUDS (separate from Skybox path)
+            // PLANET CLOUDS (separate from Skybox path)
             if (_planetCloudShader != null)
             {
                 foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -1103,7 +1145,7 @@ namespace Game_Engine.Views
                 }
             }
 
-            // 8e. PLANET WATER — after atmosphere/cloud shells so haze does not cover the surface
+            // PLANET WATER — after atmosphere/cloud shells so haze does not cover the surface
             if (_planetWaterShader != null)
             {
                 foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -1120,11 +1162,7 @@ namespace Game_Engine.Views
             planetRenderSw.Stop();
             planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;
 
-            // 9. PARTICLES
-            if (_particleShader != null)
-                SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj);
-
-            // 9b. WORLD-SPACE UI CANVASES (rendered in 3D space before post-processing)
+            // WORLD-SPACE UI CANVASES (rendered in 3D space before post-processing)
             if (_canvasRenderer != null && _cache != null)
             {
                 var viewProj = view * proj;
@@ -1135,7 +1173,7 @@ namespace Game_Engine.Views
                 }
             }
 
-            // 10. SSR — screen-space reflections (reads lit scene + G-buffer)
+            // SSR — screen-space reflections (reads lit scene + G-buffer)
             finalSceneTex = _sceneFBO.ColorTexture;
             if (useSSR && _ssrShader != null && _sceneFBO.ColorTexture != null)
             {
@@ -1158,7 +1196,7 @@ namespace Game_Engine.Views
                 finalSceneTex = _ssrFBO.ColorTexture;
             }
 
-            // 10b. VOLUMETRIC FOG — ray-marched fullscreen pass (reads scene color + depth)
+            // VOLUMETRIC FOG — ray-marched fullscreen pass (reads scene color + depth)
             if (_volFogShader != null && postVolume?.VolumetricFogEnabled == true
                 && finalSceneTex != null && _gbufferFBO?.DepthTexture != null)
             {
@@ -1182,7 +1220,7 @@ namespace Game_Engine.Views
                 finalSceneTex = _volFogFBO.ColorTexture;
             }
 
-            // 10c. TAA — temporal resolve (camera motion via depth reprojection)
+            //  TAA — temporal resolve (camera motion via depth reprojection)
             if (useTaa && _taaResolveShader != null && finalSceneTex != null && _gbufferFBO?.DepthTexture != null)
             {
                 if (_taaHistoryFbo == null) _taaHistoryFbo = new GPUFramebuffer(g);
@@ -1218,7 +1256,7 @@ namespace Game_Engine.Views
 
             } // end deferred branch
 
-            // 11. POST-PROCESSING → Avalonia framebuffer
+            // POST-PROCESSING → Avalonia framebuffer
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             g.Viewport(0, 0, (uint)W, (uint)H);
 
@@ -1242,9 +1280,17 @@ namespace Game_Engine.Views
                 g.Enable(EnableCap.DepthTest);
             }
 
+            // PARTICLES — full-screen overlay (SSAO/shadow passes leave a half-width viewport).
+            if (_particleShader != null)
+            {
+                g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
+                g.Viewport(0, 0, (uint)W, (uint)H);
+                SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj, W, H, overlayPass: true);
+            }
+
             _tScene = sec.Elapsed.TotalMilliseconds;
 
-            // 12. CANVAS UI OVERLAY — draw screen-space UI canvases on top of everything
+            // CANVAS UI OVERLAY — draw screen-space UI canvases on top of everything
             if (_canvasRenderer != null && _cache != null)
             {
                 _canvasRenderer.RenderOverlays(W, H, _cache);
@@ -1372,6 +1418,33 @@ namespace Game_Engine.Views
                     return true;
             }
             return false;
+        }
+
+        static SN.Vector3 ResolvePlanetLodCameraPos(SN.Vector3 camPos, Camera? cam)
+        {
+            if (cam != null && !CameraInsidePlanetSolid(camPos))
+                return camPos;
+
+            if (PlanetPlayerSpawner.TryGetPlayLodSeedPosition(out var seedPos))
+                return seedPos;
+
+            float maxPlanetR = 0f;
+            SN.Vector3 planetCenter = SN.Vector3.Zero;
+            foreach (var p in PlanetTerrain.ActivePlanets)
+            {
+                if (p?.Config == null || !p.IsActiveAndEnabled) continue;
+                float r = p.Config.EffectiveWorldRadius;
+                if (r > maxPlanetR)
+                {
+                    maxPlanetR = r;
+                    planetCenter = p.GetWorldCenter();
+                }
+            }
+
+            if (maxPlanetR > 1f)
+                return planetCenter + new SN.Vector3(0f, maxPlanetR * 0.35f, maxPlanetR * 2.5f);
+
+            return camPos;
         }
 
         void UpdateFps(double dt)
