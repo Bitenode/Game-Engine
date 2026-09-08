@@ -281,11 +281,13 @@ public static class PlanetWaterSampler
             return PlanetWaterSurfaceSample.Empty;
 
         sphereDir = SN.Vector3.Normalize(sphereDir);
-        if (PlanetSurfaceUtility.TryGetLavaLake(config, sphereDir, terrainRadius, out float lavaR, out float magma)
-            && magma > 0.18f
-            && lavaR > terrainRadius + 0.2f)
+        if (PlanetSurfaceUtility.TryGetLavaLake(config, sphereDir, terrainRadius, out float lavaR, out float magma, out string? lavaBiome)
+            && magma > 0.12f
+            && lavaR > terrainRadius + 0.06f)
         {
-            int shoreIdx = resolveBiomeIndex("Mountains");
+            int shoreIdx = resolveBiomeIndex(string.IsNullOrWhiteSpace(lavaBiome) ? "Volcanic" : lavaBiome!);
+            if (shoreIdx < 0) shoreIdx = resolveBiomeIndex("Volcanic");
+            if (shoreIdx < 0) shoreIdx = resolveBiomeIndex("Mountains");
             if (shoreIdx < 0) shoreIdx = resolveBiomeIndex("Beach");
             if (shoreIdx < 0) shoreIdx = 0;
             return new PlanetWaterSurfaceSample(

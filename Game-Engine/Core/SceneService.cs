@@ -90,6 +90,7 @@ namespace Game_Engine.Core
 
         /// <summary>Signal listeners that something in the scene changed.</summary>
         public static void NotifyChanged() => RaiseChanged(markDirty: true);
+        public static void NotifyChanged(bool markDirty) => RaiseChanged(markDirty);
 
         public static event Action? Changed;
         public static event Action<bool>? DirtyStateChanged;
@@ -110,9 +111,35 @@ namespace Game_Engine.Core
 
         public static bool Remove(GameObject go)
         {
+            if (!_root.Contains(go))
+                return false;
+            DestroyBehaviorsRecursive(go);
             var removed = _root.Remove(go);
-            if (removed) RaiseChanged(markDirty: true);
+            if (removed)
+                RaiseChanged(markDirty: true);
             return removed;
+        }
+
+        /// <summary>
+        /// Remove a root or child object and run lifecycle teardown recursively.
+        /// Use this for deletion; <see cref="GameObject.RemoveFromParent"/> is for reparenting.
+        /// </summary>
+        public static bool Destroy(GameObject go)
+        {
+            if (go == null)
+                return false;
+
+            bool attached = go.Parent != null || _root.Contains(go);
+            if (!attached)
+                return false;
+
+            DestroyBehaviorsRecursive(go);
+            if (go.Parent != null)
+                go.RemoveFromParent();
+            else
+                _root.Remove(go);
+            RaiseChanged(markDirty: true);
+            return true;
         }
 
         public static void ReplaceAll(IEnumerable<GameObject> items)
@@ -149,7 +176,12 @@ namespace Game_Engine.Core
 
         public static void Clear()
         {
+            SceneReplaced?.Invoke();
+            foreach (var go in _root)
+                DestroyBehaviorsRecursive(go);
+            _root.CollectionChanged -= OnRootChanged;
             _root.Clear();
+            _root.CollectionChanged += OnRootChanged;
             RaiseChanged(markDirty: true);
         }
 

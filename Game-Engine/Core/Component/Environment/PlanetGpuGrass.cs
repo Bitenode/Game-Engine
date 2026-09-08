@@ -443,6 +443,16 @@ public static class PlanetGpuGrass
         s_gpuKey = null;
     }
 
+    /// <summary>
+    /// Release the static grass GPU state when its owning render-context cache is
+    /// flushed or disposed. Must be called while that GL context is current.
+    /// </summary>
+    public static void ReleaseGpuFor(object gpuKey)
+    {
+        if (ReferenceEquals(s_gpuKey, gpuKey))
+            DisposeGpu();
+    }
+
     static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)
     {
         float len = v.Length();

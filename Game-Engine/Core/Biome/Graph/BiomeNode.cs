@@ -473,18 +473,18 @@ public sealed class BiomeCraterNode : BiomeNode
 // ── Geology: Volcano ──
 public sealed class BiomeVolcanoNode : BiomeNode
 {
-    public float Radius { get; set; } = 0.06f;
-    public float Height { get; set; } = 80f;
-    public float CalderaRadius { get; set; } = 0.015f;
+    public float Radius { get; set; } = 0.08f;
+    public float Height { get; set; } = 85f;
+    public float CalderaRadius { get; set; } = 0.028f;
     public string LavaBiomeName { get; set; } = "Volcanic";
-    public float Density { get; set; } = 0.2f;
+    public float Density { get; set; } = 0.18f;
     public int Seed { get; set; }
 
     public BiomeVolcanoNode()
     {
         Name = "Volcano";
-        AddInput("Radius", BiomeDataType.Float, 0.06f);
-        AddInput("Height", BiomeDataType.Float, 80f);
+        AddInput("Radius", BiomeDataType.Float, 0.08f);
+        AddInput("Height", BiomeDataType.Float, 85f);
         AddOutput("HeightDelta", BiomeDataType.Float);
     }
 }
@@ -492,15 +492,15 @@ public sealed class BiomeVolcanoNode : BiomeNode
 // ── Geology: Cliff ──
 public sealed class BiomeCliffNode : BiomeNode
 {
-    public float Strength { get; set; } = 1.5f;
-    public float Frequency { get; set; } = 0.01f;
-    public float SlopeBias { get; set; } = 0.6f;
+    public float Strength { get; set; } = 1.35f;
+    public float Frequency { get; set; } = 0.0065f;
+    public float SlopeBias { get; set; } = 0.55f;
 
     public BiomeCliffNode()
     {
         Name = "Cliff";
-        AddInput("Strength", BiomeDataType.Float, 1.5f);
-        AddInput("Frequency", BiomeDataType.Float, 0.01f);
+        AddInput("Strength", BiomeDataType.Float, 1.35f);
+        AddInput("Frequency", BiomeDataType.Float, 0.0065f);
         AddOutput("Escarpment", BiomeDataType.Float);
     }
 }

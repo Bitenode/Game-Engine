@@ -121,6 +121,14 @@ namespace Game_Engine.Core.Component
         SN.Vector3 _collisionCacheDir = new(float.NaN);
         float _collisionCacheR;
 
+        /// <summary>Clear stand-radius cache after digs so the next sample hits the live cubemap.</summary>
+        public void InvalidateCollisionCache()
+        {
+            _collisionCacheTime = float.NegativeInfinity;
+            _collisionCacheDir = new SN.Vector3(float.NaN);
+            _collisionCacheR = 0f;
+        }
+
         public override void Awake()
         {
             _rb = GetComponent<Rigidbody>();
@@ -423,6 +431,9 @@ namespace Game_Engine.Core.Component
             {
                 float stand = crustR + capsuleH;
                 pos = center + up * stand;
+                // Radial stand alone leaves the capsule inside steep dig faces — push out, then re-seat.
+                ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
+                crustR = SampleCollisionRadiusCached(planet, up);
                 onContact = true;
                 hit.Point = center + up * crustR;
                 hit.Normal = up;
@@ -473,6 +484,7 @@ namespace Game_Engine.Core.Component
                 if (_surfaceMode && _verticalVel <= 0f && dist <= stand + 0.02f)
                 {
                     pos = center + up * stand;
+                    ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
                     _airborne = false;
                     _verticalVel = 0f;
                     onContact = true;
@@ -523,6 +535,7 @@ namespace Game_Engine.Core.Component
             else if (_surfaceMode)
             {
                 pos = center + up * (crustR + capsuleH);
+                ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
                 onContact = true;
                 _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
@@ -774,6 +787,63 @@ namespace Game_Engine.Core.Component
             _collisionCacheDir = dir;
             _collisionCacheR = planet.SampleCollisionRadius(dir);
             return _collisionCacheR;
+        }
+
+        /// <summary>
+        /// Heightfield dig walls are radial — capsule center can sit in air while the
+        /// sides clip through steep faces (camera sees shell underside). Push out of
+        /// neighboring crust that rises faster than a walkable step, then re-seat.
+        /// </summary>
+        static void ResolveDigWallCapsule(
+            PlanetTerrain planet,
+            SN.Vector3 center,
+            ref SN.Vector3 pos,
+            ref SN.Vector3 up,
+            float capsuleRadius,
+            float capsuleH)
+        {
+            const int iters = 3;
+            const int ring = 8;
+            float maxStep = MathF.Max(0.35f, Rigidbody.PlanetWalkStepUp);
+
+            for (int it = 0; it < iters; it++)
+            {
+                RefreshRadialUp(pos, center, ref up);
+                float crustR = planet.SampleCollisionRadius(up);
+                pos = center + up * (crustR + capsuleH);
+
+                var seed = MathF.Abs(up.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
+                var t0 = SN.Vector3.Normalize(SN.Vector3.Cross(seed, up));
+                var t1 = SN.Vector3.Cross(up, t0);
+                float ang = capsuleRadius / MathF.Max(crustR, 1f);
+
+                var push = SN.Vector3.Zero;
+                float pushMag = 0f;
+                for (int i = 0; i < ring; i++)
+                {
+                    float a = i * (MathF.PI * 2f / ring);
+                    var tangent = t0 * MathF.Cos(a) + t1 * MathF.Sin(a);
+                    var sampleDir = SN.Vector3.Normalize(up + tangent * ang);
+                    float nR = planet.SampleCollisionRadius(sampleDir);
+                    float rise = nR - crustR;
+                    if (rise <= maxStep)
+                        continue;
+
+                    float excess = rise - maxStep;
+                    push -= tangent * excess;
+                    pushMag = MathF.Max(pushMag, excess);
+                }
+
+                if (pushMag < 1e-4f || push.LengthSquared() < 1e-8f)
+                    break;
+
+                push = SN.Vector3.Normalize(push);
+                pos += push * MathF.Min(pushMag * 0.65f, capsuleRadius * 1.25f);
+            }
+
+            RefreshRadialUp(pos, center, ref up);
+            float finalCrust = planet.SampleCollisionRadius(up);
+            pos = center + up * (finalCrust + capsuleH);
         }
 
         static void RefreshRadialUp(SN.Vector3 pos, SN.Vector3 center, ref SN.Vector3 up)
@@ -1160,6 +1230,25 @@ namespace Game_Engine.Core.Component
                     eye = _planetCenter + up * standEyeR;
                 else if (radial > standEyeR + 0.35f && !_airborne)
                     eye = _planetCenter + up * standEyeR + (eye - _planetCenter - up * radial);
+
+                // Dig shafts: keep the near plane out of steep walls.
+                float digClearance = MathF.Max(0.28f, (_cam?.Near ?? 0.1f) + 0.18f);
+                if (planet.TrySampleWorldDensity(eye, out float surfaceEyeDensity) && surfaceEyeDensity < digClearance)
+                {
+                    var eyePush = eye;
+                    if (planet.ResolveDensityPenetration(ref eyePush, digClearance, 6))
+                        eye = eyePush;
+                }
+                // Look-ahead into the wall you're facing while aiming down a shaft.
+                var lookProbe = eye + lookFwd * digClearance;
+                if (planet.TrySampleWorldDensity(lookProbe, out float lookD) && lookD < digClearance * 0.85f)
+                {
+                    var pushed = eye;
+                    if (planet.ResolveDensityPenetration(ref pushed, digClearance, 4))
+                        eye = pushed;
+                    if (_cam != null && _cam.Near > 0.06f)
+                        _cam.Near = MathF.Max(0.05f, _cam.Near * 0.85f);
+                }
                 return eye;
             }
 

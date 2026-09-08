@@ -348,6 +348,12 @@ namespace Game_Engine.Views
         protected override void OnOpenGlDeinit(GlInterface gl)
         {
             UpdatePlayingRegistration(isPlaying: false);
+            var g = _glCtx?.GL;
+            if (g != null)
+            {
+                SceneRenderer.DisposeStaticGlResources(g);
+                CustomShaderCache.ClearContext(g);
+            }
             _canvasRenderer?.Dispose(); _canvasRenderer = null;
             _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
             // Deferred pipeline cleanup
@@ -689,7 +695,8 @@ namespace Game_Engine.Views
                 {
                     _shadowAccumSec = 0.0;
                     _lastShadowCamPos = camPos;
-                    shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, sceneRadius);
+                    shadowVP = ShadowMapGPU.BuildDirectionalLightVP(
+                        sunShineDir, sceneCenter, sceneRadius, _shadow.Width);
                     _shadow.LightVP = shadowVP;
 
                     _shadow.Begin(g);
@@ -1221,7 +1228,7 @@ namespace Game_Engine.Views
             }
 
             //  TAA — temporal resolve (camera motion via depth reprojection)
-            if (useTaa && _taaResolveShader != null && finalSceneTex != null && _gbufferFBO?.DepthTexture != null)
+            if (useTaa && _taaResolveShader != null && finalSceneTex != null && _sceneFBO?.DepthTexture != null)
             {
                 if (_taaHistoryFbo == null) _taaHistoryFbo = new GPUFramebuffer(g);
                 if (_taaHistoryFbo.Width != W || _taaHistoryFbo.Height != H)
@@ -1235,7 +1242,7 @@ namespace Game_Engine.Views
                 g.Clear(ClearBufferMask.ColorBufferBit);
                 g.BindVertexArray(_fsQuad!.VAO);
                 SceneRenderer.RenderTemporalAA(g, _taaResolveShader, _fsQuad!, finalSceneTex,
-                    _taaHistoryFbo.ColorTexture, _gbufferFBO, invVpCurr, prevVp, W, H,
+                    _taaHistoryFbo.ColorTexture, _sceneFBO.DepthTexture, invVpCurr, prevVp, W, H,
                     postVolume?.TAAFrameBlend ?? 0.12f,
                     postVolume?.TAASharpen ?? 0.35f,
                     _taaResetHistory);
@@ -1579,6 +1586,11 @@ namespace Game_Engine.Views
             if (State != GamePanel.GameState.Playing) return;
             Focus();
             var pt = e.GetCurrentPoint(this);
+            var pos = e.GetPosition(this);
+            Input.FeedMousePosition((float)pos.X, (float)pos.Y);
+            Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
+            _lastMouse = new SN.Vector2((float)pos.X, (float)pos.Y);
+            _hasLastMouse = true;
             FeedPlayPointerButtons(pt);
             TryPlayPlanetSculpt(pt);
             e.Pointer.Capture(this);

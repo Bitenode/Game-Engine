@@ -50,8 +50,8 @@ public sealed class DensityGenerator
     }
 
     /// <summary>
-    /// Solid fill from near the core out past the surface. Keep a small hollow
-    /// at r=0 so cube-sphere samples do not collapse.
+    /// Crust-band only: from surface − CaveDepth up past the heightfield.
+    /// Full-planet solid-to-core fill is retired.
     /// </summary>
     public static void ComputeInteriorBounds(
         PlanetConfig config,
@@ -61,9 +61,12 @@ public sealed class DensityGenerator
     {
         float maxAmp = MaxAmplitude(config);
         float brush = MathF.Max(edits?.MaxRadius ?? 0f, DefaultBrushReserve);
+        float caveDepth = MathF.Max(8f, MaxCaveDepth(config));
         float outward = maxAmp * 0.85f + brush * 0.35f + 12f;
         radialMax = config.Radius + outward;
-        radialMin = MathF.Max(16f, config.Radius * 0.04f);
+        radialMin = MathF.Max(16f, config.Radius - caveDepth);
+        if (radialMin >= radialMax - 8f)
+            radialMin = MathF.Max(16f, radialMax - MathF.Max(caveDepth, 48f));
     }
 
     public static void ComputeCrustBounds(
@@ -176,7 +179,7 @@ public sealed class DensityGenerator
                     SN.Vector3 sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
                     SN.Vector3 localPos = sphereDir * rDist;
                     float density = sampler != null
-                        ? sampler.SampleProceduralDensity(localPos)
+                        ? sampler.SampleDensity(localPos)
                         : localPos.Length() - (radius + PlanetSurfaceUtility.SampleHeight(
                             _config,
                             _biomeMap,
@@ -192,9 +195,6 @@ public sealed class DensityGenerator
                                 RiverMeander = _noise.RiverMeander,
                                 ClimateAtlas = _climateAtlas
                             }));
-
-                    if (sampler != null)
-                        density = sampler.ApplyCaveCarve(localPos, density);
 
                     byte dominantMat = columnBiome[y * n + x];
                     chunk.Set(x, y, z, density);

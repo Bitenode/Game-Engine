@@ -153,6 +153,46 @@ namespace Game_Engine.Core.Component
             return true;
         }
 
+        /// <summary>
+        /// Ray from the camera through a viewport pixel (same space as
+        /// <see cref="Game_Engine.Core.Input.Input.MousePosition"/>).
+        /// </summary>
+        public bool TryGetWorldScreenRay(
+            float screenX, float screenY, float screenW, float screenH,
+            out SN.Vector3 origin, out SN.Vector3 direction)
+        {
+            origin = default;
+            direction = default;
+            if (screenW < 1f || screenH < 1f)
+                return TryGetWorldLookRay(out origin, out direction);
+
+            float ndcX = (screenX / screenW) * 2f - 1f;
+            float ndcY = 1f - (screenY / screenH) * 2f;
+
+            var view = GetViewMatrix();
+            var proj = GetProjectionMatrix(new Avalonia.Size(screenW, screenH));
+            if (!SN.Matrix4x4.Invert(view, out var invView) || !SN.Matrix4x4.Invert(proj, out var invProj))
+                return TryGetWorldLookRay(out origin, out direction);
+
+            static SN.Vector3 Unproject(SN.Vector4 clip, in SN.Matrix4x4 invP, in SN.Matrix4x4 invV)
+            {
+                var viewPos = SN.Vector4.Transform(clip, invP);
+                if (MathF.Abs(viewPos.W) > 1e-8f)
+                    viewPos /= viewPos.W;
+                return SN.Vector3.Transform(new SN.Vector3(viewPos.X, viewPos.Y, viewPos.Z), invV);
+            }
+
+            var nearWorld = Unproject(new SN.Vector4(ndcX, ndcY, -1f, 1f), invProj, invView);
+            var farWorld = Unproject(new SN.Vector4(ndcX, ndcY, 1f, 1f), invProj, invView);
+            var delta = farWorld - nearWorld;
+            if (delta.LengthSquared() < 1e-12f)
+                return TryGetWorldLookRay(out origin, out direction);
+
+            origin = nearWorld;
+            direction = SN.Vector3.Normalize(delta);
+            return true;
+        }
+
         public override void OnEnable() => CameraService.Register(this);
         public override void OnDisable() => CameraService.Unregister(this);
     }

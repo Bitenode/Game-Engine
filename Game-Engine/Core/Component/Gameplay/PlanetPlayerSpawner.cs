@@ -32,6 +32,7 @@ namespace Game_Engine.Core.Component
         [Persist] public float CapsuleRadius { get; set; } = 0.4f;
         [Persist] public bool FirstPerson { get; set; } = true;
         [Persist] public bool AttachPlanetTool { get; set; } = true;
+        [Persist] public bool AttachPostProcess { get; set; } = true;
 
         GameObject? _spawned;
         bool _awaitingSpawn;
@@ -454,6 +455,53 @@ namespace Game_Engine.Core.Component
 
             if (AttachPlanetTool)
                 EnsurePlanetTool(player, planet);
+            if (AttachPostProcess)
+                EnsurePostProcessVolume(player);
+        }
+
+        static void EnsurePostProcessVolume(GameObject player)
+        {
+            var host = player.Behaviors.OfType<Camera>().FirstOrDefault()?.gameObject
+                       ?? player.Children.SelectMany(c => c.Behaviors.OfType<Camera>())
+                           .Select(c => c.gameObject).FirstOrDefault()
+                       ?? player;
+
+            var volume = host.Behaviors.OfType<PostProcessVolume>().FirstOrDefault();
+            if (volume == null)
+                volume = host.AddBehavior<PostProcessVolume>();
+
+            volume.IsGlobal = true;
+            volume.Priority = 10;
+
+            volume.BloomEnabled = true;
+            volume.BloomThreshold = 0.72f;
+            volume.BloomIntensity = 0.62f;
+            volume.BloomIterations = 5;
+
+            volume.ColorGradingEnabled = true;
+            volume.ToneMap = ToneMapping.ACES;
+            volume.Exposure = 1.08f;
+            volume.Brightness = 0.02f;
+            volume.Contrast = 1.06f;
+            volume.Saturation = 1.1f;
+
+            volume.SSAOEnabled = true;
+            volume.SSAORadius = 0.55f;
+            volume.SSAOIntensity = 0.82f;
+            volume.SSAOBias = 0.022f;
+            volume.SSAOSamples = 20;
+
+            volume.VignetteEnabled = true;
+            volume.VignetteIntensity = 0.24f;
+            volume.VignetteSmoothness = 0.42f;
+
+            volume.FXAAEnabled = true;
+            volume.FXAAThreshold = 0.0625f;
+            volume.FXAAThresholdMin = 0.0312f;
+
+            // PlanetWeatherController drives fog when present.
+            volume.FogEnabled = false;
+            volume.VolumetricFogEnabled = false;
         }
 
         GameObject BuildPlayer()
@@ -506,6 +554,9 @@ namespace Game_Engine.Core.Component
                     if (ReferenceEquals(other, cam)) continue;
                     other.IsMain = false;
                 }
+
+                if (AttachPostProcess)
+                    EnsurePostProcessVolume(player);
             }
 
             SceneService.Add(player);

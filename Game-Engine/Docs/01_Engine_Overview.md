@@ -73,7 +73,7 @@ Game-Engine/
 │   │   │   ├── Skybox.cs        # Sky gradient + equirectangular texture
 │   │   │   ├── Terrain.cs       # Heightmap terrain with splatmaps
 │   │   │   ├── TerrainStreamer.cs # Camera-centered terrain tile streaming
-│   │   │   ├── PlanetTerrain.cs # Cube-sphere planet with stacked voxel interior + caves
+│   │   │   ├── PlanetTerrain.cs # Cube-sphere planet: height cubemap crust + crust-band caves
 │   │   │   ├── PlanetAtmosphere.cs # Per-planet atmosphere / clouds / day-night
 │   │   │   ├── PlanetVegetationSystem.cs # Biome vegetation streaming
 │   │   │   ├── PlanetWeatherController.cs # Biome-blended weather
@@ -147,17 +147,20 @@ Game-Engine/
 │   │   └── MeshUtil.cs          # Bounding radius, dimension estimation
 │   ├── Planet/                  # Planet terrain generation + chunk streaming
 │   │   ├── CubeSphereMath.cs    # Cube<->sphere mapping utilities
-│   │   ├── DensityGenerator.cs  # Stacked radial voxel shells + interior bounds
+│   │   ├── DensityGenerator.cs  # Crust-band voxel fill + interior bounds
 │   │   ├── FaceQuadtree.cs      # Per-face quadtree LOD manager
 │   │   ├── PlanetChunkManager.cs# Async chunk generation/apply scheduler
 │   │   ├── PlanetConfig.cs      # Planet generation/runtime budgets config
-│   │   ├── PlanetDensitySampler.cs # Procedural density + multi-scale caves
+│   │   ├── PlanetSurfaceCubemap.cs # Height + splat + dig deltas
+│   │   ├── PlanetCubemapBaker.cs # Bake cubemap from biome graph
+│   │   ├── CrustCaveSampler.cs # Crust-band cave occupancy
+│   │   ├── PlanetDensitySampler.cs # Heightfield + crust-band caves
+│   │   ├── PlanetMeshGenerator.cs # Height cubemap shell + crust caves
+│   │   ├── PlanetClimateAtlas.cs # Companion climate LUTs
 │   │   ├── PlanetDensityRaycast.cs # Density ray/spherecast queries
-│   │   ├── PlanetMeshGenerator.cs # Heightfield shell + stacked transvoxel
 │   │   ├── PlanetNoiseCache.cs  # Shared per-planet noise instances
 │   │   ├── PlanetSpace.cs       # World ↔ local unscaled transforms
-│   │   ├── PlanetSurfaceUtility.cs # Continent/crater/volcano/cliff height + lava lakes
-│   │   ├── PlanetClimateAtlas.cs # Baked 6-face climate/height/biome LUTs
+│   │   ├── PlanetSurfaceUtility.cs # Continent/crater/volcano/cliff height + inland lava lakes
 │   │   ├── PlanetChunkMeshCache.cs # RecipeHash-keyed in-memory mesh cache
 │   │   ├── PlanetWater.cs       # Orbit sea-level shell; chunk patches in PlanetMeshGenerator
 │   │   ├── PlanetWaterSampler.cs # Water table, carving, dry-only shore sand, lava

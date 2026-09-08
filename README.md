@@ -22,12 +22,12 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Water Rendering** — Gerstner wave displacement, Fresnel-based transparency, foam, and underwater post-processing effects
 - **Particle System** — Billboard particles with emission shapes (Sphere, Cone, Box), sub-emitters, and presets (Fire, Smoke, Sparks, Rain, Snow, Dust)
 - **Decal Projection** — Runtime decal rendering on surfaces with lifetime, fade-out, and projection modes (Forward, Up, Down)
-- **Post-Processing** — Bloom, Fog, Color Grading, Tone Mapping (Reinhard/ACES), Vignette, FXAA, and underwater effects
+- **Post-Processing** — Bloom, SSAO, Fog, Color Grading, Tone Mapping (Reinhard/ACES), Vignette, FXAA, TAA, SSR, Depth of Field, and underwater effects
 - **Vegetation System** — GPU-instanced grass, rocks, and debris with chunked rendering, distance culling, and terrain-aware placement
 
 ### World Building
 - **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
-- **Planet System** — Cube-sphere worlds with stacked transvoxel interiors, multi-scale caves, biome graph authoring, async chunk LOD streaming, LOD seam stitching, planet water/atmosphere, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
+- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs), async scene-load baking, chunk LOD streaming, planet water/atmosphere, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
 - **3D Model Import** — FBX, OBJ, glTF/GLB, DAE via AssimpNet with automatic material extraction, skeleton building, and bone animation import
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
@@ -117,7 +117,7 @@ Documentation for the engine and editor is in `Game-Engine/Docs/`:
 | [10 — Model Import & Assets](Game-Engine/Docs/10_Model_Import_And_Assets.md) | 3D model import, animation import, skeletal meshes, primitives, asset pipeline |
 | [11 — UIX Framework](Game-Engine/Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
 | [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, project configuration, dependencies, Engine.Player, publishing, ANGLE/OpenGL setup |
-| [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | PlanetTerrain, biome graph workflow, play/editor chunk LOD, seam stitching, swimming, vegetation budgets |
+| [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | Height cubemap crust, biome graph, volcanoes/lava, coastal cliffs, async scene load, play/editor chunk LOD, post-process spawn |
 | [14 — Visual Blueprints](Game-Engine/Docs/14_Visual_Blueprints.md) | Visual behavior graphs (`.blueprint`), Visual Blueprint component, nodes, reflection, EventBus integration |
 
 ---

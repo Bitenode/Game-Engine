@@ -2743,7 +2743,7 @@ uniform vec3 uAtmoZenithTint;
 uniform vec3 uAtmoHorizonTint;
 uniform vec3 uAtmoSkyTint;
 
-// One dedicated sampler per biome (units 0-7), 8 + 1 shadow = 9 total
+// One dedicated sampler per biome/splat layer (units 0-7), splat atlases on 8-9, shadow on 15
 uniform sampler2D uBiomeTex0;
 uniform sampler2D uBiomeTex1;
 uniform sampler2D uBiomeTex2;
@@ -2753,7 +2753,23 @@ uniform sampler2D uBiomeTex5;
 uniform sampler2D uBiomeTex6;
 uniform sampler2D uBiomeTex7;
 
+// Under / cliff albedo (biome graph UnderTexture). Units 10-13 for biomes 0-3.
+uniform sampler2D uBiomeUnderTex0;
+uniform sampler2D uBiomeUnderTex1;
+uniform sampler2D uBiomeUnderTex2;
+uniform sampler2D uBiomeUnderTex3;
+uniform float uBiomeHasUnder[8];
+
+uniform sampler2D uPlanetSplat0;
+uniform sampler2D uPlanetSplat1;
+uniform int uUsePlanetSplat;
+
+// Dig depth atlas (same 3×2 layout as splat). R = height delta (negative when dug). Unit 14.
+uniform sampler2D uPlanetDigAtlas;
+uniform int uUsePlanetDig;
+
 uniform float uBiomeTiling[8];
+uniform float uBiomeUnderTiling[8];
 uniform vec3  uBiomeBaseColor[8];
 uniform vec3  uBiomeUnderColor[8];
 
@@ -2801,6 +2817,91 @@ vec3 sampleBiome(int idx, vec3 wp, vec3 ba, float t)
     return triplanar(uBiomeTex7, wp, ba, t);
 }
 
+vec3 sampleBiomeUnder(int idx, vec3 wp, vec3 ba, float t)
+{
+    // Hardware sampler budget: under maps for biomes 0-3 (unit 14 = dig atlas).
+    if (idx == 0) return triplanar(uBiomeUnderTex0, wp, ba, t);
+    if (idx == 1) return triplanar(uBiomeUnderTex1, wp, ba, t);
+    if (idx == 2) return triplanar(uBiomeUnderTex2, wp, ba, t);
+    if (idx == 3) return triplanar(uBiomeUnderTex3, wp, ba, t);
+    return uBiomeUnderColor[idx];
+}
+
+// Cube-sphere dir → face index + UV (matches CubeSphereMath.SphereToCube).
+void sphereToCube(vec3 dir, out int face, out vec2 uv)
+{
+    vec3 a = abs(dir);
+    float ax = a.x, ay = a.y, az = a.z;
+    float aa, bb;
+    if (ax >= ay && ax >= az)
+    {
+        float inv = 1.0 / max(ax, 1e-8);
+        if (dir.x > 0.0) { face = 0; aa = -dir.z * inv; bb = dir.y * inv; }
+        else { face = 1; aa = dir.z * inv; bb = dir.y * inv; }
+    }
+    else if (ay >= ax && ay >= az)
+    {
+        float inv = 1.0 / max(ay, 1e-8);
+        if (dir.y > 0.0) { face = 2; aa = dir.x * inv; bb = -dir.z * inv; }
+        else { face = 3; aa = dir.x * inv; bb = dir.z * inv; }
+    }
+    else
+    {
+        float inv = 1.0 / max(az, 1e-8);
+        if (dir.z > 0.0) { face = 4; aa = dir.x * inv; bb = dir.y * inv; }
+        else { face = 5; aa = -dir.x * inv; bb = dir.y * inv; }
+    }
+    uv = vec2((aa + 1.0) * 0.5, (bb + 1.0) * 0.5);
+}
+
+vec2 faceUvToAtlas(int face, vec2 uv)
+{
+    int col = face % 3;
+    int row = face / 3;
+    vec2 atlasPixels = vec2(textureSize(uPlanetSplat0, 0));
+    vec2 facePixels = max(atlasPixels / vec2(3.0, 2.0), vec2(1.0));
+    // Stay half a texel inside each tile; linear filtering must not blend a
+    // cubemap edge with the unrelated neighboring tile in the packed atlas.
+    vec2 inset = 0.5 / facePixels;
+    vec2 safeUv = clamp(uv, inset, vec2(1.0) - inset);
+    return vec2((float(col) + safeUv.x) / 3.0,
+                (float(row) + safeUv.y) / 2.0);
+}
+
+float sampleDigDepthMeters(vec3 radialDir)
+{
+    if (uUsePlanetDig == 0) return 0.0;
+    int face;
+    vec2 uv;
+    sphereToCube(normalize(radialDir), face, uv);
+    vec2 atlasUv = faceUvToAtlas(face, uv);
+    // R stores dig delta; digging subtracts height so delta is negative.
+    float dig = -texture(uPlanetDigAtlas, atlasUv).r;
+    return max(dig, 0.0);
+}
+
+void samplePlanetSplat(vec3 radialDir, out float w[8])
+{
+    int face;
+    vec2 uv;
+    sphereToCube(normalize(radialDir), face, uv);
+    vec2 atlasUv = faceUvToAtlas(face, uv);
+    vec4 s0 = texture(uPlanetSplat0, atlasUv);
+    vec4 s1 = texture(uPlanetSplat1, atlasUv);
+    w[0] = s0.r; w[1] = s0.g; w[2] = s0.b; w[3] = s0.a;
+    w[4] = s1.r; w[5] = s1.g; w[6] = s1.b; w[7] = s1.a;
+    float sum = 0.0;
+    for (int i = 0; i < 8; i++) sum += max(w[i], 0.0);
+    if (sum < 1e-4)
+    {
+        w[0] = 1.0;
+        for (int i = 1; i < 8; i++) w[i] = 0.0;
+        return;
+    }
+    float inv = 1.0 / sum;
+    for (int i = 0; i < 8; i++) w[i] = max(w[i], 0.0) * inv;
+}
+
 float shadowFactor(vec4 sc)
 {
     if (uHasShadow == 0) return 1.0;
@@ -2808,12 +2909,21 @@ float shadowFactor(vec4 sc)
     projCoords = projCoords * 0.5 + 0.5;
     if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
         return 1.0;
-    float closestDepth = texture(uShadowMap, projCoords.xy).r;
     float bias = 0.004 + (1.0 - max(dot(normalize(vWorldNormal), normalize(-uLightDir)), 0.0)) * 0.02;
-    return (projCoords.z - bias > closestDepth) ? 0.55 : 1.0;
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float visibility = 0.0;
+    for (int y = -1; y <= 1; y++)
+    {
+        for (int x = -1; x <= 1; x++)
+        {
+            float closestDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texel).r;
+            visibility += (projCoords.z - bias > closestDepth) ? 0.55 : 1.0;
+        }
+    }
+    return visibility / 9.0;
 }
 
-vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadial)
+vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadial, float digBlend)
 {
     float t = uBiomeTiling[idx];
     vec3 texCol = sampleBiome(idx, worldPos, ba, t);
@@ -2823,11 +2933,22 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadi
     float lum = dot(texCol, vec3(0.299, 0.587, 0.114));
     vec3 topCol = (lum > 0.98) ? baseCol : texCol;
 
+    // Dig walls / floors + cliffs: sample biome-graph UnderTexture when bound.
+    if (uBiomeHasUnder[idx] > 0.5)
+    {
+        float ut = max(uBiomeUnderTiling[idx], 0.25);
+        vec3 underTex = sampleBiomeUnder(idx, worldPos, ba, ut);
+        float ulum = dot(underTex, vec3(0.299, 0.587, 0.114));
+        underCol = (ulum > 0.98) ? underCol : underTex;
+    }
+
     // Grey floor is for outward cliffs only; inward cave rock keeps biome under-color.
     underCol = mix(underCol, max(underCol, vec3(0.12)), clamp(nDotRadial, 0.0, 1.0));
-    vec3 cliffCol = mix(underCol, topCol * 0.7, 0.4);
+    vec3 cliffCol = mix(underCol, topCol * 0.62, 0.22);
 
-    return mix(cliffCol, topCol, slopeBlend);
+    // Flat dig floors still need under rock — digBlend overrides slope (top grass).
+    float topW = slopeBlend * (1.0 - digBlend);
+    return mix(cliffCol, topCol, topW);
 }
 
 vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
@@ -2856,31 +2977,37 @@ vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
     return color * clamp(uAtmoBlend, 0.0, 1.5);
 }
 
-float wetHash(vec2 p)
+float wetHash3(vec3 p)
 {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
 }
 
-float wetValueNoise(vec2 p)
+float wetValueNoise3(vec3 p)
 {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
+    vec3 i = floor(p);
+    vec3 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    float a = wetHash(i);
-    float b = wetHash(i + vec2(1.0, 0.0));
-    float c = wetHash(i + vec2(0.0, 1.0));
-    float d = wetHash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    float n000 = wetHash3(i + vec3(0.0, 0.0, 0.0));
+    float n100 = wetHash3(i + vec3(1.0, 0.0, 0.0));
+    float n010 = wetHash3(i + vec3(0.0, 1.0, 0.0));
+    float n110 = wetHash3(i + vec3(1.0, 1.0, 0.0));
+    float n001 = wetHash3(i + vec3(0.0, 0.0, 1.0));
+    float n101 = wetHash3(i + vec3(1.0, 0.0, 1.0));
+    float n011 = wetHash3(i + vec3(0.0, 1.0, 1.0));
+    float n111 = wetHash3(i + vec3(1.0, 1.0, 1.0));
+    float z0 = mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y);
+    float z1 = mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y);
+    return mix(z0, z1, f.z);
 }
 
-float wetFbm(vec2 p)
+float wetFbm3(vec3 p)
 {
     float v = 0.0;
     float a = 0.55;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 3; i++)
     {
-        v += a * wetValueNoise(p);
-        p = p * 2.04 + vec2(17.3, 9.1);
+        v += a * wetValueNoise3(p);
+        p = p * 2.03 + vec3(17.3, 9.1, 13.7);
         a *= 0.5;
     }
     return v;
@@ -2893,7 +3020,9 @@ void main()
     float nDotRadial = dot(N, radialDir);
 
     float slope = abs(nDotRadial);
-    float slopeBlend = smoothstep(0.15, 0.55, slope);
+    float slopeBlend = smoothstep(0.22, 0.78, slope);
+    float digDepth = sampleDigDepthMeters(radialDir);
+    float digBlend = smoothstep(0.25, 2.0, digDepth);
 
     vec3 radialAxes = abs(radialDir);
     radialAxes = pow(radialAxes, vec3(3.0));
@@ -2905,21 +3034,36 @@ void main()
 
     // Flat ground: radial projection (stable at cube-face poles). Steep slopes: surface normal
     // so triplanar does not smear the albedo along cliff faces.
-    vec3 blendAxes = mix(normalAxes, radialAxes, slopeBlend);
+    vec3 blendAxes = mix(normalAxes, radialAxes, slopeBlend * (1.0 - digBlend * 0.85));
 
     vec3 finalColor = vec3(0.0);
     float totalWeight = 0.0;
 
-    float weights[4] = float[4](vBlendWt.x, vBlendWt.y, vBlendWt.z, vBlendWt.w);
-    int   indices[4] = int[4](vBlendIdx.x, vBlendIdx.y, vBlendIdx.z, vBlendIdx.w);
-
-    for (int i = 0; i < 4; i++)
+    if (uUsePlanetSplat != 0)
     {
-        float w = weights[i];
-        if (w < 0.01) continue;
-        int idx = clamp(indices[i], 0, 7);
-        finalColor += evalBiome(idx, vWorldPos, blendAxes, slopeBlend, nDotRadial) * w;
-        totalWeight += w;
+        float sw[8];
+        samplePlanetSplat(radialDir, sw);
+        for (int i = 0; i < 8; i++)
+        {
+            float w = sw[i];
+            if (w < 0.01) continue;
+            finalColor += evalBiome(i, vWorldPos, blendAxes, slopeBlend, nDotRadial, digBlend) * w;
+            totalWeight += w;
+        }
+    }
+    else
+    {
+        float weights[4] = float[4](vBlendWt.x, vBlendWt.y, vBlendWt.z, vBlendWt.w);
+        int   indices[4] = int[4](vBlendIdx.x, vBlendIdx.y, vBlendIdx.z, vBlendIdx.w);
+
+        for (int i = 0; i < 4; i++)
+        {
+            float w = weights[i];
+            if (w < 0.01) continue;
+            int idx = clamp(indices[i], 0, 7);
+            finalColor += evalBiome(idx, vWorldPos, blendAxes, slopeBlend, nDotRadial, digBlend) * w;
+            totalWeight += w;
+        }
     }
 
     if (totalWeight > 0.0) finalColor /= totalWeight;
@@ -2930,25 +3074,21 @@ void main()
     float outdoor = 1.0 - interior;
     float weatherOn = clamp(uWeatherEnabled, 0.0, 1.0) * outdoor;
 
-    // Smooth meter-scale puddles on flat ground — no per-pixel hash sparkle.
-    vec3 localPos = vWorldPos - uPlanetCenter;
-    vec3 up = radialDir;
-    vec3 refAxis = abs(up.y) < 0.92 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangent = normalize(cross(refAxis, up));
-    vec3 bitangent = cross(up, tangent);
-    vec2 puddleUv = vec2(dot(localPos, tangent), dot(localPos, bitangent)) * 0.06;
-
-    float nLow = wetFbm(puddleUv);
-    float nDetail = wetFbm(puddleUv * 2.35 + vec2(4.7, 11.2));
-    float groundFlat = smoothstep(0.18, 0.58, slope);
+    // Seamless reference-sphere coordinates: stable across camera motion, LOD swaps,
+    // terrain height, and cubemap face boundaries.
+    vec3 puddleCoord = radialDir * max(uPlanetRadius, 1.0) * 0.045;
+    float nLow = wetFbm3(puddleCoord);
+    float nDetail = wetValueNoise3(puddleCoord * 1.7 + vec3(4.7, 11.2, 2.9));
+    // Keep puddles off steep faces where LOD-normal changes make highlights shimmer.
+    float groundFlat = smoothstep(0.48, 0.82, slope);
     float wetAmt = clamp(uWetness, 0.0, 1.0) * weatherOn;
     float snowAmt = clamp(uSnowCoverage, 0.0, 1.0) * weatherOn;
-    float puddleMask = smoothstep(0.40, 0.68, nLow * 0.72 + nDetail * 0.28) * groundFlat;
+    float puddleMask = smoothstep(0.48, 0.66, nLow * 0.82 + nDetail * 0.18) * groundFlat;
     float wetSheen = wetAmt * groundFlat * (1.0 - snowAmt);
     float puddle = wetSheen * puddleMask;
 
-    finalColor *= mix(vec3(1.0), vec3(0.84, 0.89, 0.92), wetSheen * 0.32);
-    finalColor *= mix(vec3(1.0), vec3(0.66, 0.76, 0.82), puddle * 0.38);
+    finalColor *= mix(vec3(1.0), vec3(0.86, 0.90, 0.93), wetSheen * 0.28);
+    finalColor *= mix(vec3(1.0), vec3(0.72, 0.80, 0.85), puddle * 0.30);
 
     vec3 L = normalize(-uLightDir);
     float NdotL = max(dot(N, L), 0.0);
@@ -2957,8 +3097,8 @@ void main()
     vec3 V = normalize(uCamPos - vWorldPos);
     vec3 H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
-    spec += pow(max(dot(N, H), 0.0), mix(24.0, 96.0, puddle)) * (wetSheen * 0.18 + puddle * 0.62);
-    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0) * (wetSheen * 0.12 + puddle * 0.28);
+    spec += pow(max(dot(N, H), 0.0), mix(20.0, 52.0, puddle)) * (wetSheen * 0.14 + puddle * 0.38);
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0) * (wetSheen * 0.08 + puddle * 0.18);
 
     vec3 R = reflect(-V, N);
     vec3 skyRefCol = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(R.y * 0.5 + 0.5, 0.0, 1.0));

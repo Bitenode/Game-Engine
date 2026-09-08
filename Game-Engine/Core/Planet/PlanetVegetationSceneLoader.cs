@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using Game_Engine.Core.Component;
@@ -14,8 +15,11 @@ namespace Game_Engine.Core.Planet;
 /// </summary>
 public static class PlanetVegetationSceneLoader
 {
+    static int s_hydrationGeneration;
+
     public static void ScheduleHydrateAfterSceneReplace()
     {
+        int generation = Interlocked.Increment(ref s_hydrationGeneration);
         var terrains = new List<PlanetTerrain>();
         foreach (var root in SceneService.Root)
             Collect(root, terrains);
@@ -26,13 +30,16 @@ public static class PlanetVegetationSceneLoader
             var relPath = terrain.PlanetAssetPath;
             if (string.IsNullOrWhiteSpace(relPath)) continue;
             if (terrain.gameObject == null) continue;
-            if (terrain.gameObject.Behaviors.OfType<PlanetVegetationSystem>().FirstOrDefault() == null)
+            var vegetation = terrain.gameObject.Behaviors
+                .OfType<PlanetVegetationSystem>()
+                .FirstOrDefault(v => v.IsActiveAndEnabled);
+            if (vegetation == null)
                 continue;
 
             terrain.AsyncVegetationHydrationPending = true;
             string pathCaptured = relPath;
-            var terrainRef = terrain;
-            _ = Task.Run(() => BackgroundLoadAndPost(pathCaptured, terrainRef));
+            var terrainRef = new WeakReference<PlanetTerrain>(terrain);
+            _ = Task.Run(() => BackgroundLoadAndPost(pathCaptured, terrainRef, generation));
         }
     }
 
@@ -44,29 +51,35 @@ public static class PlanetVegetationSceneLoader
             Collect(c, list);
     }
 
-    static void BackgroundLoadAndPost(string projectRelativePath, PlanetTerrain terrainRef)
+    static void BackgroundLoadAndPost(
+        string projectRelativePath,
+        WeakReference<PlanetTerrain> terrainRef,
+        int generation)
     {
         try
         {
             if (!PlanetAssetIO.TryLoad(projectRelativePath, out var data, out _) || data?.Vegetation == null)
             {
-                PostClearPending(terrainRef);
+                PostClearPending(terrainRef, generation);
                 return;
             }
 
             var pl = data.Vegetation.Placements;
             if (pl == null || pl.Length == 0)
             {
-                PostClearPending(terrainRef);
+                PostClearPending(terrainRef, generation);
                 return;
             }
 
             var copy = data.Vegetation.Clone();
             Dispatcher.UIThread.Post(() =>
             {
+                if (generation != Volatile.Read(ref s_hydrationGeneration)
+                    || !terrainRef.TryGetTarget(out var terrain))
+                    return;
                 try
                 {
-                    Hydrate(terrainRef, copy);
+                    Hydrate(terrain, copy);
                 }
                 catch (Exception ex)
                 {
@@ -74,26 +87,33 @@ public static class PlanetVegetationSceneLoader
                 }
                 finally
                 {
-                    terrainRef.AsyncVegetationHydrationPending = false;
+                    terrain.AsyncVegetationHydrationPending = false;
                 }
             }, DispatcherPriority.Background);
         }
         catch (Exception ex)
         {
             Log.Warning($"[PlanetVegetationSceneLoader] Background load failed ({projectRelativePath}): {ex.Message}");
-            PostClearPending(terrainRef);
+            PostClearPending(terrainRef, generation);
         }
     }
 
-    static void PostClearPending(PlanetTerrain terrainRef)
+    static void PostClearPending(WeakReference<PlanetTerrain> terrainRef, int generation)
     {
-        Dispatcher.UIThread.Post(() => terrainRef.AsyncVegetationHydrationPending = false, DispatcherPriority.Background);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (generation == Volatile.Read(ref s_hydrationGeneration)
+                && terrainRef.TryGetTarget(out var terrain))
+                terrain.AsyncVegetationHydrationPending = false;
+        }, DispatcherPriority.Background);
     }
 
     static void Hydrate(PlanetTerrain terrain, PlanetVegetationAssetData veg)
     {
         if (terrain.gameObject == null) return;
-        var sys = terrain.gameObject.Behaviors.OfType<PlanetVegetationSystem>().FirstOrDefault();
+        var sys = terrain.gameObject.Behaviors
+            .OfType<PlanetVegetationSystem>()
+            .FirstOrDefault(v => v.IsActiveAndEnabled);
         if (sys == null) return;
         sys.ImportAssetData(veg);
         // Without a warmup, MaxAssetSpawnsPerUpdate (often 2) + mixed tree/grass order meant grass could

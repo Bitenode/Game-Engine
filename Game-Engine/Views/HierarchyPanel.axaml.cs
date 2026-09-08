@@ -73,8 +73,7 @@ namespace Game_Engine.Views
             public void Delete(GameObject go)
             {
                 if (go == null) return;
-                if (go.Parent == null) Root.Remove(go);
-                else go.Parent.Children.Remove(go);
+                SceneService.Destroy(go);
             }
 
             public void Unparent(GameObject go)

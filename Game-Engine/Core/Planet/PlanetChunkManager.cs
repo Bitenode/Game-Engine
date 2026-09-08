@@ -25,11 +25,13 @@ public sealed class PlanetChunkManager
     readonly PlanetVoxelEditStore? _editStore;
     readonly PlanetChunkMeshCache _meshCache = new(256);
     PlanetClimateAtlas? _climateAtlas;
+    PlanetSurfaceCubemap? _surfaceCubemap;
     bool _clientStreaming;
     Action<QuadNode>? _clientMeshRequested;
     readonly ConcurrentQueue<MeshJob> _completed = new();
     readonly ConcurrentQueue<EditCommand> _pendingEditCommands = new();
     int _activeJobs;
+    int _disposed;
     const int BaselineConcurrentJobs = 6;
     int _lastAppliedEditCommands;
     int _lastDirtyLeavesFromEdits;
@@ -64,6 +66,12 @@ public sealed class PlanetChunkManager
     {
         _climateAtlas = atlas;
         _meshGen.SetClimateAtlas(atlas);
+    }
+
+    public void SetSurfaceCubemap(PlanetSurfaceCubemap? surface)
+    {
+        _surfaceCubemap = surface;
+        _meshGen.SetSurfaceCubemap(surface);
     }
 
     public void ClearMeshCache() => _meshCache.Clear();
@@ -109,6 +117,7 @@ public sealed class PlanetChunkManager
         public int GenerationToken;
         public TransvoxelMeshData MeshData;
         public TransvoxelMeshData? WaterData;
+        public TransvoxelMeshData? CaveData;
         public VoxelChunk? Chunk;
         public float[]? StandGrid;
     }
@@ -117,6 +126,7 @@ public sealed class PlanetChunkManager
     {
         public TransvoxelMeshData MeshData = null!;
         public TransvoxelMeshData? WaterData;
+        public TransvoxelMeshData? CaveData;
         public VoxelChunk? Chunk;
         public float[]? StandGrid;
     }
@@ -131,6 +141,8 @@ public sealed class PlanetChunkManager
 
     public void RequestFullShellRebuild(int frames = 8)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
         _meshCache.Clear();
         _forceShellRebuildFrames = Math.Max(_forceShellRebuildFrames, Math.Max(1, frames));
         for (int f = 0; f < Faces.Length; f++)
@@ -147,8 +159,9 @@ public sealed class PlanetChunkManager
     /// </summary>
     public void ResetAfterVoxelEditsLoaded()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
         while (_completed.TryDequeue(out _)) { }
-        Volatile.Write(ref _activeJobs, 0);
 
         for (int f = 0; f < Faces.Length; f++)
             DisposeNodeRecursive(Faces[f].Root);
@@ -167,8 +180,10 @@ public sealed class PlanetChunkManager
         node.InvalidateGeneration();
         GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
         GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedCaveMesh);
         node.GeneratedMesh = null;
         node.GeneratedWaterMesh = null;
+        node.GeneratedCaveMesh = null;
         node.Chunk = null;
         if (node.Children == null)
             return;
@@ -183,7 +198,8 @@ public sealed class PlanetChunkManager
     /// <param name="center">Brush center in planet-local unscaled space (<see cref="PlanetSpace"/>).</param>
     public void EnqueueSphereEdit(SN.Vector3 center, float radius, float densityDelta, float falloff)
     {
-        if (radius <= 0.001f || Math.Abs(densityDelta) <= 1e-6f)
+        if (Volatile.Read(ref _disposed) != 0
+            || radius <= 0.001f || Math.Abs(densityDelta) <= 1e-6f)
             return;
 
         _pendingEditCommands.Enqueue(new EditCommand
@@ -199,6 +215,8 @@ public sealed class PlanetChunkManager
 
     public int ApplyCompletedMeshJobs(int maxApplies = -1)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return 0;
         if (maxApplies <= 0)
             maxApplies = Math.Max(1, Config.MaxMeshAppliesPerUpdate);
 
@@ -217,6 +235,8 @@ public sealed class PlanetChunkManager
 
     public void Update(SN.Vector3 cameraPos, SN.Vector3 planetCenter, bool allowLodChanges = true)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
         int frame = Time.frameCount;
         if (_lastUpdateFrame == frame)
             return;
@@ -383,6 +403,9 @@ public sealed class PlanetChunkManager
 
     public void UpdateNoLod(SN.Vector3 planetCenter)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
         _ = planetCenter;
         _lastAppliedEditCommands = 0;
         _lastDirtyLeavesFromEdits = 0;
@@ -422,6 +445,26 @@ public sealed class PlanetChunkManager
                 root.IsGenerating = true;
                 ScheduleGeneration(root);
             }
+        }
+    }
+
+    /// <summary>Drain all queued sphere edits into the store (call before .planetvox save).</summary>
+    public void FlushPendingEditCommands()
+    {
+        if (_pendingEditCommands.IsEmpty || _editStore == null)
+            return;
+        int prevCmd = Config.MaxEditCommandsPerUpdate;
+        int prevDirty = Config.MaxEditDirtyLeavesPerUpdate;
+        Config.MaxEditCommandsPerUpdate = Math.Max(prevCmd, 10_000);
+        Config.MaxEditDirtyLeavesPerUpdate = Math.Max(prevDirty, 10_000);
+        try
+        {
+            ProcessEditCommands();
+        }
+        finally
+        {
+            Config.MaxEditCommandsPerUpdate = prevCmd;
+            Config.MaxEditDirtyLeavesPerUpdate = prevDirty;
         }
     }
 
@@ -491,12 +534,11 @@ public sealed class PlanetChunkManager
     /// </summary>
     public void ApplyPlayModeEditVisual(SN.Vector3 localCenter, float sphereRadius)
     {
-        if (_editStore == null)
-            return;
-
+        // Height-cubemap digs do not require a voxel edit store — always preview + remesh.
         if (TryPreviewDeformCoarseShells(localCenter, sphereRadius))
             _renderableDirty = true;
 
+        RefreshStandGridsFromCubemap(localCenter, sphereRadius);
         DirtyOverlappingLeaves(localCenter, sphereRadius);
 
         int playBudget = Math.Clamp(MaxConcurrentJobs, 4, 8);
@@ -505,9 +547,8 @@ public sealed class PlanetChunkManager
 
     bool TryPreviewDeformCoarseShells(SN.Vector3 localCenter, float sphereRadius)
     {
-        DensityGenerator.ComputeCrustBounds(Config, _editStore!, out _, out float radialSpan);
+        DensityGenerator.ComputeCrustBounds(Config, _editStore, out _, out float radialSpan);
         float crustPad = radialSpan * 0.35f;
-        float maxCell = MathF.Max(8f, Config.VolumetricMaxCellSize);
 
         var renderable = new List<QuadNode>(64);
         for (int f = 0; f < 6; f++)
@@ -523,7 +564,7 @@ public sealed class PlanetChunkManager
         var sampler = _meshGen.Sampler;
         bool any = false;
         int touched = 0;
-        for (int i = 0; i < renderable.Count && touched < 2; i++)
+        for (int i = 0; i < renderable.Count && touched < 6; i++)
         {
             var node = renderable[i];
             if (!IntersectsLeaf(node, localCenter, sphereRadius, crustPad))
@@ -534,17 +575,58 @@ public sealed class PlanetChunkManager
                 continue;
 
             float spacing = PlanetShellDeformer.EstimateVertexSpacing(node, Config.Radius, Config.ChunkSize);
-            if (spacing <= maxCell)
-                continue;
+            // All outer shells are heightfield now — preview-deform nearby leaves immediately.
 
             if (PlanetShellDeformer.TryDeformMesh(mesh, sampler, localCenter, sphereRadius, spacing))
             {
+                // Keep stand grid in sync with deformed verts so digs stay walkable.
+                if (mesh.Vertices != null && mesh.Vertices.Length > 0)
+                {
+                    node.StandRadiusGrid = QuadNode.BuildStandRadiusGrid(
+                        node.Face, node.U0, node.V0, node.U1, node.V1, mesh.Vertices);
+                    QuadNode.EnsureStandRadiusGrid(node.StandRadiusGrid);
+                }
                 any = true;
                 touched++;
             }
         }
 
         return any;
+    }
+
+    /// <summary>
+    /// Rebuild stand grids near an edit from the live height cubemap (digs included).
+    /// </summary>
+    public void RefreshStandGridsFromCubemap(SN.Vector3 localCenter, float sphereRadius)
+    {
+        var sampler = _meshGen.Sampler;
+        if (sampler?.SurfaceCubemap == null)
+            return;
+
+        DensityGenerator.ComputeCrustBounds(Config, _editStore, out _, out float radialSpan);
+        float crustPad = radialSpan * 0.35f;
+        var renderable = new List<QuadNode>(64);
+        for (int f = 0; f < 6; f++)
+            Faces[f].CollectRenderableNodes(renderable);
+
+        int touched = 0;
+        for (int i = 0; i < renderable.Count && touched < 8; i++)
+        {
+            var node = renderable[i];
+            if (!IntersectsLeaf(node, localCenter, sphereRadius, crustPad))
+                continue;
+            node.StandRadiusGrid = QuadNode.BuildStandRadiusGridFromSampler(
+                node.Face, node.U0, node.V0, node.U1, node.V1, sampler);
+            QuadNode.EnsureStandRadiusGrid(node.StandRadiusGrid);
+            touched++;
+        }
+    }
+
+    /// <summary>Mark overlapping leaves dirty so height-cubemap digs remesh.</summary>
+    public void DirtyLeavesNear(SN.Vector3 localCenter, float sphereRadius)
+    {
+        DirtyOverlappingLeaves(localCenter, sphereRadius);
+        _renderableDirty = true;
     }
 
     void DirtyOverlappingLeaves(SN.Vector3 localCenter, float sphereRadius)
@@ -574,7 +656,7 @@ public sealed class PlanetChunkManager
     /// </summary>
     public void ScheduleRenderablesNearEdit(SN.Vector3 localCenter, float sphereRadius, int maxNodes = 1)
     {
-        if (_editStore == null || maxNodes <= 0)
+        if (maxNodes <= 0)
             return;
 
         DensityGenerator.ComputeCrustBounds(Config, _editStore, out _, out float radialSpan);
@@ -645,9 +727,12 @@ public sealed class PlanetChunkManager
     bool IntersectsLeaf(QuadNode leaf, SN.Vector3 localCenter, float sphereRadius, float crustPad)
     {
         float planetR = Config.Radius;
+        // Leaf centres are stored at base radius; dig centres sit on the heightfield —
+        // use a generous radial pad so surface digs still hit the leaf.
+        float surfacePad = MathF.Max(crustPad, MathF.Abs(localCenter.Length() - planetR) + 8f);
         var leafCenter = leaf.WorldCentre(planetR);
-        float leafRadius = Math.Max(leaf.WorldSize(planetR) * 0.75f, planetR * 0.01f);
-        float maxDist = leafRadius + sphereRadius + crustPad;
+        float leafRadius = Math.Max(leaf.WorldSize(planetR) * 0.85f, planetR * 0.015f);
+        float maxDist = leafRadius + sphereRadius + surfacePad;
         return SN.Vector3.DistanceSquared(localCenter, leafCenter) <= maxDist * maxDist;
     }
 
@@ -785,6 +870,11 @@ public sealed class PlanetChunkManager
 
     void ScheduleGeneration(QuadNode node)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            node.IsGenerating = false;
+            return;
+        }
         if (_clientStreaming && _clientMeshRequested != null)
         {
             try
@@ -811,7 +901,8 @@ public sealed class PlanetChunkManager
 
         int token = node.GenerationToken;
         ulong editStamp = (ulong)(_editStore?.SphereEditCount ?? 0)
-            + (ulong)(_editStore?.BakedCellCount ?? 0) * 1000003UL;
+            + (ulong)(_editStore?.BakedCellCount ?? 0) * 1000003UL
+            + (ulong)(_surfaceCubemap?.Version ?? 0) * 10000019UL;
         var cacheKey = new PlanetChunkMeshCache.Key(
             face, lodLevel, u0, v0, u1, v1, Config.Seed, Config.RecipeHash, editStamp);
 
@@ -823,6 +914,7 @@ public sealed class PlanetChunkManager
                 GenerationToken = token,
                 MeshData = payload.MeshData,
                 WaterData = payload.WaterData,
+                CaveData = payload.CaveData,
                 Chunk = payload.Chunk,
                 StandGrid = payload.StandGrid,
             });
@@ -834,12 +926,17 @@ public sealed class PlanetChunkManager
         {
             try
             {
+                if (Volatile.Read(ref _disposed) != 0)
+                    return;
                 var result = _meshGen.Generate(face, u0, v0, u1, v1, resolution, transitionMask, lodLevel, transitionStride);
                 var standGrid = QuadNode.BuildStandRadiusGrid(face, u0, v0, u1, v1, result.Mesh.Positions);
+                if (Volatile.Read(ref _disposed) != 0)
+                    return;
                 _meshCache.Put(cacheKey, new CachedMeshPayload
                 {
                     MeshData = result.Mesh,
                     WaterData = result.Water,
+                    CaveData = result.Cave,
                     Chunk = result.Chunk,
                     StandGrid = standGrid,
                 });
@@ -849,15 +946,19 @@ public sealed class PlanetChunkManager
                     GenerationToken = token,
                     MeshData = result.Mesh,
                     WaterData = result.Water,
+                    CaveData = result.Cave,
                     Chunk = result.Chunk,
                     StandGrid = standGrid,
                 });
             }
             catch (Exception ex)
             {
-                Log.Info($"[PlanetChunkManager] Mesh generation failed for face={face} lod={node.LodLevel}: {ex.Message}");
-                node.IsGenerating = false;
-                node.NeedsMeshRebuild = true;
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    Log.Info($"[PlanetChunkManager] Mesh generation failed for face={face} lod={node.LodLevel}: {ex.Message}");
+                    node.IsGenerating = false;
+                    node.NeedsMeshRebuild = true;
+                }
             }
             finally
             {
@@ -874,7 +975,7 @@ public sealed class PlanetChunkManager
             return false;
         }
 
-        ApplyMesh(job.Node, job.MeshData, job.Chunk, job.WaterData, job.StandGrid);
+        ApplyMesh(job.Node, job.MeshData, job.Chunk, job.WaterData, job.StandGrid, job.CaveData);
         job.Node.IsGenerating = false;
         return true;
     }
@@ -884,7 +985,8 @@ public sealed class PlanetChunkManager
         TransvoxelMeshData meshData,
         VoxelChunk? chunk = null,
         TransvoxelMeshData? waterData = null,
-        float[]? standGrid = null)
+        float[]? standGrid = null,
+        TransvoxelMeshData? caveData = null)
     {
         if (meshData.IsEmpty)
         {
@@ -896,12 +998,16 @@ public sealed class PlanetChunkManager
 
         GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
         GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedCaveMesh);
         node.GeneratedMesh = meshData.ToEngineMesh();
         node.StandRadiusGrid = standGrid
             ?? QuadNode.BuildStandRadiusGrid(node.Face, node.U0, node.V0, node.U1, node.V1, meshData.Positions);
         QuadNode.EnsureStandRadiusGrid(node.StandRadiusGrid);
         node.GeneratedWaterMesh = waterData != null && !waterData.IsEmpty
             ? waterData.ToEngineMesh()
+            : null;
+        node.GeneratedCaveMesh = caveData != null && !caveData.IsEmpty
+            ? caveData.ToEngineMesh()
             : null;
         if (chunk != null)
             node.Chunk = chunk;
@@ -910,19 +1016,22 @@ public sealed class PlanetChunkManager
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         for (int f = 0; f < 6; f++)
-        {
-            var leaves = Faces[f].GetLeafNodes();
-            foreach (var leaf in leaves)
-            {
-                GpuMeshReleaseQueue.Enqueue(leaf.GeneratedMesh);
-                GpuMeshReleaseQueue.Enqueue(leaf.GeneratedWaterMesh);
-                leaf.GeneratedMesh = null;
-                leaf.GeneratedWaterMesh = null;
-                leaf.StandRadiusGrid = null;
-                leaf.Chunk = null;
-            }
-        }
+            DisposeNodeRecursive(Faces[f].Root);
+
+        while (_completed.TryDequeue(out _)) { }
+        while (_pendingEditCommands.TryDequeue(out _)) { }
+        _meshCache.Clear();
+        _leafScratch.Clear();
+        _coverageScratch.Clear();
+        _prefetchScratch.Clear();
+        _renderableCache.Clear();
+        _playRenderableScratch.Clear();
+        _mergedParents.Clear();
+        _clientMeshRequested = null;
     }
 
     /// <summary>

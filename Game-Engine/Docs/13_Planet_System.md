@@ -2,14 +2,20 @@
 
 ## Overview
 
-The planet system provides a cube-sphere world with a **solid voxel-filled interior** and procedural **multi-scale caves** carved through it. Each quadtree leaf owns one or more radial `VoxelChunk` shells (U/V on the cube face, Z radial). `DensityGenerator` fills 3D density (surface + interior rock + worm/cavern noise), `PlanetVoxelEditStore` applies dig/build strokes in planet-local space, and `TransvoxelMesher` builds the mesh (regular cells plus LOD transition cells from `TransitionMask`). Water, atmosphere, biome graphs, and radial gravity stay as companion systems.
+The planet system provides a cube-sphere world whose **outer crust is a height cubemap** (six faces) with a **biome-baked splatmap**. Caves and underground dig live only in a **crust band** under that heightfield (`CaveDepth`), not as solid rock to the core.
 
-This is **not** a hollow shell with a fake floor. Land biomes fill rock from near the core (~4% of radius) to slightly above the authored surface. Caves are 3D voids inside that volume; they are not height-subtracted pits on the outer shell.
+On graph apply, `PlanetCubemapBaker` builds:
+- **Height cubemap** — meters above `Radius` (mesh-driving source of truth)
+- **Height dig deltas** — separate 6-face float maps so rebaking biomes does not wipe sculpt
+- **Splat cubemap** — 8 layer weights (two RGBA faces per cube face), baked from biome blends
+- Companion **`PlanetClimateAtlas`** — temp/moist/biome LUTs for climate helpers (not mesh-driving)
+
+Each face quadtree leaf generates a **heightfield shell** from the cubemap. Fine leaves near the camera may also generate a **Transvoxel crust-cave mesh** (`GeneratedCaveMesh`) in the band `[surfaceR − CaveDepth, surfaceR]`, with hole punching where caves open to sky.
 
 Core goals:
-- Stream chunks around the camera with bounded runtime cost and parent-hold LOD (no holes while children generate)
+- Stream chunks around the camera with bounded runtime cost and parent-hold LOD
 - Author biome rules visually with the Biome Graph editor
-- Query the **same density field** for meshing, editor picking, and cave-aware contact
+- Query **heightfield + crust-band occupancy** for meshing, picking, and cave-aware contact
 - Keep movement and camera behavior stable on curved surfaces (gravity still radial)
 
 ---
@@ -18,22 +24,24 @@ Core goals:
 
 | Type | Role |
 |------|------|
-| `PlanetTerrain` | User-facing component: config, biome map, chunk manager, density queries, voxel edits, water shell |
-| `PlanetChunkManager` | Six face quadtrees, prefetch/split, parent-hold apply, transvoxel remesh, edit commands |
-| `PlanetSpace` | World ↔ planet-local unscaled conversion (center subtract, then unscale) |
-| `PlanetNoiseCache` | Shared fractal-noise instances per planet (biome, erosion, cave layers) — reused across chunk jobs |
-| `PlanetDensitySampler` | Samples crust density + multi-scale caves + edit overlay in local space |
+| `PlanetTerrain` | User-facing component: config, biome map, chunk manager, height/cave queries, dig routing, water |
+| `PlanetSurfaceCubemap` | Height + HeightDelta + Splat0/1 faces; CPU sample APIs |
+| `PlanetCubemapBaker` | Bakes surface cubemap (+ climate atlas) from biome graph / noise |
+| `PlanetChunkManager` | Six face quadtrees, prefetch/split, parent-hold apply, shell + cave remesh |
+| `PlanetSpace` | World ↔ planet-local unscaled conversion |
+| `PlanetNoiseCache` | Shared fractal-noise instances per planet |
+| `PlanetDensitySampler` | Heightfield radius + crust-band cave occupancy + cave dig overlay |
+| `CrustCaveSampler` | Worm/cavern noise scoped to `CaveDepth` under the edited surface |
 | `PlanetDensityRaycast` | Sphere-marches that field; fills `PlanetDensityHit` |
-| `BiomeMap` | Resolves biome blends per sphere direction (altitude lapse, water moisture, rain shadow) |
-| `BiomeGraph` / `PlanetRecipe` | Node graph compiles into recipe + LUTs; life/scatter/fauna tables |
-| `PlanetClimateAtlas` | Baked 6-face climate/height/biome LUTs (+ optional flow-river mask) |
+| `BiomeMap` | Resolves biome blends per sphere direction |
+| `BiomeGraph` / `PlanetRecipe` | Node graph compiles into recipe + LUTs |
+| `PlanetClimateAtlas` | Companion climate/height/biome LUTs (+ optional flow-river mask) |
 | `PlanetChunkMeshCache` | In-memory mesh cache keyed by face/lod/uv/seed/`RecipeHash`/editStamp |
 | `PlanetAssetIO` | `.planet` JSON plus `.planetvox` sidecar load/save |
 | `PlanetCollider` | Broad-phase AABB and gizmo shell (not triangle contact) |
 | `Rigidbody` / `CharacterController` | Radial gravity; surface mode uses StandRadiusGrid on crust |
-| `RigidbodyPlayer` | FixedUpdate planet motor + SurfaceMode latch; stand-grid camera on crust |
-| `PlanetLifeStreaming` / `PlanetFloraSpawner` / `PlanetScatterRenderer` | Life/scatter companions; fauna tables are data-only until AI consumes them |
-| `PlanetPlayerSpawner` | Play-mode spawner: RigidbodyPlayer + capsule + camera on the crust |
+| `RigidbodyPlayer` | FixedUpdate planet motor + SurfaceMode latch |
+| `PlanetPlayerSpawner` | Play-mode spawner on the crust |
 | `Camera` | Supports custom `WorldUp` so horizon follows local surface normal |
 
 ---
@@ -49,10 +57,10 @@ Core goals:
 | `Radius` | `1000` | Base planet radius |
 | `SeaLevelFraction` | `0.55` | Fraction of terrain min/max range used when no graph ocean body overrides sea level (see **Planet water**) |
 | `MaxLodDepth` | `6` | Max quadtree depth |
-| `ChunkSize` | `32` | Voxel/mesh chunk resolution |
+| `ChunkSize` | `32` | Mesh chunk resolution |
 | `LodDistanceMultiplier` | `5.0` | LOD split distance tuning |
 | `Seed` | `42` | Planet seed |
-| `EnableCaves` | `true` | Enables cave carving in the density pipeline |
+| `EnableCaves` | `true` | Enables crust-band cave carving / cave meshing |
 | `EnableWater` | `true` | Enables planet water rendering (orbit shell + per-chunk patches) |
 | `MaxActiveChunks` | `120` | Hard cap for active runtime chunk meshes |
 | `PlanetAssetPath` | `""` | Project-relative or absolute `.planet` path |
@@ -62,41 +70,35 @@ Core goals:
 
 - Registers itself in `PlanetTerrain.ActivePlanets` for global planet queries
 - Loads `.planet` data first (if `PlanetAssetPath` is set), then loads/compiles `BiomeGraphPath`
-- Rebuilds biome map, noise caches, chunk manager, and water after graph apply
+- Rebuilds biome map, **surface cubemap**, noise caches, chunk manager, and water after graph apply
+- On **scene load**, surface cubemap bake runs **async** on a background thread (`ScheduleSurfaceBakeAsync` via `EditorJobs`) so the UI stays responsive; `SurfaceBakePending` is true until the bake finishes and remeshes apply. Chunk shells start from live `SampleHeight` until the cubemap swap completes
+- Scene load sets `SceneService.DeferPlanetVegetationImport` so heavy vegetation import waits until after the scene replace
 - Updates chunk streaming on interval and movement threshold (not every frame)
 - Tracks effective world radius from transform scale so LOD, water, and physics stay in sync on scaled planets
-- Converts world brushes/queries through `WorldToLocal` / `LocalToWorld` (`PlanetSpace`) so a planet off the origin still edits and hits correctly
+- Converts world brushes/queries through `WorldToLocal` / `LocalToWorld` (`PlanetSpace`)
 
-### Density queries vs `SampleSurfaceRadius`
-
-Use the **density field** for anything that must hit caves, walls, ceilings, or painted holes on any hemisphere:
+### Heightfield vs crust-cave queries
 
 | API | What it is |
 |-----|------------|
-| `RaycastDensity(worldOrigin, worldDirection, maxDistance, out PlanetDensityHit hit)` | Ray-march crust density (caves included). Default quality is **editor** (96 steps / 10 refine) |
-| `RaycastDensityGameplay(...)` / `SpherecastGameplay(...)` | Same field, **gameplay** quality (32 steps / 4 refine). Player motors use these |
-| `Raycast(...)` | Alias of `RaycastDensity` (Scene View brushes) |
+| `SampleSurfaceRadius(dir)` | Edited height cubemap (+ water carve) × world scale — **no density iso march** |
+| `SampleHeightfieldRadius(dir)` | Same as `SampleSurfaceRadius` |
+| `SampleCollisionRadius(dir)` | Prefer StandRadiusGrid on the visible shell; fallback to heightfield |
+| `RaycastDensity(...)` / `Spherecast(...)` | Heightfield first; inside the crust band marches cave occupancy |
 | `RaycastPaintSurface(...)` | Play-mode tool pick: iso crossing, then geometric fallback |
-| `Spherecast(worldOrigin, worldDirection, worldRadius, maxDistance, out hit)` | Thick query for capsule/rigidbody contact |
-| `TrySampleLocalIsosurface(sphereDir, out localPoint, out localNormal)` | First air→solid crossing inward along a cube-sphere direction (pits, cave mouths) |
-| `ResolveDensityPenetration(ref worldPos, worldClearance)` | Push a point out of solid density |
-| `SampleCollisionRadius(sphereDir)` | Local stand radius on the **visible** leaf (`FindRenderableAtDirection`), not a prefetch child or neighbor peak |
+| `DigSphere` / `BuildSphere` | Near surface → height deltas; underground → cave-band occupancy edits |
+
+### Dig edits and `.planetvox`
+
+- **Surface mode** (brush center within ~surface − ε): writes into `PlanetSurfaceCubemap.HeightDelta`
+- **Cave mode** (deeper in the crust band): `PlanetVoxelEditStore` sphere strokes (same density convention: + dig / − build)
+- `SaveVoxelEdits()` / `LoadVoxelEdits()` persist sidecar version **2**: optional `HeightDeltaFaces[6]` + cave strokes / baked cells
+- Legacy v1 sidecars (strokes only): near-surface strokes project onto height deltas; deep interior strokes outside `CaveDepth` are dropped
+- Clients skip persist; the server writes when it owns the asset
 
 `PlanetDensityHit` fields: `Point`, `Normal`, `Distance`, `StartedInside`.
 
-`SampleSurfaceRadius(sphereDir)` is the **outermost** crust crossing (air→solid walking inward from outside the shell). It is for water, orbit LOD, atmosphere, vegetation radial estimates, and collider gizmos. It is **not** cave-floor contact. Physics grounding uses `Spherecast` / `RaycastDensity` along `-LocalUp`.
-
-### Voxel edits and `.planetvox`
-
-`DigSphere` / `BuildSphere` take a **world** brush center and radius. Internally they store strokes in **planet-local unscaled** space (`PlanetVoxelEditStore`). Positive density delta removes solid (dig); negative adds solid (build). Fast path: if the leaf already has a `VoxelChunk`, the stroke is splatted into the grid and remeshed; otherwise the leaf is marked dirty.
-
-Persistence:
-
-- `SavePlanetAsset()` writes `.planet` JSON (`PlanetAssetData.Version` = 2) and then `SaveVoxelEdits()`.
-- `SaveVoxelEdits()` / `LoadVoxelEdits()` read/write a sidecar named `<planet>.planetvox` next to the `.planet` (or `PlanetAssetData.VoxelEditsPath` if set). Strokes may be baked into sparse `BakedCells` when the list grows.
-- Only the offline editor or a network **server** writes those files (`OwnsPlanetAssetForPersist`). Clients send `PlanetVoxelEdit` RPCs; the server broadcasts `PlanetVoxelInvalidate`.
-
-`ClearVoxelEdits(rebuildNow)` clears the live overlay; the sidecar updates on the next save.
+`ClearVoxelEdits(rebuildNow)` clears cave strokes and height dig deltas; the sidecar updates on the next save.
 
 ---
 
@@ -231,65 +233,55 @@ High-level update sequence:
 
 **Transition / stitch remesh in play:** `UpdateTransitionMasks` still records new seam masks when neighbor LOD changes, but in **Play mode it does not force an immediate live remesh** of existing leaves. Stitch parameters apply on the next natural rebuild (split commit, merge rebuild, edit, or first generation). This stops slope/peak T-junction snaps from rewriting the mesh under a stationary player. Editor Scene View still remeshes on mask change.
 
-### Interior fill and stacked voxel shells
+### Height cubemap shell + crust-band caves
 
-`DensityGenerator.ComputeInteriorBounds` defines solid fill from `radialMin` (~4% of `Radius`, minimum 16) out to `radialMax` (surface + amplitude/brush padding).
+`PlanetMeshGenerator` **always** builds the outer crust as a heightfield shell sampled from `PlanetSurfaceCubemap` (Height + HeightDelta + water carve). The old full-planet volumetric surface path is retired.
 
-Fine leaves do **not** stretch one 32³ grid across the entire radius (that would make 20 m+ cells and shred caves). Instead `PlanetMeshGenerator` stacks **1–4 radial shells** per leaf (`DensityGenerator.RadialLayerCount`), each ~320 m thick with 32³ samples, then merges the transvoxel meshes with `TransvoxelMeshData.Append`.
+| Leaf tangential cell | Extra geometry |
+|----------------------|----------------|
+| `> VolumetricMaxCellSize` | Shell only (orbit / coarse) |
+| `≤ VolumetricMaxCellSize` | Shell + optional **crust cave** Transvoxel mesh |
 
-| Leaf tangential cell | Mesh mode |
-|----------------------|-----------|
-| `> VolumetricMaxCellSize` | Smooth **heightfield shell** (orbit / coarse Scene View) |
-| `≤ VolumetricMaxCellSize` | **Stacked transvoxel** shells (caves + interior rock) |
+`DensityGenerator.ComputeInteriorBounds` now spans only the crust band: `radialMin ≈ Radius − CaveDepth` to `radialMax` (surface + amplitude/brush padding). Transvoxel is used **only** for that band.
 
-`VolumetricMaxCellSize` defaults to **3.5** at orbit. When **`CameraBelowCrust`** is latched true (density probe at the camera with hysteresis, throttled ~**0.25 s** / **6 m** move), `PlanetTerrain.ApplyChunkBudgets` raises it to **11**, increases leaf/chunk caps, and boosts mesh job budgets so interior cave walls refine — in **both Play and editor** (editor gets slightly higher caps when underground).
+`VolumetricMaxCellSize` defaults to **3.5** at orbit. When **`CameraBelowCrust`** is latched true, `PlanetTerrain.ApplyChunkBudgets` raises it to **11** and boosts leaf/job budgets so cave walls refine.
 
-**Play-mode interior profile** (when `CameraBelowCrust` latch is true in Play): `MaxLodDepth` up to **6**, `MaxActiveChunks` / `MaxLeafNodes` toward **120–160**, `MaxGenerationSchedulesPerUpdate` **~14**, `VolumetricMaxCellSize` **11**. Orbit play outside the crust band keeps tighter caps (depth **4–5**, **32–64** leaves, **6** schedules). Walking the outer shell no longer false-triggers interior LOD (the old `camR < 1.08 × radius` heuristic remeshed whole hills as volumetric and spiked triangle count).
+### Multi-scale cave carving (crust band)
 
-### Multi-scale cave carving
+When `EnableCaves` is on, `CrustCaveSampler` carves only biomes with `CavesEnabled`:
 
-When `EnableCaves` is on, `PlanetDensitySampler.ApplyCaveCarve` runs only on biomes with `CavesEnabled` (ocean/beach presets default to **off**). Carving:
+- Lives in `[surfaceR − CaveDepth, surfaceR]` (global `CaveDepth` / per-biome cave depth)
+- Thin solid roof (~2–14 m) so mouths open only where worms break through
+- Below the band floor → solid (no core fill)
+- Blends small/medium worm tunnels and larger caverns within the band
 
-- Starts **12 m** below the local surface (thin roof so caves do not punch through the crust)
-- Continues through the **full interior** (no 280 m depth cap)
-- Stops at a tiny solid core (`r < max(16, 0.035 × Radius)`) so cube-sphere samples never collapse at the origin
-- Blends four noise scales:
-  - **Small tunnels** — high-frequency worm noise at every depth
-  - **Medium passages** — mid-scale worm corridors
-  - **Large caverns** — low-frequency FBM, slightly more open toward the core
-  - **Huge chambers** — sparse inner-half mega-rooms
-
-Cave density and biome `CaveDensity` scale how aggressively each scale opens rock.
+Shell hole punching drops shell triangles where `IsSurfaceMouth` is true so cave openings show through.
 
 ### Interior LOD and rendering
 
 When the camera is inside or just under the crust:
 
-- `QuadNode.CameraPriorityDistance` samples the patch at the camera radius (not only outer-surface corners), so fly-cam refines walls you are looking at
-- `FaceQuadtree` splits **2.3×** more aggressively near the crust
-- `SceneRenderer` disables backface culling and frustum culling in the crust band (`camRadial < 1.08 × radius`)
-- Planet terrain shader uses `slope = abs(dot(N, radialDir))` so steep cave walls still get rock textures, not grey undersides
-- **Interior lighting:** `evalAtmosphere` is skipped below the crust (`distFromCenter < uPlanetRadius`); inward faces keep biome under-color (no grey floor clamp); cavity AO darkens ceilings (`ao = mix(1.0, 0.35, -nDotRadial)`); interior ambient is slightly reduced
-- **Form shadows:** `RenderPlanetLeafShadows` draws `GetRenderableLeaves()` into the depth shadow pass so cave mouths and crater rims cast shadows (vegetation already did; planet leaves are GPU caches, not scene nodes)
+- `QuadNode.CameraPriorityDistance` samples the patch at the camera radius
+- `SceneRenderer` disables backface culling in the crust band (`camRadial < 1.08 × radius`)
+- Draws `GeneratedMesh` (shell) and `GeneratedCaveMesh` (crust caves)
+- Planet terrain shader samples **splat atlases** (3×2 face layout) by world direction and blends up to 8 layer albedos (triplanar detail); `uBiomeTex0–7` are splat layer textures
+- **Form shadows:** `RenderPlanetLeafShadows` draws shell + cave meshes into the depth pass
 
 ### Transvoxel LOD seams
 
-Fine volumetric leaves set `TransitionMask` on edges that border a coarser neighbor. `TransvoxelMesher.GenerateMesh` calls `GenerateTransitionCells` when the mask is non-zero (toggle with `PlanetConfig.EnableTransvoxelTransitions`, default **true**). Heightfield shells also run `SnapLodTJunctions` so odd edge verts align to coarser neighbors (T-junction crack prevention). Transition cells use the full Lengyel **13-corner** layout (`MarchingCubesTables.TransitionVertexData` / `TransitionCellData`) — not the old 9-sample ring interpolation. Only the outer radial shell layer currently receives the mask (enough for cave mouths and crust LOD boundaries).
-
-**Play-mode stitch policy:** mask/stride updates are recorded every LOD tick, but existing rendered meshes are **not** torn down for stitch-only changes during Play. Editor orbit continues to remesh immediately when seams change so you can inspect LOD boundaries while flying the Scene camera.
+Crust-cave leaves set `TransitionMask` on edges that border a coarser neighbor. Heightfield shells run `SnapLodTJunctions` so odd edge verts align to coarser neighbors.
 
 ### In-memory chunk mesh cache
 
-`PlanetChunkManager` keeps a `PlanetChunkMeshCache` (256 entries). The key is face / LOD / quantized UV / seed / `Config.RecipeHash` / edit stamp (`SphereEditCount` + `BakedCellCount`). A revisited leaf reuses terrain mesh, water patch, voxel chunk, and stand grid instead of remeshing. `RequestFullShellRebuild` and `ClearMeshCache()` drop the cache. Graph compile writes a new `RecipeHash`, so the next generate miss rebuilds under the new recipe.
+`PlanetChunkManager` keeps a `PlanetChunkMeshCache` (256 entries). The key includes face / LOD / UV / seed / `RecipeHash` / edit stamp (cave strokes + **height-delta version**). Graph compile writes a new `RecipeHash` and rebakes the cubemap (preserving height deltas).
 
-### Play-mode voxel edits
+### Play-mode digs
 
-Dig/build in Play no longer forces every leaf back to a heightfield shell after the first stroke. `PlanetMeshGenerator.ShouldUseVolumetric` keeps volumetric remesh on overlapping leaves (small-brush coarse-leaf exception: `MaxRadius ≤ 2.5 m` and `cell > VolumetricMaxCellSize` may stay shell-only). `PlanetChunkManager.ApplyPlayModeEditVisual` dirtys overlapping leaves and schedules async remesh with a play budget (**4–8** nodes); coarse non-volumetric leaves may get a one-frame `PlanetShellDeformer` preview.
+Surface brushes update height deltas and dirty overlapping leaves. Underground brushes edit cave occupancy. `ApplyPlayModeEditVisual` schedules async remesh with a play budget (**4–8** nodes); coarse shells may get a one-frame `PlanetShellDeformer` preview.
 
 Hierarchy/runtime note:
-- Chunk `GameObject` children are no longer created (no `PlanetChunk_*` scene hierarchy spam)
-- Runtime chunk meshes are cached on quadtree leaves and rendered directly
-- Rendering reads `PlanetChunkManager.GetRenderableLeaves()` for terrain passes; each leaf may also carry `GeneratedWaterMesh` for close-up water
+- Runtime chunk meshes are cached on quadtree leaves (`GeneratedMesh`, `GeneratedWaterMesh`, `GeneratedCaveMesh`)
+- Rendering reads `PlanetChunkManager.GetRenderableLeaves()`
 
 ---
 
@@ -305,15 +297,20 @@ When `PlanetConfig.Continents` is non-empty:
 - Extra range noise (~42 m) applies only on land (`land > 0.42`).
 
 Other compiled features:
-- **Craters** — bowl subtract + rim add from nearest-feature samples.
-- **Volcanoes** — cone height on land; **lava lakes** only inside the caldera (`TryGetLavaLake`). Outer cone walls and the inner rim above the pool stay rock.
-- **Cliffs** — ocean-side drop + land-side lip on the coastal land band.
+- **Volcanoes** — stratovolcano cones on **inland** land only. Candidate centers are filtered with `TryNearestInlandVolcanoFeature`: center land ≥ **0.72**, caldera ring samples must stay above the coastal shelf (land ≥ **0.58**). Cones fade before the cliff band (`VolcanoColumnFade` on land **0.50–0.68**). **Cliffs never carve through a volcano column** (`insideVolcanoCone` skips cliff drop/lip).
+- **Lava lakes** — flat pool inside the caldera only (`TryGetLavaLake`). Lake height is reconstructed from the volcano center (`terrain − volcanoAdd + lakeAdd`), not draped on local crust, so cliffs cannot park lava on a rim shelf. Requires column land ≥ **0.55**. Lava is **not** swim water.
+- **Craters** — bowl subtract + rim add; fade under volcano influence so impact bowls cannot replace calderas.
+- **Cliffs** — ocean-side drop + land-side lip on the coastal land band (**0.35–0.78** land), with fade near volcano influence.
 
 Biome amplitude is compressed in `SampleHeight` so Ocean(5) next to Mountains(85) cannot build a one-triangle pyramid. Height is accumulated, then **reclassified with altitude** (`biomeMap.GetBiomes(dir, altitude)`) and accumulated again.
 
-### Climate atlas (`PlanetClimateAtlas`)
+### Climate atlas + surface cubemap
 
-On graph apply, `PlanetTerrain` bakes a 6-face LUT (default **256²** per face): temperature, moisture, height, top-two biome indices/weights, and optional flow-river mask. Runtime samples bilinearly instead of allocating biome lists per voxel.
+On graph apply, `PlanetCubemapBaker.Bake` produces:
+- `PlanetSurfaceCubemap` at default **512²** per face (clamped 256–1024): height, dig deltas, splat weights
+- Companion `PlanetClimateAtlas` at **256²**: temperature, moisture, height, top-two biomes, optional flow-river mask
+
+`SampleSurfaceRadius` / shell meshing read the **surface cubemap**. Climate atlas remains for moisture/temp helpers and flow rivers.
 
 `BiomeMap` climate coupling:
 - Temperature falls with normalized altitude (`AltitudeLapseRate`).
@@ -340,7 +337,9 @@ Planet water is a **two-tier** system: a low-resolution **orbit shell** for dist
 | `ApplyWaterCarving(...)` | Lowers heightfield for rivers, optional flow-accumulation channels, and pond/lake basins |
 | `SampleSandWeight(...)` | Dry shoreline / river-bank sand blend (never paints Beach under the water mesh) |
 
-**Lava** is evaluated first: if `TryGetLavaLake` reports magma `> 0.18` and the pool sits above terrain, the sample is `PlanetWaterKind.Lava` (body index **6**). Lava is **not** swim water.
+**Lava** is evaluated first: if `TryGetLavaLake` reports magma above threshold and the pool sits clearly above terrain (`lavaR > terrainRadius + 0.06`), the sample is `PlanetWaterKind.Lava` (body index **6**). Mesh generation classifies lava against **visible** edited crust height. Lava is **not** swim water.
+
+**Ocean basin guard:** `IsOceanBasinColumn` (continent land ≤ **0.38**) prevents ocean fill on cliff-carved continent columns. Without it, columns below sea level after a cliff drop were treated as ocean and the sea sheet walked up the cliff face. Ocean seal grow and shore-edge verts respect this guard.
 
 **Multi-level water** (when `PlanetConfig.WaterBodies` is non-empty):
 - Classification uses **altitude** (`NormalizeAltitude`). Ignoring it marked wet midland as Ocean and flooded hillsides around deep basins.
@@ -363,8 +362,9 @@ Planet water is a **two-tier** system: a low-resolution **orbit shell** for dist
 Chunk water rules:
 - Built asynchronously with terrain in `PlanetChunkManager` → stored on `QuadNode.GeneratedWaterMesh`.
 - Vertices sample `SampleWaterSurface` at each grid point; dry verts are omitted from the index buffer.
-- Ocean/lake/pond triangles use the water-table radius; rivers use bed + offset; lava uses the caldera pool radius.
-- Shore verts are placed on the **visible** terrain-edge / sea-sphere intersection so the waterline matches the LOD you stand on (not a planet-wide 48-subdiv mesh).
+- Ocean/lake/pond triangles use the water-table radius; rivers use bed + offset; lava uses the caldera pool radius from `TryGetLavaLake`.
+- **Lava seed pass:** after the primary grid loop, a second pass seeds caldera lava from the visible bowl (coarse LOD can skip the caldera center on the first pass). Flood-fill then expands lava inside `SampleMagmaBowl` cells below the lake surface.
+- Shore verts are placed on the **visible** terrain-edge / sea-sphere intersection so the waterline matches the LOD you stand on (not a planet-wide 48-subdiv mesh). Tall cliff edges clamp shore interpolation to the foot of the wall so water does not climb the face.
 - Triangles spanning more than ~1.75× the leaf cell size are dropped to avoid sky-spike shards.
 
 `PlanetTerrain.SetupWater()` creates the orbit shell child `PlanetWater` with a `MeshFilter` / `MeshRenderer`. `RebuildWater()` runs after biome graph apply and on init when `EnableWater` is true.
@@ -431,14 +431,17 @@ Per-body underwater tint comes from the matching `PlanetWaterBody` deep colors w
 | `FaceQuadtree.cs` | Per-face split/merge/prefetch, neighbor lookup, `CommitReadySplits`, transition masks |
 | `QuadNode.cs` | Leaf/`VoxelChunk`/`GeneratedMesh`, `TransitionMask`, interior-aware camera priority |
 | `CubeSphereMath.cs` | Cube-face UV <-> sphere direction conversions |
-| `DensityGenerator.cs` | Fills radial `VoxelChunk` shells; `ComputeInteriorBounds`, `RadialLayerCount` |
-| `PlanetDensitySampler.cs` | Density at a local point (procedural + multi-scale caves + edits) |
+| `DensityGenerator.cs` | Crust-band `VoxelChunk` fill; `ComputeInteriorBounds` (CaveDepth) |
+| `PlanetSurfaceCubemap.cs` | Height / HeightDelta / splat faces + sample APIs |
+| `PlanetCubemapBaker.cs` | Bake cubemap + climate atlas from biome graph |
+| `CrustCaveSampler.cs` | Crust-band cave occupancy |
+| `PlanetMeshGenerator.cs` | Height cubemap shell + optional crust-cave Transvoxel |
+| `PlanetClimateAtlas.cs` | Companion climate LUTs; optional flow-accumulation river bake |
+| `PlanetDensitySampler.cs` | Heightfield + crust-band caves + cave dig overlay |
 | `PlanetDensityRaycast.cs` | `Raycast` / `Spherecast` / local isosurface / penetration |
-| `PlanetMeshGenerator.cs` | Heightfield shell (coarse) or stacked `VoxelChunk` → transvoxel (fine) |
-| `PlanetVoxelEditStore.cs` / `PlanetVoxelEditAsset.cs` | Live strokes + sidecar DTO |
+| `PlanetVoxelEditStore.cs` / `PlanetVoxelEditAsset.cs` | Cave strokes + sidecar DTO (v2 height deltas) |
 | `PlanetManipulationApi.cs` | Static `DigSphere` / `BuildSphere` helpers |
 | `PlanetSurfaceUtility.cs` | Height accumulation, continent/crater/volcano/cliff geology, lava-lake query |
-| `PlanetClimateAtlas.cs` | Baked climate/height/biome LUTs; optional flow-accumulation river bake |
 | `PlanetChunkMeshCache.cs` | RecipeHash-keyed in-memory mesh cache |
 | `PlanetWater.cs` | Orbit-only uniform sea-level shell (atmosphere proxy mesh) |
 | `PlanetWaterTypes.cs` | `PlanetWaterBody` / `PlanetWaterPath` / `PlanetWaterSurfaceSample` (`Lava = 5`) |
@@ -545,7 +548,7 @@ For planet traversal:
 
 Recommended setup:
 1. Add `PlanetTerrain` to a root GameObject
-2. Add `PlanetPlayerSpawner` to the planet (or any scene object) **or** manually add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`. Spawn stands on `SampleCollisionRadius` (same radius the motor snaps to) — not an isosurface / density ray that can hit a pit. `EnsureSunLight` **enables** an existing directional light (and turns on shadows) instead of ignoring it or spawning a second sun
+2. Add `PlanetPlayerSpawner` to the planet (or any scene object) **or** manually add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`. Spawn stands on `SampleCollisionRadius` (same radius the motor snaps to) — not an isosurface / density ray that can hit a pit. `EnsureSunLight` **enables** an existing directional light (and turns on shadows) instead of ignoring it or spawning a second sun. With **`AttachPostProcess`** (default **on**), spawn also adds a global `PostProcessVolume` on the player camera with tuned bloom, ACES color grading, SSAO, vignette, and FXAA; fog stays off so `PlanetWeatherController` can drive it when present
 3. Ensure there is a `Camera` for the player/controller
 4. Author and compile a biome graph, then assign/verify `BiomeGraphPath`
 5. On land biomes, enable `CavesEnabled` in the Biome Graph layer properties (ocean/beach default off)
@@ -560,6 +563,7 @@ Recommended setup:
 - When the fly camera is **inside** the planet, interior chunk budgets apply (higher `VolumetricMaxCellSize`, more leaves, faster mesh apply)
 - Parent-hold LOD still applies while orbiting or underground
 - Transition mask changes trigger immediate remesh in editor (stitch preview while orbiting)
+- **Planet warmup:** while `SurfaceBakePending`, chunk jobs are in flight, or no leaf has `GeneratedMesh` yet, Scene View keeps requesting GL frames (`SceneNeedsPlanetWarmupFrames`) so the planet shell appears instead of staying at `Obj:0` until Game View / Play
 
 **Play mode (Game View only for LOD split/merge):**
 

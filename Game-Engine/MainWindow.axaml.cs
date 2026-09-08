@@ -1339,7 +1339,7 @@ public partial class MainWindow : Window
     }
 
     // super-lightweight error popup
-    private async System.Threading.Tasks.Task ShowError(string message)
+    internal async System.Threading.Tasks.Task ShowError(string message)
     {
         var dlg = new Window
         {

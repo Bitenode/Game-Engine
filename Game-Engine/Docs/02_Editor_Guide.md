@@ -145,9 +145,9 @@ When a GameObject with `PlanetTerrain` is selected and a planet brush is active,
 - Inspector **Planet brushes (Scene View)**: **Dig**, **Build**, **Smooth**, **Flatten**, plus **Radius**, **Strength**, and **Falloff**
 - A ring gizmo follows the mouse on the density surface (camera pick ray → `PlanetTerrain.Raycast`)
 - Left-drag applies the tool; right-drag or **Shift** inverts Dig/Build
-- Mouse-up saves voxel strokes via `SaveVoxelEdits()` to the `.planetvox` sidecar next to the `.planet`
+- Mouse-up saves edits via `SaveVoxelEdits()` to the `.planetvox` sidecar next to the `.planet`
 
-**Interior fly-cam:** Scene View runs real planet LOD every frame. When the camera is inside the crust, chunk budgets rise so cave walls refine around you (not only when orbiting the outer surface). Give chunks a few seconds to rebuild after flying underground on land biomes.
+**Interior fly-cam:** Scene View runs planet LOD every frame. When the camera is inside the crust, chunk budgets rise so cave walls refine around you (not only when orbiting the outer surface).
 
 Play-mode **PlanetTool** (Standard Assets): LMB dig / RMB build along the camera look-ray; `[` `]` radius; `-` `=` strength.
 
@@ -355,7 +355,7 @@ Several built-in components have dedicated custom inspectors:
 | Component | Inspector Features |
 |-----------|-------------------|
 | **PlanetVegetationSystem** | Planet Vegetation runtime controls — live `Leaf Groups` / `Instances` stats, `Full Biome Populate` mode toggle, and one-click `Spawn Vegetation (Scene View)` / `Respawn (Clear + Spawn)` actions |
-| **PlanetPlayerSpawner** | Gameplay — one-click play-mode player spawn on the crust (`RigidbodyPlayer` + capsule + camera) |
+| **PlanetPlayerSpawner** | Gameplay — one-click play-mode player spawn on the crust (`RigidbodyPlayer` + capsule + camera + optional post-process) |
 | **ReflectionProbe** | **GpuCubemap** — explains runtime GPU cubemap allocation (not an importable 2D texture); **Request recapture** sets `NeedsCapture` |
 | **TriggerVolume** | **On enter** / **On exit** reaction rows (`LoadScene`, `SetObjectEnabled`, `PublishChannel`) with parallel list persistence |
 | **DialogueRunner** | Dialogue tree editor — node list with type/speaker/text, choice linking, variable store, voice clip paths per node, dialogue mode selector (Text / Voice / Both) |
@@ -698,7 +698,7 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 - **Per-biome vegetation tuning** — `VegetationDensity`, `TreeDensity`, `Patchiness`, and `SeasonalGrowthMultiplier` are exposed directly under profile controls
 - **Multi-item grass/tree authoring** — each profile supports multiple weighted grass and tree entries with per-item model path, density multiplier, and scale range
 - **Water graph nodes** — `WaterBody` (Ocean / Lake / Pond), `WaterPath`, legacy `River`, `Shore`, `WaterMerge`; wire into **Output.Water** (up to 8 bodies and 8 paths). Compile rebuilds terrain carving, dry-only shore sand, orbit shell, and per-chunk water meshes on all scene planets.
-- **Geology nodes** — `Continent`, `Crater`, `Volcano`, `Cliff`, `DomainWarp`. Continents carve ocean basins; volcanoes can fill calderas with lava (not swim water).
+- **Geology nodes** — `Continent`, `Crater`, `Volcano`, `Cliff`, `DomainWarp`. Continents carve ocean basins with a narrow coastal shelf; **Cliff** adds ocean-side drops on that band; **Volcano** adds inland stratovolcanoes with caldera **lava lakes** (not swim water). Volcano centers are filtered inland so cones do not sit on the continent rim.
 - **Climate nodes** — `Climate`, `RainShadow`, `Season`, `LatitudeBand`. Compile writes `AltitudeLapseRate`, `WaterMoistureBoost`, `RainShadowStrength`, and optional `UseSelectClassifier`.
 - **Life / scatter nodes** — `FloraLayer`, `ScatterLayer`, `FaunaLayer`, `UnderwaterLife`, `ResourceVein` compile into `PlanetRecipe` tables. Runtime companions (`PlanetFloraSpawner`, `PlanetScatterRenderer`, `PlanetFaunaTableBehavior`) receive those tables on compile.
 - **Atmosphere extras** — `Atmosphere`, `WeatherProfile`, `CloudLayer`, plus `IceSheet` / `Wetland`.

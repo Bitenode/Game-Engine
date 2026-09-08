@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Editor;
 using System;
@@ -76,23 +77,31 @@ public partial class WelcomeWindow : Window
         var name = await nameDlg.ShowDialog<string?>(this);
         if (string.IsNullOrWhiteSpace(name)) return;
 
-        try
-        {
-            ProjectService.CreateNew(parent, name, openAfterCreate: true);
-            // Treat null/indeterminate as "on" so we never skip copy unless the box is explicitly unchecked.
-            if (ChkIncludeStandardAssets.IsChecked is not false && ProjectService.Current is { } proj)
-            {
-                if (!StandardAssetsInstaller.TryCopyToProject(proj.RootPath, out var err) && err is not null)
-                    await ShowErrorAsync($"Project was created, but standard assets were not copied:\n{err}");
-            }
+        bool includeAssets = ChkIncludeStandardAssets.IsChecked is not false;
+        string parentPath = parent;
+        string projectName = name;
+        var host = _host;
+        Close();
 
-            _host.ApplyProjectOpenedAfterCreateOrOpen();
-            Close();
-        }
-        catch (Exception ex)
+        // Close hub first, then open/create on the next UI tick so the modal isn't "Not Responding".
+        Dispatcher.UIThread.Post(async () =>
         {
-            await ShowErrorAsync($"Failed to create project:\n{ex.Message}");
-        }
+            try
+            {
+                ProjectService.CreateNew(parentPath, projectName, openAfterCreate: true);
+                if (includeAssets && ProjectService.Current is { } proj)
+                {
+                    if (!StandardAssetsInstaller.TryCopyToProject(proj.RootPath, out var err) && err is not null)
+                        await host.ShowError($"Project was created, but standard assets were not copied:\n{err}");
+                }
+
+                host.ApplyProjectOpenedAfterCreateOrOpen();
+            }
+            catch (Exception ex)
+            {
+                await host.ShowError($"Failed to create project:\n{ex.Message}");
+            }
+        }, DispatcherPriority.Background);
     }
 
     async Task<string?> PickParentFolderAsync()
@@ -116,16 +125,20 @@ public partial class WelcomeWindow : Window
         var path = files[0];
         if (string.IsNullOrWhiteSpace(path)) return;
 
-        try
+        var host = _host;
+        Close();
+        Dispatcher.UIThread.Post(() =>
         {
-            ProjectService.Open(path);
-            _host.ApplyProjectOpenedAfterCreateOrOpen();
-            Close();
-        }
-        catch (Exception ex)
-        {
-            await ShowErrorAsync($"Failed to open project:\n{ex.Message}");
-        }
+            try
+            {
+                ProjectService.Open(path);
+                host.ApplyProjectOpenedAfterCreateOrOpen();
+            }
+            catch (Exception ex)
+            {
+                _ = host.ShowError($"Failed to open project:\n{ex.Message}");
+            }
+        }, DispatcherPriority.Background);
     }
 
     async Task OnOpenSelectedRecentAsync()
@@ -133,33 +146,21 @@ public partial class WelcomeWindow : Window
         if (RecentsList.SelectedItem is not RecentProjectRow row) return;
         if (!await _host.EnsureSafeToLoseUnsavedSceneAsync()) return;
 
-        try
+        var path = row.ManifestPath;
+        var host = _host;
+        Close();
+        Dispatcher.UIThread.Post(() =>
         {
-            ProjectService.Open(row.ManifestPath);
-            _host.ApplyProjectOpenedAfterCreateOrOpen();
-            Close();
-        }
-        catch (Exception ex)
-        {
-            await ShowErrorAsync($"Failed to open recent project:\n{ex.Message}");
-        }
-    }
-
-    async Task ShowErrorAsync(string message)
-    {
-        var dlg = new Window
-        {
-            Width = 420,
-            Height = 180,
-            Title = "Error",
-            Content = new TextBlock
+            try
             {
-                Text = message,
-                Margin = new Avalonia.Thickness(16),
-                TextWrapping = TextWrapping.Wrap
+                ProjectService.Open(path);
+                host.ApplyProjectOpenedAfterCreateOrOpen();
             }
-        };
-        await dlg.ShowDialog(this);
+            catch (Exception ex)
+            {
+                _ = host.ShowError($"Failed to open recent project:\n{ex.Message}");
+            }
+        }, DispatcherPriority.Background);
     }
 
     sealed record RecentProjectRow(string ManifestPath, bool Pinned)

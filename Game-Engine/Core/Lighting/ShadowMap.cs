@@ -49,12 +49,27 @@ public sealed class ShadowMapGPU : IDisposable
     public static SN.Matrix4x4 BuildDirectionalLightVP(
         SN.Vector3 lightDir,
         SN.Vector3 sceneCenter,
-        float sceneRadius)
+        float sceneRadius,
+        int shadowMapResolution = 0)
     {
         var lightForward = SN.Vector3.Normalize(lightDir);
         var lightUp = Math.Abs(SN.Vector3.Dot(lightForward, SN.Vector3.UnitY)) > 0.99f
             ? SN.Vector3.UnitZ
             : SN.Vector3.UnitY;
+
+        // Snap the moving light volume to shadow texels. Without this, a camera-
+        // followed orthographic map shifts every sample and dark bands crawl over terrain.
+        if (shadowMapResolution > 0)
+        {
+            var side = SN.Vector3.Normalize(SN.Vector3.Cross(lightUp, lightForward));
+            var vertical = SN.Vector3.Normalize(SN.Vector3.Cross(lightForward, side));
+            float texelWorld = (sceneRadius * 2f) / Math.Max(1, shadowMapResolution);
+            float x = SN.Vector3.Dot(sceneCenter, side);
+            float y = SN.Vector3.Dot(sceneCenter, vertical);
+            float snappedX = MathF.Round(x / texelWorld) * texelWorld;
+            float snappedY = MathF.Round(y / texelWorld) * texelWorld;
+            sceneCenter += side * (snappedX - x) + vertical * (snappedY - y);
+        }
 
         var lightPos = sceneCenter - lightForward * sceneRadius * 2f;
         var lightView = SN.Matrix4x4.CreateLookAt(lightPos, sceneCenter, lightUp);

@@ -13,24 +13,59 @@ namespace Game_Engine.Core.Rendering.GPU;
 /// <summary>Thread-safe queue of CPU meshes whose GPU entries should be dropped on the render thread.</summary>
 public static class GpuMeshReleaseQueue
 {
-    static readonly ConcurrentQueue<Mesh> Pending = new();
+    static readonly object Gate = new();
+    static readonly List<WeakReference<ResourceCache>> Caches = new();
+
+    internal static void Register(ResourceCache cache)
+    {
+        lock (Gate)
+        {
+            for (int i = Caches.Count - 1; i >= 0; i--)
+            {
+                if (!Caches[i].TryGetTarget(out var existing))
+                    Caches.RemoveAt(i);
+                else if (ReferenceEquals(existing, cache))
+                    return;
+            }
+            Caches.Add(new WeakReference<ResourceCache>(cache));
+        }
+    }
+
+    internal static void Unregister(ResourceCache cache)
+    {
+        lock (Gate)
+        {
+            for (int i = Caches.Count - 1; i >= 0; i--)
+            {
+                if (!Caches[i].TryGetTarget(out var existing) || ReferenceEquals(existing, cache))
+                    Caches.RemoveAt(i);
+            }
+        }
+    }
 
     public static void Enqueue(Mesh? mesh)
     {
-        if (mesh != null)
-            Pending.Enqueue(mesh);
+        if (mesh == null)
+            return;
+
+        SceneRenderer.ReleaseMeshMetadata(mesh);
+
+        // Every GL view owns a separate cache. Broadcasting prevents one view from
+        // consuming a global release while another view keeps the same mesh forever.
+        lock (Gate)
+        {
+            for (int i = Caches.Count - 1; i >= 0; i--)
+            {
+                if (Caches[i].TryGetTarget(out var cache))
+                    cache.QueueMeshRelease(mesh);
+                else
+                    Caches.RemoveAt(i);
+            }
+        }
     }
 
     public static int Drain(ResourceCache cache, int maxPerFrame = 64)
-    {
-        int released = 0;
-        while (released < maxPerFrame && Pending.TryDequeue(out var mesh))
-        {
-            cache.ReleaseMesh(mesh);
-            released++;
-        }
-        return released;
-    }
+        => cache.DrainMeshReleases(maxPerFrame);
 }
 
 /// <summary>
@@ -45,6 +80,7 @@ public sealed class ResourceCache : IDisposable
     // Mesh → GPU mesh, keyed by reference identity
     private readonly Dictionary<Mesh, GPUMeshEntry> _meshes = new(64);
     private readonly Dictionary<TexBindKey, GPUTexture> _textures = new(64);
+    private readonly ConcurrentQueue<Mesh> _pendingMeshReleases = new();
 
     /// <summary>After BCn GPU upload fails, skip re-attempting compression every frame (use RGBA path).</summary>
     private readonly HashSet<(Texture2D Tex, MaterialTexture.TexUsage Usage)> _skipBcnCompress = new(64);
@@ -72,6 +108,8 @@ public sealed class ResourceCache : IDisposable
     // Per-context terrain splatmap textures (avoids cross-context GL issues)
     // Also tracks the splatmap version last uploaded so each context re-uploads independently.
     private readonly Dictionary<Terrain, (GPUTexture Splat0, GPUTexture Splat1, int Version)> _terrainSplatTextures = new();
+    private readonly Dictionary<object, (GPUTexture Splat0, GPUTexture Splat1, int Version)> _planetSplatTextures = new();
+    private readonly Dictionary<object, (GPUTexture Height, int Version)> _planetHeightTextures = new();
 
     private struct GPUMeshEntry
     {
@@ -85,6 +123,7 @@ public sealed class ResourceCache : IDisposable
     public ResourceCache(GL gl)
     {
         _gl = gl;
+        GpuMeshReleaseQueue.Register(this);
     }
 
     /// <summary>Call when the scene changes to invalidate cached state.</summary>
@@ -108,9 +147,13 @@ public sealed class ResourceCache : IDisposable
     /// </summary>
     public void FlushAll()
     {
+        PlanetGpuGrass.ReleaseGpuFor(this);
+        SceneRenderer.ClearMeshMetadata();
+
         foreach (var kv in _meshes)
             kv.Value.GPU.Dispose();
         _meshes.Clear();
+        while (_pendingMeshReleases.TryDequeue(out _)) { }
 
         foreach (var kv in _textures)
             kv.Value.Dispose();
@@ -122,6 +165,20 @@ public sealed class ResourceCache : IDisposable
             kv.Value.Splat1?.Dispose();
         }
         _terrainSplatTextures.Clear();
+
+        foreach (var kv in _planetSplatTextures)
+        {
+            kv.Value.Splat0.Dispose();
+            kv.Value.Splat1.Dispose();
+        }
+        _planetSplatTextures.Clear();
+
+        foreach (var kv in _planetHeightTextures)
+            kv.Value.Height.Dispose();
+        _planetHeightTextures.Clear();
+
+        _whiteTex?.Dispose();
+        _whiteTex = null;
 
         _globalVersion++;
         FlushRequested = false;
@@ -174,6 +231,20 @@ public sealed class ResourceCache : IDisposable
         }
     }
 
+    internal void QueueMeshRelease(Mesh mesh) => _pendingMeshReleases.Enqueue(mesh);
+
+    internal int DrainMeshReleases(int maxPerFrame)
+    {
+        int released = 0;
+        while (released < Math.Max(1, maxPerFrame)
+               && _pendingMeshReleases.TryDequeue(out var mesh))
+        {
+            ReleaseMesh(mesh);
+            released++;
+        }
+        return released;
+    }
+
     /// <summary>
     /// Remove entries that are no longer referenced by any scene object.
     /// Call periodically (e.g., every few seconds) to prevent unbounded growth.
@@ -190,7 +261,39 @@ public sealed class ResourceCache : IDisposable
     public void Maintain(int maxEntries = 512, int maxReleasesPerFrame = 64)
     {
         GpuMeshReleaseQueue.Drain(this, maxReleasesPerFrame);
+        PruneDestroyedPlanetTextures();
         EvictOrphans(maxEntries);
+    }
+
+    void PruneDestroyedPlanetTextures()
+    {
+        List<object>? dead = null;
+        foreach (var key in _planetSplatTextures.Keys)
+        {
+            if (key is PlanetTerrain planet && !PlanetTerrain.ActivePlanets.Contains(planet))
+                (dead ??= new List<object>()).Add(key);
+        }
+        foreach (var key in _planetHeightTextures.Keys)
+        {
+            if (key is not PlanetTerrain planet || PlanetTerrain.ActivePlanets.Contains(planet))
+                continue;
+            if (dead == null || !dead.Contains(key))
+                (dead ??= new List<object>()).Add(key);
+        }
+        if (dead == null)
+            return;
+
+        for (int i = 0; i < dead.Count; i++)
+        {
+            var key = dead[i];
+            if (_planetSplatTextures.Remove(key, out var splat))
+            {
+                splat.Splat0.Dispose();
+                splat.Splat1.Dispose();
+            }
+            if (_planetHeightTextures.Remove(key, out var height))
+                height.Height.Dispose();
+        }
     }
 
     /// <summary>
@@ -327,11 +430,52 @@ public sealed class ResourceCache : IDisposable
             _terrainSplatTextures[terrain] = (entry.Splat0, entry.Splat1, version);
     }
 
+    /// <summary>
+    /// Per-context planet splat atlases (3×2 face layout). Keyed by the planet component instance.
+    /// </summary>
+    public (GPUTexture Splat0, GPUTexture Splat1, bool NeedsUpload) GetPlanetSplatTextures(object planetKey, int version)
+    {
+        if (_planetSplatTextures.TryGetValue(planetKey, out var entry))
+        {
+            bool stale = entry.Version != version;
+            return (entry.Splat0, entry.Splat1, stale);
+        }
+
+        var pair = (new GPUTexture(_gl), new GPUTexture(_gl), -1);
+        _planetSplatTextures[planetKey] = pair;
+        return (pair.Item1, pair.Item2, true);
+    }
+
+    public void SetPlanetSplatVersion(object planetKey, int version)
+    {
+        if (_planetSplatTextures.TryGetValue(planetKey, out var entry))
+            _planetSplatTextures[planetKey] = (entry.Splat0, entry.Splat1, version);
+    }
+
+    public (GPUTexture Height, bool NeedsUpload) GetPlanetHeightTexture(object planetKey, int version)
+    {
+        if (_planetHeightTextures.TryGetValue(planetKey, out var entry))
+            return (entry.Height, entry.Version != version);
+
+        var tex = new GPUTexture(_gl);
+        _planetHeightTextures[planetKey] = (tex, -1);
+        return (tex, true);
+    }
+
+    public void SetPlanetHeightVersion(object planetKey, int version)
+    {
+        if (_planetHeightTextures.TryGetValue(planetKey, out var entry))
+            _planetHeightTextures[planetKey] = (entry.Height, version);
+    }
+
     public void Dispose()
     {
+        GpuMeshReleaseQueue.Unregister(this);
+        PlanetGpuGrass.ReleaseGpuFor(this);
         foreach (var kv in _meshes)
             kv.Value.GPU.Dispose();
         _meshes.Clear();
+        while (_pendingMeshReleases.TryDequeue(out _)) { }
 
         foreach (var kv in _textures)
             kv.Value.Dispose();
@@ -343,6 +487,17 @@ public sealed class ResourceCache : IDisposable
             kv.Value.Splat1?.Dispose();
         }
         _terrainSplatTextures.Clear();
+
+        foreach (var kv in _planetSplatTextures)
+        {
+            kv.Value.Splat0?.Dispose();
+            kv.Value.Splat1?.Dispose();
+        }
+        _planetSplatTextures.Clear();
+
+        foreach (var kv in _planetHeightTextures)
+            kv.Value.Height?.Dispose();
+        _planetHeightTextures.Clear();
 
         _whiteTex?.Dispose();
         _whiteTex = null;

@@ -311,6 +311,92 @@ public sealed class GPUTexture : IDisposable
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
 
+    /// <summary>
+    /// Upload six RGBA float cubemap faces directly into a 3x2 RGBA16F atlas.
+    /// Avoids allocating a large temporary packed atlas and halves splat GPU memory.
+    /// </summary>
+    public unsafe void UploadRgba16FloatFaces(float[][] faces, int faceResolution)
+    {
+        if (faces == null || faces.Length < 6 || faceResolution <= 0)
+            return;
+        int pixelsPerFace = faceResolution * faceResolution * 4;
+        for (int i = 0; i < 6; i++)
+            if (faces[i] == null || faces[i].Length < pixelsPerFace)
+                return;
+
+        Width = faceResolution * 3;
+        Height = faceResolution * 2;
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+        _gl.TexImage2D(TextureTarget.Texture2D, 0,
+            InternalFormat.Rgba16f,
+            (uint)Width, (uint)Height, 0,
+            PixelFormat.Rgba, PixelType.Float, null);
+
+        for (int face = 0; face < 6; face++)
+        {
+            int x = (face % 3) * faceResolution;
+            int y = (face / 3) * faceResolution;
+            fixed (float* ptr = faces[face])
+            {
+                _gl.TexSubImage2D(TextureTarget.Texture2D, 0, x, y,
+                    (uint)faceResolution, (uint)faceResolution,
+                    PixelFormat.Rgba, PixelType.Float, ptr);
+            }
+        }
+
+        SetLinearClamp();
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    /// <summary>
+    /// Upload six single-channel float cubemap faces directly into a 3x2 R32F atlas.
+    /// Used by planet dig deltas without a 4x oversized RGBA staging allocation.
+    /// </summary>
+    public unsafe void UploadRedFloatFaces(float[][] faces, int faceResolution)
+    {
+        if (faces == null || faces.Length < 6 || faceResolution <= 0)
+            return;
+        int pixelsPerFace = faceResolution * faceResolution;
+        for (int i = 0; i < 6; i++)
+            if (faces[i] == null || faces[i].Length < pixelsPerFace)
+                return;
+
+        Width = faceResolution * 3;
+        Height = faceResolution * 2;
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+        _gl.TexImage2D(TextureTarget.Texture2D, 0,
+            InternalFormat.R32f,
+            (uint)Width, (uint)Height, 0,
+            PixelFormat.Red, PixelType.Float, null);
+
+        for (int face = 0; face < 6; face++)
+        {
+            int x = (face % 3) * faceResolution;
+            int y = (face / 3) * faceResolution;
+            fixed (float* ptr = faces[face])
+            {
+                _gl.TexSubImage2D(TextureTarget.Texture2D, 0, x, y,
+                    (uint)faceResolution, (uint)faceResolution,
+                    PixelFormat.Red, PixelType.Float, ptr);
+            }
+        }
+
+        SetLinearClamp();
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    void SetLinearClamp()
+    {
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+    }
+
     public void Bind(TextureUnit unit = TextureUnit.Texture0)
     {
         _gl.ActiveTexture(unit);

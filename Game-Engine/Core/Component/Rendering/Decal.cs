@@ -102,12 +102,7 @@ namespace Game_Engine.Core.Component
                 {
                     // Auto-destroy when lifetime expires
                     if (gameObject != null)
-                    {
-                        if (gameObject.Parent != null)
-                            gameObject.Parent.Children.Remove(gameObject);
-                        else
-                            SceneService.Remove(gameObject);
-                    }
+                        SceneService.Destroy(gameObject);
                 }
             }
 

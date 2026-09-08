@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Game_Engine.Core.Planet;
@@ -24,7 +25,14 @@ public static class PlanetGrassTextureCache
     static int s_loaderRunning;
     static bool s_scanned;
     static int s_readyStamp;
+    static int s_loadGeneration;
     const int CarpetMixSize = 14;
+    const int MaxReadyTextures = 32;
+
+    static PlanetGrassTextureCache()
+    {
+        ProjectService.ProjectClosed += Clear;
+    }
 
     public static int ReadyCount => s_ready.Count;
     public static int ReadyStamp => Volatile.Read(ref s_readyStamp);
@@ -175,15 +183,18 @@ public static class PlanetGrassTextureCache
     {
         if (Interlocked.CompareExchange(ref s_loaderRunning, 1, 0) != 0)
             return;
-        Task.Run(LoaderLoop);
+        int generation = Volatile.Read(ref s_loadGeneration);
+        Task.Run(() => LoaderLoop(generation));
     }
 
-    static void LoaderLoop()
+    static void LoaderLoop(int generation)
     {
         try
         {
             while (s_pendingAbs.TryDequeue(out var abs))
             {
+                if (generation != Volatile.Read(ref s_loadGeneration))
+                    break;
                 try
                 {
                     if (!File.Exists(abs))
@@ -195,7 +206,16 @@ public static class PlanetGrassTextureCache
                     string rel = PlanetAssetIO.NormalizeAssetReference(abs);
                     if (string.IsNullOrWhiteSpace(rel))
                         rel = abs;
+                    if (generation != Volatile.Read(ref s_loadGeneration))
+                        break;
                     s_ready[rel] = tex;
+                    while (s_ready.Count > MaxReadyTextures)
+                    {
+                        var oldest = s_ready.Keys.FirstOrDefault();
+                        if (oldest == null || !s_ready.TryRemove(oldest, out _))
+                            break;
+                        s_queued.TryRemove(oldest, out _);
+                    }
                     Interlocked.Increment(ref s_readyStamp);
                 }
                 catch { /* skip broken cards */ }
@@ -204,9 +224,24 @@ public static class PlanetGrassTextureCache
         finally
         {
             Interlocked.Exchange(ref s_loaderRunning, 0);
-            if (!s_pendingAbs.IsEmpty)
+            if (generation == Volatile.Read(ref s_loadGeneration) && !s_pendingAbs.IsEmpty)
                 Kick();
         }
+    }
+
+    public static void Clear()
+    {
+        Interlocked.Increment(ref s_loadGeneration);
+        s_ready.Clear();
+        s_queued.Clear();
+        while (s_pendingAbs.TryDequeue(out _)) { }
+        lock (s_catalogLock)
+        {
+            s_catalog.Clear();
+            s_carpetMix.Clear();
+            s_scanned = false;
+        }
+        Interlocked.Increment(ref s_readyStamp);
     }
 
     static Texture2D PrepareGrassCard(Texture2D src)

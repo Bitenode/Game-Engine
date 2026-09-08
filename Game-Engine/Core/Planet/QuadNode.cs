@@ -34,6 +34,8 @@ public sealed class QuadNode
     public VoxelChunk? Chunk { get; set; }
     public Mesh? GeneratedMesh { get; set; }
     public Mesh? GeneratedWaterMesh { get; set; }
+    /// <summary>Optional crust-band cave mesh under the heightfield shell.</summary>
+    public Mesh? GeneratedCaveMesh { get; set; }
 
     /// <summary>
     /// Max mesh radius per leaf UV cell. Built once from the generated mesh
@@ -267,9 +269,11 @@ public sealed class QuadNode
     {
         GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
         GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedCaveMesh);
         node.Chunk = null;
         node.GeneratedMesh = null;
         node.GeneratedWaterMesh = null;
+        node.GeneratedCaveMesh = null;
         node.StandRadiusGrid = null;
         node.InvalidateGeneration();
     }
@@ -355,6 +359,32 @@ public sealed class QuadNode
         return grid;
     }
 
+    /// <summary>
+    /// Build stand radii by sampling the height cubemap (includes digs) across the leaf UV.
+    /// Prefer this after surface sculpt so collision matches the edited heightfield.
+    /// </summary>
+    public static float[] BuildStandRadiusGridFromSampler(
+        int face, float u0, float v0, float u1, float v1,
+        PlanetDensitySampler sampler)
+    {
+        int n = StandGridSize;
+        var grid = new float[n * n];
+        float inv = 1f / MathF.Max(1, n - 1);
+        for (int y = 0; y < n; y++)
+        {
+            float tv = y * inv;
+            float v = v0 + (v1 - v0) * tv;
+            for (int x = 0; x < n; x++)
+            {
+                float tu = x * inv;
+                float u = u0 + (u1 - u0) * tu;
+                var dir = CubeSphereMath.FaceUVToDirection(face, u, v);
+                grid[y * n + x] = MathF.Max(1f, sampler.SampleEditedSurfaceRadius(dir));
+            }
+        }
+        return grid;
+    }
+
     static float[] FillStandRadiusGrid(
         int face, float u0, float v0, float u1, float v1,
         int count, Func<int, SN.Vector3> at, float[]? grid = null)
@@ -397,8 +427,8 @@ public sealed class QuadNode
     }
 
     /// <summary>
-    /// Empty bins (and single-cell cave dips) borrow a neighbor radius so bilinear
-    /// stand never interpolates toward 0 and pulls the player underground.
+    /// Empty bins borrow a neighbor radius so bilinear stand never interpolates toward 0.
+    /// Does NOT raise intentional dig dips (those are real heightfield edits).
     /// </summary>
     static void InpaintStandHoles(float[] grid, int n)
     {
@@ -438,26 +468,6 @@ public sealed class QuadNode
             }
             if (filled == 0)
                 break;
-        }
-
-        Array.Copy(grid, tmp, grid.Length);
-        for (int y = 0; y < n; y++)
-        {
-            for (int x = 0; x < n; x++)
-            {
-                int i = y * n + x;
-                float v = tmp[i];
-                if (v <= 1e-4f)
-                    continue;
-                float minN = float.MaxValue;
-                int nCount = 0;
-                if (x > 0) { float a = tmp[i - 1]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
-                if (x + 1 < n) { float a = tmp[i + 1]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
-                if (y > 0) { float a = tmp[i - n]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
-                if (y + 1 < n) { float a = tmp[i + n]; if (a > 1e-4f) { minN = MathF.Min(minN, a); nCount++; } }
-                if (nCount >= 3 && v < minN - 10f)
-                    grid[i] = minN;
-            }
         }
     }
 

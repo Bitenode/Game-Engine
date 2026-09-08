@@ -7,7 +7,7 @@ using SN = System.Numerics;
 namespace Game_Engine.Core.Planet;
 
 /// <summary>
-/// Composes procedural planet density (crust + 3D caves) with runtime voxel edits.
+/// Composes height-cubemap crust + crust-band caves with runtime edits.
 /// All positions are planet-local unscaled (see <see cref="PlanetSpace"/>).
 /// Density convention: negative = solid, positive = air. Isosurface is density == 0.
 /// </summary>
@@ -23,6 +23,8 @@ public sealed class PlanetDensitySampler
     readonly PlanetNoiseCache? _noise;
     readonly Noise.SimplexNoise? _riverPrimary;
     readonly Noise.SimplexNoise? _riverMeander;
+    PlanetSurfaceCubemap? _surfaceCubemap;
+    CrustCaveSampler? _crustCaves;
 
     public PlanetDensitySampler(
         PlanetConfig config,
@@ -96,18 +98,60 @@ public sealed class PlanetDensitySampler
 
     public void SetClimateAtlas(PlanetClimateAtlas? atlas) => _climateAtlas = atlas;
 
-    float SampleCarvedHeight(SN.Vector3 sphereDir) =>
-        PlanetSurfaceUtility.SampleHeight(
-            _config,
-            _biomeMap,
-            _biomeNoises,
-            _erosionNoise,
-            _ridgeNoise,
-            _basinNoise,
-            sphereDir,
-            CreateCarveContext());
+    public void SetSurfaceCubemap(PlanetSurfaceCubemap? surface)
+    {
+        _surfaceCubemap = surface;
+        EnsureCrustCaves();
+        _crustCaves?.SetSurfaceCubemap(surface);
+    }
 
-    /// <summary>Procedural crust density only (no caves, no paint strokes).</summary>
+    public PlanetSurfaceCubemap? SurfaceCubemap => _surfaceCubemap;
+    public CrustCaveSampler? CrustCaves
+    {
+        get
+        {
+            EnsureCrustCaves();
+            return _crustCaves;
+        }
+    }
+
+    void EnsureCrustCaves()
+    {
+        if (_crustCaves != null || _noise == null)
+            return;
+        _crustCaves = new CrustCaveSampler(_config, _biomeMap, _noise, _editStore);
+        _crustCaves.SetSurfaceCubemap(_surfaceCubemap);
+    }
+
+    float SampleCarvedHeight(SN.Vector3 sphereDir)
+    {
+        float height;
+        if (_surfaceCubemap != null)
+            height = _surfaceCubemap.SampleEditedHeight(sphereDir);
+        else
+        {
+            height = PlanetSurfaceUtility.SampleHeight(
+                _config,
+                _biomeMap,
+                _biomeNoises,
+                _erosionNoise,
+                _ridgeNoise,
+                _basinNoise,
+                sphereDir);
+        }
+
+        var carve = CreateCarveContext();
+        return PlanetWaterSampler.ApplyWaterCarving(
+            height,
+            sphereDir,
+            carve.Config,
+            _biomeMap,
+            carve.RiverPrimary,
+            carve.RiverMeander,
+            carve.ClimateAtlas);
+    }
+
+    /// <summary>Procedural crust density only (no caves). Uses height cubemap when available.</summary>
     public float SampleProceduralDensity(SN.Vector3 localPos)
     {
         float len = localPos.Length();
@@ -116,31 +160,39 @@ public sealed class PlanetDensitySampler
 
         var dir = localPos / len;
         float baseHeight = SampleCarvedHeight(dir);
-
         return len - (_config.Radius + baseHeight);
     }
 
     /// <summary>
-    /// Same field used for transvoxel meshing: crust + worm caves + edit deltas.
-    /// <paramref name="localPos"/> is planet-local unscaled space.
-    /// Outer-crust samples (within ~12 m of the procedural surface) skip cave carve
-    /// and biome lookups entirely — walking never pays worm-noise cost.
+    /// Density field for physics / cave contact: heightfield crust + crust-band caves + cave digs.
+    /// Outer samples near the surface skip cave cost (walking on the shell).
     /// </summary>
     public float SampleDensity(SN.Vector3 localPos)
     {
-        float density = SampleProceduralDensity(localPos);
         float len = localPos.Length();
-        if (len >= 1e-5f)
+        if (len < 1e-5f)
+            return 1f;
+
+        var dir = localPos / len;
+        float surfaceRadius = SampleEditedSurfaceRadius(dir);
+        float density = len - surfaceRadius;
+
+        // Walking on / above the shell — no cave evaluation.
+        if (len >= surfaceRadius - 6f)
+            return density;
+
+        float caveDepth = MathF.Max(8f, DensityGenerator.MaxCaveDepth(_config));
+        if (!_config.EnableCaves || len < surfaceRadius - caveDepth)
         {
-            // density = len - surfaceRadius  ⇒  surfaceRadius = len - density
-            float surfaceRadius = len - density;
-            if (len >= surfaceRadius - 12f)
-            {
-                if (_editStore != null)
-                    density += _editStore.SampleDensityDelta(localPos);
-                return density;
-            }
+            // Below crust band: solid (no deep interior).
+            if (len < surfaceRadius - caveDepth)
+                return MathF.Min(density, surfaceRadius - caveDepth - len);
+            return density;
         }
+
+        EnsureCrustCaves();
+        if (_crustCaves != null)
+            return _crustCaves.SampleOccupancy(localPos);
 
         density = ApplyCaveCarve(localPos, density);
         if (_editStore != null)
@@ -177,33 +229,54 @@ public sealed class PlanetDensitySampler
     }
 
     /// <summary>
-    /// Outer crust radius along <paramref name="sphereDir"/>, including paint strokes
-    /// but not worm caves (those must not punch the heightfield shell).
+    /// Outer crust radius along <paramref name="sphereDir"/> from the height cubemap
+    /// (+ dig deltas + water carve). Worm caves never affect this value.
     /// </summary>
     public float SampleEditedSurfaceRadius(SN.Vector3 sphereDir, float vertexSpacing = 0f)
+    {
+        _ = vertexSpacing;
+        float lenSq = sphereDir.LengthSquared();
+        if (lenSq < 1e-12f)
+            return _config.Radius;
+        var dir = sphereDir / MathF.Sqrt(lenSq);
+        return MathF.Max(_config.Radius * 0.5f, _config.Radius + SampleCarvedHeight(dir));
+    }
+
+    /// <summary>
+    /// Surface radius without dig deltas (base cubemap + water carve only).
+    /// Used so land digs below sea level do not spawn ocean water in the pit.
+    /// </summary>
+    public float SampleUndugSurfaceRadius(SN.Vector3 sphereDir)
     {
         float lenSq = sphereDir.LengthSquared();
         if (lenSq < 1e-12f)
             return _config.Radius;
         var dir = sphereDir / MathF.Sqrt(lenSq);
-        float height = SampleCarvedHeight(dir);
-        float r0 = _config.Radius + height;
-        if (_editStore == null || (_editStore.SphereEditCount == 0 && _editStore.BakedCellCount == 0))
-            return r0;
-
-        // Coarse play-mode shells need a wider footprint than the brush radius so grid
-        // verts (often 4–12 m apart) actually move; cap keeps small brushes from becoming craters.
-        var surfacePos = dir * r0;
-        float brushReach = MathF.Max(_editStore.MaxRadius * 1.5f, 1.25f);
-        float influence = MathF.Max(vertexSpacing, 0f);
-        if (SceneService.PlayMode)
-            influence = MathF.Min(MathF.Max(influence * 0.5f, brushReach), 12f);
+        float height;
+        if (_surfaceCubemap != null)
+            height = _surfaceCubemap.SampleBaseHeight(dir);
         else
-            influence = MathF.Min(influence, MathF.Max(_editStore.MaxRadius * 1.35f, 1f));
-        float delta = _editStore.SampleHeightDelta(surfacePos, influence);
-        float maxDisp = MathF.Min(_config.Radius * 0.05f, MathF.Max(2f, brushReach * 1.25f));
-        delta = Math.Clamp(delta, -maxDisp, maxDisp);
-        return MathF.Max(_config.Radius * 0.5f, r0 - delta);
+        {
+            height = PlanetSurfaceUtility.SampleHeight(
+                _config,
+                _biomeMap,
+                _biomeNoises,
+                _erosionNoise,
+                _ridgeNoise,
+                _basinNoise,
+                dir);
+        }
+
+        var carve = CreateCarveContext();
+        height = PlanetWaterSampler.ApplyWaterCarving(
+            height,
+            dir,
+            carve.Config,
+            _biomeMap,
+            carve.RiverPrimary,
+            carve.RiverMeander,
+            carve.ClimateAtlas);
+        return MathF.Max(_config.Radius * 0.5f, _config.Radius + height);
     }
 
     /// <summary>Finite-difference gradient. Points toward air (increasing density).</summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Voxel;
@@ -8,22 +9,27 @@ namespace Game_Engine.Core.Planet;
 
 public readonly struct PlanetChunkBuildResult
 {
-    public PlanetChunkBuildResult(TransvoxelMeshData mesh, VoxelChunk? chunk, TransvoxelMeshData? water = null)
+    public PlanetChunkBuildResult(
+        TransvoxelMeshData mesh,
+        VoxelChunk? chunk,
+        TransvoxelMeshData? water = null,
+        TransvoxelMeshData? cave = null)
     {
         Mesh = mesh;
         Chunk = chunk;
         Water = water;
+        Cave = cave;
     }
 
     public TransvoxelMeshData Mesh { get; }
     public VoxelChunk? Chunk { get; }
     public TransvoxelMeshData? Water { get; }
+    public TransvoxelMeshData? Cave { get; }
 }
 
 /// <summary>
-/// Builds a leaf mesh. Coarse leaves use a spherical heightfield shell.
-/// Fine leaves stack transvoxel shells from near the core to the surface
-/// so caves exist throughout the planet, not only in a thin crust.
+/// Builds leaf meshes: height-cubemap shell for the outer crust, plus optional
+/// Transvoxel crust-band caves under the heightfield on fine leaves.
 /// </summary>
 public sealed class PlanetMeshGenerator
 {
@@ -34,6 +40,7 @@ public sealed class PlanetMeshGenerator
     readonly DensityGenerator _densityGen;
     readonly PlanetDensitySampler _sampler;
     PlanetClimateAtlas? _climateAtlas;
+    PlanetSurfaceCubemap? _surfaceCubemap;
 
     public PlanetDensitySampler Sampler => _sampler;
     public PlanetNoiseCache Noise => _noise;
@@ -43,6 +50,8 @@ public sealed class PlanetMeshGenerator
         _config = config;
         _biomeMap = biomeMap;
         _editStore = editStore;
+        if (_config.GeologyNoise == null)
+            _config.GeologyNoise = new Noise.SimplexNoise(_config.Seed + 11000);
         _noise = PlanetNoiseCache.Create(config);
         _densityGen = new DensityGenerator(config, biomeMap, _noise);
         _sampler = new PlanetDensitySampler(config, biomeMap, _noise, editStore);
@@ -57,6 +66,12 @@ public sealed class PlanetMeshGenerator
         _densityGen.SetClimateAtlas(atlas);
     }
 
+    public void SetSurfaceCubemap(PlanetSurfaceCubemap? surface)
+    {
+        _surfaceCubemap = surface;
+        _sampler.SetSurfaceCubemap(surface);
+    }
+
     public PlanetChunkBuildResult Generate(
         int face,
         float u0,
@@ -69,53 +84,19 @@ public sealed class PlanetMeshGenerator
         int transitionStride = 0)
     {
         var water = GenerateWaterPatch(face, u0, v0, u1, v1, resolution, transitionMask, transitionStride);
+        var shell = GenerateShell(face, u0, v0, u1, v1, resolution, transitionMask, transitionStride);
 
-        if (!ShouldUseVolumetric(face, u0, v0, u1, v1, resolution, lodLevel))
+        TransvoxelMeshData? cave = null;
+        VoxelChunk? caveChunk = null;
+        if (ShouldGenerateCrustCaves(face, u0, v0, u1, v1, resolution))
         {
-            var shell = GenerateShell(face, u0, v0, u1, v1, resolution, transitionMask, transitionStride);
-            return new PlanetChunkBuildResult(shell, null, water);
+            var built = GenerateCrustCave(face, u0, v0, u1, v1, lodLevel, transitionMask);
+            cave = built.Mesh;
+            caveChunk = built.Chunk;
+            PunchShellMouths(shell, face, u0, v0, u1, v1, resolution);
         }
 
-        DensityGenerator.ComputeInteriorBounds(_config, _editStore, out float radialMin, out float radialMax);
-        int voxelSize = 32;
-        int layers = _config.EnableCaves
-            ? DensityGenerator.RadialLayerCount(radialMin, radialMax, voxelSize)
-            : 1;
-        float usable = MathF.Max(8f, radialMax - radialMin);
-
-        TransvoxelMeshData? combined = null;
-        VoxelChunk? outerChunk = null;
-        for (int layer = 0; layer < layers; layer++)
-        {
-            float t0 = layer / (float)layers;
-            float t1 = (layer + 1) / (float)layers;
-            float layerMin = radialMin + t0 * usable;
-            float layerSpan = MathF.Max(8f, (radialMin + t1 * usable) - layerMin);
-            var chunk = new VoxelChunk(voxelSize);
-            _densityGen.Generate(
-                chunk,
-                face,
-                u0,
-                v0,
-                u1,
-                v1,
-                lodLevel,
-                _editStore,
-                _sampler,
-                layerMin,
-                layerSpan);
-            _editStore?.AccumulateIntoChunk(chunk);
-            byte mask = layer == layers - 1 ? transitionMask : (byte)0;
-            var layerMesh = Remesh(chunk, mask);
-            if (combined == null)
-                combined = layerMesh;
-            else
-                combined.Append(layerMesh);
-            if (layer == layers - 1)
-                outerChunk = chunk;
-        }
-
-        return new PlanetChunkBuildResult(combined ?? new TransvoxelMeshData(), outerChunk, water);
+        return new PlanetChunkBuildResult(shell, caveChunk, water, cave);
     }
 
     /// <summary>
@@ -140,6 +121,7 @@ public sealed class PlanetMeshGenerator
         var uvs = new SN.Vector2[n * n];
         var wet = new bool[n * n];
         var terrainRAt = new float[n * n];
+        var undugRAt = new float[n * n];
         var waterRAt = new float[n * n];
 
         int ResolveBiomeIndex(string name)
@@ -170,19 +152,52 @@ public sealed class PlanetMeshGenerator
 
                 var dir = CubeSphereMath.FaceUVToDirection(face, u, v);
                 float terrainR = _sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
+                // Classify ocean/biome from undug height so digging a dry pit below
+                // sea level does not turn grassland into an instant ocean fill.
+                float undugR = _sampler.SampleUndugSurfaceRadius(dir);
                 var sample = PlanetWaterSampler.SampleWaterSurface(
                     dir,
                     _config,
                     _biomeMap,
-                    terrainR,
+                    undugR,
                     _noise.RiverPrimary,
                     _noise.RiverMeander,
                     ResolveBiomeIndex);
 
+                // Classify lava against the visible bowl, not undug height.
+                if (sample.Kind != PlanetWaterKind.Lava
+                    && PlanetSurfaceUtility.TryGetLavaLake(_config, dir, terrainR, out float lavaR, out float magma, out _)
+                    && magma > 0.12f
+                    && lavaR > terrainR + 0.06f)
+                {
+                    int shoreIdx = ResolveBiomeIndex("Volcanic");
+                    sample = new PlanetWaterSurfaceSample(
+                        lavaR,
+                        Math.Clamp(magma, 0.42f, 1f),
+                        shoreIdx,
+                        PlanetWaterKind.Lava,
+                        6);
+                }
+
                 int idx = iy * n + ix;
                 terrainRAt[idx] = terrainR;
+                undugRAt[idx] = undugR;
                 terrainPos[idx] = dir * MathF.Max(1f, terrainR);
-                if (sample.Mask >= 0.01f && sample.Radius > terrainR + 0.05f)
+                bool isLava = sample.Kind == PlanetWaterKind.Lava;
+                if (isLava && PlanetSurfaceUtility.SampleContinentLand(_config, dir) < 0.55f)
+                {
+                    sample = PlanetWaterSurfaceSample.Empty;
+                    isLava = false;
+                }
+                if (!isLava && sample.Kind == PlanetWaterKind.Ocean
+                    && !PlanetSurfaceUtility.IsOceanBasinColumn(_config, dir))
+                    sample = PlanetWaterSurfaceSample.Empty;
+
+                bool spawnWater = sample.Mask >= 0.01f && (
+                    isLava
+                        ? sample.Radius > terrainR + 0.06f
+                        : sample.Radius > undugR + 0.05f && sample.Radius > terrainR + 0.05f);
+                if (spawnWater)
                 {
                     // Oceans share one sea-level sphere. Lakes/ponds keep the
                     // sampler radius so they stay in the hole instead of flooding
@@ -213,6 +228,36 @@ public sealed class PlanetMeshGenerator
             }
         }
 
+        // Coarse LOD can skip the caldera center — seed lava from the visible bowl directly.
+        for (int iy = 0; iy < n; iy++)
+        {
+            for (int ix = 0; ix < n; ix++)
+            {
+                int idx = iy * n + ix;
+                if (wet[idx] && (int)(uvs[idx].X / 8f) == 6)
+                    continue;
+
+                var dir = terrainPos[idx].LengthSquared() > 1e-8f
+                    ? SN.Vector3.Normalize(terrainPos[idx])
+                    : SN.Vector3.UnitY;
+                float terrainR = terrainRAt[idx];
+                if (PlanetSurfaceUtility.SampleContinentLand(_config, dir) < 0.55f)
+                    continue;
+                if (!PlanetSurfaceUtility.TryGetLavaLake(_config, dir, terrainR, out float lavaR, out float magma, out _))
+                    continue;
+                if (magma < 0.12f || lavaR <= terrainR + 0.06f)
+                    continue;
+
+                positions[idx] = dir * lavaR;
+                waterRAt[idx] = lavaR;
+                int shoreIdx = ResolveBiomeIndex("Volcanic");
+                uvs[idx] = new SN.Vector2(
+                    Math.Clamp(shoreIdx, 0, 7) + 6f * 8f,
+                    Math.Clamp(MathF.Max(magma, 0.42f), 0.35f, 1f));
+                wet[idx] = true;
+            }
+        }
+
         // Match the terrain shell's T-junction ramps so water corners sit on
         // the same stretched LOD edge the player sees.
         SnapWaterTerrainLod(terrainPos, terrainRAt, n, size, transitionMask, transitionStride);
@@ -240,6 +285,9 @@ public sealed class PlanetMeshGenerator
                 {
                     int idx = iy * n + ix;
                     if (wet[idx]) continue;
+                    // Dig pits on dry land stay dry — only grow into cells that were
+                    // already below sea before dig deltas.
+                    if (undugRAt[idx] >= oceanFillR - 0.02f) continue;
                     if (terrainRAt[idx] >= oceanFillR - 0.02f) continue;
 
                     bool nearOcean = false;
@@ -264,11 +312,73 @@ public sealed class PlanetMeshGenerator
                     var dir = terrainPos[idx].LengthSquared() > 1e-8f
                         ? SN.Vector3.Normalize(terrainPos[idx])
                         : SN.Vector3.UnitY;
+                    if (!PlanetSurfaceUtility.IsOceanBasinColumn(_config, dir))
+                        continue;
                     if (PlanetSurfaceUtility.SampleMagmaBowl(_config, dir) > 0.18f)
                         continue;
                     positions[idx] = dir * oceanFillR;
                     waterRAt[idx] = oceanFillR;
                     uvs[idx] = new SN.Vector2(neighborUv.X, MathF.Max(0.35f, neighborUv.Y));
+                    grow[idx] = true;
+                    grown++;
+                }
+            }
+            for (int i = 0; i < grow.Length; i++)
+            {
+                if (grow[i])
+                    wet[i] = true;
+            }
+            if (grown == 0)
+                break;
+        }
+
+        // Guarantee lava fills the whole caldera bowl once any cell seeds it.
+        // Ocean seal skips magma bowls, so lava must grow on its own.
+        for (int pass = 0; pass < 6; pass++)
+        {
+            int grown = 0;
+            var grow = new bool[n * n];
+            for (int iy = 0; iy < n; iy++)
+            {
+                for (int ix = 0; ix < n; ix++)
+                {
+                    int idx = iy * n + ix;
+                    if (wet[idx]) continue;
+
+                    float neighborLavaR = 0f;
+                    SN.Vector2 neighborUv = default;
+                    bool nearLava = false;
+                    for (int dy = -1; dy <= 1 && !nearLava; dy++)
+                    {
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = ix + dx, ny = iy + dy;
+                            if ((uint)nx >= (uint)n || (uint)ny >= (uint)n) continue;
+                            int nidx = ny * n + nx;
+                            if (!wet[nidx] || waterRAt[nidx] <= 1e-4f) continue;
+                            if ((int)(uvs[nidx].X / 8f) != 6) continue;
+                            nearLava = true;
+                            neighborLavaR = waterRAt[nidx];
+                            neighborUv = uvs[nidx];
+                            break;
+                        }
+                    }
+                    if (!nearLava) continue;
+
+                    var dir = terrainPos[idx].LengthSquared() > 1e-8f
+                        ? SN.Vector3.Normalize(terrainPos[idx])
+                        : SN.Vector3.UnitY;
+                    if (PlanetSurfaceUtility.SampleContinentLand(_config, dir) < 0.55f)
+                        continue;
+                    if (PlanetSurfaceUtility.SampleMagmaBowl(_config, dir) < 0.12f)
+                        continue;
+                    if (terrainRAt[idx] >= neighborLavaR - 0.06f)
+                        continue;
+
+                    positions[idx] = dir * neighborLavaR;
+                    waterRAt[idx] = neighborLavaR;
+                    uvs[idx] = new SN.Vector2(neighborUv.X, MathF.Max(0.4f, neighborUv.Y));
                     grow[idx] = true;
                     grown++;
                 }
@@ -323,21 +433,24 @@ public sealed class PlanetMeshGenerator
             bool lavaEdge = (int)(uvs[wetIdx].X / 8f) == 6;
             if (!TryTerrainEdgeSeaT(pW, pD, wr, trW, trD, out t))
             {
-                if (trD < wr - 0.02f && !riverEdge && !lavaEdge)
+                var dirD = pD.LengthSquared() > 1e-8f
+                    ? SN.Vector3.Normalize(pD)
+                    : SN.Vector3.Normalize(pW);
+                if (trD < wr - 0.02f && !riverEdge && !lavaEdge
+                    && PlanetSurfaceUtility.IsOceanBasinColumn(_config, dirD))
                 {
-                    var dirD = pD.LengthSquared() > 1e-8f
-                        ? SN.Vector3.Normalize(pD)
-                        : SN.Vector3.Normalize(pW);
                     var uvFill = uvs[wetIdx];
                     uvFill.Y = MathF.Max(0.35f, uvFill.Y * 0.8f);
                     return AddVert(dirD * wr, uvFill);
                 }
-                t = lavaEdge ? 0.18f : (riverEdge ? 0.62f : 0.7f);
+                t = lavaEdge ? 0.12f : (riverEdge ? 0.62f : 0.12f);
             }
             if (riverEdge)
                 t = Math.Clamp(MathF.Max(t, 0.55f), 0.08f, 0.92f);
-            if (lavaEdge)
-                t = Math.Clamp(t, 0.04f, 0.35f);
+            else if (lavaEdge)
+                t = Math.Clamp(t, 0.04f, 0.22f);
+            else if (trD > wr + 2.5f)
+                t = Math.Clamp(MathF.Min(t, 0.12f), 0.04f, 0.12f);
 
             var shorePos = ProjectToRadius(SN.Vector3.Lerp(pW, pD, t), wr);
             var uv = uvs[wetIdx];
@@ -450,32 +563,95 @@ public sealed class PlanetMeshGenerator
         }
     }
 
-    bool ShouldUseVolumetric(int face, float u0, float v0, float u1, float v1, int resolution, int lodLevel)
+    bool ShouldGenerateCrustCaves(int face, float u0, float v0, float u1, float v1, int resolution)
     {
-        _ = lodLevel;
+        if (!_config.EnableCaves)
+            return false;
         float cell = EstimateCell(face, u0, v0, u1, v1, resolution);
         float maxCell = MathF.Max(8f, _config.VolumetricMaxCellSize);
+        if (cell > maxCell)
+            return false;
 
+        // Always generate near-camera fine caves when enabled; also when cave digs overlap.
         if (_editStore != null && (_editStore.SphereEditCount > 0 || _editStore.BakedCellCount > 0))
         {
             var dir = CubeSphereMath.FaceUVToDirection(face, (u0 + u1) * 0.5f, (v0 + v1) * 0.5f);
-            var a = CubeSphereMath.FaceUVToDirection(face, u0, v0) * _config.Radius;
-            var b = CubeSphereMath.FaceUVToDirection(face, u1, v0) * _config.Radius;
-            var c = CubeSphereMath.FaceUVToDirection(face, u0, v1) * _config.Radius;
-            float leafR = MathF.Max(MathF.Max(SN.Vector3.Distance(a, b), SN.Vector3.Distance(a, c)) * 0.75f, _config.Radius * 0.01f);
+            float leafR = MathF.Max(EstimateCell(face, u0, v0, u1, v1, 1) * 0.75f, _config.Radius * 0.01f);
             if (_editStore.OverlapsSphere(dir * _config.Radius, leafR + _editStore.MaxRadius + 8f))
-            {
-                // Foot-scale play digs on coarse leaves: shell-only remesh is much faster.
-                if (SceneService.PlayMode && _editStore.MaxRadius <= 2.5f && cell > maxCell)
-                    return false;
                 return true;
+        }
+
+        return true;
+    }
+
+    PlanetChunkBuildResult GenerateCrustCave(
+        int face, float u0, float v0, float u1, float v1, int lodLevel, byte transitionMask)
+    {
+        DensityGenerator.ComputeInteriorBounds(_config, _editStore, out float radialMin, out float radialMax);
+        int voxelSize = 32;
+        float usable = MathF.Max(8f, radialMax - radialMin);
+        var chunk = new VoxelChunk(voxelSize);
+        _densityGen.Generate(
+            chunk,
+            face,
+            u0,
+            v0,
+            u1,
+            v1,
+            lodLevel,
+            _editStore,
+            _sampler,
+            radialMin,
+            usable);
+        // Dig deltas are already folded into SampleDensity / CrustCaveSampler.
+        var mesh = Remesh(chunk, transitionMask);
+        return new PlanetChunkBuildResult(mesh, chunk);
+    }
+
+    /// <summary>
+    /// Drop shell quads where a cave opens to sky so the crust-band mesh shows through.
+    /// </summary>
+    void PunchShellMouths(
+        TransvoxelMeshData shell, int face, float u0, float v0, float u1, float v1, int resolution)
+    {
+        var caves = _sampler.CrustCaves;
+        if (caves == null || shell.Indices.Count < 3)
+            return;
+
+        int n = resolution + 1;
+        int size = Math.Max(1, resolution);
+        var mouth = new bool[n * n];
+        for (int iy = 0; iy < n; iy++)
+        {
+            float vt = (float)iy / size;
+            float v = v0 + vt * (v1 - v0);
+            for (int ix = 0; ix < n; ix++)
+            {
+                float ut = (float)ix / size;
+                float u = u0 + ut * (u1 - u0);
+                var dir = CubeSphereMath.FaceUVToDirection(face, u, v);
+                mouth[iy * n + ix] = caves.IsSurfaceMouth(dir);
             }
         }
 
-        if (!_config.EnableCaves)
-            return false;
-
-        return cell <= maxCell;
+        var kept = new List<int>(shell.Indices.Count);
+        for (int i = 0; i + 2 < shell.Indices.Count; i += 3)
+        {
+            int a = shell.Indices[i];
+            int b = shell.Indices[i + 1];
+            int c = shell.Indices[i + 2];
+            // Skirt / extra verts are beyond the grid — keep them.
+            if (a >= mouth.Length || b >= mouth.Length || c >= mouth.Length)
+            {
+                kept.Add(a); kept.Add(b); kept.Add(c);
+                continue;
+            }
+            if (mouth[a] && mouth[b] && mouth[c])
+                continue;
+            kept.Add(a); kept.Add(b); kept.Add(c);
+        }
+        shell.Indices.Clear();
+        shell.Indices.AddRange(kept);
     }
 
     static void SnapWaterTerrainLod(
@@ -640,7 +816,7 @@ public sealed class PlanetMeshGenerator
 
                 data.Positions.Add(pos);
                 data.Normals.Add(normal);
-                data.UVs.Add(new SN.Vector2(ut, vt));
+                data.UVs.Add(new SN.Vector2(u, v));
                 data.BlendIndices.Add(blendIdx);
                 data.BlendWeights.Add(blendWt);
             }

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Game_Engine.Core.Biome;
 
 namespace Game_Engine.Core.Planet;
@@ -77,6 +78,14 @@ public static class PlanetAssetIO
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true
+    };
+
+    /// <summary>Compact options for .planetvox — full height faces must not be pretty-printed.</summary>
+    static readonly JsonSerializerOptions _voxelJson = new()
+    {
+        WriteIndented = false,
+        PropertyNameCaseInsensitive = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
     public static bool TryLoad(string planetAssetPath, out PlanetAssetData? data, out string? error)
@@ -203,7 +212,7 @@ public static class PlanetAssetIO
             }
 
             var json = File.ReadAllText(abs);
-            data = JsonSerializer.Deserialize<PlanetVoxelEditAsset>(json, _json);
+            data = JsonSerializer.Deserialize<PlanetVoxelEditAsset>(json, _voxelJson);
             if (data == null)
             {
                 error = $"Planet voxel sidecar is empty or invalid JSON: {abs}";
@@ -212,6 +221,8 @@ public static class PlanetAssetIO
 
             data.Strokes ??= Array.Empty<PlanetVoxelSphereStroke>();
             data.BakedCells ??= Array.Empty<PlanetVoxelBakedCell>();
+            data.HeightDeltaSparse ??= Array.Empty<PlanetHeightDeltaTexel>();
+            data.HeightDeltaFaces ??= Array.Empty<float[]>();
             if (string.IsNullOrWhiteSpace(data.Space))
                 data.Space = PlanetVoxelEditAsset.PlanetLocalUnscaledSpace;
             return true;
@@ -233,13 +244,19 @@ public static class PlanetAssetIO
             data.Space = PlanetVoxelEditAsset.PlanetLocalUnscaledSpace;
             data.Strokes ??= Array.Empty<PlanetVoxelSphereStroke>();
             data.BakedCells ??= Array.Empty<PlanetVoxelBakedCell>();
+            data.HeightDeltaSparse ??= Array.Empty<PlanetHeightDeltaTexel>();
+            // Prefer sparse height digs — never rewrite 6×512² zero-filled JSON faces.
+            if (data.HeightDeltaSparse.Length > 0)
+                data.HeightDeltaFaces = Array.Empty<float[]>();
+            else
+                data.HeightDeltaFaces ??= Array.Empty<float[]>();
 
             string abs = ResolveVoxelEditsAbsolutePath(planetAssetPath, voxelEditsPath);
             string? dir = Path.GetDirectoryName(abs);
             if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            var json = JsonSerializer.Serialize(data, _json);
+            var json = JsonSerializer.Serialize(data, _voxelJson);
             File.WriteAllText(abs, json);
             return true;
         }

@@ -130,20 +130,20 @@ public sealed class CraterRecipe
 public sealed class VolcanoRecipe
 {
     public string NodeId { get; set; } = "";
-    public float Radius { get; set; } = 0.06f;
-    public float Height { get; set; } = 80f;
-    public float CalderaRadius { get; set; } = 0.015f;
+    public float Radius { get; set; } = 0.08f;
+    public float Height { get; set; } = 85f;
+    public float CalderaRadius { get; set; } = 0.028f;
     public string LavaBiomeName { get; set; } = "Volcanic";
-    public float Density { get; set; } = 0.2f;
+    public float Density { get; set; } = 0.18f;
     public int Seed { get; set; }
 }
 
 public sealed class CliffRecipe
 {
     public string NodeId { get; set; } = "";
-    public float Strength { get; set; } = 1.5f;
-    public float Frequency { get; set; } = 0.01f;
-    public float SlopeBias { get; set; } = 0.6f;
+    public float Strength { get; set; } = 1.35f;
+    public float Frequency { get; set; } = 0.0065f;
+    public float SlopeBias { get; set; } = 0.55f;
 }
 
 public sealed class DomainWarpRecipe

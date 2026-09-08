@@ -469,7 +469,7 @@ The planet pipeline integrates directly with runtime rigidbody and character phy
 - Jump impulse is applied along local up
 - Camera controllers set `Camera.WorldUp` from smoothed local up to keep horizon alignment stable while traversing curved surfaces
 
-See [Planet System](13_Planet_System.md) for interior fill, stacked voxel shells, cave scales, chunk streaming, and `.planetvox` edits.
+See [Planet System](13_Planet_System.md) for height-cubemap crust, crust-band caves, chunk streaming, and `.planetvox` digs.
 
 ---
 

@@ -184,6 +184,7 @@ Full-screen post-processing composite pass.
 | Effect | Implementation |
 |--------|---------------|
 | **FXAA** | Fast approximate anti-aliasing — edge detection and directional blur |
+| **SSAO** | Screen-space ambient occlusion pass before the composite (optional via `PostProcessVolume.SSAOEnabled`) |
 | **Bloom** | Simplified single-pass bloom — bright pixel extraction + Gaussian-like blur |
 | **Fog** | Depth-based atmospheric fog with configurable color and density |
 | **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Game_Engine.Core;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Networking;
@@ -72,6 +74,7 @@ public sealed class PlanetTerrain : Behavior
     BiomeMap? _biomeMap;
     PlanetChunkManager? _chunkManager;
     PlanetVoxelEditStore? _voxelEditStore;
+    PlanetSurfaceCubemap? _surfaceCubemap;
     bool _pendingVoxelMeshRefresh;
     PlanetWater? _planetWater;
     PlanetVegetationAssetData? _pendingVegetationAssetData;
@@ -120,6 +123,7 @@ public sealed class PlanetTerrain : Behavior
     public PlanetConfig? Config => _config;
     public BiomeMap? Map => _biomeMap;
     public PlanetClimateAtlas? ClimateAtlas => _climateAtlas;
+    public PlanetSurfaceCubemap? SurfaceCubemap => _surfaceCubemap;
     public PlanetChunkManager? ChunkManager => _chunkManager;
     public int ActiveGenerationJobs => _chunkManager?.ActiveJobs ?? 0;
     public int PendingMeshJobs => _chunkManager?.PendingCompletedJobs ?? 0;
@@ -152,13 +156,20 @@ public sealed class PlanetTerrain : Behavior
     SN.Vector3 _worldCenterCached;
     float _worldScaleCached = 1f;
 
+    /// <summary>True while a background height/splat cubemap bake is still running.</summary>
+    public bool SurfaceBakePending { get; private set; }
+
+    int _surfaceBakeGeneration;
+
     public override void Awake()
     {
         if (!ActivePlanets.Contains(this))
             ActivePlanets.Add(this);
         EnsurePlanetNetworkRpcsRegistered();
         EnsurePlanetAssetPath();
-        Initialize();
+        // Play calls Awake after editor load — do not rebuild/rebake an already-live planet.
+        if (_chunkManager == null)
+            Initialize();
     }
 
     public override void PostDeserialize()
@@ -175,7 +186,7 @@ public sealed class PlanetTerrain : Behavior
 
         EnsurePlanetAssetPath();
         var abs = PlanetAssetIO.ToAbsolutePath(PlanetAssetPath);
-        if (!File.Exists(abs))
+        if (!File.Exists(abs) && !SceneService.DeferPlanetVegetationImport)
             SavePlanetAsset();
 
         if (_chunkManager == null)
@@ -185,14 +196,12 @@ public sealed class PlanetTerrain : Behavior
     public override void OnDestroy()
     {
         ActivePlanets.Remove(this);
+        Interlocked.Increment(ref _surfaceBakeGeneration);
+        SurfaceBakePending = false;
         _chunkManager?.Dispose();
         _chunkManager = null;
 
-        if (WaterGO != null)
-        {
-            WaterGO.RemoveFromParent();
-            WaterGO = null;
-        }
+        ReleaseOrbitWater();
     }
 
     void Initialize()
@@ -253,6 +262,7 @@ public sealed class PlanetTerrain : Behavior
             _chunkManager = new PlanetChunkManager(_config, _biomeMap, _voxelEditStore);
             _wiredStreamClient = null;
             RebuildPhysicsNoise();
+            _chunkManager.RequestFullShellRebuild(16);
         }
         else if (_riverNoisePrimary == null && _config.NeedsRiverNoise)
         {
@@ -271,7 +281,19 @@ public sealed class PlanetTerrain : Behavior
     {
         if (!_pendingVoxelMeshRefresh || _chunkManager == null || _voxelEditStore == null)
             return;
-        if (_voxelEditStore.SphereEditCount == 0 && _voxelEditStore.BakedCellCount == 0)
+        bool hasHeightDeltas = false;
+        if (_surfaceCubemap != null)
+        {
+            for (int f = 0; f < 6 && !hasHeightDeltas; f++)
+            {
+                var d = _surfaceCubemap.HeightDelta[f];
+                for (int i = 0; i < d.Length; i++)
+                {
+                    if (MathF.Abs(d[i]) > 1e-6f) { hasHeightDeltas = true; break; }
+                }
+            }
+        }
+        if (_voxelEditStore.SphereEditCount == 0 && _voxelEditStore.BakedCellCount == 0 && !hasHeightDeltas)
         {
             _pendingVoxelMeshRefresh = false;
             return;
@@ -410,23 +432,116 @@ public sealed class PlanetTerrain : Behavior
             _biomeMap.BindClimateCoupling(_config, _riverNoisePrimary, _riverNoiseMeander, _ridgeNoise);
             _config.GeologyNoise = new Noise.SimplexNoise(seed + 11000);
             _densitySampler = new PlanetDensitySampler(_config, _biomeMap, _noiseCache, _voxelEditStore);
-            try
+
+            // Scene load: bake off the UI thread so the project hub / editor stay responsive.
+            // Chunk meshes start from live SampleHeight; cubemap swap remeshes when ready.
+            if (SceneService.DeferPlanetVegetationImport)
             {
-                _climateAtlas = PlanetClimateAtlas.Bake(_config, _biomeMap, _noiseCache, 256);
-                _densitySampler?.SetClimateAtlas(_climateAtlas);
-                _chunkManager?.SetClimateAtlas(_climateAtlas);
+                ScheduleSurfaceBakeAsync();
+                return;
             }
-            catch (Exception ex)
-            {
-                Log.Warning($"[PlanetTerrain] Climate atlas bake failed: {ex.Message}");
-                _climateAtlas = null;
-            }
+
+            BakeSurfaceCubemapSync();
         }
         else
         {
             _riverNoisePrimary = _config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 10000) : null;
             _riverNoiseMeander = _config.NeedsRiverNoise ? new Noise.SimplexNoise(seed + 11000) : null;
         }
+    }
+
+    void BakeSurfaceCubemapSync()
+    {
+        if (_config == null || _biomeMap == null || _noiseCache == null)
+            return;
+        try
+        {
+            var baked = PlanetCubemapBaker.Bake(
+                _config, _biomeMap, _noiseCache,
+                PlanetSurfaceCubemap.DefaultResolution,
+                _surfaceCubemap);
+            ApplySurfaceBakeResult(baked, remesh: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[PlanetTerrain] Surface cubemap bake failed: {ex.Message}");
+            _climateAtlas = null;
+            _surfaceCubemap = null;
+            SurfaceBakePending = false;
+        }
+    }
+
+    void ScheduleSurfaceBakeAsync()
+    {
+        if (_config == null || _biomeMap == null || _noiseCache == null)
+            return;
+
+        int generation = Interlocked.Increment(ref _surfaceBakeGeneration);
+        SurfaceBakePending = true;
+        var config = _config;
+        var biomeMap = _biomeMap;
+        var noise = _noiseCache;
+        var preserve = _surfaceCubemap;
+        var self = new WeakReference<PlanetTerrain>(this);
+
+        _ = Editor.EditorJobs.RunCpuAsync(ct =>
+        {
+            ct.ThrowIfCancellationRequested();
+            return PlanetCubemapBaker.Bake(
+                config, biomeMap, noise,
+                PlanetSurfaceCubemap.DefaultResolution,
+                preserve);
+        }).ContinueWith(t =>
+        {
+            Editor.EditorJobs.PostToUi(() =>
+            {
+                if (!self.TryGetTarget(out var terrain))
+                    return;
+                if (generation != Volatile.Read(ref terrain._surfaceBakeGeneration))
+                    return;
+
+                if (t.IsFaulted)
+                {
+                    var msg = t.Exception?.GetBaseException().Message ?? "unknown";
+                    Log.Warning($"[PlanetTerrain] Async surface bake failed: {msg}");
+                    terrain.SurfaceBakePending = false;
+                    return;
+                }
+
+                if (t.IsCanceled)
+                {
+                    terrain.SurfaceBakePending = false;
+                    return;
+                }
+
+                try
+                {
+                    terrain.ApplySurfaceBakeResult(t.Result, remesh: true);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"[PlanetTerrain] Applying async bake failed: {ex.Message}");
+                    terrain.SurfaceBakePending = false;
+                }
+            }, Editor.EditorUiPostPriority.Normal);
+        }, TaskContinuationOptions.ExecuteSynchronously);
+    }
+
+    void ApplySurfaceBakeResult(PlanetCubemapBaker.BakeResult baked, bool remesh)
+    {
+        _surfaceCubemap = baked.Surface;
+        _climateAtlas = baked.Climate;
+        _densitySampler?.SetClimateAtlas(_climateAtlas);
+        _densitySampler?.SetSurfaceCubemap(_surfaceCubemap);
+        _chunkManager?.SetClimateAtlas(_climateAtlas);
+        _chunkManager?.SetSurfaceCubemap(_surfaceCubemap);
+        if (remesh)
+        {
+            _chunkManager?.ClearMeshCache();
+            _chunkManager?.RequestFullShellRebuild(16);
+        }
+        SurfaceBakePending = false;
+        SceneService.NotifyChanged(markDirty: false);
     }
 
     PlanetWaterCarveContext CreateWaterCarveContext() => new()
@@ -442,8 +557,14 @@ public sealed class PlanetTerrain : Behavior
         if (_config == null || _biomeMap == null || _biomeNoises == null)
             return 0f;
 
-        // Macro height from climate LUT when available; detail noise still applied via full sample
-        // for water carving / edits. LUT path is the hot query for vegetation radial estimates.
+        if (_surfaceCubemap != null)
+        {
+            float h = _surfaceCubemap.SampleEditedHeight(sphereDir);
+            var carve = CreateWaterCarveContext();
+            return PlanetWaterSampler.ApplyWaterCarving(
+                h, sphereDir, carve.Config, _biomeMap, carve.RiverPrimary, carve.RiverMeander, carve.ClimateAtlas);
+        }
+
         if (_climateAtlas != null)
         {
             float macro = _climateAtlas.SampleMacroHeight(sphereDir);
@@ -463,6 +584,29 @@ public sealed class PlanetTerrain : Behavior
             CreateWaterCarveContext());
     }
 
+    /// <summary>
+    /// Sample the terrain surface radius at a direction from planet center.
+    /// Height cubemap (+ dig deltas + water carve) is the source of truth — no density iso march.
+    /// </summary>
+    public float SampleSurfaceRadius(SN.Vector3 sphereDir)
+    {
+        float worldScale = GetWorldRadiusScale();
+        if (_config == null)
+            return Radius * worldScale;
+
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        var sampler = CreateDensitySampler();
+        if (sampler != null)
+            return sampler.SampleEditedSurfaceRadius(sphereDir) * worldScale;
+
+        float height = SampleCarvedHeight(sphereDir);
+        return (_config.Radius + height) * worldScale;
+    }
+
     public PlanetWaterSurfaceSample SampleWaterSurface(SN.Vector3 sphereDir)
     {
         if (_config == null || _biomeMap == null)
@@ -472,17 +616,26 @@ public sealed class PlanetTerrain : Behavior
             return PlanetWaterSurfaceSample.Empty;
 
         sphereDir = SN.Vector3.Normalize(sphereDir);
-        // Must match chunk water meshing (SampleEditedSurfaceRadius), not the
-        // climate-atlas macro shortcut used for vegetation estimates.
-        float terrainR = SampleLocalCrustRadius(sphereDir);
+        // Classify with undug height so land digs below sea do not become ocean
+        // (matches GenerateWaterPatch / dry dig pits).
+        float undugR = SampleUndugLocalCrustRadius(sphereDir);
         return PlanetWaterSampler.SampleWaterSurface(
             sphereDir,
             _config,
             _biomeMap,
-            terrainR,
+            undugR,
             _riverNoisePrimary,
             _riverNoiseMeander,
             FindBiomeIndex);
+    }
+
+    /// <summary>Local crust radius ignoring dig deltas (base cubemap + water carve).</summary>
+    public float SampleUndugLocalCrustRadius(SN.Vector3 sphereDir)
+    {
+        var sampler = CreateDensitySampler();
+        if (sampler != null)
+            return MathF.Max(1f, sampler.SampleUndugSurfaceRadius(sphereDir));
+        return SampleLocalCrustRadius(sphereDir);
     }
 
     /// <summary>
@@ -515,7 +668,10 @@ public sealed class PlanetTerrain : Behavior
 
         float waterR = sample.Mask >= 0.04f ? sample.Radius * scale : 0f;
         float seaR = PlanetWaterSampler.GetOceanFillRadius(_config) * scale;
-        if (waterR < 1f && crustWorldR < seaR - 0.2f
+        float undugCrustWorld = SampleUndugLocalCrustRadius(sphereDir) * scale;
+        // Only force sea fill when the undug column was already an ocean basin —
+        // never treat a dug land pit as swim water.
+        if (waterR < 1f && undugCrustWorld < seaR - 0.2f && crustWorldR < seaR - 0.2f
             && PlanetSurfaceUtility.SampleMagmaBowl(_config, sphereDir) < 0.18f)
         {
             waterR = seaR;
@@ -539,44 +695,16 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
-    /// Sample the actual terrain surface radius at a given direction from planet center.
-    /// Uses the same noise pipeline as the mesh generator for pixel-accurate results.
-    /// Returns <c>radius + terrainHeight</c> (distance from center to surface).
-    /// </summary>
-    public float SampleSurfaceRadius(SN.Vector3 sphereDir)
-    {
-        float worldScale = GetWorldRadiusScale();
-        if (_config == null || _biomeMap == null || _biomeNoises == null)
-            return Radius * worldScale;
-
-        float height = SampleCarvedHeight(sphereDir);
-        float baseSurfaceR = _config.Radius + height;
-
-        var sampler = CreateDensitySampler();
-        if (sampler == null)
-            return baseSurfaceR * worldScale;
-
-        return FindSurfaceRadiusOnRay(sphereDir, baseSurfaceR, sampler) * worldScale;
-    }
-
-    /// <summary>
-    /// Visible crust radius (heightfield only). Matches the shell mesh while volumetric
-    /// transvoxel is off. Avoids the density ray that can pin a player to one radial.
+    /// Visible crust radius (heightfield only). Matches the shell mesh.
     /// </summary>
     public float SampleHeightfieldRadius(SN.Vector3 sphereDir)
     {
-        float worldScale = GetWorldRadiusScale();
-        if (_config == null || _biomeMap == null || _biomeNoises == null)
-            return Radius * worldScale;
-
-        float height = SampleCarvedHeight(sphereDir);
-        return (_config.Radius + height) * worldScale;
+        return SampleSurfaceRadius(sphereDir);
     }
 
     /// <summary>
-    /// Player stand radius on the visible chunk mesh. Never Max with the
-    /// climate-atlas heightfield — that LUT is a coarser LOD and lifts the
-    /// capsule into the air over the rendered crust.
+    /// Player stand radius. Height cubemap (+ digs) is always authoritative.
+    /// Stand grids lag remesh / preview and caused float + fall-through while digging.
     /// </summary>
     public float SampleCollisionRadius(SN.Vector3 sphereDir)
     {
@@ -584,17 +712,9 @@ public sealed class PlanetTerrain : Behavior
         float crustLocal = _config != null
             ? SampleLocalCrustRadius(sphereDir)
             : Radius;
-        float meshLocal = _chunkManager?.SampleCollisionLocalRadius(sphereDir) ?? 0f;
-        if (meshLocal <= 1e-4f)
-            return crustLocal * worldScale;
-
-        // Cave / empty-bin samples sit tens of meters inside the shell — treat as missing.
-        // Small undershoot (bilinear) may pull up a couple of meters toward the mesher crust.
-        // Do not ride the analytical peak when it is far above the visible LOD triangle.
-        if (meshLocal < crustLocal - 50f)
-            return crustLocal * worldScale;
-        float pulled = MathF.Max(meshLocal, MathF.Min(crustLocal, meshLocal + 3f));
-        return pulled * worldScale;
+        if (crustLocal < 1f)
+            crustLocal = Radius;
+        return crustLocal * worldScale;
     }
 
     /// <summary>
@@ -750,11 +870,17 @@ public sealed class PlanetTerrain : Behavior
     PlanetDensitySampler? CreateDensitySampler()
     {
         if (_densitySampler != null)
+        {
+            _densitySampler.SetClimateAtlas(_climateAtlas);
+            _densitySampler.SetSurfaceCubemap(_surfaceCubemap);
             return _densitySampler;
+        }
         if (_config == null || _biomeMap == null || _noiseCache == null)
             return null;
 
         _densitySampler = new PlanetDensitySampler(_config, _biomeMap, _noiseCache, _voxelEditStore);
+        _densitySampler.SetClimateAtlas(_climateAtlas);
+        _densitySampler.SetSurfaceCubemap(_surfaceCubemap);
         return _densitySampler;
     }
 
@@ -899,17 +1025,26 @@ public sealed class PlanetTerrain : Behavior
 
     void RebuildWater()
     {
-        if (!EnableWater || gameObject == null || _config == null) return;
+        if (gameObject == null || _config == null) return;
 
+        ReleaseOrbitWater();
+        if (!EnableWater)
+            return;
+
+        SetupWater();
+        _chunkManager?.RequestFullShellRebuild(16);
+    }
+
+    void ReleaseOrbitWater()
+    {
+        if (_planetWater?.WaterMesh != null)
+            Game_Engine.Core.Rendering.GPU.GpuMeshReleaseQueue.Enqueue(_planetWater.WaterMesh);
         if (WaterGO != null)
         {
             WaterGO.RemoveFromParent();
             WaterGO = null;
         }
         _planetWater = null;
-
-        SetupWater();
-        _chunkManager?.RequestFullShellRebuild(16);
     }
 
     public override void Update()
@@ -1425,9 +1560,20 @@ public sealed class PlanetTerrain : Behavior
             return false;
 
         EnsurePlanetAssetPath();
+        // Editor digs may still be sitting in the chunk-manager queue — flush before export.
+        _chunkManager?.FlushPendingEditCommands();
+        EnsureSurfaceCubemap();
         _voxelEditStore ??= new PlanetVoxelEditStore();
         var sidecarRel = PlanetAssetIO.GetVoxelEditsSidecarProjectRelative(PlanetAssetPath);
         var asset = _voxelEditStore.ExportAsset(bakeIfOverThreshold: true);
+        if (_surfaceCubemap != null)
+        {
+            asset.HeightDeltaResolution = _surfaceCubemap.Resolution;
+            asset.HeightDeltaSparse = _surfaceCubemap.ExportSparseHeightDeltas();
+            asset.HeightDeltaFaces = Array.Empty<float[]>();
+            if (asset.HeightDeltaSparse.Length > 0)
+                asset.MaxRadius = MathF.Max(asset.MaxRadius, _surfaceCubemap.TexelMeters(_config?.Radius ?? Radius) * 3f);
+        }
         if (!PlanetAssetIO.TrySaveVoxelEdits(PlanetAssetPath, asset, out var error, sidecarRel))
         {
             if (!string.IsNullOrWhiteSpace(error))
@@ -1456,6 +1602,7 @@ public sealed class PlanetTerrain : Behavior
         try
         {
             _voxelEditStore.LoadFromAsset(asset);
+            ApplyHeightDeltasFromAsset(asset);
             if (_chunkManager != null)
                 _chunkManager.ResetAfterVoxelEditsLoaded();
             else
@@ -1466,6 +1613,65 @@ public sealed class PlanetTerrain : Behavior
         {
             Log.Info($"[PlanetTerrain] Voxel edit load failed: {ex.Message}");
             return false;
+        }
+    }
+
+    void ApplyHeightDeltasFromAsset(PlanetVoxelEditAsset asset)
+    {
+        if (_surfaceCubemap == null)
+            return;
+
+        if (asset.HeightDeltaSparse is { Length: > 0 } sparse
+            && asset.HeightDeltaResolution == _surfaceCubemap.Resolution)
+        {
+            // v2 stored dig as +height (bumps). v3+ stores dig as -height (holes).
+            if (asset.Version < 3)
+            {
+                for (int i = 0; i < sparse.Length; i++)
+                    sparse[i].Value = -sparse[i].Value;
+            }
+            _surfaceCubemap.ImportSparseHeightDeltas(sparse, asset.HeightDeltaResolution);
+            return;
+        }
+
+        if (asset.HeightDeltaFaces is { Length: 6 } faces
+            && asset.HeightDeltaResolution == _surfaceCubemap.Resolution)
+        {
+            for (int f = 0; f < 6; f++)
+            {
+                if (faces[f] == null || faces[f].Length != _surfaceCubemap.HeightDelta[f].Length)
+                    continue;
+                Array.Copy(faces[f], _surfaceCubemap.HeightDelta[f], faces[f].Length);
+                if (asset.Version < 3)
+                {
+                    var d = _surfaceCubemap.HeightDelta[f];
+                    for (int i = 0; i < d.Length; i++)
+                        d[i] = -d[i];
+                }
+            }
+            _surfaceCubemap.BumpHeightVersion();
+            return;
+        }
+
+        // Legacy v1: project near-surface strokes onto height deltas; keep crust-band strokes.
+        if (asset.Strokes == null || asset.Strokes.Length == 0)
+            return;
+
+        float planetR = _config?.Radius ?? Radius;
+        float caveDepth = MathF.Max(8f, _config != null ? DensityGenerator.MaxCaveDepth(_config) : 280f);
+        _voxelEditStore?.Clear();
+        for (int i = 0; i < asset.Strokes.Length; i++)
+        {
+            var s = asset.Strokes[i];
+            var center = new SN.Vector3(s.X, s.Y, s.Z);
+            float len = center.Length();
+            if (len < 1e-5f) continue;
+            var dir = center / len;
+            float surfaceR = planetR + _surfaceCubemap.SampleBaseHeight(dir);
+            if (len >= surfaceR - MathF.Max(4f, s.Radius * 1.5f))
+                _surfaceCubemap.ApplyHeightBrush(center, s.Radius, s.DensityDelta, s.Falloff);
+            else if (len >= surfaceR - caveDepth)
+                _voxelEditStore?.AddSphere(center, s.Radius, s.DensityDelta, s.Falloff);
         }
     }
 
@@ -1948,7 +2154,9 @@ public sealed class PlanetTerrain : Behavior
         fauna?.Bind(result.FaunaLayers);
 
         SceneRenderer.ResetBiomeTexDebug();
-        SavePlanetAsset();
+        // Never rewrite .planet during scene deserialize — that stalls the UI for no benefit.
+        if (!SceneService.DeferPlanetVegetationImport)
+            SavePlanetAsset();
         SceneService.NotifyChanged();
     }
 
@@ -2078,28 +2286,30 @@ public sealed class PlanetTerrain : Behavior
     public void DigSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)
     {
         if (SceneService.PlayMode)
-            ApplyPlayModeSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff));
+            ApplyRoutedSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff), playMode: true);
         else
-            QueueSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff));
+            ApplyRoutedSphereEdit(worldCenter, radius, HeightStep(strength), ResolveFalloff(falloff), playMode: false);
     }
 
     public void BuildSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)
     {
         if (SceneService.PlayMode)
-            ApplyPlayModeSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff));
+            ApplyRoutedSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff), playMode: true);
         else
-            QueueSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff));
+            ApplyRoutedSphereEdit(worldCenter, radius, -HeightStep(strength), ResolveFalloff(falloff), playMode: false);
     }
 
     /// <summary>
-    /// Play-mode sculpting: store stroke and queue async remesh (never block the UI thread).
+    /// Surface brushes edit the height cubemap; underground brushes edit crust-band occupancy.
     /// </summary>
-    void ApplyPlayModeSphereEdit(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
+    void ApplyRoutedSphereEdit(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff, bool playMode)
     {
-        if (_chunkManager == null || _voxelEditStore == null)
+        if (_chunkManager == null)
             return;
 
-        float r = Math.Clamp(radius, 0.2f, 2.5f);
+        EnsureSurfaceCubemap();
+
+        float r = playMode ? Math.Clamp(radius, 0.2f, 2.5f) : Math.Max(0.05f, radius);
         if (NetworkManager.IsActive && NetworkManager.IsClient && StreamSurfaceFromServerWhenClient)
         {
             SendPlanetVoxelEditToServer(worldCenter, r, densityDelta, falloff);
@@ -2108,17 +2318,76 @@ public sealed class PlanetTerrain : Behavior
 
         var localCenter = WorldToLocal(worldCenter);
         float localRadius = WorldToLocalLength(r);
-        float cap = MathF.Min(1.5f, MathF.Max(0.35f, localRadius * 0.65f));
+        float cap = playMode
+            ? MathF.Min(1.5f, MathF.Max(0.35f, localRadius * 0.65f))
+            : MathF.Min(10f, MathF.Max(2.5f, localRadius * 0.45f));
         densityDelta = Math.Clamp(densityDelta, -cap, cap);
         falloff = ResolveFalloff(falloff);
 
-        _voxelEditStore.AddSphere(localCenter, localRadius, densityDelta, falloff);
-        float invalidateR = localRadius + MathF.Max(0.75f, MathF.Abs(densityDelta));
-        _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
+        float len = localCenter.Length();
+        var dir = len > 1e-5f ? localCenter / len : SN.Vector3.UnitY;
+        float surfaceR = CreateDensitySampler()?.SampleEditedSurfaceRadius(dir)
+            ?? (_config?.Radius ?? Radius);
+        float caveDepth = MathF.Max(8f, _config != null ? DensityGenerator.MaxCaveDepth(_config) : 280f);
+        // Prefer height-cubemap digs for anything near the outer crust. Cave occupancy
+        // only when clearly below the surface (avoids empty .planetvox from mis-routed hits).
+        float surfaceBand = MathF.Max(MathF.Max(12f, localRadius * 2f), caveDepth * 0.25f);
+        bool deepUnderground = len < surfaceR - surfaceBand;
+
+        if (!deepUnderground && _surfaceCubemap != null)
+        {
+            float texel = _surfaceCubemap.TexelMeters(surfaceR);
+            float brushR = MathF.Max(localRadius, texel * 5.5f);
+            // Visible crater depth — play density caps alone are too shallow on large planets.
+            float stepMag = MathF.Max(MathF.Abs(densityDelta), MathF.Max(5f, texel * 1.5f));
+            float step = stepMag * MathF.Sign(densityDelta == 0f ? 1f : densityDelta);
+
+            _surfaceCubemap.ApplyHeightBrush(localCenter, brushR, step, falloff);
+            // Keep mesher/sampler on the same cubemap instance as digs just wrote.
+            _chunkManager.SetSurfaceCubemap(_surfaceCubemap);
+            float invalidateR = brushR + MathF.Max(2f, MathF.Abs(step));
+            _chunkManager.ClearMeshCache();
+            // Always preview-deform + schedule remesh (editor and play).
+            _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
+        }
+        else
+        {
+            // Cave digs: apply to the edit store immediately (do not leave strokes stuck in a queue).
+            _voxelEditStore ??= new PlanetVoxelEditStore();
+            _voxelEditStore.AddSphere(localCenter, localRadius, densityDelta, falloff);
+            float invalidateR = localRadius + MathF.Max(0.75f, MathF.Abs(densityDelta));
+            if (playMode)
+                _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
+            else
+                _chunkManager.DirtyLeavesNear(localCenter, invalidateR);
+        }
 
         if (NetworkManager.IsActive && NetworkManager.IsServer)
-            BroadcastPlanetInvalidateClients(GetPlanetNetworkId(), worldCenter, r + MathF.Max(0.5f, MathF.Abs(densityDelta)));
+        {
+            float invalidateR = r + MathF.Max(0.5f, MathF.Abs(densityDelta));
+            BroadcastPlanetInvalidateClients(GetPlanetNetworkId(), worldCenter, invalidateR);
+        }
     }
+
+    /// <summary>Bake height+splat cubemap on demand so digs never no-op when bake was skipped.</summary>
+    void EnsureSurfaceCubemap()
+    {
+        if (_surfaceCubemap != null || _config == null || _biomeMap == null)
+            return;
+        if (SurfaceBakePending)
+            return;
+        if (_noiseCache == null)
+            RebuildPhysicsNoise();
+        if (_surfaceCubemap != null || _noiseCache == null || SurfaceBakePending)
+            return;
+        BakeSurfaceCubemapSync();
+    }
+
+    /// <summary>
+    /// Play-mode sculpting: store stroke and queue async remesh (never block the UI thread).
+    /// </summary>
+    void ApplyPlayModeSphereEdit(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
+        => ApplyRoutedSphereEdit(worldCenter, radius, densityDelta, falloff, playMode: true);
 
     /// <summary>Pull the crust toward the average nearby surface radius.</summary>
     public void SmoothSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)
@@ -2207,6 +2476,7 @@ public sealed class PlanetTerrain : Behavior
     public void ClearVoxelEdits(bool rebuildNow = true)
     {
         _voxelEditStore?.Clear();
+        _surfaceCubemap?.ClearHeightDeltas();
         if (!rebuildNow || gameObject == null) return;
         _chunkManager?.ResetAfterVoxelEditsLoaded();
         _pendingVoxelMeshRefresh = false;
@@ -2224,26 +2494,7 @@ public sealed class PlanetTerrain : Behavior
     }
 
     void QueueSphereEdit(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
-    {
-        if (_chunkManager == null) return;
-        float r = Math.Max(0.05f, radius);
-        if (NetworkManager.IsActive && NetworkManager.IsClient && StreamSurfaceFromServerWhenClient)
-        {
-            SendPlanetVoxelEditToServer(worldCenter, r, densityDelta, falloff);
-            return;
-        }
-
-        var localCenter = WorldToLocal(worldCenter);
-        float localRadius = WorldToLocalLength(r);
-        float cap = MathF.Min(10f, MathF.Max(2.5f, localRadius * 0.45f));
-        densityDelta = Math.Clamp(densityDelta, -cap, cap);
-        _chunkManager.EnqueueSphereEdit(localCenter, localRadius, densityDelta, falloff);
-        if (NetworkManager.IsActive && NetworkManager.IsServer)
-        {
-            float invalidateR = r + Math.Max(2f, MathF.Abs(densityDelta));
-            BroadcastPlanetInvalidateClients(GetPlanetNetworkId(), worldCenter, invalidateR);
-        }
-    }
+        => ApplyRoutedSphereEdit(worldCenter, radius, densityDelta, falloff, playMode: false);
 
     void SendPlanetVoxelEditToServer(SN.Vector3 worldCenter, float radius, float densityDelta, float falloff)
     {

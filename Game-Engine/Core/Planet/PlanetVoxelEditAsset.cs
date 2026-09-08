@@ -1,15 +1,15 @@
+#nullable enable
 using System;
 
 namespace Game_Engine.Core.Planet;
 
 /// <summary>
-/// Serialized voxel-edit overlay. Coordinates are planet-local unscaled
-/// (same space as <see cref="PlanetVoxelEditStore"/>), never world-space.
-/// Written to a sidecar <c>.planetvox</c> next to the <c>.planet</c> JSON.
+/// Serialized dig overlay: height-cubemap deltas (surface sculpt) + crust-band cave strokes.
+/// Sidecar remains <c>.planetvox</c>; version 2+ carries height faces.
 /// </summary>
 public sealed class PlanetVoxelEditAsset
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 3;
     public const string PlanetLocalUnscaledSpace = "PlanetLocalUnscaled";
     public const string SidecarExtension = ".planetvox";
 
@@ -24,9 +24,29 @@ public sealed class PlanetVoxelEditAsset
     /// <summary>Largest brush radius represented (live strokes and baked cells). Used for crust depth.</summary>
     public float MaxRadius { get; set; }
 
+    /// <summary>Shared resolution for <see cref="HeightDeltaFaces"/> (0 = none).</summary>
+    public int HeightDeltaResolution { get; set; }
+
+    /// <summary>
+    /// Six faces of height dig deltas (row-major). Empty when using <see cref="HeightDeltaSparse"/>.
+    /// Legacy full-face dumps from early v2 are still loaded.
+    /// </summary>
+    public float[][] HeightDeltaFaces { get; set; } = Array.Empty<float[]>();
+
+    /// <summary>Compact nonzero height digs (preferred for v2+ save).</summary>
+    public PlanetHeightDeltaTexel[] HeightDeltaSparse { get; set; } = Array.Empty<PlanetHeightDeltaTexel>();
+
     public PlanetVoxelSphereStroke[] Strokes { get; set; } = Array.Empty<PlanetVoxelSphereStroke>();
 
     public PlanetVoxelBakedCell[] BakedCells { get; set; } = Array.Empty<PlanetVoxelBakedCell>();
+}
+
+/// <summary>One nonzero height-cubemap dig texel.</summary>
+public sealed class PlanetHeightDeltaTexel
+{
+    public int Face { get; set; }
+    public int Index { get; set; }
+    public float Value { get; set; }
 }
 
 public sealed class PlanetVoxelSphereStroke

@@ -188,6 +188,19 @@ public sealed class BiomeMap
         return results;
     }
 
+    /// <summary>Splat slot for a named biome, or -1 if the graph did not include it.</summary>
+    public int FindBiomeSlot(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || _biomes == null)
+            return -1;
+        for (int i = 0; i < _biomes.Length; i++)
+        {
+            if (string.Equals(_biomes[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                return Math.Clamp((int)_biomes[i].BiomeIndex, 0, 7);
+        }
+        return -1;
+    }
+
     /// <summary>Get the dominant (highest-weight) biome at a sphere direction.</summary>
     public BiomeDefinition GetDominantBiome(SN.Vector3 sphereDir) => GetDominantBiome(sphereDir, -1f);
 

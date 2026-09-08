@@ -42,6 +42,11 @@ namespace Game_Engine.Core.Component
         [Persist] public bool AlignEmissionToGravity { get; set; } = false;
         [Persist] public bool UsePlanetGravity { get; set; } = false;
         [Persist] public bool StopOnPlanetSurfaceHit { get; set; } = false;
+        /// <summary>
+        /// Move live particles with a moving emitter. Intended for player-centered
+        /// weather volumes so rain/snow coverage cannot lag behind the player.
+        /// </summary>
+        [Persist] public bool FollowEmitterMotion { get; set; } = false;
         /// <summary>When true, quads stretch along velocity (rain streaks) instead of circular camera billboards.</summary>
         [Persist] public bool StretchAlongVelocity { get; set; } = false;
         [Persist] public float StretchLength { get; set; } = 0.8f;
@@ -93,6 +98,8 @@ namespace Game_Engine.Core.Component
         float _frustumNear = 1.5f;
         float _frustumFar = 28f;
         float _frustumLift = 10f;
+        bool _hasFollowOrigin;
+        SN.Vector3 _lastFollowOrigin;
 
         /// <summary>Whether particles are currently being emitted and simulated.</summary>
         public bool IsPlaying => _playing;
@@ -121,7 +128,14 @@ namespace Game_Engine.Core.Component
 
         public void Play() => _playing = true;
         public void Stop() { _playing = false; }
-        public void Clear() { AliveCount = 0; for (int i = 0; i < Particles.Length; i++) Particles[i].Active = false; }
+        public void Clear()
+        {
+            AliveCount = 0;
+            _emitAccum = 0f;
+            _hasFollowOrigin = false;
+            for (int i = 0; i < Particles.Length; i++)
+                Particles[i].Active = false;
+        }
 
         /// <summary>
         /// Spawn inside the camera view (plus a lift along gravity-up so rain/snow falls through the lens).
@@ -205,6 +219,7 @@ namespace Game_Engine.Core.Component
 
             // Simulate existing particles
             var emitterPos = (_unprojSpawn || _frustumSpawn) ? _frustumOrigin : GetWorldPosition();
+            SynchronizeFollowOrigin(emitterPos);
             var gravityDir = ResolveGravityDirection(emitterPos);
             var nearestSurfaceCenter = SN.Vector3.Zero;
             var nearestSurfacePlanet = StopOnPlanetSurfaceHit ? ResolveNearestPlanet(emitterPos, out nearestSurfaceCenter) : null;
@@ -257,6 +272,40 @@ namespace Game_Engine.Core.Component
                 if (!Loop && _emitAccum <= 0f && alive == 0)
                     _playing = false;
             }
+        }
+
+        /// <summary>
+        /// Immediately move live particles with a player-centered weather volume.
+        /// Calling this from LateUpdate removes the one-frame camera-order lag.
+        /// </summary>
+        public void SynchronizeFollowOrigin(SN.Vector3 worldOrigin)
+        {
+            if (!FollowEmitterMotion)
+            {
+                _hasFollowOrigin = false;
+                return;
+            }
+
+            if (_hasFollowOrigin)
+            {
+                var delta = worldOrigin - _lastFollowOrigin;
+                float maxCarry = MathF.Max(12f, MathF.Max(BoxSize.X, BoxSize.Z) * 2f);
+                if (delta.LengthSquared() > maxCarry * maxCarry)
+                {
+                    // Teleport / scene change: stale weather would cross the planet.
+                    Clear();
+                }
+                else if (delta.LengthSquared() > 1e-10f)
+                {
+                    for (int i = 0; i < Particles.Length; i++)
+                    {
+                        if (Particles[i].Active)
+                            Particles[i].Position += delta;
+                    }
+                }
+            }
+            _lastFollowOrigin = worldOrigin;
+            _hasFollowOrigin = true;
         }
 
         private int FindFreeSlot()

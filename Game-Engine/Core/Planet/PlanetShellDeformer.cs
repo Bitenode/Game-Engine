@@ -15,22 +15,22 @@ static class PlanetShellDeformer
         float localInfluenceRadius,
         float vertexSpacing)
     {
-        if (!mesh.IsPlanetMesh)
+        if (!mesh.IsPlanetMesh && (mesh.Vertices == null || mesh.Vertices.Length == 0))
             return false;
 
         var verts = mesh.Vertices;
         if (verts == null || verts.Length == 0)
             return false;
 
-        float reach = MathF.Max(localInfluenceRadius * 2.5f, MathF.Max(vertexSpacing, 1.5f));
+        // Always deform nearby verts — don't skip just because the chunk is dense.
+        float reach = MathF.Max(localInfluenceRadius * 3f, MathF.Max(vertexSpacing * 2f, 4f));
         float reachSq = reach * reach;
-        bool cull = verts.Length > 6000;
         bool changed = false;
 
         for (int i = 0; i < verts.Length; i++)
         {
             var p = verts[i];
-            if (cull && SN.Vector3.DistanceSquared(p, localEditCenter) > reachSq)
+            if (SN.Vector3.DistanceSquared(p, localEditCenter) > reachSq)
                 continue;
 
             float lenSq = p.LengthSquared();
@@ -40,7 +40,7 @@ static class PlanetShellDeformer
             var dir = p / MathF.Sqrt(lenSq);
             float newR = sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
             var np = dir * newR;
-            if (SN.Vector3.DistanceSquared(p, np) <= 1e-10f)
+            if (SN.Vector3.DistanceSquared(p, np) <= 1e-8f)
                 continue;
 
             verts[i] = np;

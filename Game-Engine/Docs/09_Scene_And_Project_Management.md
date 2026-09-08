@@ -626,6 +626,8 @@ The `SceneManager` provides a script-accessible API for loading scenes at runtim
 4. Caches are rebuilt; `Awake()` and `Start()` are called on new behaviors
 5. `SceneManager.SceneLoaded` event fires with the scene name
 
+**Planet-heavy scenes:** surface baking and vegetation import may finish shortly after the scene is active so loading stays responsive. See [Planet System — Scene View LOD](13_Planet_System.md#scene-view-lod-play-lod-and-editor-brushes).
+
 ### SceneQuery — Runtime Scene Search
 
 The `SceneQuery` class provides utilities for finding objects in the scene hierarchy from scripts:

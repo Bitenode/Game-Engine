@@ -110,6 +110,13 @@ namespace Game_Engine.Core.Component
             base.OnDisable();
         }
 
+        public override void OnDestroy()
+        {
+            var old = GetComponent<MeshFilter>()?.Mesh;
+            if (old != null)
+                Game_Engine.Core.Rendering.GPU.GpuMeshReleaseQueue.Enqueue(old);
+        }
+
         public override void Awake()
         {
             if (!_meshBuilt) BuildMesh();
@@ -215,6 +222,8 @@ namespace Game_Engine.Core.Component
                 Normals = normals,
                 UVs = uvs
             };
+            if (mf.Mesh != null && !ReferenceEquals(mf.Mesh, mesh))
+                Game_Engine.Core.Rendering.GPU.GpuMeshReleaseQueue.Enqueue(mf.Mesh);
             mf.Mesh = mesh;
         }
 

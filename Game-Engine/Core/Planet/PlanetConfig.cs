@@ -114,9 +114,8 @@ public sealed class PlanetConfig
         || (WaterPaths != null && WaterPaths.Length > 0);
 
     /// <summary>
-    /// Transvoxel crust is used when a leaf's tangential cell size is at or below this
-    /// (planet-local units). Coarser leaves use a smooth spherical heightfield shell so
-    /// orbit / default Scene View does not look like marching-cubes shards.
+    /// Deprecated as a surface-mesh trigger. Kept for cave-band leaf refinement only
+    /// (fine leaves near the camera may generate crust cave meshes).
     /// </summary>
     public float VolumetricMaxCellSize { get; set; } = 3.5f;
 

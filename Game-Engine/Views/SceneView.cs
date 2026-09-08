@@ -1219,12 +1219,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             refresh = true;
         }
 
-        foreach (var planet in PlanetTerrain.ActivePlanets)
-        {
-            var cm = planet?.ChunkManager;
-            if (cm != null && (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0))
-                refresh = true;
-        }
+        if (SceneNeedsPlanetWarmupFrames())
+            refresh = true;
 
         if (!refresh)
             return false;
@@ -1232,6 +1228,31 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _scenePlanetLodAccumSec = 0.0;
         _lastScenePlanetLodCamPos = camPos;
         return true;
+    }
+
+    static bool SceneNeedsPlanetWarmupFrames()
+    {
+        foreach (var planet in PlanetTerrain.ActivePlanets)
+        {
+            if (planet == null) continue;
+            if (planet.SurfaceBakePending)
+                return true;
+            var cm = planet.ChunkManager;
+            if (cm == null)
+                return true;
+            if (cm.PendingEditCommands > 0 || cm.PendingCompletedJobs > 0 || cm.ActiveJobs > 0)
+                return true;
+            var leaves = cm.GetRenderableLeaves();
+            if (leaves == null || leaves.Count == 0)
+                return true;
+            for (int i = 0; i < leaves.Count; i++)
+            {
+                if (leaves[i].GeneratedMesh != null)
+                    return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     bool ShouldRefreshSceneMeshLod(SN.Vector3 camPos, float dt)
@@ -1503,6 +1524,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             {
                 if (!GameView.IsAnyViewPlaying && PlanetTerrain.ActivePlanets.Count > 0)
                     TryAutoFrameActivePlanet(immediate: true);
+                // Keep Scene pumping until the first planet shell meshes land.
+                if (!GameView.IsAnyViewPlaying && SceneNeedsPlanetWarmupFrames())
+                    RequestNextFrameRendering();
             }, Avalonia.Threading.DispatcherPriority.Loaded);
         };
 
@@ -1733,6 +1757,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         var g = _glCtx?.GL;
         if (g != null)
         {
+            SceneRenderer.DisposeStaticGlResources(g);
+            CustomShaderCache.ClearContext(g);
             if (_gizmoVao != 0) { g.DeleteVertexArray(_gizmoVao); _gizmoVao = 0; }
             if (_gizmoVbo != 0) { g.DeleteBuffer(_gizmoVbo); _gizmoVbo = 0; }
             if (_colliderVao != 0) { g.DeleteVertexArray(_colliderVao); _colliderVao = 0; }
@@ -1973,7 +1999,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             // Shadow frustum centered on orbit target
             var sceneCenter = _target;
             float sceneRadius = Math.Max(20f, _distance * 1.5f);
-            shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, sceneRadius);
+            shadowVP = ShadowMapGPU.BuildDirectionalLightVP(
+                sunShineDir, sceneCenter, sceneRadius, _shadow.Width);
             _shadow.LightVP = shadowVP;
 
             // Render depth from the sun's perspective
@@ -2246,6 +2273,14 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             SceneRenderer.SkipPlanetVegetationDraws = false;
             SceneRenderer.EndViewRender();
             _renderInFlight = false;
+            // Async chunk meshes only apply inside Update/RefreshLod. Keep pumping Scene
+            // frames until leaves have meshes (Game Play already loops continuously).
+            if (!GameView.IsAnyViewPlaying && SceneNeedsPlanetWarmupFrames())
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(
+                    RequestNextFrameRendering,
+                    Avalonia.Threading.DispatcherPriority.Background);
+            }
         }
     }
     private int _evictCounter;
@@ -2507,12 +2542,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _selected = null;
 
         foreach (var go in targets)
-        {
-            if (go.Parent != null)
-                go.Parent.Children.Remove(go);
-            else
-                SceneService.Remove(go);
-        }
+            SceneService.Destroy(go);
 
         SceneService.NotifyChanged();
         RequestNextFrameRendering();

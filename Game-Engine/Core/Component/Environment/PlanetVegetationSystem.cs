@@ -19,6 +19,11 @@ public sealed class PlanetVegetationSystem : Behavior
 {
     public const string RuntimeRootName = "PlanetVegetation_Runtime";
 
+    static PlanetVegetationSystem()
+    {
+        ProjectService.ProjectClosed += ResetStaticTemplateCaches;
+    }
+
     static readonly List<PlanetVegetationSystem> s_activeSystems = new(4);
     public static IReadOnlyList<PlanetVegetationSystem> ActiveSystems => s_activeSystems;
     public static bool AnyUseDedicatedRenderPass
@@ -250,6 +255,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
     static readonly Dictionary<string, ImportedTreeTemplate> s_treeTemplateCache = new(StringComparer.OrdinalIgnoreCase);
     static readonly object s_treeTemplateLock = new();
+    const int MaxTreeTemplateCacheEntries = 32;
     /// <summary>Suffix so template cache invalidates when import/spawn pipeline changes.</summary>
     const string TreeTemplateCacheKeySuffix = "|hier_v30_pine002";
     const string DefaultPlanetGrassTexturePath = "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd";
@@ -260,6 +266,17 @@ public sealed class PlanetVegetationSystem : Behavior
     static readonly HashSet<string> s_queuedTemplateLoads = new(StringComparer.OrdinalIgnoreCase);
     static int s_templateLoaderRunning;
     bool _deferSpawnForTemplate;
+
+    static void ResetStaticTemplateCaches()
+    {
+        lock (s_treeTemplateLock)
+        {
+            s_treeTemplateCache.Clear();
+            s_queuedTemplateLoads.Clear();
+        }
+        while (s_pendingTemplateLoads.TryDequeue(out _)) { }
+        PlanetGrassTextureCache.Clear();
+    }
 
     bool PlayPerfLimited => SceneService.PlayMode && !VegetationStressTest;
 
@@ -3170,6 +3187,13 @@ public sealed class PlanetVegetationSystem : Behavior
 
         lock (s_treeTemplateLock)
         {
+            if (!s_treeTemplateCache.ContainsKey(cacheKey)
+                && s_treeTemplateCache.Count >= MaxTreeTemplateCacheEntries)
+            {
+                var oldest = s_treeTemplateCache.Keys.FirstOrDefault();
+                if (oldest != null)
+                    s_treeTemplateCache.Remove(oldest);
+            }
             s_treeTemplateCache[cacheKey] = tpl;
             return tpl;
         }
@@ -4099,6 +4123,9 @@ public sealed class PlanetVegetationSystem : Behavior
         // Trust the water mask for coasts. A global ocean-fill sphere clips dry hillside
         // benches that sit slightly below fill radius but above the actual shoreline.
         if (water.Mask >= 0.18f && water.Kind != PlanetWaterKind.Lava && crust < water.Radius - shorePad)
+            return false;
+
+        if (PlanetSurfaceUtility.SampleVolcanoRockMask(_terrain.Config, dir) > 0.22f)
             return false;
 
         return IsAboveSea(dir);

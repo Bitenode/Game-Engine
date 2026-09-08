@@ -385,7 +385,7 @@ dotnet publish -c Release -r linux-x64 --self-contained
 
 | Project | Debug Output | Release Output |
 |---------|-------------|----------------|
-| Game_Engine | `Game-Engine/bin/Debug/net9.0/` | `Game-Engine/bin/Release/net9.0/` |
+| Game_Engine | `Game-Engine/bin/Debug/net9.0-windows/` | `Game-Engine/bin/Release/net9.0-windows/` |
 | Engine.Player | `Engine.Player/bin/Debug/net9.0/` | `Engine.Player/bin/Release/net9.0/{rid}/publish/` |
 
 ### Self-Contained vs Framework-Dependent

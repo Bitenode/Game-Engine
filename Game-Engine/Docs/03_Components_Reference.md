@@ -446,7 +446,7 @@ Inspector-driven trigger presets and filters. Add to the **same GameObject** as 
 
 ## PlanetTerrain
 
-Planet terrain component for cube-sphere worlds with stacked transvoxel interiors, biome graph-driven generation, and multi-scale caves.
+Planet terrain component for cube-sphere worlds with a **height-cubemap shell**, biome-baked splat materials, and **crust-band caves** under the heightfield.
 
 | Property                | Type    | Default | Description |
 |-------------------------|---------|---------|-------------|
@@ -469,33 +469,24 @@ Planet terrain component for cube-sphere worlds with stacked transvoxel interior
 | `DefaultManipulationFalloff` | `float` | `0.6` | Default brush falloff used by dig/build APIs |
 
 **Runtime config (via `PlanetConfig`, adjusted by `ApplyChunkBudgets`):**
-- `VolumetricMaxCellSize` — **3.5** at orbit; **11** when `CameraBelowCrust` latch is true (density probe + hysteresis at camera)
+- `VolumetricMaxCellSize` — cave-band leaf refinement threshold (**3.5** orbit; **11** when `CameraBelowCrust`)
+- `EnableTransvoxelTransitions` — Lengyel transition cells on crust-cave LOD seams
+- Outer crust is always a height-cubemap shell; fine leaves may add a Transvoxel crust-cave mesh
+- Dig/build near the surface edits height deltas; underground edits cave-band occupancy
 - Play interior (inside crust latch): `MaxLodDepth` up to **6**, leaf cap **~120–160**, **~14** generation schedules per update; orbit play uses **32–64** leaves, depth **4–5**, **6** schedules
 - Play LOD is driven by **Game View only**; Scene View renders but does not split/merge during Play
-- `EnableTransvoxelTransitions` — when **true** (default), volumetric leaves emit Lengyel transition cells on LOD seam edges
-- Coarse leaves above that cell size use a smooth heightfield shell; finer leaves stack 1–4 radial transvoxel shells from near the core to the surface
-- Play dig/build remeshes overlapping volumetric leaves (no global heightfield flatten after the first edit); coarse shells may get a one-frame shell deform preview
 
 **Key methods:**
-- `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON (`PlanetAssetData` version 2) and the `.planetvox` sidecar
-- `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read planet-local strokes (and optional baked cells). Sidecar path defaults to `<name>.planetvox` beside the `.planet`
-- `WorldToLocal` / `LocalToWorld` / `WorldToLocalLength` / `LocalToWorldLength` — `PlanetSpace` conversion (density, edits, and meshes use local unscaled space)
-- `RaycastDensity` / `Raycast` — density ray-march (editor quality 96/10); fills `PlanetDensityHit` (`Point`, `Normal`, `Distance`, `StartedInside`)
-- `RaycastDensityGameplay` / `SpherecastGameplay` — same field, gameplay quality 32/4 (player motors)
-- `RaycastPaintSurface` — play-mode tool pick (iso crossing, then geometric fallback)
-- `Spherecast(worldOrigin, worldDirection, worldRadius, maxDistance, out hit)` — thick density query
-- `SampleCollisionRadius(sphereDir)` — stand radius on the **visible** leaf (`FindRenderableAtDirection`)
-- `TrySampleLocalIsosurface(sphereDir, ...)` — first inward isosurface (pits / cave mouths), not outer crust
-- `ResolveDensityPenetration(ref worldPos, worldClearance)`
-- `TryLoadBiomeGraph()` — load, compile, and apply graph data
-- `ApplyGraphResult(result, graphPath)` — apply graph output from the biome editor
-- `SampleSurfaceRadius(sphereDir)` — **outermost** crust radius (water, orbit, atmosphere, vegetation estimates). Not cave contact
-- `SampleWaterSurface(sphereDir)` — local water table sample (radius, mask, kind, body index) for rendering and underwater queries
-- `SampleWaterMask(sphereDir)` — shorthand water coverage mask
-- `UpdateLOD(cameraPos)` — camera position for the chunk streamer
-- `RefreshLodAroundCamera(cameraPos, allowLodChanges = true)` — editor/play LOD refresh with interior chunk budgets; Game View may pass `allowLodChanges: false` after a render-gap frame to apply meshes without split/merge
-- `UpdateSceneViewLod(cameraPos)` — Scene View LOD when **not** playing (Scene View does not drive LOD during Play)
-- `DigSphere(worldCenter, radius, strength, falloff)` — subtract density (world brush; stored local)
+- `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON and `.planetvox` sidecar (v2 height deltas + cave strokes)
+- `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read height deltas and cave strokes
+- `WorldToLocal` / `LocalToWorld` / `WorldToLocalLength` / `LocalToWorldLength` — `PlanetSpace` conversion
+- `RaycastDensity` / `Raycast` — heightfield + crust-cave occupancy ray-march; fills `PlanetDensityHit`
+- `RaycastDensityGameplay` / `SpherecastGameplay` — same field, gameplay quality 32/4
+- `RaycastPaintSurface` — play-mode tool pick
+- `Spherecast(...)` — thick density query
+- `SampleCollisionRadius(sphereDir)` — stand radius on the visible leaf
+- `SampleSurfaceRadius(sphereDir)` — edited height cubemap radius (water, orbit, vegetation). Not cave contact
+- `DigSphere` / `BuildSphere` — surface → height deltas; underground → cave occupancy
 - `BuildSphere(worldCenter, radius, strength, falloff)` — add density
 - `SmoothSphere(worldCenter, radius, strength, falloff)` — blend neighborhood density toward a local average
 - `FlattenSphere(worldCenter, radius, strength, falloff, targetDensity)` — pull density toward a target iso
@@ -765,13 +756,19 @@ Post-processing effects applied as a full-screen pass after scene rendering. Sup
 | Effect | Description |
 |--------|-------------|
 | **Bloom** | Bright areas glow and bleed into surrounding pixels |
+| **SSAO** | Screen-space ambient occlusion (radius, intensity, bias, sample count, depth sigma) |
+| **SSR** | Screen-space reflections (ray steps, roughness cutoff, max distance) |
+| **TAA** | Temporal anti-aliasing (frame blend, sharpen) |
 | **Fog** | Distance-based atmospheric fog |
 | **Volumetric Fog** | Ray-marched volumetric scattering with shadow sampling, height falloff, and 3D noise |
 | **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |
 | **Tone Mapping** | HDR to LDR conversion (Reinhard or ACES methods) |
 | **Vignette** | Darkened edges around the screen |
 | **FXAA** | Fast approximate anti-aliasing |
+| **Depth of Field** | Focus distance, aperture, focal length, near/far blur scales |
 | **Underwater** | Distortion, fog, caustics, and color absorption when camera is below water |
+
+**Typical usage:** add to a camera GameObject, or let `PlanetPlayerSpawner` attach one at play spawn when `AttachPostProcess` is enabled.
 
 ### Volumetric Fog Properties
 
@@ -1382,9 +1379,12 @@ Play-mode helper that creates or reuses a `RigidbodyPlayer` on `PlanetTerrain` a
 | `ExtraHeight` | `float` | `0.25` | Lift above the sampled surface |
 | `CapsuleHeight` / `CapsuleRadius` | `float` | `2` / `0.4` | Player capsule dimensions |
 | `FirstPerson` | `bool` | `true` | Passed to `RigidbodyPlayer` |
+| `AttachPlanetTool` | `bool` | `true` | Adds `PlanetTool` (dig/build along camera ray in play) |
+| `AttachPostProcess` | `bool` | `true` | Adds a global `PostProcessVolume` on the player camera with tuned bloom, ACES grading, SSAO, vignette, and FXAA |
 
 **Behavior:**
 - Resolves the nearest/active `PlanetTerrain` and stands the player on `SampleCollisionRadius` (same radius the motor snaps to). Isosurface / density rays can hit a pit or cave mouth and are not used for spawn
+- `EnsurePostProcessVolume` attaches to the player camera child (or player root). Fog is left off so `PlanetWeatherController` can drive it when present
 - `EnsureSunLight` **enables** an existing directional light and turns on `CastShadows`; it only creates a new Sun if the scene has none
 - Retries spawn for up to **12 seconds** while waiting for renderable leaves (`ActiveChunkCount > 0`); after timeout falls back without the leaf requirement
 - Adds `Rigidbody`, `CapsuleCollider`, and `RigidbodyPlayer` if missing

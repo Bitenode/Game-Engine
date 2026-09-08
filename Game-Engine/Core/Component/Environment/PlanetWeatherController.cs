@@ -156,10 +156,16 @@ public sealed class PlanetWeatherController : Behavior
             _updateAccum = 0f;
             StepWeather();
         }
-        else
-        {
-            ApplyPrecipitation(ResolveCameraPosition());
-        }
+    }
+
+    public override void LateUpdate()
+    {
+        if (!EnableWeather || _terrain == null || _terrain.Config == null || !_terrain.IsActiveAndEnabled)
+            return;
+
+        // Player/camera Update has completed, so the precipitation volume follows
+        // the current frame's eye instead of trailing by one behavior tick.
+        ApplyPrecipitation(ResolveCameraPosition());
     }
 
     public override void OnDestroy()
@@ -180,7 +186,6 @@ public sealed class PlanetWeatherController : Behavior
         if (!_terrain.TryGetBiomeBlendsAtWorldPos(camPos, out var blends) || blends.Length == 0)
         {
             ApplyHeldWeatherIntensities(Math.Max(UpdateIntervalSeconds, 0.05f), 0.5f, 1f);
-            ApplyPrecipitation(camPos);
             ApplyVegetationCoupling(1f, 1f);
             return;
         }
@@ -252,7 +257,6 @@ public sealed class PlanetWeatherController : Behavior
         if (DriveAtmosphere) ApplyAtmosphere(avgCloudBias, submerged);
         if (DriveWind) ApplyWind(cfg, avgWindBias);
         ApplyPostFog(avgFogBias, submerged);
-        ApplyPrecipitation(camPos);
         ApplyVegetationCoupling(growthMul, avgWindBias);
     }
 
@@ -389,46 +393,25 @@ public sealed class PlanetWeatherController : Behavior
         var cam = ResolveActiveCamera();
         if (cam != null && cam.TryGetWorldLookRay(out var lookOrigin, out _))
             cameraPos = lookOrigin;
-        else if (TryGetCameraLook(out var camPos, out _, out _, out _, out _) && camPos.LengthSquared() > 1e-6f)
-            cameraPos = camPos;
+        else if (TryGetCameraLook(out var fallbackPos, out _, out _, out _, out _)
+                 && fallbackPos.LengthSquared() > 1e-6f)
+            cameraPos = fallbackPos;
 
         float lift = Math.Max(8f, PrecipitationHeight);
         if (emitSnow)
             lift = Math.Max(lift, 12f);
 
-        bool haveFrustum = false;
-        SN.Vector3 camOrigin = default;
-        SN.Vector3 camForward = new(0f, 0f, -1f);
-        SN.Vector3 camRight = SN.Vector3.UnitX;
-        SN.Vector3 camUp = SN.Vector3.UnitY;
-        float camFov = 60f;
-        float camAspect = 16f / 9f;
-        float camNear = 0.5f;
-        float camFar = 40f;
-        if (cam != null)
-        {
-            var view = cam.GetViewMatrix();
-            if (SN.Matrix4x4.Invert(view, out var invView))
-            {
-                camOrigin = new SN.Vector3(invView.M41, invView.M42, invView.M43);
-                camRight = NormalizeOrFallback(new SN.Vector3(invView.M11, invView.M21, invView.M31), SN.Vector3.UnitX);
-                camUp = NormalizeOrFallback(new SN.Vector3(invView.M12, invView.M22, invView.M32), SN.Vector3.UnitY);
-                camForward = NormalizeOrFallback(new SN.Vector3(-invView.M13, -invView.M23, -invView.M33), new SN.Vector3(0f, 0f, -1f));
-                var vp = Game_Engine.Core.Input.Input.ViewportSize;
-                camAspect = vp.Y > 0.5f ? vp.X / vp.Y : 16f / 9f;
-                camFov = cam.FieldOfView;
-                camNear = Math.Max(0.4f, cam.Near);
-                camFar = Math.Clamp(Math.Min(cam.Far, 48f), camNear + 2f, 48f);
-                haveFrustum = true;
-            }
-        }
+        // Full player-centered width (not camera-frustum-only). BoxSize is a full
+        // diameter, so this gives at least 13 m coverage in every horizontal direction.
+        float coverage = Math.Max(26f, PrecipitationArea * 1.35f);
 
         for (int i = 0; i < layerCount; i++)
         {
             var go = _precipObjects[i];
             var emitter = _precipEmitters[i];
-            float layerH = PrecipitationHeight + i * Math.Max(4f, PrecipitationLayerSpacing);
-            SceneGraphUtil.SetPositionWorld(go, cameraPos + planetUp * layerH);
+            float layerH = lift + i * Math.Max(4f, PrecipitationLayerSpacing);
+            var emitterWorld = cameraPos + planetUp * layerH;
+            SceneGraphUtil.SetPositionWorld(go, emitterWorld);
 
             float layerFactor = 1f - (i / Math.Max(1f, layerCount - 1f)) * 0.28f;
             bool layerActive = i < activeLayerCap;
@@ -444,13 +427,9 @@ public sealed class PlanetWeatherController : Behavior
             if (!emitter.Enabled)
                 emitter.SetEnabledSilent(true);
 
-            float layerLift = lift + i * Math.Max(4f, PrecipitationLayerSpacing * 0.35f);
-            if (haveFrustum)
-            {
-                emitter.SetCameraFrustumSpawn(
-                    camOrigin, camForward, camRight, camUp, planetUp,
-                    camFov, camAspect, camNear, camFar, layerLift);
-            }
+            emitter.ClearCameraFrustumSpawn();
+            emitter.FollowEmitterMotion = true;
+            emitter.SynchronizeFollowOrigin(emitterWorld);
             if (emitSnow)
             {
                 if (emitter.Preset != ParticlePreset.Snow)
@@ -460,7 +439,7 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.MaxParticles = Math.Max(250, (int)(RainSafeInt(SnowMaxParticlesPerLayer) * layerFactor));
                     emitter.EmissionRate = Math.Max(5f, SnowEmissionRatePerLayer * (0.35f + effectiveSnow * 0.9f) * layerFactor);
                     emitter.Lifetime = Math.Max(1.2f, SnowLifetimeSeconds);
-                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 0.7f, Math.Max(10f, PrecipitationHeight * 0.55f), PrecipitationArea * 0.7f);
+                    emitter.BoxSize = new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.8f), coverage);
                     if (DisableSurfaceHitForWeatherPrecipitation)
                         emitter.StopOnPlanetSurfaceHit = false;
                 }
@@ -482,7 +461,7 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.MaxParticles = Math.Max(350, (int)(RainSafeInt(RainMaxParticlesPerLayer) * layerFactor));
                     emitter.EmissionRate = Math.Max(10f, RainEmissionRatePerLayer * (0.35f + effectiveRain * 0.9f) * layerFactor);
                     emitter.Lifetime = Math.Max(0.8f, RainLifetimeSeconds);
-                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 0.55f, Math.Max(10f, PrecipitationHeight * 0.6f), PrecipitationArea * 0.55f);
+                    emitter.BoxSize = new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.85f), coverage);
                     emitter.StretchAlongVelocity = true;
                     emitter.StretchLength = 1.15f;
                     if (DisableSurfaceHitForWeatherPrecipitation)
