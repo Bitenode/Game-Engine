@@ -155,6 +155,15 @@ public sealed class PlanetTerrain : Behavior
     int _worldXformFrame = int.MinValue;
     SN.Vector3 _worldCenterCached;
     float _worldScaleCached = 1f;
+    int _oceanFillCacheFrame = int.MinValue;
+    float _oceanFillWorldCached;
+    int _waterColFrame = int.MinValue;
+    SN.Vector3 _waterColDir;
+    float _waterColOccupant;
+    bool _waterColHit;
+    float _waterColWaterR;
+    float _waterColCrustR;
+    PlanetWaterSurfaceSample _waterColSample;
 
     /// <summary>True while a background height/splat cubemap bake is still running.</summary>
     public bool SurfaceBakePending { get; private set; }
@@ -432,6 +441,12 @@ public sealed class PlanetTerrain : Behavior
             _biomeMap.BindClimateCoupling(_config, _riverNoisePrimary, _riverNoiseMeander, _ridgeNoise);
             _config.GeologyNoise = new Noise.SimplexNoise(seed + 11000);
             _densitySampler = new PlanetDensitySampler(_config, _biomeMap, _noiseCache, _voxelEditStore);
+            // Keep live sculpt while a graph rebake is in flight.
+            if (_surfaceCubemap != null)
+            {
+                _densitySampler.SetSurfaceCubemap(_surfaceCubemap);
+                _chunkManager?.SetSurfaceCubemap(_surfaceCubemap);
+            }
 
             // Scene load: bake off the UI thread so the project hub / editor stay responsive.
             // Chunk meshes start from live SampleHeight; cubemap swap remeshes when ready.
@@ -529,6 +544,11 @@ public sealed class PlanetTerrain : Behavior
 
     void ApplySurfaceBakeResult(PlanetCubemapBaker.BakeResult baked, bool remesh)
     {
+        // Bake may have copied deltas from a stale snapshot. Live digs during the
+        // bake live on the current cubemap — keep those, then swap.
+        if (_surfaceCubemap != null && !ReferenceEquals(_surfaceCubemap, baked.Surface))
+            baked.Surface.CopyHeightDeltasFrom(_surfaceCubemap);
+
         _surfaceCubemap = baked.Surface;
         _climateAtlas = baked.Climate;
         _densitySampler?.SetClimateAtlas(_climateAtlas);
@@ -538,6 +558,7 @@ public sealed class PlanetTerrain : Behavior
         if (remesh)
         {
             _chunkManager?.ClearMeshCache();
+            _chunkManager?.InvalidateOverlappingGenerations();
             _chunkManager?.RequestFullShellRebuild(16);
         }
         SurfaceBakePending = false;
@@ -557,9 +578,11 @@ public sealed class PlanetTerrain : Behavior
         if (_config == null || _biomeMap == null || _biomeNoises == null)
             return 0f;
 
+        float live = PlanetSurfaceUtility.SampleHeight(
+            _config, _biomeMap, _biomeNoises, _erosionNoise, _ridgeNoise, _basinNoise, sphereDir);
         if (_surfaceCubemap != null)
         {
-            float h = _surfaceCubemap.SampleEditedHeight(sphereDir);
+            float h = _surfaceCubemap.SampleAuthoredHeight(sphereDir, live);
             var carve = CreateWaterCarveContext();
             return PlanetWaterSampler.ApplyWaterCarving(
                 h, sphereDir, carve.Config, _biomeMap, carve.RiverPrimary, carve.RiverMeander, carve.ClimateAtlas);
@@ -639,7 +662,23 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
+    /// Ocean fill radius in world meters. Cached per Update frame.
+    /// </summary>
+    public float GetOceanFillWorldRadius()
+    {
+        if (_config == null)
+            return 0f;
+        int frame = Time.frameCount;
+        if (frame == _oceanFillCacheFrame && _oceanFillWorldCached > 0f)
+            return _oceanFillWorldCached;
+        _oceanFillCacheFrame = frame;
+        _oceanFillWorldCached = PlanetWaterSampler.GetOceanFillRadius(_config) * GetWorldRadiusScale();
+        return _oceanFillWorldCached;
+    }
+
+    /// <summary>
     /// Shared water-column test for swimming and underwater FX.
+    /// Cubemap height vs the ocean sphere only — no live biome / river classify.
     /// Occupant can be the capsule or the camera. Lava bowls are not swim water.
     /// </summary>
     public bool TryGetWaterColumn(
@@ -656,42 +695,75 @@ public sealed class PlanetTerrain : Behavior
             return false;
 
         sphereDir = SN.Vector3.Normalize(sphereDir);
+        int frame = Time.frameCount;
+        if (frame == _waterColFrame
+            && MathF.Abs(occupantRadius - _waterColOccupant) < 0.4f
+            && SN.Vector3.Dot(sphereDir, _waterColDir) > 0.9997f)
+        {
+            waterWorldR = _waterColWaterR;
+            crustWorldR = _waterColCrustR;
+            sample = _waterColSample;
+            return _waterColHit;
+        }
+
         float scale = GetWorldRadiusScale();
-        crustWorldR = SampleCollisionRadius(sphereDir);
-        sample = SampleWaterSurface(sphereDir);
+        crustWorldR = SampleStandWorldRadius(sphereDir);
+        float seaR = GetOceanFillWorldRadius();
 
-        if (sample.Kind == PlanetWaterKind.Lava)
-        {
-            waterWorldR = sample.Radius * scale;
-            return false;
-        }
-
-        float waterR = sample.Mask >= 0.04f ? sample.Radius * scale : 0f;
-        float seaR = PlanetWaterSampler.GetOceanFillRadius(_config) * scale;
-        float undugCrustWorld = SampleUndugLocalCrustRadius(sphereDir) * scale;
-        // Only force sea fill when the undug column was already an ocean basin —
-        // never treat a dug land pit as swim water.
-        if (waterR < 1f && undugCrustWorld < seaR - 0.2f && crustWorldR < seaR - 0.2f
-            && PlanetSurfaceUtility.SampleMagmaBowl(_config, sphereDir) < 0.18f)
-        {
-            waterR = seaR;
-            sample = new PlanetWaterSurfaceSample(
-                seaR / MathF.Max(1e-4f, scale), 1f, 0, PlanetWaterKind.Ocean, 0);
-        }
-
-        if (waterR < 1f)
-            return false;
-
-        waterWorldR = waterR;
-        if (waterR < crustWorldR + 0.05f)
-            return false;
-        // Jump-in from a bank, or stand on a wet seabed — both are swim water.
-        if (occupantRadius > waterR + 2.4f)
-            return false;
         // Deep cave under the crust, not a seabed stand.
         if (occupantRadius < crustWorldR - 8f)
-            return false;
-        return true;
+            return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
+                out waterWorldR, out crustWorldR, out sample);
+
+        // Continent / air well above the ocean sphere.
+        if (occupantRadius > seaR + 2.4f && crustWorldR > seaR + 0.15f)
+            return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
+                out waterWorldR, out crustWorldR, out sample);
+
+        // Undug cubemap only — live river carve / GetBiomes must not run on the player tick.
+        float undugWorld = SampleUndugStandWorldRadius(sphereDir);
+        // Land (including dug pits on land) stays dry. Only undug ocean basins swim.
+        if (undugWorld >= seaR - 0.2f)
+            return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
+                out waterWorldR, out crustWorldR, out sample);
+
+        if (crustWorldR >= seaR - 0.05f)
+            return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
+                out waterWorldR, out crustWorldR, out sample);
+
+        float waterR = seaR;
+        if (waterR < crustWorldR + 0.05f || occupantRadius > waterR + 2.4f)
+            return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
+                out waterWorldR, out crustWorldR, out sample);
+
+        var hit = new PlanetWaterSurfaceSample(
+            waterR / MathF.Max(1e-4f, scale), 1f, 0, PlanetWaterKind.Ocean, 0);
+        return CacheWaterColumn(sphereDir, occupantRadius, true, waterR, crustWorldR, hit,
+            out waterWorldR, out crustWorldR, out sample);
+    }
+
+    bool CacheWaterColumn(
+        SN.Vector3 sphereDir,
+        float occupantRadius,
+        bool hit,
+        float waterWorldR,
+        float crustWorldR,
+        PlanetWaterSurfaceSample sample,
+        out float outWater,
+        out float outCrust,
+        out PlanetWaterSurfaceSample outSample)
+    {
+        _waterColFrame = Time.frameCount;
+        _waterColDir = sphereDir;
+        _waterColOccupant = occupantRadius;
+        _waterColHit = hit;
+        _waterColWaterR = waterWorldR;
+        _waterColCrustR = crustWorldR;
+        _waterColSample = sample;
+        outWater = waterWorldR;
+        outCrust = crustWorldR;
+        outSample = sample;
+        return hit;
     }
 
     /// <summary>
@@ -707,11 +779,51 @@ public sealed class PlanetTerrain : Behavior
     /// Stand grids lag remesh / preview and caused float + fall-through while digging.
     /// </summary>
     public float SampleCollisionRadius(SN.Vector3 sphereDir)
+        => SampleStandWorldRadius(sphereDir);
+
+    /// <summary>
+    /// Fast crust stand: cubemap height + digs only. No live river/biome carve.
+    /// Used by the player every physics tick.
+    /// </summary>
+    public float SampleStandWorldRadius(SN.Vector3 sphereDir)
     {
         float worldScale = GetWorldRadiusScale();
-        float crustLocal = _config != null
-            ? SampleLocalCrustRadius(sphereDir)
-            : Radius;
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        if (_surfaceCubemap != null && _surfaceCubemap.HasBaseHeights && _config != null)
+        {
+            float local = _surfaceCubemap.SampleEditedSurfaceRadius(_config.Radius, sphereDir);
+            return MathF.Max(1f, local) * worldScale;
+        }
+
+        float crustLocal = _config != null ? SampleLocalCrustRadius(sphereDir) : Radius;
+        if (crustLocal < 1f)
+            crustLocal = Radius;
+        return crustLocal * worldScale;
+    }
+
+    /// <summary>
+    /// Undug crust (base cubemap, no digs, no live water carve). Used to keep
+    /// land pits dry while ocean basins still swim.
+    /// </summary>
+    public float SampleUndugStandWorldRadius(SN.Vector3 sphereDir)
+    {
+        float worldScale = GetWorldRadiusScale();
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        if (_surfaceCubemap != null && _surfaceCubemap.HasBaseHeights && _config != null)
+        {
+            float local = _config.Radius + _surfaceCubemap.SampleBaseHeight(sphereDir);
+            return MathF.Max(1f, local) * worldScale;
+        }
+
+        float crustLocal = _config != null ? SampleLocalCrustRadius(sphereDir) : Radius;
         if (crustLocal < 1f)
             crustLocal = Radius;
         return crustLocal * worldScale;
@@ -1341,63 +1453,148 @@ public sealed class PlanetTerrain : Behavior
     public bool RaycastDensityGameplay(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
         => RaycastDensity(worldOrigin, worldDirection, maxDistance, out hit, PlanetDensityProbeQuality.Gameplay);
 
-    /// <summary>Same as <see cref="RaycastDensity"/> — alias for Scene View brushes.</summary>
+    /// <summary>Same as heightfield pick, then density for caves.</summary>
     public bool Raycast(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
-        => RaycastDensity(worldOrigin, worldDirection, maxDistance, out hit);
+    {
+        if (RaycastHeightfield(worldOrigin, worldDirection, maxDistance, out hit))
+            return true;
+        return RaycastDensity(worldOrigin, worldDirection, maxDistance, out hit);
+    }
 
-    /// <summary>Play-mode tool picking: iso crossing, then geometric fallback.</summary>
+    /// <summary>
+    /// Play-mode and editor pick against the visible height cubemap.
+    /// </summary>
     public bool RaycastPaintSurface(SN.Vector3 worldOrigin, SN.Vector3 worldDirection, float maxDistance, out PlanetDensityHit hit)
     {
+        if (RaycastHeightfield(worldOrigin, worldDirection, maxDistance, out hit))
+            return true;
+
+        if (_config != null && _config.CameraBelowCrust)
+            return RaycastDensityGameplay(worldOrigin, worldDirection, maxDistance, out hit);
+
         hit = default;
-        var sampler = CreateDensitySampler();
-        if (sampler != null && _config != null)
+        return false;
+    }
+
+    /// <summary>
+    /// First air→crust hit along a ray using cubemap height (matches the shell mesh).
+    /// </summary>
+    public bool RaycastHeightfield(
+        SN.Vector3 worldOrigin,
+        SN.Vector3 worldDirection,
+        float maxDistance,
+        out PlanetDensityHit hit)
+    {
+        hit = default;
+        float dirLenSq = worldDirection.LengthSquared();
+        if (dirLenSq < 1e-12f || _config == null)
+            return false;
+
+        var localOrigin = WorldToLocal(worldOrigin);
+        var localDir = worldDirection / MathF.Sqrt(dirLenSq);
+        float maxLocal = WorldToLocalLength(MathF.Max(0.5f, maxDistance));
+        if (maxLocal < 0.05f)
+            return false;
+
+        float SampleLocalCrust(SN.Vector3 sphereDir)
         {
-            if (PlanetDensityRaycast.RaycastIsoCrossing(
-                    sampler, GetWorldCenter(), GetWorldRadiusScale(),
-                    worldOrigin, worldDirection, maxDistance, out hit))
-                return true;
+            return MathF.Max(1f, SampleLocalCrustRadius(sphereDir));
         }
 
-        float lenSq = worldDirection.LengthSquared();
-        if (lenSq < 1e-12f)
-            return false;
-        var dir = worldDirection / MathF.Sqrt(lenSq);
-        var center = GetWorldCenter();
-        float scale = GetWorldRadiusScale();
-        float outerR = (Radius + 80f) * scale;
-        float t = Picking.RayIntersectSphere(worldOrigin, dir, center, outerR);
-        if (t >= float.MaxValue * 0.5f || t > maxDistance)
-            return false;
-
-        var approx = worldOrigin + dir * t;
-        var local = WorldToLocal(approx);
-        float localLen = local.Length();
-        var sphereDir = localLen > 1e-5f ? local / localLen : SN.Vector3.UnitY;
-
-        if (TrySampleLocalIsosurface(sphereDir, out var localPt, out var localN))
+        float maxAmp = 80f;
+        if (_config.Biomes != null)
         {
-            var worldPt = LocalToWorld(localPt);
-            var nWorld = LocalToWorld(localPt + localN) - worldPt;
-            hit = new PlanetDensityHit
-            {
-                Point = worldPt,
-                Normal = nWorld.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(nWorld) : sphereDir,
-                Distance = SN.Vector3.Distance(worldOrigin, worldPt),
-                StartedInside = false
-            };
+            for (int i = 0; i < _config.Biomes.Length; i++)
+                maxAmp = MathF.Max(maxAmp, _config.Biomes[i].HeightAmplitude);
+        }
+        float outerR = _config.Radius + maxAmp + 16f;
+
+        static bool RaySphereHit(SN.Vector3 o, SN.Vector3 d, float radius, out float tEnter)
+        {
+            tEnter = 0f;
+            float b = SN.Vector3.Dot(o, d);
+            float c = o.LengthSquared() - radius * radius;
+            float disc = b * b - c;
+            if (disc < 0f)
+                return c <= 0f;
+            float s = MathF.Sqrt(disc);
+            float t0 = -b - s;
+            float t1 = -b + s;
+            if (t1 < 0f)
+                return false;
+            tEnter = t0 >= 0f ? t0 : 0f;
             return true;
         }
 
-        float surfaceR = SampleSurfaceRadius(sphereDir);
-        var worldHit = center + sphereDir * surfaceR;
-        hit = new PlanetDensityHit
+        if (!RaySphereHit(localOrigin, localDir, outerR, out float t))
+            return false;
+        if (t > maxLocal)
+            return false;
+
+        float RadialDiff(SN.Vector3 localPos, out SN.Vector3 sphereDir, out float crustR)
         {
-            Point = worldHit,
-            Normal = sphereDir,
-            Distance = SN.Vector3.Distance(worldOrigin, worldHit),
-            StartedInside = false
-        };
-        return true;
+            float r = localPos.Length();
+            if (r < 1e-5f)
+            {
+                sphereDir = SN.Vector3.UnitY;
+                crustR = SampleLocalCrust(sphereDir);
+                return r - crustR;
+            }
+            sphereDir = localPos / r;
+            crustR = SampleLocalCrust(sphereDir);
+            return r - crustR;
+        }
+
+        var p0 = localOrigin + localDir * t;
+        float prevD = RadialDiff(p0, out _, out _);
+        float prevT = t;
+        // Started in rock: step forward until air, then the next solid is the hit.
+        bool seenAir = prevD > 0.02f;
+        const int maxSteps = 160;
+
+        for (int i = 0; i < maxSteps && t < maxLocal; i++)
+        {
+            float step = Math.Clamp(MathF.Abs(prevD) * 0.65f + 0.05f, 0.08f, 12f);
+            float nextT = MathF.Min(maxLocal, t + step);
+            var p1 = localOrigin + localDir * nextT;
+            float d1 = RadialDiff(p1, out var sph, out var crustR);
+            if (d1 > 0.02f)
+                seenAir = true;
+
+            bool crossed = seenAir && prevD > 0f && d1 <= 0f;
+            bool startedInAndNearby = !seenAir && d1 <= 0f && nextT <= 3f && MathF.Abs(d1) < 8f;
+            if (crossed || startedInAndNearby)
+            {
+                float lo = prevT;
+                float hi = nextT;
+                SN.Vector3 hitDir = sph;
+                float hitCrust = crustR;
+                for (int r = 0; r < 7; r++)
+                {
+                    float mid = (lo + hi) * 0.5f;
+                    var pm = localOrigin + localDir * mid;
+                    float dm = RadialDiff(pm, out hitDir, out hitCrust);
+                    if (dm <= 0f) hi = mid;
+                    else lo = mid;
+                }
+                float hitT = (lo + hi) * 0.5f;
+                var localHit = hitDir * hitCrust;
+                hit = new PlanetDensityHit
+                {
+                    Point = LocalToWorld(localHit),
+                    Normal = hitDir,
+                    Distance = PlanetSpace.LocalToWorldLength(hitT, GetWorldRadiusScale()),
+                    StartedInside = prevD <= 0f && t <= 1e-4f
+                };
+                return hit.Distance <= maxDistance + 1f;
+            }
+
+            prevD = d1;
+            prevT = nextT;
+            t = nextT;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -2015,6 +2212,8 @@ public sealed class PlanetTerrain : Behavior
         _config.Cliffs = result.Cliffs ?? Array.Empty<Biome.Graph.CliffRecipe>();
         _config.DomainWarps = result.DomainWarps ?? Array.Empty<Biome.Graph.DomainWarpRecipe>();
         _config.LatitudeBands = result.LatitudeBands ?? Array.Empty<Biome.Graph.LatitudeBandRecipe>();
+        _config.IceSheets = result.IceSheets ?? Array.Empty<Biome.Graph.IceSheetRecipe>();
+        _config.Wetlands = result.Wetlands ?? Array.Empty<Biome.Graph.WetlandRecipe>();
 
         // Climate coupling from compiled recipe / Climate+RainShadow nodes.
         var climate = result.Recipe?.Climate;
@@ -2027,6 +2226,19 @@ public sealed class PlanetTerrain : Behavior
             if (climate.WaterMoistureBoost > 0f)
                 _config.WaterMoistureBoost = climate.WaterMoistureBoost;
         }
+
+        if (result.RainShadows is { Length: > 0 })
+        {
+            float width = 0f;
+            for (int i = 0; i < result.RainShadows.Length; i++)
+                width += result.RainShadows[i].Width;
+            _config.RainShadowWidth = Math.Clamp(width / result.RainShadows.Length, 0.02f, 0.5f);
+        }
+
+        if (result.Seasons is { Length: > 0 })
+            _config.SnowLineAltitude = Math.Clamp(result.Seasons[0].SnowLineAltitude, 0.05f, 1f);
+
+        ApplyGraphAtmosphere(result);
 
         if (result.WaterBodies is { Length: > 0 })
         {
@@ -2120,10 +2332,30 @@ public sealed class PlanetTerrain : Behavior
                 if (layer.HasNoiseInput && layer.NoiseFrequency > 0f)
                     biome.NoiseFrequency = MathF.Max(0.0001f, layer.NoiseFrequency);
 
+                bool useClimate = layer.OverrideClimate
+                    || layer.MinTemperature >= 0f || layer.MaxTemperature >= 0f
+                    || layer.MinMoisture >= 0f || layer.MaxMoisture >= 0f
+                    || layer.MinAltitude >= 0f || layer.MaxAltitude >= 0f;
+                if (useClimate)
+                {
+                    if (layer.MinTemperature >= 0f) biome.MinTemperature = layer.MinTemperature;
+                    if (layer.MaxTemperature >= 0f) biome.MaxTemperature = layer.MaxTemperature;
+                    if (layer.MinMoisture >= 0f) biome.MinMoisture = layer.MinMoisture;
+                    if (layer.MaxMoisture >= 0f) biome.MaxMoisture = layer.MaxMoisture;
+                    if (layer.MinAltitude >= 0f) biome.MinAltitude = layer.MinAltitude;
+                    if (layer.MaxAltitude >= 0f) biome.MaxAltitude = layer.MaxAltitude;
+                    if (biome.MaxTemperature < biome.MinTemperature)
+                        (biome.MinTemperature, biome.MaxTemperature) = (biome.MaxTemperature, biome.MinTemperature);
+                    if (biome.MaxMoisture < biome.MinMoisture)
+                        (biome.MinMoisture, biome.MaxMoisture) = (biome.MaxMoisture, biome.MinMoisture);
+                    if (biome.MaxAltitude < biome.MinAltitude)
+                        (biome.MinAltitude, biome.MaxAltitude) = (biome.MaxAltitude, biome.MinAltitude);
+                }
+
                 next[i] = biome;
             }
             _config.Biomes = next;
-            if (layerCount > Biome.Graph.BiomeOutputNode.MaxLayerSlots)
+            if (layerCount > 8)
                 Log.Info($"[PlanetTerrain] Graph has {layerCount} layers; shader binds 8 albedo slots (index >= 7 uses uBiomeTex7).");
 
             if (result.Recipe.Geology.MacroFrequency > 0f)
@@ -2152,6 +2384,10 @@ public sealed class PlanetTerrain : Behavior
         scatter?.ApplyRecipes(result.ScatterLayers);
         var fauna = GetComponent<PlanetFaunaTableBehavior>();
         fauna?.Bind(result.FaunaLayers);
+        var life = GetComponent<PlanetLifeStreaming>();
+        life?.BindRecipe(result.Recipe);
+
+        ApplyWetlandFloraBoost(result);
 
         SceneRenderer.ResetBiomeTexDebug();
         // Never rewrite .planet during scene deserialize — that stalls the UI for no benefit.
@@ -2283,6 +2519,74 @@ public sealed class PlanetTerrain : Behavior
         return presets[Math.Min(index, presets.Length - 1)];
     }
 
+    void ApplyGraphAtmosphere(Biome.Graph.BiomeGraphResult result)
+    {
+        var atmo = Atmosphere ?? GetComponent<PlanetAtmosphere>();
+        if (atmo == null)
+            return;
+
+        if (result.AtmosphereNodes is { Length: > 0 })
+        {
+            var a = result.AtmosphereNodes[0];
+            if (!string.IsNullOrWhiteSpace(a.Preset)
+                && Enum.TryParse<PlanetAtmospherePreset>(a.Preset, ignoreCase: true, out var preset)
+                && preset != PlanetAtmospherePreset.Custom)
+            {
+                atmo.Preset = preset;
+            }
+            else
+            {
+                atmo.Preset = PlanetAtmospherePreset.Custom;
+            }
+            atmo.RayleighStrength = Math.Clamp(a.RayleighStrength, 0.05f, 4f);
+            atmo.MieStrength = Math.Clamp(a.MieStrength, 0f, 4f);
+            if (a.DayLengthMinutes > 0.5f)
+                atmo.DayLengthMinutes = a.DayLengthMinutes;
+            if (a.AtmosphereHeight > 10f)
+                atmo.AtmosphereHeight = a.AtmosphereHeight;
+        }
+
+        if (result.CloudLayers is { Length: > 0 })
+        {
+            var c = result.CloudLayers[0];
+            atmo.EnableClouds = true;
+            atmo.CloudCoverage = Math.Clamp(c.Coverage, 0f, 1f);
+            atmo.CloudDensity = Math.Clamp(c.Density, 0.05f, 3f);
+            if (c.BaseHeight > 1f) atmo.CloudBaseHeight = c.BaseHeight;
+            if (c.TopHeight > c.BaseHeight) atmo.CloudTopHeight = c.TopHeight;
+        }
+    }
+
+    void ApplyWetlandFloraBoost(Biome.Graph.BiomeGraphResult result)
+    {
+        if (_config?.Biomes == null || result.Wetlands is not { Length: > 0 })
+            return;
+
+        for (int w = 0; w < result.Wetlands.Length; w++)
+        {
+            var wet = result.Wetlands[w];
+            string target = wet.TargetBiome ?? "";
+            for (int i = 0; i < _config.Biomes.Length; i++)
+            {
+                var b = _config.Biomes[i];
+                if (!string.IsNullOrWhiteSpace(target)
+                    && !string.Equals(b.Name, target, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(b.Name, "Wetlands", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                float reed = Math.Clamp(wet.ReedDensity, 0f, 2f);
+                b.VegetationDensity = Math.Clamp(b.VegetationDensity + reed * 0.35f, 0f, 2f);
+                b.VegetationPatchiness = Math.Clamp(b.VegetationPatchiness * 0.85f, 0.15f, 1f);
+                if (string.Equals(b.Name, "Wetlands", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(b.Name, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    b.MinMoisture = Math.Min(b.MinMoisture, Math.Max(0.55f, 1f - wet.MoistureBoost));
+                    b.MaxMoisture = 1f;
+                }
+            }
+        }
+    }
+
     public void DigSphere(SN.Vector3 worldCenter, float radius, float strength = 0f, float falloff = -1f)
     {
         if (SceneService.PlayMode)
@@ -2346,8 +2650,8 @@ public sealed class PlanetTerrain : Behavior
             // Keep mesher/sampler on the same cubemap instance as digs just wrote.
             _chunkManager.SetSurfaceCubemap(_surfaceCubemap);
             float invalidateR = brushR + MathF.Max(2f, MathF.Abs(step));
-            _chunkManager.ClearMeshCache();
-            // Always preview-deform + schedule remesh (editor and play).
+            // Do not ClearMeshCache() per stroke — that rebuilt the whole planet and
+            // was the PlanetTool spike. Dirty + remesh only overlapping leaves.
             _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
         }
         else
@@ -2374,8 +2678,18 @@ public sealed class PlanetTerrain : Behavior
     {
         if (_surfaceCubemap != null || _config == null || _biomeMap == null)
             return;
+
+        // Bake still running — keep a scratch for HeightDelta only. HasBaseHeights
+        // stays false so remesh/GPU keep using live graph heights + these deltas.
         if (SurfaceBakePending)
+        {
+            _surfaceCubemap = new PlanetSurfaceCubemap(
+                PlanetSurfaceCubemap.DefaultResolution, _config.RecipeHash);
+            _densitySampler?.SetSurfaceCubemap(_surfaceCubemap);
+            _chunkManager?.SetSurfaceCubemap(_surfaceCubemap);
             return;
+        }
+
         if (_noiseCache == null)
             RebuildPhysicsNoise();
         if (_surfaceCubemap != null || _noiseCache == null || SurfaceBakePending)

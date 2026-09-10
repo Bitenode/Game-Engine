@@ -34,9 +34,13 @@ public sealed class CrustCaveSampler
 
     public float SampleSurfaceRadius(SN.Vector3 sphereDir)
     {
+        float live = PlanetSurfaceUtility.SampleHeight(
+            _config, _biomeMap,
+            _noise.BiomeNoises, _noise.ErosionNoise,
+            _noise.RidgeNoise, _noise.BasinNoise, sphereDir);
         if (_surface != null)
-            return _surface.SampleEditedSurfaceRadius(_config.Radius, sphereDir);
-        return _config.Radius;
+            return MathF.Max(1f, _config.Radius + _surface.SampleAuthoredHeight(sphereDir, live));
+        return MathF.Max(1f, _config.Radius + live);
     }
 
     /// <summary>

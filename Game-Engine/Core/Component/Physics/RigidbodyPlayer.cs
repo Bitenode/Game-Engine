@@ -120,6 +120,8 @@ namespace Game_Engine.Core.Component
         float _collisionCacheTime = float.NegativeInfinity;
         SN.Vector3 _collisionCacheDir = new(float.NaN);
         float _collisionCacheR;
+        float _cachedStandCrustR;
+        float _cachedStandWaterR;
 
         /// <summary>Clear stand-radius cache after digs so the next sample hits the live cubemap.</summary>
         public void InvalidateCollisionCache()
@@ -201,7 +203,6 @@ namespace Game_Engine.Core.Component
             _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
 
             // ── Move intent ──
-            GEInput.PollHardwareHeldKeys();
             int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
                      - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.S) ? 1 : 0);
             int xRight = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.D) ? 1 : 0)
@@ -315,6 +316,9 @@ namespace Game_Engine.Core.Component
         {
             float dist = (pos - _planetCenter).Length();
             bool belowCrust = planet.Config != null && planet.Config.CameraBelowCrust;
+            // Cave-LOD latch must not force density walking while the body is on the shell.
+            if (belowCrust && dist >= crustR - Rigidbody.PlanetSurfaceEnterSlack)
+                belowCrust = false;
             Rigidbody.RefreshPlanetSurfaceMode(ref _surfaceMode, dist, crustR, belowCrust);
         }
 
@@ -405,8 +409,13 @@ namespace Game_Engine.Core.Component
             }
 
             const float stepUp = Rigidbody.PlanetWalkStepUp;
-            float neighborhood = GetNeighborhoodRadius(planet, up);
-            float probeDist = MathF.Min(capsuleH + stepUp + Rigidbody.PlanetWalkGroundSnap, neighborhood);
+            float neighborhood = 32f;
+            float probeDist = capsuleH + stepUp + Rigidbody.PlanetWalkGroundSnap;
+            if (!_surfaceMode || _airborne)
+            {
+                neighborhood = GetNeighborhoodRadius(planet, up);
+                probeDist = MathF.Min(probeDist, neighborhood);
+            }
 
             if (wish.LengthSquared() > 1e-8f)
             {
@@ -431,9 +440,12 @@ namespace Game_Engine.Core.Component
             {
                 float stand = crustR + capsuleH;
                 pos = center + up * stand;
-                // Radial stand alone leaves the capsule inside steep dig faces — push out, then re-seat.
-                ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
-                crustR = SampleCollisionRadiusCached(planet, up);
+                // Dig-wall ring is only needed while moving or just after a jump.
+                if (_wishLocal.LengthSquared() > 1e-4f || _airborne)
+                {
+                    ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
+                    crustR = SampleCollisionRadiusCached(planet, up);
+                }
                 onContact = true;
                 hit.Point = center + up * crustR;
                 hit.Normal = up;
@@ -535,7 +547,8 @@ namespace Game_Engine.Core.Component
             else if (_surfaceMode)
             {
                 pos = center + up * (crustR + capsuleH);
-                ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
+                if (_wishLocal.LengthSquared() > 1e-4f)
+                    ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH);
                 onContact = true;
                 _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
@@ -553,6 +566,7 @@ namespace Game_Engine.Core.Component
             }
 
             Transform.Position = new Vector3(pos.X, pos.Y, pos.Z);
+            _cachedStandCrustR = crustR;
         }
 
         static bool TryQueryPlanetWater(
@@ -785,7 +799,7 @@ namespace Game_Engine.Core.Component
                 return _collisionCacheR;
             _collisionCacheTime = now;
             _collisionCacheDir = dir;
-            _collisionCacheR = planet.SampleCollisionRadius(dir);
+            _collisionCacheR = planet.SampleStandWorldRadius(dir);
             return _collisionCacheR;
         }
 
@@ -802,14 +816,14 @@ namespace Game_Engine.Core.Component
             float capsuleRadius,
             float capsuleH)
         {
-            const int iters = 3;
-            const int ring = 8;
+            const int iters = 1;
+            const int ring = 4;
             float maxStep = MathF.Max(0.35f, Rigidbody.PlanetWalkStepUp);
 
             for (int it = 0; it < iters; it++)
             {
                 RefreshRadialUp(pos, center, ref up);
-                float crustR = planet.SampleCollisionRadius(up);
+                float crustR = planet.SampleStandWorldRadius(up);
                 pos = center + up * (crustR + capsuleH);
 
                 var seed = MathF.Abs(up.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
@@ -824,7 +838,7 @@ namespace Game_Engine.Core.Component
                     float a = i * (MathF.PI * 2f / ring);
                     var tangent = t0 * MathF.Cos(a) + t1 * MathF.Sin(a);
                     var sampleDir = SN.Vector3.Normalize(up + tangent * ang);
-                    float nR = planet.SampleCollisionRadius(sampleDir);
+                    float nR = planet.SampleStandWorldRadius(sampleDir);
                     float rise = nR - crustR;
                     if (rise <= maxStep)
                         continue;
@@ -842,7 +856,7 @@ namespace Game_Engine.Core.Component
             }
 
             RefreshRadialUp(pos, center, ref up);
-            float finalCrust = planet.SampleCollisionRadius(up);
+            float finalCrust = planet.SampleStandWorldRadius(up);
             pos = center + up * (finalCrust + capsuleH);
         }
 
@@ -892,6 +906,8 @@ namespace Game_Engine.Core.Component
                         }
                         _planetInWater = true;
                         _planetDiving = wantsDive;
+                        _cachedStandCrustR = crustR;
+                        _cachedStandWaterR = waterSurfaceR;
                         SwimOnPlanet(dt, planet, _planetCenter, waterUp, bodyDist, waterSurfaceR, crustR, waterSample, _planetDiving);
                     }
                     else
@@ -903,6 +919,7 @@ namespace Game_Engine.Core.Component
                         _planetSubmergedLatch = false;
                         _swimPlanarVel = SN.Vector3.Zero;
                         _swimRadialVel *= MathF.Max(0f, 1f - dt * 5f);
+                        _cachedStandWaterR = 0f;
                         WalkOnPlanetSurface(dt, planetUp, planet, _planetCenter);
                     }
                 }
@@ -916,6 +933,7 @@ namespace Game_Engine.Core.Component
                     _planetSubmergedLatch = false;
                     _swimPlanarVel = SN.Vector3.Zero;
                     _swimRadialVel *= MathF.Max(0f, 1f - dt * 4f);
+                    _cachedStandWaterR = 0f;
                     WalkOnPlanetSurface(dt, planetUp, planet, _planetCenter);
                 }
                 return;
@@ -1093,12 +1111,10 @@ namespace Game_Engine.Core.Component
             var target = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
             var lookAt = target + localUp * (float)FirstPersonOffset.Y;
             var desiredPos = target + desired;
-            if (IsPlanetSwimming && !_planetDiving && _planet != null)
+            if (IsPlanetSwimming && !_planetDiving && _cachedStandWaterR > 1f)
             {
-                var sample = _planet.SampleWaterSurface(localUp);
-                float waterR = sample.Mask >= 0.04f ? sample.Radius * _planet.GetWorldRadiusScale() : 0f;
                 float bodyR = SN.Vector3.Dot(target - _planetCenter, localUp);
-                if (waterR > 1f && bodyR > waterR - 1.25f)
+                if (bodyR > _cachedStandWaterR - 1.25f)
                     desiredPos = LiftEyeAboveWater(desiredPos, localUp, _planet);
             }
             if (AvoidCameraGroundClip)
@@ -1169,12 +1185,9 @@ namespace Game_Engine.Core.Component
 
         SN.Vector3 LiftEyeAboveWater(SN.Vector3 eye, SN.Vector3 up, PlanetTerrain planet)
         {
+            _ = planet;
             up = SafeNormalize(up, SN.Vector3.UnitY);
-            var sample = planet.SampleWaterSurface(up);
-            if (sample.Mask < 0.04f || sample.Kind == PlanetWaterKind.Lava)
-                return eye;
-
-            float waterR = sample.Radius * planet.GetWorldRadiusScale();
+            float waterR = _cachedStandWaterR;
             if (waterR < 1f)
                 return eye;
 
@@ -1210,19 +1223,20 @@ namespace Game_Engine.Core.Component
             {
                 if (!_planetDiving)
                 {
-                    var sample = planet.SampleWaterSurface(up);
-                    float waterR = sample.Mask >= 0.04f ? sample.Radius * planet.GetWorldRadiusScale() : 0f;
                     float bodyR = SN.Vector3.Dot(bodyPos - _planetCenter, up);
-                    if (waterR > 1f && bodyR > waterR - 1.25f)
+                    if (_cachedStandWaterR > 1f && bodyR > _cachedStandWaterR - 1.25f)
                         eye = LiftEyeAboveWater(eye, up, planet);
                 }
                 return eye;
             }
 
-            // Surface mode: lift from stand grid + radial offset — no density loops.
+            // Surface mode: lift from the heightfield stand. Density marches are
+            // cave-only — they were the Update spike while walking the crust.
             if (_surfaceMode)
             {
-                float crustR = SampleCollisionRadiusCached(planet, up);
+                float crustR = _cachedStandCrustR > 1f
+                    ? _cachedStandCrustR
+                    : SampleCollisionRadiusCached(planet, up);
                 float eyeHeight = MathF.Max(0.5f, (float)FirstPersonOffset.Y);
                 float standEyeR = crustR + eyeHeight;
                 float radial = SN.Vector3.Dot(eye - _planetCenter, up);
@@ -1231,23 +1245,24 @@ namespace Game_Engine.Core.Component
                 else if (radial > standEyeR + 0.35f && !_airborne)
                     eye = _planetCenter + up * standEyeR + (eye - _planetCenter - up * radial);
 
-                // Dig shafts: keep the near plane out of steep walls.
-                float digClearance = MathF.Max(0.28f, (_cam?.Near ?? 0.1f) + 0.18f);
-                if (planet.TrySampleWorldDensity(eye, out float surfaceEyeDensity) && surfaceEyeDensity < digClearance)
+                if (planet.Config != null && planet.Config.CameraBelowCrust)
                 {
-                    var eyePush = eye;
-                    if (planet.ResolveDensityPenetration(ref eyePush, digClearance, 6))
-                        eye = eyePush;
-                }
-                // Look-ahead into the wall you're facing while aiming down a shaft.
-                var lookProbe = eye + lookFwd * digClearance;
-                if (planet.TrySampleWorldDensity(lookProbe, out float lookD) && lookD < digClearance * 0.85f)
-                {
-                    var pushed = eye;
-                    if (planet.ResolveDensityPenetration(ref pushed, digClearance, 4))
-                        eye = pushed;
-                    if (_cam != null && _cam.Near > 0.06f)
-                        _cam.Near = MathF.Max(0.05f, _cam.Near * 0.85f);
+                    float digClearance = MathF.Max(0.28f, (_cam?.Near ?? 0.1f) + 0.18f);
+                    if (planet.TrySampleWorldDensity(eye, out float surfaceEyeDensity) && surfaceEyeDensity < digClearance)
+                    {
+                        var eyePush = eye;
+                        if (planet.ResolveDensityPenetration(ref eyePush, digClearance, 6))
+                            eye = eyePush;
+                    }
+                    var lookProbe = eye + lookFwd * digClearance;
+                    if (planet.TrySampleWorldDensity(lookProbe, out float lookD) && lookD < digClearance * 0.85f)
+                    {
+                        var pushed = eye;
+                        if (planet.ResolveDensityPenetration(ref pushed, digClearance, 4))
+                            eye = pushed;
+                        if (_cam != null && _cam.Near > 0.06f)
+                            _cam.Near = MathF.Max(0.05f, _cam.Near * 0.85f);
+                    }
                 }
                 return eye;
             }

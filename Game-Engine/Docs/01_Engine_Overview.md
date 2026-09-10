@@ -252,13 +252,18 @@ Game-Engine/
 ├── Docking/                     # Dockable panel system
 │   ├── DockManager.cs           # 5-region dock management
 │   └── ToolWindow.cs            # Floating window wrapper
-├── Standard Assets/             # Built-in assets
+├── Standard Assets/             # Built-in assets (copied to Assets/Standard Assets/ in new projects)
+│   ├── BiomeGraph/              # Starter planet biome graphs (e.g. PlanetBiomes.biomegraph)
+│   ├── Biomes/                  # vegetation-profiles.json presets
+│   ├── Planet Textures/         # Ground albedo/normal packs for biome layers
+│   ├── Planet Vegetation/       # Default grass/tree FBX and materials
 │   ├── Skybox/                  # 47 equirectangular sky textures
 │   ├── Glass/                   # Glass material textures
 │   ├── Shader/                  # Built-in shaders and shader graphs
 │   │   ├── Steel PBR.shader    # Cook-Torrance PBR shader
 │   │   └── *.shadergraph       # Pre-built shader graph assets
-│   └── Code Examples/           # Extension code samples
+│   ├── Scenes/                  # Main Menu, Server lobby templates
+│   └── Code Examples/           # Extension code samples (UI, gameplay, planet tools)
 ├── Program.cs                   # Application entry point
 ├── MainWindow.axaml(.cs)        # Main editor window with menus
 ├── App.axaml(.cs)               # Avalonia application definition

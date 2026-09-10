@@ -785,9 +785,9 @@ public sealed class PlanetMeshGenerator
                 if (u1 >= 1f && ix == size) u = 1f;
 
                 var sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
-                // Always sample the authored surface (no LOD-scaled brush). Adjacent
-                // chunks then agree on shared cube-sphere edges.
-                float surfaceR = _sampler.SampleEditedSurfaceRadius(sphereDir, vertexSpacing);
+                // Cubemap + digs, no live river carve — matches the sculpt preview
+                // so remesh cannot snap craters back to the biome-graph height.
+                float surfaceR = _sampler.SampleMeshSurfaceRadius(sphereDir);
                 float alt = _biomeMap.NormalizeAltitude(surfaceR - _config.Radius);
                 var blends = _biomeMap.GetBiomes(sphereDir, alt);
                 var pos = sphereDir * surfaceR;
@@ -995,9 +995,9 @@ public sealed class PlanetMeshGenerator
         var d0 = SN.Vector3.Normalize(sphereDir);
         var dT = SN.Vector3.Normalize(sphereDir + t * eps);
         var dB = SN.Vector3.Normalize(sphereDir + b * eps);
-        float r0 = _sampler.SampleEditedSurfaceRadius(d0, vertexSpacing);
-        float rT = _sampler.SampleEditedSurfaceRadius(dT, vertexSpacing);
-        float rB = _sampler.SampleEditedSurfaceRadius(dB, vertexSpacing);
+        float r0 = _sampler.SampleMeshSurfaceRadius(d0);
+        float rT = _sampler.SampleMeshSurfaceRadius(dT);
+        float rB = _sampler.SampleMeshSurfaceRadius(dB);
         var p0 = d0 * r0;
         var pT = dT * rT;
         var pB = dB * rB;

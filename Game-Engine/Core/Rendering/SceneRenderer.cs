@@ -3182,6 +3182,24 @@ namespace Game_Engine.Core
                 return;
             }
 
+            // Scratch cubemap during an in-flight graph bake has empty splat —
+            // keep vertex biome blends so the first dig cannot paint the planet dirt.
+            if (!surface.HasBaseHeights)
+            {
+                shader.SetInt("uUsePlanetSplat", 0);
+                int pendingHeightVersion = surface.HeightVersion;
+                var (pendingDig, pendingDigUpload) = cache.GetPlanetHeightTexture(planet, pendingHeightVersion);
+                if (pendingDigUpload)
+                {
+                    pendingDig.UploadRedFloatFaces(surface.HeightDelta, surface.Resolution);
+                    cache.SetPlanetHeightVersion(planet, pendingHeightVersion);
+                }
+                pendingDig.Bind(TextureUnit.Texture14);
+                shader.SetTexture("uPlanetDigAtlas", 14);
+                shader.SetInt("uUsePlanetDig", 1);
+                return;
+            }
+
             int splatVersion = surface.SplatVersion;
             var (splat0, splat1, needsUpload) = cache.GetPlanetSplatTextures(planet, splatVersion);
             if (needsUpload)
@@ -3261,25 +3279,19 @@ namespace Game_Engine.Core
             if (UnderwaterQuery.AnyPlayerPlanetSubmerged())
                 return;
 
-            wetness = BiomeWeatherRuntime.Wetness;
-            snowCoverage = BiomeWeatherRuntime.SnowCoverage;
             var behaviors = planet.gameObject?.Behaviors;
             if (behaviors == null)
-            {
-                weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;
                 return;
-            }
+
             for (int i = 0; i < behaviors.Count; i++)
             {
                 if (behaviors[i] is not PlanetWeatherController wx || !wx.EnableWeather || !wx.IsActiveAndEnabled)
                     continue;
-                wetness = Math.Max(wetness, wx.Wetness);
-                wetness = Math.Max(wetness, wx.RainIntensity * 0.92f);
-                snowCoverage = Math.Max(snowCoverage, wx.SnowCoverage);
+                wetness = Math.Max(wx.Wetness, wx.RainIntensity * 0.92f);
+                snowCoverage = wx.SnowCoverage;
                 weatherOn = (wetness > 0.02f || snowCoverage > 0.02f || wx.RainIntensity > 0.05f) ? 1f : 0f;
                 return;
             }
-            weatherOn = (wetness > 0.02f || snowCoverage > 0.02f) ? 1f : 0f;
         }
 
         private static void BindBiomeTextures(GL gl, ShaderProgram shader, ResourceCache cache,
@@ -3534,7 +3546,7 @@ namespace Game_Engine.Core
                         wb.DeepestR, wb.DeepestG, wb.DeepestB);
                 }
                 SetBodyColor(6, 1.00f, 0.55f, 0.10f, 0.82f, 0.16f, 0.03f, 0.20f, 0.03f, 0.01f);
-                SetBodyColor(7, 0.12f, 0.35f, 0.28f, 0.04f, 0.12f, 0.14f, 0.02f, 0.05f, 0.08f);
+                SetBodyColor(7, 0.16f, 0.48f, 0.50f, 0.05f, 0.22f, 0.30f, 0.03f, 0.12f, 0.20f);
             }
             waterShader.SetInt("uWaterBodyCount", waterBodyCount);
 

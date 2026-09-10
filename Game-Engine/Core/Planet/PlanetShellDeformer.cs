@@ -38,7 +38,9 @@ static class PlanetShellDeformer
                 continue;
 
             var dir = p / MathF.Sqrt(lenSq);
-            float newR = sampler.SampleEditedSurfaceRadius(dir, vertexSpacing);
+            float newR = sampler != null
+                ? sampler.SampleMeshSurfaceRadius(dir)
+                : p.Length();
             var np = dir * newR;
             if (SN.Vector3.DistanceSquared(p, np) <= 1e-8f)
                 continue;

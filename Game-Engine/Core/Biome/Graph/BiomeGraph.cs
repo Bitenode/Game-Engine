@@ -148,6 +148,14 @@ public sealed class BiomeLayerInfo
     public float TreeMaxSlope { get; set; } = 35f;
     public float TreeMinAltitude { get; set; }
     public float TreeMaxAltitude { get; set; } = 0.85f;
+
+    public bool OverrideClimate { get; set; }
+    public float MinTemperature { get; set; } = -1f;
+    public float MaxTemperature { get; set; } = -1f;
+    public float MinMoisture { get; set; } = -1f;
+    public float MaxMoisture { get; set; } = -1f;
+    public float MinAltitude { get; set; } = -1f;
+    public float MaxAltitude { get; set; } = -1f;
 }
 
 /// <summary>
@@ -554,6 +562,13 @@ public sealed class BiomeGraph
                 GrowthTemperatureMax = ln.GrowthTemperatureMax,
                 GrowthMoistureMin = ln.GrowthMoistureMin,
                 GrowthMoistureMax = ln.GrowthMoistureMax,
+                OverrideClimate = ln.HasAuthoredClimate,
+                MinTemperature = ln.MinTemperature,
+                MaxTemperature = ln.MaxTemperature,
+                MinMoisture = ln.MinMoisture,
+                MaxMoisture = ln.MaxMoisture,
+                MinAltitude = ln.MinAltitude,
+                MaxAltitude = ln.MaxAltitude,
             });
         }
         result.Layers = layers.ToArray();
@@ -880,17 +895,34 @@ public sealed class BiomeGraph
         var rules = new BiomeSelectRule[layers.Length];
         for (int i = 0; i < layers.Length; i++)
         {
-            var preset = FindPreset(layers[i].BiomeName) ?? presets[Math.Min(i, presets.Length - 1)];
+            var layer = layers[i];
+            var preset = FindPreset(layer.BiomeName) ?? presets[Math.Min(i, presets.Length - 1)];
+            bool useLayer = layer.OverrideClimate
+                || layer.MinTemperature >= 0f || layer.MaxTemperature >= 0f
+                || layer.MinMoisture >= 0f || layer.MaxMoisture >= 0f
+                || layer.MinAltitude >= 0f || layer.MaxAltitude >= 0f;
+
+            float minT = useLayer && layer.MinTemperature >= 0f ? layer.MinTemperature : preset.MinTemperature;
+            float maxT = useLayer && layer.MaxTemperature >= 0f ? layer.MaxTemperature : preset.MaxTemperature;
+            float minM = useLayer && layer.MinMoisture >= 0f ? layer.MinMoisture : preset.MinMoisture;
+            float maxM = useLayer && layer.MaxMoisture >= 0f ? layer.MaxMoisture : preset.MaxMoisture;
+            float minA = useLayer && layer.MinAltitude >= 0f ? layer.MinAltitude : preset.MinAltitude;
+            float maxA = useLayer && layer.MaxAltitude >= 0f ? layer.MaxAltitude : preset.MaxAltitude;
+
+            if (maxT < minT) (minT, maxT) = (maxT, minT);
+            if (maxM < minM) (minM, maxM) = (maxM, minM);
+            if (maxA < minA) (minA, maxA) = (maxA, minA);
+
             rules[i] = new BiomeSelectRule
             {
-                BiomeName = layers[i].BiomeName,
+                BiomeName = layer.BiomeName,
                 LayerIndex = i,
-                MinTemperature = preset.MinTemperature,
-                MaxTemperature = preset.MaxTemperature,
-                MinMoisture = preset.MinMoisture,
-                MaxMoisture = preset.MaxMoisture,
-                MinAltitude = preset.MinAltitude,
-                MaxAltitude = preset.MaxAltitude,
+                MinTemperature = minT,
+                MaxTemperature = maxT,
+                MinMoisture = minM,
+                MaxMoisture = maxM,
+                MinAltitude = minA,
+                MaxAltitude = maxA,
             };
         }
         return rules;
@@ -1460,6 +1492,13 @@ public sealed class BiomeGraph
                 obj["growthTempMax"] = n.GrowthTemperatureMax;
                 obj["growthMoistMin"] = n.GrowthMoistureMin;
                 obj["growthMoistMax"] = n.GrowthMoistureMax;
+                obj["overrideClimate"] = n.OverrideClimate || n.HasAuthoredClimate;
+                obj["minTemp"] = n.MinTemperature;
+                obj["maxTemp"] = n.MaxTemperature;
+                obj["minMoist"] = n.MinMoisture;
+                obj["maxMoist"] = n.MaxMoisture;
+                obj["minAlt"] = n.MinAltitude;
+                obj["maxAlt"] = n.MaxAltitude;
                 break;
             case BiomeMathNode n:
                 obj["operation"] = n.Operation.ToString(); break;
@@ -1634,6 +1673,13 @@ public sealed class BiomeGraph
                 n.GrowthTemperatureMax = item["growthTempMax"]?.GetValue<float>() ?? 0.8f;
                 n.GrowthMoistureMin = item["growthMoistMin"]?.GetValue<float>() ?? 0.2f;
                 n.GrowthMoistureMax = item["growthMoistMax"]?.GetValue<float>() ?? 0.9f;
+                n.OverrideClimate = item["overrideClimate"]?.GetValue<bool>() ?? false;
+                n.MinTemperature = item["minTemp"]?.GetValue<float>() ?? -1f;
+                n.MaxTemperature = item["maxTemp"]?.GetValue<float>() ?? -1f;
+                n.MinMoisture = item["minMoist"]?.GetValue<float>() ?? -1f;
+                n.MaxMoisture = item["maxMoist"]?.GetValue<float>() ?? -1f;
+                n.MinAltitude = item["minAlt"]?.GetValue<float>() ?? -1f;
+                n.MaxAltitude = item["maxAlt"]?.GetValue<float>() ?? -1f;
                 break;
             case BiomeMathNode n:
                 if (Enum.TryParse<BiomeMathOp>(item["operation"]?.GetValue<string>(), out var op))

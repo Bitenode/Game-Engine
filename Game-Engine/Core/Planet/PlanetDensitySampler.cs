@@ -95,6 +95,9 @@ public sealed class PlanetDensitySampler
     };
 
     PlanetClimateAtlas? _climateAtlas;
+    int _carveCacheFrame = -1;
+    SN.Vector3 _carveCacheDir;
+    float _carveCacheHeight;
 
     public void SetClimateAtlas(PlanetClimateAtlas? atlas) => _climateAtlas = atlas;
 
@@ -123,25 +126,33 @@ public sealed class PlanetDensitySampler
         _crustCaves.SetSurfaceCubemap(_surfaceCubemap);
     }
 
+    float SampleLiveGraphHeight(SN.Vector3 sphereDir)
+        => PlanetSurfaceUtility.SampleHeight(
+            _config,
+            _biomeMap,
+            _biomeNoises,
+            _erosionNoise,
+            _ridgeNoise,
+            _basinNoise,
+            sphereDir);
+
+    float SampleAuthoredHeight(SN.Vector3 sphereDir)
+    {
+        float live = SampleLiveGraphHeight(sphereDir);
+        if (_surfaceCubemap != null)
+            return _surfaceCubemap.SampleAuthoredHeight(sphereDir, live);
+        return live;
+    }
+
     float SampleCarvedHeight(SN.Vector3 sphereDir)
     {
-        float height;
-        if (_surfaceCubemap != null)
-            height = _surfaceCubemap.SampleEditedHeight(sphereDir);
-        else
-        {
-            height = PlanetSurfaceUtility.SampleHeight(
-                _config,
-                _biomeMap,
-                _biomeNoises,
-                _erosionNoise,
-                _ridgeNoise,
-                _basinNoise,
-                sphereDir);
-        }
+        int frame = Time.frameCount;
+        if (frame == _carveCacheFrame && SN.Vector3.Dot(sphereDir, _carveCacheDir) > 0.9998f)
+            return _carveCacheHeight;
 
+        float height = SampleAuthoredHeight(sphereDir);
         var carve = CreateCarveContext();
-        return PlanetWaterSampler.ApplyWaterCarving(
+        height = PlanetWaterSampler.ApplyWaterCarving(
             height,
             sphereDir,
             carve.Config,
@@ -149,6 +160,10 @@ public sealed class PlanetDensitySampler
             carve.RiverPrimary,
             carve.RiverMeander,
             carve.ClimateAtlas);
+        _carveCacheFrame = frame;
+        _carveCacheDir = sphereDir;
+        _carveCacheHeight = height;
+        return height;
     }
 
     /// <summary>Procedural crust density only (no caves). Uses height cubemap when available.</summary>
@@ -243,6 +258,18 @@ public sealed class PlanetDensitySampler
     }
 
     /// <summary>
+    /// Visible shell radius (cubemap + digs, no live river carve). Matches meshing.
+    /// </summary>
+    public float SampleMeshSurfaceRadius(SN.Vector3 sphereDir)
+    {
+        float lenSq = sphereDir.LengthSquared();
+        if (lenSq < 1e-12f)
+            return _config.Radius;
+        var dir = sphereDir / MathF.Sqrt(lenSq);
+        return MathF.Max(_config.Radius * 0.5f, _config.Radius + SampleAuthoredHeight(dir));
+    }
+
+    /// <summary>
     /// Surface radius without dig deltas (base cubemap + water carve only).
     /// Used so land digs below sea level do not spawn ocean water in the pit.
     /// </summary>
@@ -252,20 +279,10 @@ public sealed class PlanetDensitySampler
         if (lenSq < 1e-12f)
             return _config.Radius;
         var dir = sphereDir / MathF.Sqrt(lenSq);
-        float height;
-        if (_surfaceCubemap != null)
-            height = _surfaceCubemap.SampleBaseHeight(dir);
-        else
-        {
-            height = PlanetSurfaceUtility.SampleHeight(
-                _config,
-                _biomeMap,
-                _biomeNoises,
-                _erosionNoise,
-                _ridgeNoise,
-                _basinNoise,
-                dir);
-        }
+        float live = SampleLiveGraphHeight(dir);
+        float height = _surfaceCubemap != null
+            ? _surfaceCubemap.SampleAuthoredBaseHeight(dir, live)
+            : live;
 
         var carve = CreateCarveContext();
         height = PlanetWaterSampler.ApplyWaterCarving(

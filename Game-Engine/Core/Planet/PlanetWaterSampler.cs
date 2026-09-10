@@ -355,8 +355,8 @@ public static class PlanetWaterSampler
             }
             else
             {
-                // Inland water sits in the hole — it must not fill up to global
-                // sea level or every grassland valley becomes a second ocean.
+                // Inland water sits in a real hole. Wetlands stay damp ground —
+                // they must not mint a swim-deep sheet across moist flats.
                 float hole = oceanFillR - terrainRadius;
                 if (hole < body.MinBasinDepth)
                     continue;

@@ -48,7 +48,6 @@ public static class PlanetCubemapBaker
 
         int res = surface.Resolution;
         float inv = 1f / MathF.Max(1, res - 1);
-        float maxAmp = MathF.Max(1f, DensityGenerator.MaxAmplitude(config));
         Span<float> weights = stackalloc float[8];
 
         for (int face = 0; face < 6; face++)
@@ -77,7 +76,7 @@ public static class PlanetCubemapBaker
 
                     fHeight[idx] = height;
 
-                    float alt = Math.Clamp((height / maxAmp) * 0.5f + 0.5f, 0f, 1f);
+                    float alt = biomeMap.NormalizeAltitude(height);
                     var blends = biomeMap.GetBiomes(dir, alt);
                     WriteNormalizedSplat(blends, weights);
                     int s = idx * 4;
@@ -96,6 +95,7 @@ public static class PlanetCubemapBaker
         if (preserveDeltasFrom != null)
             surface.CopyHeightDeltasFrom(preserveDeltasFrom);
 
+        surface.MarkBaseHeightsReady();
         surface.BumpVersion();
         return surface;
     }

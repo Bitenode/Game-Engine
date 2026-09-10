@@ -64,16 +64,11 @@ namespace Game_Engine.Core.Component
                     continue;
 
                 var dir = toPos / distToCenter;
-                var waterSample = planet.SampleWaterSurface(dir);
+                if (!planet.TryGetWaterColumn(dir, distToCenter, out float waterLevelWorld, out float crustWorld, out var waterSample))
+                    continue;
                 if (waterSample.Kind == PlanetWaterKind.Lava)
                     continue;
 
-                float scale = planet.GetWorldRadiusScale();
-                float waterLevelWorld = waterSample.Mask >= 0.04f ? waterSample.Radius * scale : 0f;
-                if (waterLevelWorld < 1f)
-                    continue;
-
-                float crustWorld = planet.SampleCollisionRadius(dir);
                 // Camera vs the water table at the crust — not the seabed and not
                 // the swim capsule test (that only went true on the ocean floor).
                 float depth = waterLevelWorld - distToCenter;
@@ -128,8 +123,15 @@ namespace Game_Engine.Core.Component
         /// Planet underwater post only while a player is actually diving/submerged.
         /// Scene-view cameras with no player still get camera-based water FX.
         /// </summary>
+        static int _fxCacheFrame = int.MinValue;
+        static bool _fxCache;
+
         public static bool PlanetSwimFxActive()
         {
+            int frame = Time.frameCount;
+            if (frame == _fxCacheFrame)
+                return _fxCache;
+
             var players = SceneQuery.FindBehaviors<RigidbodyPlayer>();
             bool any = false;
             foreach (var p in players)
@@ -138,9 +140,15 @@ namespace Game_Engine.Core.Component
                     continue;
                 any = true;
                 if (p.IsPlanetSwimming && p.IsPlanetSubmerged)
+                {
+                    _fxCacheFrame = frame;
+                    _fxCache = true;
                     return true;
+                }
             }
-            return !any;
+            _fxCacheFrame = frame;
+            _fxCache = !any;
+            return _fxCache;
         }
 
         /// <summary>True when a live player is under the planet water surface.</summary>

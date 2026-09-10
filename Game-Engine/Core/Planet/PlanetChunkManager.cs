@@ -77,6 +77,52 @@ public sealed class PlanetChunkManager
     public void ClearMeshCache() => _meshCache.Clear();
 
     /// <summary>
+    /// Drop in-flight remesh jobs so they cannot overwrite a live sculpt preview
+    /// with a mesh generated from pre-dig (graph) heights.
+    /// </summary>
+    public void InvalidateOverlappingGenerations()
+    {
+        for (int f = 0; f < 6; f++)
+        {
+            var leaves = Faces[f].GetLeafNodes();
+            for (int i = 0; i < leaves.Count; i++)
+                InvalidateNodeChain(leaves[i]);
+            Faces[f].Root.InvalidateGeneration();
+        }
+    }
+
+    static void InvalidateNodeChain(QuadNode node)
+    {
+        for (var cur = node; cur != null; cur = cur.Parent)
+            cur.InvalidateGeneration();
+    }
+
+    /// <summary>
+    /// Bump generation tokens on shells overlapping a brush so in-flight graph meshes
+    /// cannot overwrite a live sculpt preview.
+    /// </summary>
+    public void InvalidateGenerationsNear(SN.Vector3 localCenter, float sphereRadius)
+    {
+        DensityGenerator.ComputeCrustBounds(Config, _editStore, out _, out float radialSpan);
+        float crustPad = radialSpan * 0.35f;
+
+        var nodes = new List<QuadNode>(128);
+        for (int f = 0; f < 6; f++)
+        {
+            Faces[f].CollectRenderableNodes(nodes);
+            nodes.AddRange(Faces[f].GetLeafNodes());
+        }
+
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            var node = nodes[i];
+            if (!IntersectsLeaf(node, localCenter, sphereRadius, crustPad))
+                continue;
+            InvalidateNodeChain(node);
+        }
+    }
+
+    /// <summary>
     /// When enabled, <see cref="ScheduleGeneration"/> does not run local jobs; it invokes <paramref name="onMeshRequested"/> instead (network client streaming).
     /// </summary>
     public void SetClientStreamingMode(bool enabled, Action<QuadNode>? onMeshRequested)
@@ -149,7 +195,12 @@ public sealed class PlanetChunkManager
         {
             var leaves = Faces[f].GetLeafNodes();
             for (int i = 0; i < leaves.Count; i++)
+            {
+                InvalidateNodeChain(leaves[i]);
                 leaves[i].NeedsMeshRebuild = true;
+            }
+            Faces[f].Root.InvalidateGeneration();
+            Faces[f].Root.NeedsMeshRebuild = true;
         }
     }
 
@@ -518,7 +569,7 @@ public sealed class PlanetChunkManager
     {
         for (var cur = node; cur != null; cur = cur.Parent)
         {
-            cur.IsGenerating = false;
+            cur.InvalidateGeneration();
             if (cur.NeedsMeshRebuild)
                 continue;
             if (dirtied >= dirtyBudget)
@@ -534,6 +585,10 @@ public sealed class PlanetChunkManager
     /// </summary>
     public void ApplyPlayModeEditVisual(SN.Vector3 localCenter, float sphereRadius)
     {
+        // Kill stale remesh jobs first — they were the "crater then snap back to graph" bug.
+        InvalidateGenerationsNear(localCenter, sphereRadius);
+        ApplyCompletedMeshJobs();
+
         // Height-cubemap digs do not require a voxel edit store — always preview + remesh.
         if (TryPreviewDeformCoarseShells(localCenter, sphereRadius))
             _renderableDirty = true;
@@ -564,7 +619,7 @@ public sealed class PlanetChunkManager
         var sampler = _meshGen.Sampler;
         bool any = false;
         int touched = 0;
-        for (int i = 0; i < renderable.Count && touched < 6; i++)
+        for (int i = 0; i < renderable.Count && touched < 12; i++)
         {
             var node = renderable[i];
             if (!IntersectsLeaf(node, localCenter, sphereRadius, crustPad))
@@ -575,9 +630,7 @@ public sealed class PlanetChunkManager
                 continue;
 
             float spacing = PlanetShellDeformer.EstimateVertexSpacing(node, Config.Radius, Config.ChunkSize);
-            // All outer shells are heightfield now — preview-deform nearby leaves immediately.
-
-            if (PlanetShellDeformer.TryDeformMesh(mesh, sampler, localCenter, sphereRadius, spacing))
+            if (sampler != null && PlanetShellDeformer.TryDeformMesh(mesh, sampler, localCenter, sphereRadius, spacing))
             {
                 // Keep stand grid in sync with deformed verts so digs stay walkable.
                 if (mesh.Vertices != null && mesh.Vertices.Length > 0)
@@ -682,7 +735,7 @@ public sealed class PlanetChunkManager
 
             for (var cur = node; cur != null; cur = cur.Parent)
             {
-                cur.IsGenerating = false;
+                cur.InvalidateGeneration();
                 cur.NeedsMeshRebuild = true;
             }
 
@@ -971,7 +1024,8 @@ public sealed class PlanetChunkManager
     {
         if (job.GenerationToken != job.Node.GenerationToken)
         {
-            job.Node.IsGenerating = false;
+            // A newer generate owns this node. Do not clear IsGenerating or the
+            // in-flight remesh is treated as idle and a second job can share the token.
             return false;
         }
 

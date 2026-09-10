@@ -113,12 +113,12 @@ namespace Game_Engine.Core.Component
             if (_applyCooldown > 0f)
                 return;
 
-            if (!TryGetLookRay(out var origin, out var dir))
+            if (!TryGetPaintRay(out var origin, out var dir))
                 return;
 
             float maxDist = MaxRayDistance;
-            if (maxDist <= 1f)
-                maxDist = Math.Max(2000f, _targetPlanet.Radius * 8f);
+            if (maxDist > 2500f)
+                maxDist = Math.Max(250f, _targetPlanet.Radius * 0.35f);
 
             if (!_targetPlanet.RaycastPaintSurface(origin, dir, maxDist, out PlanetDensityHit hit))
                 return;
@@ -135,6 +135,7 @@ namespace Game_Engine.Core.Component
                 _targetPlanet.BuildSphere(hit.Point, EffectiveRadius(), EffectiveStrength(), BrushFalloff);
 
             _targetPlanet.NotifyEdited(origin);
+            GetComponent<RigidbodyPlayer>()?.InvalidateCollisionCache();
 
             _wasPainting = true;
             float rate = Math.Clamp(MaxApplyRatePerSecond, 1f, 24f);
@@ -163,6 +164,7 @@ namespace Game_Engine.Core.Component
             if (dig) _targetPlanet.DigSphere(worldPoint, EffectiveRadius(), EffectiveStrength(), BrushFalloff);
             if (build) _targetPlanet.BuildSphere(worldPoint, EffectiveRadius(), EffectiveStrength(), BrushFalloff);
             _targetPlanet.NotifyEdited(origin);
+            GetComponent<RigidbodyPlayer>()?.InvalidateCollisionCache();
             _wasPainting = true;
             _applyCooldown = 1f / Math.Clamp(MaxApplyRatePerSecond, 1f, 24f);
         }
@@ -185,6 +187,30 @@ namespace Game_Engine.Core.Component
             }
             _camera ??= CameraService.MainOrFirst();
             _camera ??= SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled);
+        }
+
+        bool TryGetPaintRay(out SN.Vector3 origin, out SN.Vector3 direction)
+        {
+            origin = default;
+            direction = default;
+
+            if (_camera == null || !_camera.Enabled)
+                ResolveCamera();
+
+            if (_camera != null)
+            {
+                var vp = GEInput.ViewportSize;
+                var mp = GEInput.MousePosition;
+                if (vp.X > 1f && vp.Y > 1f && mp.X >= 0f && mp.Y >= 0f && mp.X <= vp.X && mp.Y <= vp.Y)
+                {
+                    if (_camera.TryGetWorldScreenRay(mp.X, mp.Y, vp.X, vp.Y, out origin, out direction))
+                        return true;
+                }
+                if (_camera.TryGetWorldLookRay(out origin, out direction))
+                    return true;
+            }
+
+            return TryGetLookRay(out origin, out direction);
         }
 
         bool TryGetLookRay(out SN.Vector3 origin, out SN.Vector3 direction)

@@ -25,7 +25,7 @@ Core goals:
 | Type | Role |
 |------|------|
 | `PlanetTerrain` | User-facing component: config, biome map, chunk manager, height/cave queries, dig routing, water |
-| `PlanetSurfaceCubemap` | Height + HeightDelta + Splat0/1 faces; CPU sample APIs |
+| `PlanetSurfaceCubemap` | Height + HeightDelta + Splat0/1 faces; CPU sample APIs. `HasBaseHeights` marks a fully baked cubemap vs a scratch map that stores dig deltas only |
 | `PlanetCubemapBaker` | Bakes surface cubemap (+ climate atlas) from biome graph / noise |
 | `PlanetChunkManager` | Six face quadtrees, prefetch/split, parent-hold apply, shell + cave remesh |
 | `PlanetSpace` | World ↔ planet-local unscaled conversion |
@@ -71,7 +71,9 @@ Core goals:
 - Registers itself in `PlanetTerrain.ActivePlanets` for global planet queries
 - Loads `.planet` data first (if `PlanetAssetPath` is set), then loads/compiles `BiomeGraphPath`
 - Rebuilds biome map, **surface cubemap**, noise caches, chunk manager, and water after graph apply
-- On **scene load**, surface cubemap bake runs **async** on a background thread (`ScheduleSurfaceBakeAsync` via `EditorJobs`) so the UI stays responsive; `SurfaceBakePending` is true until the bake finishes and remeshes apply. Chunk shells start from live `SampleHeight` until the cubemap swap completes
+- On **scene load**, surface cubemap bake runs **async** on a background thread (`ScheduleSurfaceBakeAsync` via `EditorJobs`) so the UI stays responsive; `SurfaceBakePending` is true until the bake finishes and remeshes apply. Until then, chunk shells and brushes use **live graph heights** (`PlanetSurfaceUtility.SampleHeight`) — not zero-height placeholder data
+- If you sculpt while the bake is still pending, a **scratch** `PlanetSurfaceCubemap` may be created with `HasBaseHeights = false`. It stores **HeightDelta only**; meshing and shading keep using live graph heights plus those deltas until the real bake lands
+- When the async bake completes, `ApplySurfaceBakeResult` copies **current** dig deltas from the live/scratch cubemap into the baked result before swapping, then invalidates stale remesh jobs and requests a full shell rebuild
 - Scene load sets `SceneService.DeferPlanetVegetationImport` so heavy vegetation import waits until after the scene replace
 - Updates chunk streaming on interval and movement threshold (not every frame)
 - Tracks effective world radius from transform scale so LOD, water, and physics stay in sync on scaled planets
@@ -84,9 +86,10 @@ Core goals:
 | `SampleSurfaceRadius(dir)` | Edited height cubemap (+ water carve) × world scale — **no density iso march** |
 | `SampleHeightfieldRadius(dir)` | Same as `SampleSurfaceRadius` |
 | `SampleCollisionRadius(dir)` | Prefer StandRadiusGrid on the visible shell; fallback to heightfield |
-| `RaycastDensity(...)` / `Spherecast(...)` | Heightfield first; inside the crust band marches cave occupancy |
-| `RaycastPaintSurface(...)` | Play-mode tool pick: iso crossing, then geometric fallback |
+| `RaycastDensity(...)` / `Spherecast(...)` | Height-cubemap march first (`RaycastHeightfield`); density/cave march only when clearly underground |
+| `Raycast(...)` / `RaycastPaintSurface(...)` | Same heightfield-first pick used by Scene View brushes and **PlanetTool** (Game View screen ray) |
 | `DigSphere` / `BuildSphere` | Near surface → height deltas; underground → cave-band occupancy edits |
+| `SampleStandWorldRadius` / fast player stand | Uses baked cubemap when `HasBaseHeights`; otherwise live graph + dig deltas (no per-tick river carve) |
 
 ### Dig edits and `.planetvox`
 
@@ -141,12 +144,13 @@ The Biome Graph editor (`BiomeGraphPanel`) is a node-based authoring tool that w
   - `ShoreClimateBias` — `ApplyShoreSand` scales sand bands by local moisture
   - Optional `UseFlowAccumulationRivers` (default **false**) — one-shot D8 flow bake on the height LUT; noise rivers stay the default
 - `RecipeHash` from compile keys the in-memory chunk mesh cache (`PlanetChunkMeshCache`)
-- Up to 8 biome layers (`Layer0`...`Layer7`) with:
+- Up to **16** biome layers (`Layer0`...`Layer15`) in the graph. The crust shader still binds **8** albedo slots (`uBiomeTex0–7`); extra layers share slot 7 for splat. Each layer has:
   - Albedo/normal paths
   - Base color
   - Tiling
   - Per-layer noise mode/octaves
   - Erosion strength/frequency
+  - Optional **climate box** overrides (`Min/Max` temperature, moisture, altitude) so custom names like Savanna / Wetlands classify correctly
   - Optional water color overrides
   - Vegetation defaults:
     - `VegetationProfileId`
@@ -157,6 +161,23 @@ The Biome Graph editor (`BiomeGraphPanel`) is a node-based authoring tool that w
     - `WeatherProfileId`
     - `RainChance` / `SnowChance` / `StormChance`
     - `WindBias` / `CloudCoverageBias` / `FogDensityBias`
+
+Built-in presets include Ocean, Beach, Grassland, Forest, Desert, Tundra, Mountains, Volcanic, **Savanna**, **Wetlands**, **Alpine**, **Boreal**, and **Ice**.
+
+### Shipped graph and textures (Standard Assets)
+
+The editor ships a starter graph and ground textures for new projects:
+
+| Asset | Path |
+|-------|------|
+| Starter biome graph | `Standard Assets/BiomeGraph/PlanetBiomes.biomegraph` |
+| Ground albedo/normal packs | `Standard Assets/Planet Textures/` (Landscape Ground Pack, rock, and volcanic sets copied from the engine install) |
+
+Layer `albedoPath` / `normalPath` / `underTexPath` values in `PlanetBiomes.biomegraph` use project-relative paths such as:
+
+`Assets/Standard Assets/Planet Textures/GroundTexture_03_Grass_albedo.tga`
+
+When **Include standard assets in new projects** is checked at project creation, the installer copies the whole `Standard Assets` tree (including `Planet Textures/` and `BiomeGraph/`) into `Assets/Standard Assets/`. Custom graphs should follow the same convention — keep biome textures under the project’s `Assets/Standard Assets/` (or another project-relative folder), not absolute paths to another machine’s project.
 
 When applied, planet runtime state is rebuilt so generated chunks immediately reflect new biome graph data.
 
@@ -188,7 +209,7 @@ The palette also includes authoring nodes that compile into `BiomeGraphResult` /
 | Climate | `Climate`, `RainShadow`, `Season`, `LatitudeBand` | `ClimateNodes`, `RainShadows`, `Seasons`, `LatitudeBands` |
 | Life | `FloraLayer`, `ScatterLayer`, `FaunaLayer`, `UnderwaterLife`, `ResourceVein` | `FloraLayers`, `ScatterLayers`, `FaunaLayers`, `UnderwaterLife`, `ResourceVeins` |
 | Atmosphere | `Atmosphere`, `WeatherProfile`, `CloudLayer` | `AtmosphereNodes`, `WeatherProfiles`, `CloudLayers` |
-| Water extras | `IceSheet`, `Wetland` | `IceSheets`, `Wetlands` |
+| Water extras | `IceSheet`, `Wetland` | `IceSheets`, `Wetlands` — applied at runtime (polar ice preference / crust raise; wetland moisture + flora boost + shallow flood bias) |
 
 `BiomeLayer` remains the ground material. Flora/Scatter attach via `Output.Life` / `Output.Scatter` (or stand alone in the graph). `FloraLayer` can push profile id, densities, patchiness, and growth/treeline ranges onto matching layers by `TargetBiome`.
 
@@ -199,7 +220,7 @@ Runtime companions (optional on the planet GameObject):
 
 `PlanetVegetationSystem` keeps streaming plants; `UseUniversalLandVegetation` defaults to **false** so per-biome `VegetationProfileId` matters. It honors `VegetationPatchiness`, growth temperature/moisture, and tree slope/altitude reject.
 
-On `ApplyGraphResult`, `PlanetTerrain` binds compiled tables onto companions when they exist: `PlanetFloraSpawner.ApplyRecipes`, `PlanetScatterRenderer.ApplyRecipes`, `PlanetFaunaTableBehavior.Bind`. `PlanetLifeStreaming.BindRecipe` is the same table hook for later fauna/underwater/vein consumers; vegetation already shares its 18×18 face/UV cell keys.
+On `ApplyGraphResult`, `PlanetTerrain` binds compiled tables onto companions when they exist: `PlanetFloraSpawner.ApplyRecipes`, `PlanetScatterRenderer.ApplyRecipes`, `PlanetFaunaTableBehavior.Bind`, and `PlanetLifeStreaming.BindRecipe`. Atmosphere / CloudLayer recipes push onto `PlanetAtmosphere` when present.
 
 Built-in vegetation profiles: `Default`, `Universal`, `Forest`, `Grassland`, `Desert`, `Alpine`, `Tundra`, `Volcanic`, `Ocean` (with `TreeItems` / `BushItems` / `RockItems` stubs).
 
@@ -264,7 +285,7 @@ When the camera is inside or just under the crust:
 - `QuadNode.CameraPriorityDistance` samples the patch at the camera radius
 - `SceneRenderer` disables backface culling in the crust band (`camRadial < 1.08 × radius`)
 - Draws `GeneratedMesh` (shell) and `GeneratedCaveMesh` (crust caves)
-- Planet terrain shader samples **splat atlases** (3×2 face layout) by world direction and blends up to 8 layer albedos (triplanar detail); `uBiomeTex0–7` are splat layer textures
+- Planet terrain shader samples **splat atlases** (3×2 face layout) by world direction and blends up to 8 layer albedos (triplanar detail); `uBiomeTex0–7` are splat layer textures. Extra graph layers beyond 8 share slot 7.
 - **Form shadows:** `RenderPlanetLeafShadows` draws shell + cave meshes into the depth pass
 
 ### Transvoxel LOD seams
@@ -275,9 +296,20 @@ Crust-cave leaves set `TransitionMask` on edges that border a coarser neighbor. 
 
 `PlanetChunkManager` keeps a `PlanetChunkMeshCache` (256 entries). The key includes face / LOD / UV / seed / `RecipeHash` / edit stamp (cave strokes + **height-delta version**). Graph compile writes a new `RecipeHash` and rebakes the cubemap (preserving height deltas).
 
-### Play-mode digs
+### Surface sculpting (editor + play)
 
-Surface brushes update height deltas and dirty overlapping leaves. Underground brushes edit cave occupancy. `ApplyPlayModeEditVisual` schedules async remesh with a play budget (**4–8** nodes); coarse shells may get a one-frame `PlanetShellDeformer` preview.
+Surface brushes write `PlanetSurfaceCubemap.HeightDelta` and call `ApplyPlayModeEditVisual`:
+
+1. **Invalidate** overlapping in-flight remesh jobs (`InvalidateGenerationsNear`) so stale graph meshes cannot overwrite a live crater after the preview
+2. **Preview** — `PlanetShellDeformer` may deform visible shell verts in place for one frame (`SampleMeshSurfaceRadius`: cubemap + digs, no live river carve)
+3. **Remesh** — dirty overlapping leaves and schedule async generation with a play budget (**4–8** nodes)
+
+Underground brushes edit cave-band occupancy via `PlanetVoxelEditStore` instead.
+
+**Stability notes:**
+- Remesh jobs are keyed by `editStamp` (cave strokes + **height-delta version**). Per-stroke `ClearMeshCache()` is **not** used — that was a major PlanetTool spike
+- `NotifyEdited` only resets the play LOD cooldown; it does **not** force a full LOD refresh every stroke
+- Completed shell meshes sample **`SampleMeshSurfaceRadius`** (cubemap + digs) so remesh agrees with the preview and dig atlas
 
 Hierarchy/runtime note:
 - Runtime chunk meshes are cached on quadtree leaves (`GeneratedMesh`, `GeneratedWaterMesh`, `GeneratedCaveMesh`)
@@ -578,11 +610,14 @@ Recommended setup:
 - Tools: **Dig**, **Build**, **Smooth**, **Flatten**, plus **Radius** / **Strength** / **Falloff** sliders
 - Hover shows a ring gizmo on the density surface
 - Left-drag paints; right-drag or **Shift** inverts Dig/Build
-- Picking: camera ray → `PlanetTerrain.Raycast` (density). Hits the side you clicked, including cave walls — not an XZ heightmap and not player-underfoot radial projection
+- Picking: camera ray → `PlanetTerrain.Raycast` (height-cubemap march first; cave density only when underground). Hits the visible crust you clicked — not an XZ heightmap and not player-underfoot radial projection
 - Dig/Build call `DigSphere` / `BuildSphere`; Smooth/Flatten call `SmoothSphere` / `FlattenSphere`
 - Mouse-up runs `SaveVoxelEdits()` to the `.planetvox` sidecar
 
-Play-mode **PlanetTool** (Standard Assets) uses the same look-ray path: LMB dig / RMB build along the camera look-ray (`Raycast`), `[` `]` radius, `-` `=` strength. On mouse-up it also calls `SaveVoxelEdits()`.
+Play-mode **PlanetTool** (Standard Assets, attached by `PlanetPlayerSpawner` when `AttachPlanetTool` is true):
+- **Game View:** LMB dig / RMB build along the **camera screen ray** (`TryGetWorldScreenRay` → `RaycastPaintSurface`), `[` `]` radius, `-` `=` strength
+- **Scene View during Play:** Hand-tool click uses the cursor hit via `PlanetTool.ApplyStrokeAt`
+- On mouse-up (Scene View stroke end) or when the paint button is released, calls `SaveVoxelEdits()` to the `.planetvox` sidecar
 
 `PlanetManipulator.AutoApply` rays from the manipulator GameObject toward the planet center, then away if needed, and paints the **surface hit** (not the planet pivot).
 

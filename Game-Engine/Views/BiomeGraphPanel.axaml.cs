@@ -1305,6 +1305,14 @@ public partial class BiomeGraphPanel : UserControl
                 AddPropInt("Octaves", n.NoiseOctaves, v => n.NoiseOctaves = v);
                 AddPropFloat("Erosion Str", n.ErosionStrength, v => n.ErosionStrength = v);
                 AddPropFloat("Erosion Freq", n.ErosionFrequency, v => n.ErosionFrequency = v);
+                AddPropSeparator("Climate Box");
+                AddPropCheckbox("Override Climate", n.OverrideClimate, v => n.OverrideClimate = v);
+                AddPropFloat("Min Temp", n.MinTemperature, v => n.MinTemperature = v);
+                AddPropFloat("Max Temp", n.MaxTemperature, v => n.MaxTemperature = v);
+                AddPropFloat("Min Moisture", n.MinMoisture, v => n.MinMoisture = v);
+                AddPropFloat("Max Moisture", n.MaxMoisture, v => n.MaxMoisture = v);
+                AddPropFloat("Min Altitude", n.MinAltitude, v => n.MinAltitude = v);
+                AddPropFloat("Max Altitude", n.MaxAltitude, v => n.MaxAltitude = v);
                 AddPropSeparator("Water");
                 AddPropCheckbox("Spawn Water", n.SpawnWater, v => n.SpawnWater = v);
                 if (n.SpawnWater)

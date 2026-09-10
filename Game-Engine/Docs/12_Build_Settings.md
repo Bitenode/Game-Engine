@@ -15,7 +15,7 @@ Github Engine/
 │   ├── Program.cs                  # Editor entry point
 │   ├── App.axaml                   # Editor Avalonia application
 │   ├── MainWindow.axaml            # Editor main window
-│   └── Standard Assets/            # Built-in assets
+│   └── Standard Assets/            # Built-in assets (BiomeGraph, Planet Textures, Planet Vegetation, Skybox, Shader, Scenes, Code Examples)
 │
 └── Engine.Player/                  # Standalone player project (desktop + Windows TFM for packaging)
     ├── Engine.Player.csproj        # Player project file (net9.0, net9.0-windows10.0.19041.0)

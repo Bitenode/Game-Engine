@@ -40,6 +40,12 @@ public sealed class PlanetSurfaceCubemap
     /// <summary>Compatibility alias for mesh recipes, which depend on edited height.</summary>
     public int Version => HeightVersion;
 
+    /// <summary>
+    /// True after a graph bake filled <see cref="Height"/> and splat.
+    /// Scratch maps created so digs can land during an in-flight bake stay false.
+    /// </summary>
+    public bool HasBaseHeights { get; private set; }
+
     public PlanetSurfaceCubemap(int resolution, ulong recipeHash)
     {
         Resolution = Math.Clamp(resolution, MinResolution, MaxResolution);
@@ -66,12 +72,26 @@ public sealed class PlanetSurfaceCubemap
         return faces;
     }
 
+    /// <summary>Mark Height + splat as authored (call from the cubemap baker only).</summary>
+    public void MarkBaseHeightsReady() => HasBaseHeights = true;
+
     /// <summary>Full bake changed height and splat data.</summary>
     public void BumpVersion()
     {
         HeightVersion++;
         SplatVersion++;
     }
+
+    /// <summary>
+    /// Authored surface height: baked cubemap, or live graph height plus any
+    /// in-flight dig deltas when this map is still a scratch.
+    /// </summary>
+    public float SampleAuthoredHeight(SN.Vector3 sphereDir, float liveGraphHeight)
+        => (HasBaseHeights ? SampleBaseHeight(sphereDir) : liveGraphHeight) + SampleHeightDelta(sphereDir);
+
+    /// <summary>Base height only (no digs). Scratch maps return the live graph height.</summary>
+    public float SampleAuthoredBaseHeight(SN.Vector3 sphereDir, float liveGraphHeight)
+        => HasBaseHeights ? SampleBaseHeight(sphereDir) : liveGraphHeight;
 
     /// <summary>Dig/build edit changed height only.</summary>
     public void BumpHeightVersion() => HeightVersion++;
@@ -85,10 +105,31 @@ public sealed class PlanetSurfaceCubemap
 
     public void CopyHeightDeltasFrom(PlanetSurfaceCubemap? other)
     {
-        if (other == null || other.Resolution != Resolution)
+        if (other == null)
             return;
+        if (other.Resolution == Resolution)
+        {
+            for (int f = 0; f < 6; f++)
+                Array.Copy(other.HeightDelta[f], HeightDelta[f], HeightDelta[f].Length);
+            BumpHeightVersion();
+            return;
+        }
+
+        int res = Resolution;
+        float inv = 1f / MathF.Max(1, res - 1);
         for (int f = 0; f < 6; f++)
-            Array.Copy(other.HeightDelta[f], HeightDelta[f], HeightDelta[f].Length);
+        {
+            var dst = HeightDelta[f];
+            for (int y = 0; y < res; y++)
+            {
+                float v = y * inv;
+                for (int x = 0; x < res; x++)
+                {
+                    var dir = CubeSphereMath.FaceUVToDirection(f, x * inv, v);
+                    dst[y * res + x] = other.SampleHeightDelta(dir);
+                }
+            }
+        }
         BumpHeightVersion();
     }
 

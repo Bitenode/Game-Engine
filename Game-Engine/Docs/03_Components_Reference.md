@@ -18,7 +18,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
 | **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
-| **Gameplay** | PlanetPlayerSpawner | `Core/Component/Gameplay/` |
+| **Gameplay** | PlanetPlayerSpawner, PlanetTool | `Core/Component/Gameplay/` (PlanetTool ships in Standard Assets) |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
 | **2D** | Camera2D, SpriteRenderer, Tilemap | `Core/Component/2D/` |
@@ -472,7 +472,7 @@ Planet terrain component for cube-sphere worlds with a **height-cubemap shell**,
 - `VolumetricMaxCellSize` — cave-band leaf refinement threshold (**3.5** orbit; **11** when `CameraBelowCrust`)
 - `EnableTransvoxelTransitions` — Lengyel transition cells on crust-cave LOD seams
 - Outer crust is always a height-cubemap shell; fine leaves may add a Transvoxel crust-cave mesh
-- Dig/build near the surface edits height deltas; underground edits cave-band occupancy
+- Dig/build near the surface edits height deltas; underground edits cave-band occupancy. While `SurfaceBakePending`, a scratch cubemap may hold deltas only until the graph bake completes (`HasBaseHeights`)
 - Play interior (inside crust latch): `MaxLodDepth` up to **6**, leaf cap **~120–160**, **~14** generation schedules per update; orbit play uses **32–64** leaves, depth **4–5**, **6** schedules
 - Play LOD is driven by **Game View only**; Scene View renders but does not split/merge during Play
 
@@ -480,7 +480,7 @@ Planet terrain component for cube-sphere worlds with a **height-cubemap shell**,
 - `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON and `.planetvox` sidecar (v2 height deltas + cave strokes)
 - `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read height deltas and cave strokes
 - `WorldToLocal` / `LocalToWorld` / `WorldToLocalLength` / `LocalToWorldLength` — `PlanetSpace` conversion
-- `RaycastDensity` / `Raycast` — heightfield + crust-cave occupancy ray-march; fills `PlanetDensityHit`
+- `RaycastDensity` / `Raycast` — height-cubemap march first; crust-cave density when underground; fills `PlanetDensityHit`
 - `RaycastDensityGameplay` / `SpherecastGameplay` — same field, gameplay quality 32/4
 - `RaycastPaintSurface` — play-mode tool pick
 - `Spherecast(...)` — thick density query
@@ -1349,7 +1349,7 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 - **Momentum-based** — natural sliding, pushing, and inertia
 - **Planet movement** — tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
-- **Density grounding on planets** — `ResolveDensityPenetration`, short `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` for cave floors/ceilings; outer crust uses **surface mode** + `SampleCollisionRadius` (visible leaf); heightfield radius only as last-resort fallback
+- **Density grounding on planets** — `ResolveDensityPenetration`, short `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` for cave floors/ceilings; outer crust uses **surface mode** + `SampleCollisionRadius` / `SampleStandWorldRadius` (cubemap + digs when baked, else live graph + deltas)
 - **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
 - **Pole stability** — avoids pole-only movement mode toggles that can flip controls
@@ -1390,6 +1390,31 @@ Play-mode helper that creates or reuses a `RigidbodyPlayer` on `PlanetTerrain` a
 - Adds `Rigidbody`, `CapsuleCollider`, and `RigidbodyPlayer` if missing
 
 Attach to the planet root or any scene object. See [Planet System](13_Planet_System.md).
+
+---
+
+## PlanetTool
+
+Play-mode planet sculpting behavior (Standard Assets). Added automatically by `PlanetPlayerSpawner` when `AttachPlanetTool` is true.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `BrushRadius` | `float` | `0.6` | Brush radius in world units (play clamp **0.2–2.5**) |
+| `BrushStrength` | `float` | `0.5` | Dig/build strength |
+| `BrushFalloff` | `float` | `0.65` | Edge softness |
+| `MaxApplyRatePerSecond` | `float` | `6` | Stroke rate limit |
+| `MaxRayDistance` | `float` | `20000` | Max pick distance (clamped near large planets) |
+
+**Input (Game View):**
+- **LMB** / **Fire1** / **F** — dig
+- **RMB** / **Shift+LMB** / **G** — build
+- **`[` / `]`** — radius; **`-` / `=`** — strength
+
+**Picking:** Game View uses the camera **screen ray** → `PlanetTerrain.RaycastPaintSurface`. Scene View play clicks use `PlanetTool.ApplyStrokeAt` at the cursor hit.
+
+**Persistence:** `PlanetPlayerSpawner` / Scene View call `SaveVoxelEdits()` on stroke end; height digs are stored in the `.planetvox` sidecar as sparse height deltas.
+
+See [Planet System — Surface sculpting](13_Planet_System.md#surface-sculpting-editor--play).
 
 ---
 

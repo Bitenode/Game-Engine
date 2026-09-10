@@ -75,7 +75,35 @@ public static class PlanetSurfaceUtility
         }
 
         height = ApplyGraphGeology(config, sphereDir, height);
+        height = ApplyIceSheetRaise(config, sphereDir, height, biomeMap);
         return height;
+    }
+
+    /// <summary>
+    /// Raise cold polar crust slightly when IceSheet recipes are present.
+    /// </summary>
+    public static float ApplyIceSheetRaise(PlanetConfig config, SN.Vector3 sphereDir, float height, BiomeMap? biomeMap)
+    {
+        if (config.IceSheets is not { Length: > 0 } || biomeMap == null)
+            return height;
+
+        float polar = Math.Clamp((MathF.Abs(sphereDir.Y) - 0.86f) / 0.10f, 0f, 1f);
+        if (polar <= 0.02f)
+            return height;
+
+        float alt = Math.Clamp(height / Math.Max(20f, 80f), 0f, 1f);
+        float temp = biomeMap.GetTemperature(sphereDir, alt);
+        float raise = 0f;
+        for (int i = 0; i < config.IceSheets.Length; i++)
+        {
+            var s = config.IceSheets[i];
+            if (temp > s.MaxTemperature)
+                continue;
+            float cold = Math.Clamp((s.MaxTemperature - temp) / Math.Max(0.05f, s.MaxTemperature), 0f, 1f);
+            float cov = Math.Clamp(s.Coverage, 0f, 1f);
+            raise = MathF.Max(raise, cold * cov * polar * Math.Clamp(s.Thickness, 0f, 80f));
+        }
+        return height + raise;
     }
 
     /// <summary>

@@ -137,6 +137,12 @@ public sealed class PlanetWeatherController : Behavior
         {
             if (_effectsApplied)
                 RestoreBaselines();
+            SnowCoverage = 0f;
+            SnowIntensity = 0f;
+            Wetness = 0f;
+            RainIntensity = 0f;
+            BiomeWeatherRuntime.SnowCoverage = 0f;
+            BiomeWeatherRuntime.Wetness = 0f;
             SetPrecipEmittersActive(false, clearParticles: true);
             return;
         }
@@ -440,8 +446,6 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.EmissionRate = Math.Max(5f, SnowEmissionRatePerLayer * (0.35f + effectiveSnow * 0.9f) * layerFactor);
                     emitter.Lifetime = Math.Max(1.2f, SnowLifetimeSeconds);
                     emitter.BoxSize = new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.8f), coverage);
-                    if (DisableSurfaceHitForWeatherPrecipitation)
-                        emitter.StopOnPlanetSurfaceHit = false;
                 }
                 else if (OverrideEmitterParams)
                 {
@@ -449,6 +453,7 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.EmissionRate = (35f + effectiveSnow * 140f) * layerFactor;
                     emitter.BoxSize = new SN.Vector3(PrecipitationArea * 1.1f, 0f, PrecipitationArea * 1.1f);
                 }
+                emitter.StopOnPlanetSurfaceHit = !DisableSurfaceHitForWeatherPrecipitation;
                 emitter.Loop = true;
                 emitter.Play();
             }
@@ -464,8 +469,6 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.BoxSize = new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.85f), coverage);
                     emitter.StretchAlongVelocity = true;
                     emitter.StretchLength = 1.15f;
-                    if (DisableSurfaceHitForWeatherPrecipitation)
-                        emitter.StopOnPlanetSurfaceHit = false;
                 }
                 else if (OverrideEmitterParams)
                 {
@@ -473,6 +476,7 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.EmissionRate = (90f + effectiveRain * 340f) * layerFactor;
                     emitter.BoxSize = new SN.Vector3(PrecipitationArea * 1.2f, 0f, PrecipitationArea * 1.2f);
                 }
+                emitter.StopOnPlanetSurfaceHit = !DisableSurfaceHitForWeatherPrecipitation;
                 emitter.Loop = true;
                 emitter.Play();
             }

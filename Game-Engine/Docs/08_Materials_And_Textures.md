@@ -191,6 +191,15 @@ Located in `Standard Assets/Glass/`:
 - Variety: Daytime, sunset, overcast, night, space, alien environments
 - Assign to the Skybox component's `TexturePath` property
 
+### Planet ground textures
+Shipped in `Standard Assets/Planet Textures/` for the starter **`PlanetBiomes.biomegraph`** (Landscape Ground Pack albedos/normals, rock, and volcanic sets). Biome layer paths in that graph use:
+
+`Assets/Standard Assets/Planet Textures/<filename>`
+
+After **Include standard assets in new projects**, these files live under the project's `Assets/Standard Assets/Planet Textures/`. Custom biome graphs should reference project-relative paths the same way — not absolute paths to another machine's Assets folder.
+
+See [Planet System — Shipped graph and textures](13_Planet_System.md#shipped-graph-and-textures-standard-assets).
+
 ---
 
 ## Model Import Materials

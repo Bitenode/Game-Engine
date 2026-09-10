@@ -185,6 +185,21 @@ public sealed class BiomeLayerNode : BiomeNode
     public float GrowthMoistureMin { get; set; } = 0.2f;
     public float GrowthMoistureMax { get; set; } = 0.9f;
 
+    /// <summary>When true, Min/Max T/M/A override the matched preset climate box.</summary>
+    public bool OverrideClimate { get; set; }
+    public float MinTemperature { get; set; } = -1f;
+    public float MaxTemperature { get; set; } = -1f;
+    public float MinMoisture { get; set; } = -1f;
+    public float MaxMoisture { get; set; } = -1f;
+    public float MinAltitude { get; set; } = -1f;
+    public float MaxAltitude { get; set; } = -1f;
+
+    public bool HasAuthoredClimate =>
+        OverrideClimate
+        || MinTemperature >= 0f || MaxTemperature >= 0f
+        || MinMoisture >= 0f || MaxMoisture >= 0f
+        || MinAltitude >= 0f || MaxAltitude >= 0f;
+
     public BiomeLayerNode()
     {
         Name = "Biome Layer";
@@ -757,7 +772,7 @@ public sealed class BiomeIceSheetNode : BiomeNode
 
 public sealed class BiomeWetlandNode : BiomeNode
 {
-    public float FloodDepth { get; set; } = 1.5f;
+    public float FloodDepth { get; set; } = 0f;
     public float ReedDensity { get; set; } = 0.55f;
     public float MoistureBoost { get; set; } = 0.35f;
     public string TargetBiome { get; set; } = "Grassland";

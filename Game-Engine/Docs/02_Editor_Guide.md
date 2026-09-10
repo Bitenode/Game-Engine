@@ -149,7 +149,7 @@ When a GameObject with `PlanetTerrain` is selected and a planet brush is active,
 
 **Interior fly-cam:** Scene View runs planet LOD every frame. When the camera is inside the crust, chunk budgets rise so cave walls refine around you (not only when orbiting the outer surface).
 
-Play-mode **PlanetTool** (Standard Assets): LMB dig / RMB build along the camera look-ray; `[` `]` radius; `-` `=` strength.
+Play-mode **PlanetTool** (Standard Assets): LMB dig / RMB build along the **Game View camera screen ray**; Scene View play clicks use the cursor hit. `[` `]` radius; `-` `=` strength. Surface digs persist in `.planetvox` height deltas.
 
 ---
 
@@ -693,15 +693,16 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 - **Validation** — checks for missing output wiring, missing biome layers, and circular links
 - **Preview** — equirectangular biome color preview generated from compiled graph data
 - **Compile & apply** — compiles graph and applies it to all scene `PlanetTerrain` components
-- **File workflow** — save/load `.biomegraph` files
+- **File workflow** — save/load `.biomegraph` files. Shipped starter: `Standard Assets/BiomeGraph/PlanetBiomes.biomegraph` with layer textures under `Standard Assets/Planet Textures/` (paths like `Assets/Standard Assets/Planet Textures/...` after project install)
 - **Vegetation profile management** — select or create vegetation profiles per biome layer (`New`, `Save`, `Delete`, `Reload`)
 - **Per-biome vegetation tuning** — `VegetationDensity`, `TreeDensity`, `Patchiness`, and `SeasonalGrowthMultiplier` are exposed directly under profile controls
 - **Multi-item grass/tree authoring** — each profile supports multiple weighted grass and tree entries with per-item model path, density multiplier, and scale range
 - **Water graph nodes** — `WaterBody` (Ocean / Lake / Pond), `WaterPath`, legacy `River`, `Shore`, `WaterMerge`; wire into **Output.Water** (up to 8 bodies and 8 paths). Compile rebuilds terrain carving, dry-only shore sand, orbit shell, and per-chunk water meshes on all scene planets.
 - **Geology nodes** — `Continent`, `Crater`, `Volcano`, `Cliff`, `DomainWarp`. Continents carve ocean basins with a narrow coastal shelf; **Cliff** adds ocean-side drops on that band; **Volcano** adds inland stratovolcanoes with caldera **lava lakes** (not swim water). Volcano centers are filtered inland so cones do not sit on the continent rim.
-- **Climate nodes** — `Climate`, `RainShadow`, `Season`, `LatitudeBand`. Compile writes `AltitudeLapseRate`, `WaterMoistureBoost`, `RainShadowStrength`, and optional `UseSelectClassifier`.
-- **Life / scatter nodes** — `FloraLayer`, `ScatterLayer`, `FaunaLayer`, `UnderwaterLife`, `ResourceVein` compile into `PlanetRecipe` tables. Runtime companions (`PlanetFloraSpawner`, `PlanetScatterRenderer`, `PlanetFaunaTableBehavior`) receive those tables on compile.
-- **Atmosphere extras** — `Atmosphere`, `WeatherProfile`, `CloudLayer`, plus `IceSheet` / `Wetland`.
+- **Climate nodes** — `Climate`, `RainShadow`, `Season`, `LatitudeBand`. Compile writes `AltitudeLapseRate`, `WaterMoistureBoost`, `RainShadowStrength` / width, `SnowLineAltitude`, and optional `UseSelectClassifier`.
+- **Life / scatter nodes** — `FloraLayer`, `ScatterLayer`, `FaunaLayer`, `UnderwaterLife`, `ResourceVein` compile into `PlanetRecipe` tables. Runtime companions (`PlanetFloraSpawner`, `PlanetScatterRenderer`, `PlanetFaunaTableBehavior`, `PlanetLifeStreaming`) receive those tables on compile.
+- **Atmosphere extras** — `Atmosphere` / `CloudLayer` apply onto `PlanetAtmosphere` when present; `IceSheet` / `Wetland` drive polar ice and wetland moisture/flood behavior.
+- **Biome Layer climate box** — optional Min/Max temperature, moisture, and altitude so custom biome names keep distinct Whittaker regions.
 - Compile also bakes a `PlanetClimateAtlas` (256² per cube face) and a `RecipeHash` that keys the chunk mesh cache.
 
 ### Typical workflow

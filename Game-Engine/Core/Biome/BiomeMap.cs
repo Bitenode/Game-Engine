@@ -42,6 +42,11 @@ public sealed class BiomeMap
     SimplexNoise? _riverMeander;
     FractalNoise? _ridgeNoise;
 
+    int _biomeCacheFrame = -1;
+    SN.Vector3 _biomeCacheDir;
+    float _biomeCacheAlt = float.NaN;
+    BiomeBlend[]? _biomeCache;
+
     /// <summary>When true (BiomeSelect wired), altitude weighs more in classification.</summary>
     public bool UseSelectClassifier { get; set; }
 
@@ -105,6 +110,13 @@ public sealed class BiomeMap
     /// </summary>
     public BiomeBlend[] GetBiomes(SN.Vector3 sphereDir, float altitude)
     {
+        int frame = Game_Engine.Core.Time.frameCount;
+        if (_biomeCache != null
+            && frame == _biomeCacheFrame
+            && MathF.Abs(altitude - _biomeCacheAlt) < 0.002f
+            && SN.Vector3.Dot(sphereDir, _biomeCacheDir) > 0.9997f)
+            return _biomeCache;
+
         float temperature = GetTemperature(sphereDir, altitude);
         float moisture = GetMoisture(sphereDir, altitude);
 
@@ -156,6 +168,10 @@ public sealed class BiomeMap
             if (inRange)
                 dist *= 0.25f;
 
+            dist += SnowBiomeLatitudePenalty(b, sphereDir, altitude);
+            dist *= IceSheetDistanceScale(b, temperature, altitude, sphereDir);
+            dist *= WetlandDistanceScale(b, moisture, altitude);
+
             candidates.Add((b, dist));
         }
 
@@ -164,11 +180,12 @@ public sealed class BiomeMap
         int count = Math.Min(4, candidates.Count);
         var results = new BiomeBlend[count];
 
-        if (count == 0) return results;
+        if (count == 0)
+            return CacheBiomes(sphereDir, altitude, results);
         if (count == 1)
         {
             results[0] = new BiomeBlend { Biome = candidates[0].biome, Weight = 1f };
-            return results;
+            return CacheBiomes(sphereDir, altitude, results);
         }
 
         // Sharper weighting: use squared inverse distance so the closest biome
@@ -185,6 +202,15 @@ public sealed class BiomeMap
         for (int i = 0; i < count; i++)
             results[i].Weight /= totalInvDist;
 
+        return CacheBiomes(sphereDir, altitude, results);
+    }
+
+    BiomeBlend[] CacheBiomes(SN.Vector3 sphereDir, float altitude, BiomeBlend[] results)
+    {
+        _biomeCacheFrame = Game_Engine.Core.Time.frameCount;
+        _biomeCacheDir = sphereDir;
+        _biomeCacheAlt = altitude;
+        _biomeCache = results;
         return results;
     }
 
@@ -250,6 +276,7 @@ public sealed class BiomeMap
 
         moist += SampleWaterMoistureBoost(dir);
         moist -= SampleRainShadow(dir, altitude);
+        moist += SampleWetlandMoistureBoost(dir, altitude);
 
         return Math.Clamp(moist, 0f, 1f);
     }
@@ -349,7 +376,8 @@ public sealed class BiomeMap
         else
             windTan = SN.Vector3.Normalize(windTan);
 
-        const float step = 0.012f;
+        float width = Math.Clamp(_config.RainShadowWidth, 0.02f, 0.5f);
+        float step = Math.Clamp(width * 0.12f, 0.006f, 0.04f);
         float hHere = RoughOrographicHeight(dir, altitude);
         float hUp = RoughOrographicHeight(SN.Vector3.Normalize(dir - windTan * step), altitude);
         float hDown = RoughOrographicHeight(SN.Vector3.Normalize(dir + windTan * step), altitude);
@@ -357,7 +385,9 @@ public sealed class BiomeMap
         // Lee side: downhill along wind (hUp > hHere > hDown) with a ridge nearby.
         float drop = Math.Clamp((hUp - hDown) * 0.5f, 0f, 1f);
         float ridgePresence = Math.Clamp(ridge * 0.35f + hHere * 0.65f, 0f, 1f);
-        return drop * ridgePresence * strength;
+        // Wider authored shadows stretch the lee influence gently.
+        float widthScale = Math.Clamp(0.65f + width * 2.5f, 0.65f, 1.6f);
+        return drop * ridgePresence * strength * widthScale;
     }
 
     float RoughOrographicHeight(SN.Vector3 dir, float altitude)
@@ -404,5 +434,101 @@ public sealed class BiomeMap
         if (best < 0)
             return 0f;
         return wantTemp ? bands[best].TemperatureBias : bands[best].MoistureBias;
+    }
+
+    static bool IsSnowNamedBiome(BiomeDefinition biome)
+        => string.Equals(biome.Name, "Ice", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(biome.Name, "Tundra", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Snow textures must not win temperate land. Ice stays polar; tundra may also
+    /// appear on high peaks. Cubemap altitude is biased to ~0.5 at sea level, so
+    /// a wide Tundra/Ice climate box otherwise paints the whole crust white.
+    /// </summary>
+    static float SnowBiomeLatitudePenalty(BiomeDefinition biome, SN.Vector3 sphereDir, float altitude)
+    {
+        if (!IsSnowNamedBiome(biome))
+            return 0f;
+
+        // |Y| 0.86 ≈ 59° — below that, snow biomes must not win.
+        float polar = Math.Clamp((MathF.Abs(sphereDir.Y) - 0.86f) / 0.10f, 0f, 1f);
+        bool isTundra = string.Equals(biome.Name, "Tundra", StringComparison.OrdinalIgnoreCase);
+        float alpine = isTundra && altitude >= 0.90f ? Math.Clamp((altitude - 0.88f) / 0.10f, 0f, 1f) : 0f;
+        float allow = MathF.Max(polar, alpine);
+        return (1f - allow) * 3.5f;
+    }
+
+    float IceSheetDistanceScale(BiomeDefinition biome, float temperature, float altitude, SN.Vector3 sphereDir)
+    {
+        var sheets = _config?.IceSheets;
+        if (sheets == null || sheets.Length == 0)
+            return 1f;
+
+        float polar = Math.Clamp((MathF.Abs(sphereDir.Y) - 0.86f) / 0.10f, 0f, 1f);
+        if (polar <= 0.02f)
+            return 1f;
+
+        bool isIce = string.Equals(biome.Name, "Ice", StringComparison.OrdinalIgnoreCase);
+        float best = 1f;
+        for (int i = 0; i < sheets.Length; i++)
+        {
+            var s = sheets[i];
+            if (temperature > s.MaxTemperature)
+                continue;
+            float coverage = Math.Clamp(s.Coverage, 0.05f, 1f);
+            float cold = Math.Clamp((s.MaxTemperature - temperature) / Math.Max(0.05f, s.MaxTemperature), 0f, 1f);
+            float weight = cold * coverage * polar;
+            if (altitude >= 0f && altitude > 0.55f)
+                weight *= 0.65f;
+
+            if (isIce)
+                best = Math.Min(best, 1f - weight * 0.75f);
+            else if (biome.SpawnWater || string.Equals(biome.Name, "Ocean", StringComparison.OrdinalIgnoreCase))
+                best = Math.Min(best, 1f + weight * 0.35f);
+        }
+        return Math.Clamp(best, 0.2f, 1.6f);
+    }
+
+    float WetlandDistanceScale(BiomeDefinition biome, float moisture, float altitude)
+    {
+        var wetlands = _config?.Wetlands;
+        if (wetlands == null || wetlands.Length == 0)
+            return 1f;
+
+        for (int i = 0; i < wetlands.Length; i++)
+        {
+            var w = wetlands[i];
+            bool match = string.IsNullOrWhiteSpace(w.TargetBiome)
+                ? string.Equals(biome.Name, "Wetlands", StringComparison.OrdinalIgnoreCase)
+                : string.Equals(biome.Name, w.TargetBiome, StringComparison.OrdinalIgnoreCase);
+            if (!match)
+                continue;
+            if (altitude >= 0f && altitude > 0.45f)
+                return 1f;
+            float moistNeed = Math.Clamp(0.55f + w.MoistureBoost * 0.5f, 0.4f, 0.95f);
+            if (moisture < moistNeed)
+                return 1.15f;
+            return 0.82f;
+        }
+        return 1f;
+    }
+
+    float SampleWetlandMoistureBoost(SN.Vector3 dir, float altitude)
+    {
+        var wetlands = _config?.Wetlands;
+        if (wetlands == null || wetlands.Length == 0)
+            return 0f;
+
+        float boost = 0f;
+        for (int i = 0; i < wetlands.Length; i++)
+        {
+            float m = Math.Clamp(wetlands[i].MoistureBoost, 0f, 1f);
+            if (m <= 1e-4f) continue;
+            float lowland = altitude < 0f ? 0.7f : Math.Clamp(1f - altitude * 1.6f, 0f, 1f);
+            float n = 0.5f + 0.5f * _moistNoise.Noise3D(
+                dir.X * 5.1f + i * 11f, dir.Y * 5.1f, dir.Z * 5.1f - i);
+            boost = MathF.Max(boost, m * lowland * (0.55f + 0.45f * n));
+        }
+        return boost;
     }
 }

@@ -67,8 +67,12 @@ public sealed class PlanetConfig
     public float WaterMoistureBoost { get; set; } = 0.35f;
     /// <summary>Moisture drop on the lee side of ridges (scales with <see cref="RidgeStrength"/>).</summary>
     public float RainShadowStrength { get; set; } = 0.45f;
+    /// <summary>Angular width of rain-shadow falloff from RainShadow graph nodes.</summary>
+    public float RainShadowWidth { get; set; } = 0.12f;
     /// <summary>Scales shore sand blend weight by local climate moisture (0 = geometric only).</summary>
     public float ShoreClimateBias { get; set; } = 0.35f;
+    /// <summary>Normalized altitude above which climate snow appears (from Season node).</summary>
+    public float SnowLineAltitude { get; set; } = 0.72f;
     public float AltitudeWeight { get; set; } = 0.3f;
     public bool UseSelectClassifier { get; set; }
     public float AltitudeSeaLevel { get; set; }
@@ -156,5 +160,7 @@ public sealed class PlanetConfig
     [JsonIgnore] public CliffRecipe[] Cliffs { get; set; } = Array.Empty<CliffRecipe>();
     [JsonIgnore] public DomainWarpRecipe[] DomainWarps { get; set; } = Array.Empty<DomainWarpRecipe>();
     [JsonIgnore] public LatitudeBandRecipe[] LatitudeBands { get; set; } = Array.Empty<LatitudeBandRecipe>();
+    [JsonIgnore] public IceSheetRecipe[] IceSheets { get; set; } = Array.Empty<IceSheetRecipe>();
+    [JsonIgnore] public WetlandRecipe[] Wetlands { get; set; } = Array.Empty<WetlandRecipe>();
     [JsonIgnore] public Game_Engine.Core.Noise.SimplexNoise? GeologyNoise { get; set; }
 }

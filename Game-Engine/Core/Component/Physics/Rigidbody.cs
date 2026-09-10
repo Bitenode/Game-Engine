@@ -188,16 +188,15 @@ namespace Game_Engine.Core.Component
                     {
                         IsUnderwater = PlayerMotor.IsPlanetSubmerged;
                         UnderwaterDepth = PlayerMotor.PlanetSubmergeDepth;
-                        if (!IsUnderwater)
-                            underwaterState = null;
-                        else
-                            underwaterState = UnderwaterQuery.GetState(pos0);
+                        underwaterState = IsUnderwater ? UnderwaterQuery.GetState(pos0) : null;
                     }
                     else
                     {
-                        underwaterState = UnderwaterQuery.GetState(pos0);
-                        IsUnderwater = underwaterState.HasValue;
-                        UnderwaterDepth = underwaterState?.Depth ?? 0f;
+                        // Player already classified the column this tick — do not
+                        // re-run water / biome sampling from the rigidbody.
+                        underwaterState = null;
+                        IsUnderwater = false;
+                        UnderwaterDepth = 0f;
                     }
                     _forceAccum = SN.Vector3.Zero;
                     _impulseAccum = SN.Vector3.Zero;

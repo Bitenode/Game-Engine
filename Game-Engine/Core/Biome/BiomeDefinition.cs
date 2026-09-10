@@ -286,8 +286,110 @@ public sealed class BiomeDefinition
         VegetationRegrowthRate = 0.02f,
     };
 
+    public static BiomeDefinition Savanna => new()
+    {
+        Name = "Savanna", BiomeIndex = 8,
+        BaseColorR = 0.62f, BaseColorG = 0.58f, BaseColorB = 0.22f,
+        HeightAmplitude = 28f, NoiseFrequency = 0.0035f, NoiseMode = "FBM",
+        MinAltitude = 0.18f, MaxAltitude = 0.48f,
+        MinTemperature = 0.55f, MaxTemperature = 0.95f,
+        MinMoisture = 0.18f, MaxMoisture = 0.45f,
+        VegetationDensity = 0.35f, TreeDensity = 0.12f,
+        TopTiling = 18f, UnderTiling = 12f,
+        CavesEnabled = true,
+        VegetationProfileId = "Savanna",
+        WeatherProfileId = "Arid",
+        ClearChance = 0.62f,
+        CloudyChance = 0.26f,
+        RainChance = 0.08f,
+        SnowChance = 0f,
+        StormChance = 0.04f,
+        FogDensityBias = 0.7f,
+    };
+
+    public static BiomeDefinition Wetlands => new()
+    {
+        Name = "Wetlands", BiomeIndex = 9,
+        BaseColorR = 0.22f, BaseColorG = 0.42f, BaseColorB = 0.28f,
+        HeightAmplitude = 12f, NoiseFrequency = 0.004f, NoiseMode = "Billow",
+        MinAltitude = 0.12f, MaxAltitude = 0.38f,
+        MinTemperature = 0.35f, MaxTemperature = 0.8f,
+        MinMoisture = 0.65f, MaxMoisture = 1f,
+        VegetationDensity = 0.7f, TreeDensity = 0.2f,
+        TopTiling = 14f, UnderTiling = 10f,
+        CavesEnabled = false,
+        VegetationProfileId = "Wetlands",
+        WeatherProfileId = "Humid",
+        ClearChance = 0.28f,
+        CloudyChance = 0.40f,
+        RainChance = 0.24f,
+        SnowChance = 0.02f,
+        StormChance = 0.06f,
+        FogDensityBias = 1.4f,
+    };
+
+    public static BiomeDefinition Alpine => new()
+    {
+        Name = "Alpine", BiomeIndex = 10,
+        BaseColorR = 0.55f, BaseColorG = 0.58f, BaseColorB = 0.52f,
+        HeightAmplitude = 70f, NoiseFrequency = 0.0045f, NoiseMode = "Ridged",
+        MinAltitude = 0.62f, MaxAltitude = 1f, ErosionStrength = 0.45f, ErosionFrequency = 0.018f,
+        MinTemperature = 0.05f, MaxTemperature = 0.4f,
+        MinMoisture = 0.25f, MaxMoisture = 0.7f,
+        VegetationDensity = 0.2f, TreeDensity = 0.08f,
+        TopTiling = 16f, UnderTiling = 10f,
+        CavesEnabled = true,
+        VegetationProfileId = "Alpine",
+        WeatherProfileId = "Mountain",
+        SnowChance = 0.22f,
+        StormChance = 0.05f,
+        WindBias = 1.35f,
+    };
+
+    public static BiomeDefinition Boreal => new()
+    {
+        Name = "Boreal", BiomeIndex = 11,
+        BaseColorR = 0.18f, BaseColorG = 0.38f, BaseColorB = 0.22f,
+        HeightAmplitude = 35f, NoiseFrequency = 0.0038f, NoiseMode = "FBM",
+        MinAltitude = 0.25f, MaxAltitude = 0.65f, ErosionStrength = 0.25f, ErosionFrequency = 0.014f,
+        MinTemperature = 0.15f, MaxTemperature = 0.45f,
+        MinMoisture = 0.4f, MaxMoisture = 0.85f,
+        VegetationDensity = 0.55f, TreeDensity = 0.55f,
+        TopTiling = 13f, UnderTiling = 9f,
+        CavesEnabled = true,
+        VegetationProfileId = "Boreal",
+        WeatherProfileId = "Cold",
+        ClearChance = 0.34f,
+        CloudyChance = 0.40f,
+        RainChance = 0.12f,
+        SnowChance = 0.12f,
+        StormChance = 0.02f,
+    };
+
+    public static BiomeDefinition Ice => new()
+    {
+        Name = "Ice", BiomeIndex = 12,
+        BaseColorR = 0.86f, BaseColorG = 0.92f, BaseColorB = 0.96f,
+        HeightAmplitude = 10f, NoiseFrequency = 0.003f, NoiseMode = "FBM",
+        MinAltitude = 0f, MaxAltitude = 0.55f,
+        MinTemperature = 0f, MaxTemperature = 0.22f,
+        MinMoisture = 0.35f, MaxMoisture = 1f,
+        VegetationDensity = 0.02f, TreeDensity = 0f,
+        TopTiling = 22f, UnderTiling = 14f,
+        CavesEnabled = false,
+        VegetationProfileId = "Ice",
+        WeatherProfileId = "Cold",
+        ClearChance = 0.42f,
+        CloudyChance = 0.36f,
+        RainChance = 0.02f,
+        SnowChance = 0.18f,
+        StormChance = 0.02f,
+        FogDensityBias = 1.1f,
+    };
+
     public static BiomeDefinition[] AllPresets => new[]
     {
-        Ocean, Beach, Grassland, Forest, Desert, Tundra, Mountains, Volcanic
+        Ocean, Beach, Grassland, Forest, Desert, Tundra, Mountains, Volcanic,
+        Savanna, Wetlands, Alpine, Boreal, Ice
     };
 }

@@ -3378,7 +3378,9 @@ void main()
     vec3 scatterColor = uShallowColor.rgb * scatter;
 
     float NdotL = max(dot(N, L), 0.0);
-    float lighting = uAmbient + NdotL * 0.4 * uDiffuseK;
+    // Keep a dusk floor so pond/lake/river tints do not crush to black at sundown.
+    float lighting = max(uAmbient, 0.26) + NdotL * 0.55 * uDiffuseK;
+    waterColor = max(waterColor, vec3(0.04, 0.14, 0.18));
     vec3 color = waterColor * lighting + vec3(spec) + scatterColor;
     color += evalAtmosphere(vWorldPos, V, radialDir) * 0.45;
     float viewExtinction = exp(-max(0.0, 1.0 - dot(V, radialDir)) * 2.2);

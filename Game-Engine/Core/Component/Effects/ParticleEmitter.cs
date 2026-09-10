@@ -209,69 +209,70 @@ namespace Game_Engine.Core.Component
             float dt = Time.deltaTime;
             if (dt <= 0f) return;
 
-            // Ensure array sized
+            // Ensure array sized. Compact live particles live in [0, AliveCount).
             if (Particles.Length != MaxParticles)
             {
                 var old = Particles;
+                int keep = Math.Min(AliveCount, MaxParticles);
                 Particles = new Particle[MaxParticles];
-                Array.Copy(old, Particles, Math.Min(old.Length, MaxParticles));
+                if (keep > 0)
+                    Array.Copy(old, Particles, Math.Min(old.Length, keep));
+                AliveCount = keep;
             }
 
-            // Simulate existing particles
             var emitterPos = (_unprojSpawn || _frustumSpawn) ? _frustumOrigin : GetWorldPosition();
             SynchronizeFollowOrigin(emitterPos);
             var gravityDir = ResolveGravityDirection(emitterPos);
             var nearestSurfaceCenter = SN.Vector3.Zero;
             var nearestSurfacePlanet = StopOnPlanetSurfaceHit ? ResolveNearestPlanet(emitterPos, out nearestSurfaceCenter) : null;
-            int alive = 0;
-            for (int i = 0; i < Particles.Length; i++)
+
+            int i = 0;
+            while (i < AliveCount)
             {
                 ref var p = ref Particles[i];
-                if (!p.Active) continue;
-
                 p.Life -= dt;
                 if (p.Life <= 0f)
                 {
-                    // Sub-emitter: spawn child particles at death position
+                    var deathPos = p.Position;
+                    RemoveAliveAt(i);
                     if (SubEmitterEnabled)
-                        SpawnSubParticles(p.Position);
-                    p.Active = false;
+                        SpawnSubParticles(deathPos);
                     continue;
                 }
 
-                // Physics
                 p.Velocity += gravityDir * (9.81f * GravityMultiplier * dt);
                 p.Velocity *= (1f - Drag * dt);
                 p.Position += p.Velocity * dt;
 
                 if (StopOnPlanetSurfaceHit && HasHitPlanetSurface(p.Position, nearestSurfacePlanet, nearestSurfaceCenter))
                 {
-                    p.Active = false;
+                    RemoveAliveAt(i);
                     continue;
                 }
-                alive++;
+                i++;
             }
-            AliveCount = alive;
 
-            // Emit new particles
             if (_playing)
             {
                 _emitAccum += EmissionRate * dt;
                 int toSpawn = (int)_emitAccum;
                 _emitAccum -= toSpawn;
 
-                for (int s = 0; s < toSpawn && alive < MaxParticles; s++)
-                {
-                    int idx = FindFreeSlot();
-                    if (idx < 0) break;
-                    SpawnParticle(ref Particles[idx]);
-                    alive++;
-                }
-                AliveCount = alive;
+                for (int s = 0; s < toSpawn && AliveCount < Particles.Length; s++)
+                    SpawnParticle(ref Particles[AliveCount++]);
 
-                if (!Loop && _emitAccum <= 0f && alive == 0)
+                if (!Loop && _emitAccum <= 0f && AliveCount == 0)
                     _playing = false;
             }
+        }
+
+        void RemoveAliveAt(int index)
+        {
+            AliveCount--;
+            if (index < AliveCount)
+                Particles[index] = Particles[AliveCount];
+            if (AliveCount >= 0 && AliveCount < Particles.Length)
+                Particles[AliveCount].Active = false;
         }
 
         /// <summary>
@@ -297,22 +298,27 @@ namespace Game_Engine.Core.Component
                 }
                 else if (delta.LengthSquared() > 1e-10f)
                 {
-                    for (int i = 0; i < Particles.Length; i++)
-                    {
-                        if (Particles[i].Active)
-                            Particles[i].Position += delta;
-                    }
+                    for (int i = 0; i < AliveCount; i++)
+                        Particles[i].Position += delta;
                 }
             }
             _lastFollowOrigin = worldOrigin;
             _hasFollowOrigin = true;
         }
 
-        private int FindFreeSlot()
+        private void SpawnSubParticles(SN.Vector3 deathPos)
         {
-            for (int i = 0; i < Particles.Length; i++)
-                if (!Particles[i].Active) return i;
-            return -1;
+            for (int i = 0; i < SubEmitterCount && AliveCount < Particles.Length; i++)
+            {
+                ref var p = ref Particles[AliveCount++];
+                p.Position = deathPos;
+                p.Velocity = RandomOnSphere() * SubEmitterSpeed;
+                p.Life = SubEmitterLifetime * (0.8f + 0.4f * (float)_rng.NextDouble());
+                p.MaxLife = p.Life;
+                p.Size = StartSize * 0.5f;
+                p.Rotation = (float)_rng.NextDouble() * MathF.Tau;
+                p.Active = true;
+            }
         }
 
         private void SpawnParticle(ref Particle p)
@@ -376,23 +382,6 @@ namespace Game_Engine.Core.Component
             p.Size = StartSize;
             p.Rotation = (float)_rng.NextDouble() * MathF.Tau;
             p.Active = true;
-        }
-
-        private void SpawnSubParticles(SN.Vector3 deathPos)
-        {
-            for (int i = 0; i < SubEmitterCount; i++)
-            {
-                int idx = FindFreeSlot();
-                if (idx < 0) break;
-                ref var p = ref Particles[idx];
-                p.Position = deathPos;
-                p.Velocity = RandomOnSphere() * SubEmitterSpeed;
-                p.Life = SubEmitterLifetime * (0.8f + 0.4f * (float)_rng.NextDouble());
-                p.MaxLife = p.Life;
-                p.Size = StartSize * 0.5f;
-                p.Rotation = (float)_rng.NextDouble() * MathF.Tau;
-                p.Active = true;
-            }
         }
 
         private SN.Vector3 RandomOnSphere()
@@ -484,7 +473,7 @@ namespace Game_Engine.Core.Component
 
             float dist = MathF.Sqrt(lenSq);
             var dir = toPos / dist;
-            float surfaceRadius = nearest.SampleSurfaceRadius(dir);
+            float surfaceRadius = nearest.SampleStandWorldRadius(dir);
             return dist <= surfaceRadius;
         }
 
@@ -501,8 +490,7 @@ namespace Game_Engine.Core.Component
                 var p = PlanetTerrain.ActivePlanets[i];
                 if (p?.gameObject == null) continue;
 
-                var world = SceneGraphUtil.AccumulateWorld(p.gameObject);
-                var center = new SN.Vector3(world.M41, world.M42, world.M43);
+                var center = p.GetWorldCenter();
                 float d2 = SN.Vector3.DistanceSquared(worldPos, center);
                 if (d2 < nearestSq)
                 {
@@ -526,8 +514,7 @@ namespace Game_Engine.Core.Component
             {
                 var p = PlanetTerrain.ActivePlanets[i];
                 if (p?.gameObject == null) continue;
-                var world = SceneGraphUtil.AccumulateWorld(p.gameObject);
-                var center = new SN.Vector3(world.M41, world.M42, world.M43);
+                var center = p.GetWorldCenter();
                 float d2 = SN.Vector3.DistanceSquared(atWorldPos, center);
                 if (d2 < nearestSq)
                 {
@@ -592,10 +579,9 @@ namespace Game_Engine.Core.Component
 
         public SN.Vector3 GetRenderFallDirection()
         {
-            for (int i = 0; i < Particles.Length; i++)
+            for (int i = 0; i < AliveCount; i++)
             {
                 ref var p = ref Particles[i];
-                if (!p.Active) continue;
                 if (p.Velocity.LengthSquared() > 1e-8f)
                     return SafeNormalize(p.Velocity, -SN.Vector3.UnitY);
             }
@@ -610,10 +596,10 @@ namespace Game_Engine.Core.Component
         {
             int skipped = 0;
             int count = 0;
-            for (int i = 0; i < Particles.Length && count < maxCount; i++)
+            int n = Math.Min(AliveCount, Particles.Length);
+            for (int i = 0; i < n && count < maxCount; i++)
             {
                 ref var p = ref Particles[i];
-                if (!p.Active) continue;
                 if (skipped < skipActive)
                 {
                     skipped++;

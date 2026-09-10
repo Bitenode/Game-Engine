@@ -67,7 +67,6 @@ public sealed class PlanetClimateAtlas
         var atlas = new PlanetClimateAtlas(resolution, config.RecipeHash);
         int res = atlas.Resolution;
         float inv = 1f / MathF.Max(1, res - 1);
-        float maxAmp = MathF.Max(1f, DensityGenerator.MaxAmplitude(config));
 
         for (int face = 0; face < 6; face++)
         {
@@ -97,7 +96,7 @@ public sealed class PlanetClimateAtlas
                             noise.RidgeNoise, noise.BasinNoise, dir);
                     }
 
-                    float alt = Math.Clamp((height / maxAmp) * 0.5f + 0.5f, 0f, 1f);
+                    float alt = biomeMap.NormalizeAltitude(height);
                     // Climate coupling lives in BiomeMap (lapse / water / rain shadow).
                     float temp = biomeMap.GetTemperature(dir, alt);
                     float moist = biomeMap.GetMoisture(dir, alt);
