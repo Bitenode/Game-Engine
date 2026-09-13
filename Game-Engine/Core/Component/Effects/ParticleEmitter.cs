@@ -100,6 +100,14 @@ namespace Game_Engine.Core.Component
         float _frustumLift = 10f;
         bool _hasFollowOrigin;
         SN.Vector3 _lastFollowOrigin;
+        int _followSyncFrame = int.MinValue;
+
+        // cache nearest planet / gravity for rain/snow sim.
+        PlanetTerrain? _cachedNearestPlanet;
+        SN.Vector3 _cachedNearestPlanetCenter;
+        SN.Vector3 _cachedGravityDir = -SN.Vector3.UnitY;
+        SN.Vector3 _planetCachePos = new(float.NaN);
+        int _planetCacheFrame = int.MinValue;
 
         /// <summary>Whether particles are currently being emitted and simulated.</summary>
         public bool IsPlaying => _playing;
@@ -221,10 +229,25 @@ namespace Game_Engine.Core.Component
             }
 
             var emitterPos = (_unprojSpawn || _frustumSpawn) ? _frustumOrigin : GetWorldPosition();
-            SynchronizeFollowOrigin(emitterPos);
-            var gravityDir = ResolveGravityDirection(emitterPos);
+            // weather LateUpdate owns follow sync when FollowEmitterMotion is set
+            // (avoids Update + LateUpdate double carry of the whole particle list).
+            if (!FollowEmitterMotion)
+                SynchronizeFollowOrigin(emitterPos);
+
+            SN.Vector3 gravityDir = -SN.Vector3.UnitY;
+            PlanetTerrain? nearestSurfacePlanet = null;
             var nearestSurfaceCenter = SN.Vector3.Zero;
-            var nearestSurfacePlanet = StopOnPlanetSurfaceHit ? ResolveNearestPlanet(emitterPos, out nearestSurfaceCenter) : null;
+            if (UsePlanetGravity || StopOnPlanetSurfaceHit)
+            {
+                EnsurePlanetCache(emitterPos);
+                if (UsePlanetGravity)
+                    gravityDir = _cachedGravityDir;
+                if (StopOnPlanetSurfaceHit)
+                {
+                    nearestSurfacePlanet = _cachedNearestPlanet;
+                    nearestSurfaceCenter = _cachedNearestPlanetCenter;
+                }
+            }
 
             int i = 0;
             while (i < AliveCount)
@@ -304,6 +327,7 @@ namespace Game_Engine.Core.Component
             }
             _lastFollowOrigin = worldOrigin;
             _hasFollowOrigin = true;
+            _followSyncFrame = Time.frameCount;
         }
 
         private void SpawnSubParticles(SN.Vector3 deathPos)
@@ -479,10 +503,38 @@ namespace Game_Engine.Core.Component
 
         private PlanetTerrain? ResolveNearestPlanet(SN.Vector3 worldPos, out SN.Vector3 nearestCenter)
         {
-            nearestCenter = SN.Vector3.Zero;
-            if (PlanetTerrain.ActivePlanets.Count == 0) return null;
+            EnsurePlanetCache(worldPos);
+            nearestCenter = _cachedNearestPlanetCenter;
+            return _cachedNearestPlanet;
+        }
+
+        private SN.Vector3 ResolveGravityDirection(SN.Vector3 atWorldPos)
+        {
+            if (!UsePlanetGravity || PlanetTerrain.ActivePlanets.Count == 0)
+                return -SN.Vector3.UnitY;
+            EnsurePlanetCache(atWorldPos);
+            return _cachedGravityDir;
+        }
+
+        void EnsurePlanetCache(SN.Vector3 worldPos)
+        {
+            int frame = Time.frameCount;
+            if (frame == _planetCacheFrame
+                && !float.IsNaN(_planetCachePos.X)
+                && SN.Vector3.DistanceSquared(worldPos, _planetCachePos) < 4f)
+                return;
+
+            _planetCacheFrame = frame;
+            _planetCachePos = worldPos;
+            _cachedNearestPlanet = null;
+            _cachedNearestPlanetCenter = SN.Vector3.Zero;
+            _cachedGravityDir = -SN.Vector3.UnitY;
+
+            if (PlanetTerrain.ActivePlanets.Count == 0)
+                return;
 
             PlanetTerrain? nearest = null;
+            SN.Vector3 nearestCenter = SN.Vector3.Zero;
             float nearestSq = float.MaxValue;
 
             for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
@@ -500,34 +552,13 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            return nearest;
-        }
-
-        private SN.Vector3 ResolveGravityDirection(SN.Vector3 atWorldPos)
-        {
-            if (!UsePlanetGravity || PlanetTerrain.ActivePlanets.Count == 0)
-                return -SN.Vector3.UnitY;
-
-            SN.Vector3 nearestCenter = SN.Vector3.Zero;
-            float nearestSq = float.MaxValue;
-            for (int i = 0; i < PlanetTerrain.ActivePlanets.Count; i++)
+            _cachedNearestPlanet = nearest;
+            _cachedNearestPlanetCenter = nearestCenter;
+            if (nearest != null && nearestSq < float.MaxValue)
             {
-                var p = PlanetTerrain.ActivePlanets[i];
-                if (p?.gameObject == null) continue;
-                var center = p.GetWorldCenter();
-                float d2 = SN.Vector3.DistanceSquared(atWorldPos, center);
-                if (d2 < nearestSq)
-                {
-                    nearestSq = d2;
-                    nearestCenter = center;
-                }
+                var down = nearestCenter - worldPos;
+                _cachedGravityDir = SafeNormalize(down, -SN.Vector3.UnitY);
             }
-
-            if (nearestSq >= float.MaxValue)
-                return -SN.Vector3.UnitY;
-
-            var down = nearestCenter - atWorldPos;
-            return SafeNormalize(down, -SN.Vector3.UnitY);
         }
 
         private static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)

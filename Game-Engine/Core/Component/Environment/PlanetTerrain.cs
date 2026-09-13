@@ -76,6 +76,8 @@ public sealed class PlanetTerrain : Behavior
     PlanetVoxelEditStore? _voxelEditStore;
     PlanetSurfaceCubemap? _surfaceCubemap;
     bool _pendingVoxelMeshRefresh;
+    /// <summary>Height digs from .planetvox loaded before the cubemap exists.</summary>
+    PlanetVoxelEditAsset? _pendingHeightDeltaAsset;
     PlanetWater? _planetWater;
     PlanetVegetationAssetData? _pendingVegetationAssetData;
     bool? _wiredStreamClient;
@@ -555,6 +557,16 @@ public sealed class PlanetTerrain : Behavior
         _densitySampler?.SetSurfaceCubemap(_surfaceCubemap);
         _chunkManager?.SetClimateAtlas(_climateAtlas);
         _chunkManager?.SetSurfaceCubemap(_surfaceCubemap);
+
+        // .planetvox height digs often load before the cubemap exists — apply now
+        // so holes persist across restart (before remesh).
+        if (_pendingHeightDeltaAsset != null)
+        {
+            var pending = _pendingHeightDeltaAsset;
+            _pendingHeightDeltaAsset = null;
+            ApplyHeightDeltasFromAsset(pending);
+        }
+
         if (remesh)
         {
             _chunkManager?.ClearMeshCache();
@@ -727,6 +739,11 @@ public sealed class PlanetTerrain : Behavior
             return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
                 out waterWorldR, out crustWorldR, out sample);
 
+        // Excavated land still above the ocean fill on the undug surface — dry pit.
+        if (crustWorldR + 1.25f < undugWorld && undugWorld > seaR - 1.5f)
+            return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
+                out waterWorldR, out crustWorldR, out sample);
+
         if (crustWorldR >= seaR - 0.05f)
             return CacheWaterColumn(sphereDir, occupantRadius, false, 0f, crustWorldR, PlanetWaterSurfaceSample.Empty,
                 out waterWorldR, out crustWorldR, out sample);
@@ -823,10 +840,11 @@ public sealed class PlanetTerrain : Behavior
             return MathF.Max(1f, local) * worldScale;
         }
 
-        float crustLocal = _config != null ? SampleLocalCrustRadius(sphereDir) : Radius;
-        if (crustLocal < 1f)
-            crustLocal = Radius;
-        return crustLocal * worldScale;
+        // Never fall back to dug SampleLocalCrustRadius — that made land dig pits swim.
+        float undugLocal = SampleUndugLocalCrustRadius(sphereDir);
+        if (undugLocal < 1f)
+            undugLocal = _config != null ? _config.Radius : Radius;
+        return MathF.Max(1f, undugLocal) * worldScale;
     }
 
     /// <summary>
@@ -1248,6 +1266,8 @@ public sealed class PlanetTerrain : Behavior
     {
         LastCameraPosition = cameraPos;
         _playEditLodCooldown = 0f;
+        // Digs change crust/undug classification — don't reuse a wet/dry water-column hit.
+        _waterColFrame = int.MinValue;
     }
 
     /// <summary>Refine chunks around a world-space camera (editor or play).</summary>
@@ -1815,11 +1835,37 @@ public sealed class PlanetTerrain : Behavior
 
     void ApplyHeightDeltasFromAsset(PlanetVoxelEditAsset asset)
     {
-        if (_surfaceCubemap == null)
+        bool hasSparse = asset.HeightDeltaSparse is { Length: > 0 };
+        bool hasFaces = asset.HeightDeltaFaces is { Length: 6 };
+        bool hasLegacyStrokes = asset.Strokes is { Length: > 0 };
+        if (!hasSparse && !hasFaces && !hasLegacyStrokes)
             return;
 
+        // Load runs during Initialize before RebuildPhysicsNoise bakes the cubemap.
+        // Keep the asset and apply in ApplySurfaceBakeResult; also park deltas on a
+        // scratch cubemap so live digs / async bake preserve them via CopyHeightDeltasFrom.
+        if (_surfaceCubemap == null)
+        {
+            _pendingHeightDeltaAsset = asset;
+            if (_config != null)
+            {
+                int res = asset.HeightDeltaResolution > 0
+                    ? asset.HeightDeltaResolution
+                    : PlanetSurfaceCubemap.DefaultResolution;
+                _surfaceCubemap = new PlanetSurfaceCubemap(res, _config.RecipeHash);
+                ApplyHeightDeltasOntoCubemap(asset, _surfaceCubemap);
+            }
+            return;
+        }
+
+        ApplyHeightDeltasOntoCubemap(asset, _surfaceCubemap);
+        _pendingHeightDeltaAsset = null;
+    }
+
+    void ApplyHeightDeltasOntoCubemap(PlanetVoxelEditAsset asset, PlanetSurfaceCubemap cubemap)
+    {
         if (asset.HeightDeltaSparse is { Length: > 0 } sparse
-            && asset.HeightDeltaResolution == _surfaceCubemap.Resolution)
+            && asset.HeightDeltaResolution == cubemap.Resolution)
         {
             // v2 stored dig as +height (bumps). v3+ stores dig as -height (holes).
             if (asset.Version < 3)
@@ -1827,26 +1873,35 @@ public sealed class PlanetTerrain : Behavior
                 for (int i = 0; i < sparse.Length; i++)
                     sparse[i].Value = -sparse[i].Value;
             }
-            _surfaceCubemap.ImportSparseHeightDeltas(sparse, asset.HeightDeltaResolution);
+            cubemap.ImportSparseHeightDeltas(sparse, asset.HeightDeltaResolution);
             return;
         }
 
         if (asset.HeightDeltaFaces is { Length: 6 } faces
-            && asset.HeightDeltaResolution == _surfaceCubemap.Resolution)
+            && asset.HeightDeltaResolution == cubemap.Resolution)
         {
             for (int f = 0; f < 6; f++)
             {
-                if (faces[f] == null || faces[f].Length != _surfaceCubemap.HeightDelta[f].Length)
+                if (faces[f] == null || faces[f].Length != cubemap.HeightDelta[f].Length)
                     continue;
-                Array.Copy(faces[f], _surfaceCubemap.HeightDelta[f], faces[f].Length);
+                Array.Copy(faces[f], cubemap.HeightDelta[f], faces[f].Length);
                 if (asset.Version < 3)
                 {
-                    var d = _surfaceCubemap.HeightDelta[f];
+                    var d = cubemap.HeightDelta[f];
                     for (int i = 0; i < d.Length; i++)
                         d[i] = -d[i];
                 }
             }
-            _surfaceCubemap.BumpHeightVersion();
+            cubemap.BumpHeightVersion();
+            return;
+        }
+
+        // Resolution mismatch: keep pending so a later bake at the right res can retry.
+        if ((asset.HeightDeltaSparse is { Length: > 0 } || asset.HeightDeltaFaces is { Length: 6 })
+            && asset.HeightDeltaResolution > 0
+            && asset.HeightDeltaResolution != cubemap.Resolution)
+        {
+            _pendingHeightDeltaAsset = asset;
             return;
         }
 
@@ -1864,9 +1919,9 @@ public sealed class PlanetTerrain : Behavior
             float len = center.Length();
             if (len < 1e-5f) continue;
             var dir = center / len;
-            float surfaceR = planetR + _surfaceCubemap.SampleBaseHeight(dir);
+            float surfaceR = planetR + cubemap.SampleBaseHeight(dir);
             if (len >= surfaceR - MathF.Max(4f, s.Radius * 1.5f))
-                _surfaceCubemap.ApplyHeightBrush(center, s.Radius, s.DensityDelta, s.Falloff);
+                cubemap.ApplyHeightBrush(center, s.Radius, s.DensityDelta, s.Falloff);
             else if (len >= surfaceR - caveDepth)
                 _voxelEditStore?.AddSphere(center, s.Radius, s.DensityDelta, s.Falloff);
         }
@@ -2653,6 +2708,7 @@ public sealed class PlanetTerrain : Behavior
             // Do not ClearMeshCache() per stroke — that rebuilt the whole planet and
             // was the PlanetTool spike. Dirty + remesh only overlapping leaves.
             _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
+            NotifyVegetationSurfaceEdit(worldCenter, LocalToWorldLength(invalidateR));
         }
         else
         {
@@ -2664,12 +2720,25 @@ public sealed class PlanetTerrain : Behavior
                 _chunkManager.ApplyPlayModeEditVisual(localCenter, invalidateR);
             else
                 _chunkManager.DirtyLeavesNear(localCenter, invalidateR);
+            // Near-surface cave punches can leave floating grass — clear the cone.
+            if (!deepUnderground)
+                NotifyVegetationSurfaceEdit(worldCenter, LocalToWorldLength(invalidateR));
         }
 
         if (NetworkManager.IsActive && NetworkManager.IsServer)
         {
             float invalidateR = r + MathF.Max(0.5f, MathF.Abs(densityDelta));
             BroadcastPlanetInvalidateClients(GetPlanetNetworkId(), worldCenter, invalidateR);
+        }
+    }
+
+    void NotifyVegetationSurfaceEdit(SN.Vector3 worldCenter, float worldRadius)
+    {
+        if (gameObject?.Behaviors == null) return;
+        foreach (var b in gameObject.Behaviors)
+        {
+            if (b is PlanetVegetationSystem veg && veg.IsActiveAndEnabled)
+                veg.NotifySurfaceEdit(worldCenter, worldRadius);
         }
     }
 
@@ -2791,6 +2860,7 @@ public sealed class PlanetTerrain : Behavior
     {
         _voxelEditStore?.Clear();
         _surfaceCubemap?.ClearHeightDeltas();
+        _pendingHeightDeltaAsset = null;
         if (!rebuildNow || gameObject == null) return;
         _chunkManager?.ResetAfterVoxelEditsLoaded();
         _pendingVoxelMeshRefresh = false;

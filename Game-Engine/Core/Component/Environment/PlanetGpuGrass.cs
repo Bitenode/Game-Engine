@@ -192,12 +192,14 @@ public static class PlanetGpuGrass
         gl.PolygonOffset(-1.5f, -1.5f);
 
         owner.GetGpuGrassEnvironment(out float wetness, out float snow, out float rain, out float cloudiness, out float windMul, out float sunIntensity, out float atmoAmbient);
-        float wind = WindSystem.GetCurrentStrength() * Math.Max(0.2f, windMul);
+        // Breeze sway — was wind*10 (often clamped to storm max) + heavy rain kick.
+        float wind = WindSystem.GetCurrentStrength() * Math.Clamp(windMul, 0.2f, 1.15f);
         float storm = rain >= 0.85f ? 1f : 0f;
         var sunTint = lightColor.LengthSquared() > 1e-6f
             ? lightColor
             : new SN.Vector3(1f, 0.96f, 0.88f);
-        float amb = Math.Max(ambient, atmoAmbient);
+        // Prefer atmosphere night values over a brighter scene ambient floor.
+        float amb = Math.Min(Math.Max(0.02f, ambient), Math.Max(0.02f, atmoAmbient));
 
         s_shader.Use();
         s_shader.SetMatrix4("uPlanetWorld", planetWorld);
@@ -206,9 +208,9 @@ public static class PlanetGpuGrass
         s_shader.SetVector3("uCamPos", camPos);
         s_shader.SetVector3("uLightDir", lightDir);
         s_shader.SetVector3("uLightColor", sunTint);
-        s_shader.SetFloat("uAmbient", Math.Clamp(amb, 0.10f, 0.85f));
+        s_shader.SetFloat("uAmbient", Math.Clamp(amb, 0.02f, 0.85f));
         s_shader.SetFloat("uDiffuseK", Math.Clamp(diffuseK, 0.20f, 1.35f));
-        s_shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.12f, 2f));
+        s_shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.02f, 2f));
         s_shader.SetFloat("uAlphaCutoff", 0.32f);
         s_shader.SetFloat("uWetness", wetness);
         s_shader.SetFloat("uSnow", snow);
@@ -216,7 +218,7 @@ public static class PlanetGpuGrass
         s_shader.SetFloat("uStorm", storm);
         s_shader.SetFloat("uCloudiness", cloudiness);
         s_shader.SetFloat("uWindTime", WindSystem.Time);
-        s_shader.SetFloat("uWindStrength", Math.Clamp(wind * 10f, 0.03f, 1.45f));
+        s_shader.SetFloat("uWindStrength", Math.Clamp(wind * 3.0f, 0.02f, 0.36f));
         s_shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
             ? SN.Vector3.Normalize(WindSystem.Direction)
             : SN.Vector3.UnitX);

@@ -344,7 +344,7 @@ Called from `FixedUpdate`. Performs the full physics simulation step:
 - CCD max iterations: `4`
 - Skin thickness: `radius * 0.2f` (minimum `0.01f`)
 
-**Planet walking:** uses the same **surface mode** hysteresis as `Rigidbody` (`RefreshPlanetSurfaceMode`: enter when radial ≥ crust − 6 m, leave when radial < crust − 10 m or `CameraBelowCrust`). On the outer crust it stands on `PlanetTerrain.SampleCollisionRadius` (visible leaf). Caves use `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine), not the editor 96-step pick.
+**Planet walking:** uses the same **surface mode** hysteresis as `Rigidbody` (`RefreshPlanetSurfaceMode`: enter when radial ≥ crust − 6 m, leave when radial < crust − 10 m or `CameraBelowCrust`). On the outer crust it stands on `PlanetTerrain.SampleStandWorldRadius` (height cubemap + dig deltas). Caves use `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine), not the editor 96-step pick.
 
 **Requires:** CapsuleCollider (auto-added via `[Require]`)
 
@@ -477,14 +477,16 @@ Planet terrain component for cube-sphere worlds with a **height-cubemap shell**,
 - Play LOD is driven by **Game View only**; Scene View renders but does not split/merge during Play
 
 **Key methods:**
-- `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON and `.planetvox` sidecar (v2 height deltas + cave strokes)
-- `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read height deltas and cave strokes
+- `SavePlanetAsset()` / `LoadPlanetAsset()` — persist/load `.planet` JSON and `.planetvox` sidecar
+- `SaveVoxelEdits()` / `LoadVoxelEdits(voxelEditsPath?)` — write/read sidecar v3 (sparse `HeightDeltaSparse` preferred; legacy v1/v2 strokes and full faces still load). If the cubemap is not ready at load time, height deltas are held until `ApplySurfaceBakeResult`
 - `WorldToLocal` / `LocalToWorld` / `WorldToLocalLength` / `LocalToWorldLength` — `PlanetSpace` conversion
 - `RaycastDensity` / `Raycast` — height-cubemap march first; crust-cave density when underground; fills `PlanetDensityHit`
 - `RaycastDensityGameplay` / `SpherecastGameplay` — same field, gameplay quality 32/4
 - `RaycastPaintSurface` — play-mode tool pick
 - `Spherecast(...)` — thick density query
-- `SampleCollisionRadius(sphereDir)` — stand radius on the visible leaf
+- `SampleCollisionRadius(sphereDir)` — alias for `SampleStandWorldRadius` (height cubemap + dig deltas)
+- `SampleStandWorldRadius(sphereDir)` — fast player stand; no per-tick river carve
+- `SampleUndugStandWorldRadius(sphereDir)` — base cubemap without dig deltas (dry land pits vs ocean basins)
 - `SampleSurfaceRadius(sphereDir)` — edited height cubemap radius (water, orbit, vegetation). Not cave contact
 - `DigSphere` / `BuildSphere` — surface → height deltas; underground → cave occupancy
 - `BuildSphere(worldCenter, radius, strength, falloff)` — add density
@@ -1349,7 +1351,8 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 - **Momentum-based** — natural sliding, pushing, and inertia
 - **Planet movement** — tangent-basis movement projected onto the local surface plane
 - **Planet jumping** — jump impulse applied along `Rigidbody.LocalUp`
-- **Density grounding on planets** — `ResolveDensityPenetration`, short `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` for cave floors/ceilings; outer crust uses **surface mode** + `SampleCollisionRadius` / `SampleStandWorldRadius` (cubemap + digs when baked, else live graph + deltas)
+- **Density grounding on planets** — `ResolveDensityPenetration`, short `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` for cave floors/ceilings; outer crust uses **surface mode** + `SampleStandWorldRadius`
+- **Heightfield body/camera clearance** — `ResolveDigWallCapsule`, `HeightfieldGap`, `ResolveHeightfieldEyeClearance`; `InvalidateCollisionCache()` after sculpt edits
 - **Camera up alignment** — writes smoothed local up into `Camera.WorldUp`
 - **Camera modes** — first-person and third-person with smooth follow
 - **Pole stability** — avoids pole-only movement mode toggles that can flip controls
@@ -1412,7 +1415,7 @@ Play-mode planet sculpting behavior (Standard Assets). Added automatically by `P
 
 **Picking:** Game View uses the camera **screen ray** → `PlanetTerrain.RaycastPaintSurface`. Scene View play clicks use `PlanetTool.ApplyStrokeAt` at the cursor hit.
 
-**Persistence:** `PlanetPlayerSpawner` / Scene View call `SaveVoxelEdits()` on stroke end; height digs are stored in the `.planetvox` sidecar as sparse height deltas.
+**Persistence:** stroke end calls `SaveVoxelEdits()`; clears player stand cache via `RigidbodyPlayer.InvalidateCollisionCache()`.
 
 See [Planet System — Surface sculpting](13_Planet_System.md#surface-sculpting-editor--play).
 
@@ -2051,6 +2054,8 @@ Root sinking uses trunk-up **and** radial passes so tilted trees don’t “pick
 **Play performance:** procedural spawn caps ~**24** trees / **~32** grass batches, ~**220 m** activation; `RefreshVegetation` ~**4 ms**/frame budget in play; deferred spawn until imported template is ready.
 
 **Streaming keys:** vegetation groups use a fixed **18×18 face/UV cell** (`face:iu:iv`), not quadtree leaf IDs, so LOD split/merge does not pop plants. Despawn radius uses ~**1.45×** spawn radius hysteresis. With `BatchGrassPerLeaf`, up to **4** profile grass types can share one leaf as separate patches.
+
+**Surface sculpting:** `NotifySurfaceEdit(worldCenter, worldRadius)` removes GPU carpet patches, carpet trees, asset instances, and procedural leaf entries in an angular cone around the brush. Called from `PlanetTerrain` after height/cave edits via `NotifyVegetationSurfaceEdit`.
 
 **Scene / `.scene` load:** `SceneService.LoadFromFile` defers embedding vegetation from the synchronous `.planet` read. `PlanetVegetationSceneLoader` then reads + deserializes each planet asset on a **thread-pool** thread and applies `vegetation` on the **Avalonia UI thread** (spawn still uses existing per-update budgets).
 

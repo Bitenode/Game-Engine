@@ -1227,22 +1227,26 @@ namespace Game_Engine.Core
                 PlanetVegetationSystem.TryGetActiveFoliageEnvironment(
                     out float wetness, out float snow, out float rain, out float cloudiness,
                     out float windMul, out float sunIntensity, out float atmoAmbient);
-                float sway = item.Tree != null ? item.Tree.WindSway : 0.55f;
-                float speed = item.Tree != null ? item.Tree.WindSpeed : 0.45f;
-                float wind = WindSystem.GetCurrentStrength() * Math.Max(0.25f, sway) * Math.Max(0.35f, windMul);
-                wind *= 1f + rain * 1.15f;
+                float sway = item.Tree != null ? item.Tree.WindSway : 0.35f;
+                float speed = item.Tree != null ? item.Tree.WindSpeed : 0.55f;
+                float wind = WindSystem.GetCurrentStrength()
+                    * Math.Clamp(sway, 0.08f, 0.55f)
+                    * Math.Clamp(windMul, 0.35f, 1.15f);
+                // Light rain stiffens a bit — do not multiply into storm displacement.
+                wind *= 1f + Math.Clamp(rain, 0f, 1f) * 0.2f;
                 shader.SetInt("uIsVegetation", 1);
-                shader.SetFloat("uWindTime", WindSystem.Time * Math.Max(0.25f, speed) * 0.55f);
+                shader.SetFloat("uWindTime", WindSystem.Time * Math.Clamp(speed, 0.25f, 1.05f) * 0.45f);
                 shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
                     ? SN.Vector3.Normalize(WindSystem.Direction)
                     : SN.Vector3.UnitX);
-                shader.SetFloat("uWindStrength", Math.Clamp(wind * 12f, 0.14f, 1.35f));
+                shader.SetFloat("uWindStrength", Math.Clamp(wind * 4.2f, 0.04f, 0.38f));
                 shader.SetFloat("uRain", rain);
                 shader.SetFloat("uWetness", wetness);
                 shader.SetFloat("uSnow", snow);
                 shader.SetFloat("uCloudiness", cloudiness);
-                shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.16f, 2f));
-                shader.SetFloat("uAmbient", Math.Clamp(Math.Max(ctx.Ambient, atmoAmbient), 0.12f, 0.85f));
+                // Match planet day/night — no bright floors, don't pick Max(ctx, atmo).
+                shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.02f, 2f));
+                shader.SetFloat("uAmbient", Math.Clamp(atmoAmbient, 0.02f, 0.85f));
             }
             else
             {

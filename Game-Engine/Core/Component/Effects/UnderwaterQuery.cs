@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using SN = System.Numerics;
 using Game_Engine.Core;
@@ -22,6 +23,20 @@ namespace Game_Engine.Core.Component
 
     public static class UnderwaterQuery
     {
+        static readonly List<RigidbodyPlayer> s_players = new(4);
+
+        public static void RegisterPlayer(RigidbodyPlayer player)
+        {
+            if (player != null && !s_players.Contains(player))
+                s_players.Add(player);
+        }
+
+        public static void UnregisterPlayer(RigidbodyPlayer player)
+        {
+            if (player != null)
+                s_players.Remove(player);
+        }
+
         public static UnderwaterState? GetState(SN.Vector3 worldPos)
         {
             UnderwaterState? best = null;
@@ -132,10 +147,10 @@ namespace Game_Engine.Core.Component
             if (frame == _fxCacheFrame)
                 return _fxCache;
 
-            var players = SceneQuery.FindBehaviors<RigidbodyPlayer>();
             bool any = false;
-            foreach (var p in players)
+            for (int i = 0; i < s_players.Count; i++)
             {
+                var p = s_players[i];
                 if (p == null || !p.IsActiveAndEnabled)
                     continue;
                 any = true;
@@ -154,8 +169,9 @@ namespace Game_Engine.Core.Component
         /// <summary>True when a live player is under the planet water surface.</summary>
         public static bool AnyPlayerPlanetSubmerged()
         {
-            foreach (var p in SceneQuery.FindBehaviors<RigidbodyPlayer>())
+            for (int i = 0; i < s_players.Count; i++)
             {
+                var p = s_players[i];
                 if (p != null && p.IsActiveAndEnabled && p.IsPlanetSubmerged)
                     return true;
             }

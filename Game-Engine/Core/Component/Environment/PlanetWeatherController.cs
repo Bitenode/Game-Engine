@@ -98,6 +98,11 @@ public sealed class PlanetWeatherController : Behavior
     float _basePostFogEnd;
     bool _basePostVolFogEnabled;
     float _basePostVolFogDensity;
+
+    // track cam motion for rain LOD; emitter dirty checks read live props.
+    SN.Vector3 _lastPrecipCamPos = new(float.NaN);
+    bool _precipCamMoving;
+    PlanetWeatherState _lastPrecipState = (PlanetWeatherState)(-1);
     float _basePostVolFogMaxDistance;
     float _baseWindAmplitude;
     float _baseWindGustiness;
@@ -325,10 +330,16 @@ public sealed class PlanetWeatherController : Behavior
 
     void ApplyWind(PlanetConfig cfg, float biomeWindBias)
     {
-        float targetMul = cfg.GlobalWindMultiplier * biomeWindBias * (CurrentState == PlanetWeatherState.Storm ? StormWindBoost : 1f);
-        WindSystem.Amplitude = Damp(WindSystem.Amplitude, 0.08f * targetMul, 1.7f, UpdateIntervalSeconds);
-        WindSystem.Gustiness = Damp(WindSystem.Gustiness, 0.35f + targetMul * 0.15f, 1.4f, UpdateIntervalSeconds);
-        WindSystem.TurbulenceFrequency = Damp(WindSystem.TurbulenceFrequency, 0.85f + targetMul * 0.4f, 1.2f, UpdateIntervalSeconds);
+        // Keep Amplitude in a light-breeze band. Storm used to push this into gale
+        // territory, then shaders multiplied by 10–12 and shredded foliage.
+        float targetMul = Math.Clamp(
+            cfg.GlobalWindMultiplier * Math.Clamp(biomeWindBias, 0.5f, 1.35f)
+            * (CurrentState == PlanetWeatherState.Storm ? Math.Clamp(StormWindBoost, 1f, 1.25f) : 1f),
+            0.4f,
+            1.25f);
+        WindSystem.Amplitude = Damp(WindSystem.Amplitude, 0.045f * targetMul, 1.7f, UpdateIntervalSeconds);
+        WindSystem.Gustiness = Damp(WindSystem.Gustiness, 0.18f + targetMul * 0.1f, 1.4f, UpdateIntervalSeconds);
+        WindSystem.TurbulenceFrequency = Damp(WindSystem.TurbulenceFrequency, 0.55f + targetMul * 0.2f, 1.2f, UpdateIntervalSeconds);
         _effectsApplied = true;
     }
 
@@ -377,6 +388,7 @@ public sealed class PlanetWeatherController : Behavior
             _precipHiddenAccum += Math.Max(0.05f, UpdateIntervalSeconds);
             ClearPrecipitationFrustum();
             SetPrecipEmittersActive(false, clearParticles: _precipHiddenAccum >= Math.Max(0.1f, PrecipitationHiddenClearDelaySeconds));
+            InvalidatePrecipDirty();
             return;
         }
 
@@ -385,6 +397,7 @@ public sealed class PlanetWeatherController : Behavior
             _precipHiddenAccum += Math.Max(0.05f, UpdateIntervalSeconds);
             ClearPrecipitationFrustum();
             SetPrecipEmittersActive(false, clearParticles: _precipHiddenAccum >= Math.Max(0.1f, PrecipitationHiddenClearDelaySeconds));
+            InvalidatePrecipDirty();
             return;
         }
 
@@ -403,6 +416,10 @@ public sealed class PlanetWeatherController : Behavior
                  && fallbackPos.LengthSquared() > 1e-6f)
             cameraPos = fallbackPos;
 
+        if (!float.IsNaN(_lastPrecipCamPos.X))
+            _precipCamMoving = SN.Vector3.DistanceSquared(cameraPos, _lastPrecipCamPos) > 0.35f * 0.35f;
+        _lastPrecipCamPos = cameraPos;
+
         float lift = Math.Max(8f, PrecipitationHeight);
         if (emitSnow)
             lift = Math.Max(lift, 12f);
@@ -410,6 +427,9 @@ public sealed class PlanetWeatherController : Behavior
         // Full player-centered width (not camera-frustum-only). BoxSize is a full
         // diameter, so this gives at least 13 m coverage in every horizontal direction.
         float coverage = Math.Max(26f, PrecipitationArea * 1.35f);
+
+        // harder rain caps while the camera/player is moving.
+        float moveCapScale = (_precipCamMoving && emitRain) ? 0.55f : 1f;
 
         for (int i = 0; i < layerCount; i++)
         {
@@ -435,6 +455,7 @@ public sealed class PlanetWeatherController : Behavior
 
             emitter.ClearCameraFrustumSpawn();
             emitter.FollowEmitterMotion = true;
+            // follow sync once here; ParticleEmitter.Update skips same-frame re-sync.
             emitter.SynchronizeFollowOrigin(emitterWorld);
             if (emitSnow)
             {
@@ -442,16 +463,25 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.ApplyPreset(ParticlePreset.Snow);
                 if (UsePrecipitationPerformanceBudget)
                 {
-                    emitter.MaxParticles = Math.Max(250, (int)(RainSafeInt(SnowMaxParticlesPerLayer) * layerFactor));
-                    emitter.EmissionRate = Math.Max(5f, SnowEmissionRatePerLayer * (0.35f + effectiveSnow * 0.9f) * layerFactor);
-                    emitter.Lifetime = Math.Max(1.2f, SnowLifetimeSeconds);
-                    emitter.BoxSize = new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.8f), coverage);
+                    ApplyPrecipEmitterBudget(
+                        emitter,
+                        Math.Max(250, (int)(RainSafeInt(SnowMaxParticlesPerLayer) * layerFactor * moveCapScale)),
+                        Math.Max(5f, SnowEmissionRatePerLayer * (0.35f + effectiveSnow * 0.9f) * layerFactor * moveCapScale),
+                        Math.Max(1.2f, SnowLifetimeSeconds),
+                        new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.8f), coverage),
+                        stretch: false,
+                        stretchLen: 0f);
                 }
                 else if (OverrideEmitterParams)
                 {
-                    emitter.MaxParticles = Math.Max(1000, (int)(1400 * layerFactor));
-                    emitter.EmissionRate = (35f + effectiveSnow * 140f) * layerFactor;
-                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 1.1f, 0f, PrecipitationArea * 1.1f);
+                    ApplyPrecipEmitterBudget(
+                        emitter,
+                        Math.Max(1000, (int)(1400 * layerFactor * moveCapScale)),
+                        (35f + effectiveSnow * 140f) * layerFactor * moveCapScale,
+                        emitter.Lifetime,
+                        new SN.Vector3(PrecipitationArea * 1.1f, 0f, PrecipitationArea * 1.1f),
+                        stretch: false,
+                        stretchLen: 0f);
                 }
                 emitter.StopOnPlanetSurfaceHit = !DisableSurfaceHitForWeatherPrecipitation;
                 emitter.Loop = true;
@@ -463,18 +493,29 @@ public sealed class PlanetWeatherController : Behavior
                     emitter.ApplyPreset(ParticlePreset.Rain);
                 if (UsePrecipitationPerformanceBudget)
                 {
-                    emitter.MaxParticles = Math.Max(350, (int)(RainSafeInt(RainMaxParticlesPerLayer) * layerFactor));
-                    emitter.EmissionRate = Math.Max(10f, RainEmissionRatePerLayer * (0.35f + effectiveRain * 0.9f) * layerFactor);
-                    emitter.Lifetime = Math.Max(0.8f, RainLifetimeSeconds);
-                    emitter.BoxSize = new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.85f), coverage);
-                    emitter.StretchAlongVelocity = true;
-                    emitter.StretchLength = 1.15f;
+                    int maxP = Math.Max(350, (int)(RainSafeInt(RainMaxParticlesPerLayer) * layerFactor * moveCapScale));
+                    // Moving hard-cap ~1200 particles on the primary layer.
+                    if (_precipCamMoving)
+                        maxP = Math.Min(maxP, Math.Max(350, (int)(1200 * layerFactor)));
+                    ApplyPrecipEmitterBudget(
+                        emitter,
+                        maxP,
+                        Math.Max(10f, RainEmissionRatePerLayer * (0.35f + effectiveRain * 0.9f) * layerFactor * moveCapScale),
+                        Math.Max(0.8f, RainLifetimeSeconds),
+                        new SN.Vector3(coverage, Math.Max(12f, PrecipitationHeight * 0.85f), coverage),
+                        stretch: true,
+                        stretchLen: 1.15f);
                 }
                 else if (OverrideEmitterParams)
                 {
-                    emitter.MaxParticles = Math.Max(2000, (int)(2800 * layerFactor));
-                    emitter.EmissionRate = (90f + effectiveRain * 340f) * layerFactor;
-                    emitter.BoxSize = new SN.Vector3(PrecipitationArea * 1.2f, 0f, PrecipitationArea * 1.2f);
+                    ApplyPrecipEmitterBudget(
+                        emitter,
+                        Math.Max(2000, (int)(2800 * layerFactor * moveCapScale)),
+                        (90f + effectiveRain * 340f) * layerFactor * moveCapScale,
+                        emitter.Lifetime,
+                        new SN.Vector3(PrecipitationArea * 1.2f, 0f, PrecipitationArea * 1.2f),
+                        stretch: false,
+                        stretchLen: 0f);
                 }
                 emitter.StopOnPlanetSurfaceHit = !DisableSurfaceHitForWeatherPrecipitation;
                 emitter.Loop = true;
@@ -485,6 +526,43 @@ public sealed class PlanetWeatherController : Behavior
                 // Let already-spawned particles continue to simulate to planet hit.
                 emitter.Stop();
             }
+        }
+
+        _lastPrecipState = CurrentState;
+    }
+
+    void InvalidatePrecipDirty()
+    {
+        _lastPrecipState = (PlanetWeatherState)(-1);
+    }
+
+    void ApplyPrecipEmitterBudget(
+        ParticleEmitter emitter,
+        int maxParticles,
+        float emissionRate,
+        float lifetime,
+        SN.Vector3 boxSize,
+        bool stretch,
+        float stretchLen)
+    {
+        bool dirty =
+            emitter.MaxParticles != maxParticles
+            || MathF.Abs(emitter.EmissionRate - emissionRate) > 0.05f
+            || MathF.Abs(emitter.Lifetime - lifetime) > 0.01f
+            || (emitter.BoxSize - boxSize).LengthSquared() > 0.01f
+            || (stretch && (!emitter.StretchAlongVelocity || MathF.Abs(emitter.StretchLength - stretchLen) > 0.01f));
+
+        if (!dirty)
+            return;
+
+        emitter.MaxParticles = maxParticles;
+        emitter.EmissionRate = emissionRate;
+        emitter.Lifetime = lifetime;
+        emitter.BoxSize = boxSize;
+        if (stretch)
+        {
+            emitter.StretchAlongVelocity = true;
+            emitter.StretchLength = stretchLen;
         }
     }
 
@@ -595,7 +673,7 @@ public sealed class PlanetWeatherController : Behavior
             _vegetation.ApplyWeather(
                 Wetness,
                 SnowCoverage,
-                Math.Max(0.25f, windBias),
+                Math.Clamp(windBias, 0.45f, 1.15f),
                 Math.Max(RainIntensity, CurrentState == PlanetWeatherState.Storm ? 1f : 0f),
                 Cloudiness);
 

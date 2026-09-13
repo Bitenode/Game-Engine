@@ -95,7 +95,8 @@ Core goals:
 
 - **Surface mode** (brush center within ~surface − ε): writes into `PlanetSurfaceCubemap.HeightDelta`
 - **Cave mode** (deeper in the crust band): `PlanetVoxelEditStore` sphere strokes (same density convention: + dig / − build)
-- `SaveVoxelEdits()` / `LoadVoxelEdits()` persist sidecar version **2**: optional `HeightDeltaFaces[6]` + cave strokes / baked cells
+- `SaveVoxelEdits()` / `LoadVoxelEdits()` persist sidecar version **3**: preferred **`HeightDeltaSparse`** texel list; optional legacy `HeightDeltaFaces[6]`; cave strokes / baked cells unchanged. v2 dig sign is inverted on load (`Version < 3`)
+- `LoadVoxelEdits()` before the surface cubemap exists: height deltas are parked on a scratch cubemap and reapplied in `ApplySurfaceBakeResult` when the bake completes
 - Legacy v1 sidecars (strokes only): near-surface strokes project onto height deltas; deep interior strokes outside `CaveDepth` are dropped
 - Clients skip persist; the server writes when it owns the asset
 
@@ -306,6 +307,8 @@ Surface brushes write `PlanetSurfaceCubemap.HeightDelta` and call `ApplyPlayMode
 
 Underground brushes edit cave-band occupancy via `PlanetVoxelEditStore` instead.
 
+After each edit, `NotifyVegetationSurfaceEdit` forwards to `PlanetVegetationSystem.NotifySurfaceEdit` so grass/trees in the brush cone are removed (streaming refills dry land later).
+
 **Stability notes:**
 - Remesh jobs are keyed by `editStamp` (cave strokes + **height-delta version**). Per-stroke `ClearMeshCache()` is **not** used — that was a major PlanetTool spike
 - `NotifyEdited` only resets the play LOD cooldown; it does **not** force a full LOD refresh every stroke
@@ -471,7 +474,7 @@ Per-body underwater tint comes from the matching `PlanetWaterBody` deep colors w
 | `PlanetClimateAtlas.cs` | Companion climate LUTs; optional flow-accumulation river bake |
 | `PlanetDensitySampler.cs` | Heightfield + crust-band caves + cave dig overlay |
 | `PlanetDensityRaycast.cs` | `Raycast` / `Spherecast` / local isosurface / penetration |
-| `PlanetVoxelEditStore.cs` / `PlanetVoxelEditAsset.cs` | Cave strokes + sidecar DTO (v2 height deltas) |
+| `PlanetVoxelEditStore.cs` / `PlanetVoxelEditAsset.cs` | Cave strokes + sidecar DTO (v3 sparse height deltas) |
 | `PlanetManipulationApi.cs` | Static `DigSphere` / `BuildSphere` helpers |
 | `PlanetSurfaceUtility.cs` | Height accumulation, continent/crater/volcano/cliff geology, lava-lake query |
 | `PlanetChunkMeshCache.cs` | RecipeHash-keyed in-memory mesh cache |
@@ -518,7 +521,7 @@ Per-body underwater tint comes from the matching `PlanetWaterBody` deep colors w
 - Finds nearest active planet each fixed tick (`FindNearestPlanetCached` — rebind after **~48 m** move or planet-count change)
 - Computes `LocalUp` from planet center to body position
 - Applies gravity along `-LocalUp` when on a planet (fallback: world `-Y`)
-- **Surface mode** (`RefreshPlanetSurfaceMode`): walk the outer crust stand radius when radial ≥ crust − **6 m**; leave when radial < crust − **10 m** or `CameraBelowCrust`. Surface mode snaps to `SampleCollisionRadius` (the visible leaf). Interior / cave motion uses density probes
+- **Surface mode** (`RefreshPlanetSurfaceMode`): walk the outer crust stand radius when radial ≥ crust − **6 m**; leave when radial < crust − **10 m** or `CameraBelowCrust`. Surface mode snaps to `SampleStandWorldRadius`. Interior / cave motion uses density probes
 - Grounds with `SpherecastGameplay` / `RaycastDensityGameplay` along `-LocalUp` and `ResolveDensityPenetration` (cave floors, walls, ceilings)
 - Keeps tangent velocity when grounded (removes into-surface component)
 - Preserves existing non-planet collision paths (terrain, mesh, AABB, triggers)
@@ -536,7 +539,7 @@ Additional runtime state:
 - Computes planet world AABB from max radius (`base radius + biome max amplitude`) with world-scale awareness
 - Exposes `BaseRadius`, `MaxRadius`, and optional `RadiusOverride`
 - Provides debug shell bounds for collider visualization (gizmos still sample `SampleSurfaceRadius` for the outer shell)
-- Exact player/body contact on the outer crust uses the visible-leaf stand radius; caves use gameplay density ray/spherecast — not the AABB shell
+- Exact player/body contact on the outer crust uses `SampleStandWorldRadius` (height cubemap + dig deltas); caves use gameplay density ray/spherecast — not the AABB shell
 
 ### RigidbodyPlayer
 
@@ -545,7 +548,7 @@ Additional runtime state:
 - Builds move axes from a tangent basis derived from `LocalUp`
 - Applies acceleration and drag in tangent space on planets
 - Jumps along `LocalUp` (not always world +Y)
-- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` (capsule height + step-up + ground snap — not a ray to the core). On the outer crust, **surface mode** stands on `SampleCollisionRadius` (visible leaf stand grid). Interior uses the density hit. `SampleCollisionRadius` is cached once per frame; heightfield radius is only a last-resort fallback near the outer shell when chunks are not ready
+- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` (capsule height + step-up + ground snap). On the outer crust, **surface mode** stands on `SampleStandWorldRadius` (height cubemap + dig deltas). **`ResolveDigWallCapsule`** clears steep dig walls and crater rims by lateral push using **`HeightfieldGap`** (world-point vs stand radius). **`ResolveHeightfieldEyeClearance`** applies the same heightfield tests to the first-person eye. **`InvalidateCollisionCache()`** clears the stand-radius cache after sculpt strokes
 - **Planet swimming:** `TryGetWaterColumn` on the body starts `SwimOnPlanet()` instead of crust walking. Surface float (chest on the table, head/camera dry), WASD tangent, **Space** up, **Ctrl** dive. Releasing Ctrl hovers; look-down + W does not dive. `IsPlanetSwimming` / `IsPlanetSubmerged` / `PlanetSubmergeDepth` expose the mode. `Rigidbody` keeps underwater state only while actually submerged
 - Avoids pole-specific movement mode switching to prevent axis flips/discontinuities
 - Smooths camera up-vector transitions to reduce horizon jitter

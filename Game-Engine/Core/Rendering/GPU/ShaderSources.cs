@@ -88,7 +88,7 @@ void main()
         float side = clamp(length(aPosition.xz) / 3.2, 0.0, 1.0);
         float leaf = max(h, side * 0.7);
         float tip = leaf * leaf;
-        float weatherKick = 1.0 + clamp(uRain, 0.0, 1.0) * 0.9;
+        float weatherKick = 1.0 + clamp(uRain, 0.0, 1.0) * 0.25;
         vec3 wdir = normalize(uWindDir + vec3(0.001, 0.0, 0.0));
 
         float phase1 = uWindTime * 0.48 + worldPos.x * 0.07 + worldPos.z * 0.05;
@@ -407,14 +407,17 @@ void main()
         float clouds = clamp(uCloudiness, 0.0, 1.0);
         float wet = clamp(uWetness, 0.0, 1.0);
         float snow = clamp(uSnow, 0.0, 1.0);
-        float sunI = max(0.16, uSunIntensity) * mix(1.0, 0.60, clouds);
-        float amb = max(uAmbient, 0.14) * mix(1.0, 0.78, clouds);
+        float sunI = max(0.02, uSunIntensity) * mix(1.0, 0.55, clouds);
+        float amb = max(0.02, uAmbient) * mix(1.0, 0.72, clouds);
         litAlbedo *= mix(1.0, 0.82, wet);
         litAlbedo = mix(litAlbedo, litAlbedo * vec3(0.86, 0.92, 0.96), wet * 0.35);
         litAlbedo = mix(litAlbedo, vec3(0.86, 0.89, 0.93), snow * mix(0.18, 0.42, card));
         aoLit = mix(0.62, 1.0, aoFactor);
         float ambShadow = mix(0.42, 1.0, shadow);
-        shade = amb * ambShadow + uDiffuseK * diffuse * sunI * mix(0.40, 1.0, shadow);
+        // Scale wrap with sun so night does not keep half-Lambert fill lighting.
+        float night = clamp(uSunIntensity, 0.0, 1.0);
+        float wrapDiff = mix(diffuse, diffuse * 0.35 + 0.08, 1.0 - night);
+        shade = amb * ambShadow + uDiffuseK * wrapDiff * sunI * mix(0.40, 1.0, shadow);
         specular *= wet * 0.45 * sunI;
     }
     else
@@ -3650,12 +3653,12 @@ void main()
     float tip = clamp(aPosition.y, 0.0, 1.0);
     vec4 world = uPlanetWorld * vec4(local, 1.0);
     vec3 wdir = normalize(uWindDir + vec3(0.001, 0.0, 0.0));
-    float phase = uWindTime * 1.8 + dot(aInstPosScale.xyz, vec3(0.19, 0.11, 0.17));
-    float gust = sin(phase) * 0.62 + sin(phase * 2.17 + tip * 3.1) * 0.38;
-    float weatherKick = 1.0 + uRain * 1.55 + uStorm * 0.85;
+    float phase = uWindTime * 1.15 + dot(aInstPosScale.xyz, vec3(0.19, 0.11, 0.17));
+    float gust = sin(phase) * 0.72 + sin(phase * 1.73 + tip * 2.4) * 0.28;
+    // Soft breeze — rain used to add ~2.4x weatherKick and look like a gale.
+    float weatherKick = 1.0 + uRain * 0.28 + uStorm * 0.18;
     world.xyz += wdir * (tip * tip * uWindStrength * weatherKick * gust);
-    world.xyz += wdir.zxy * (tip * uRain * 0.12 * sin(phase * 5.7));
-    world.xyz += normalize(mat3(uPlanetWorld) * up) * (tip * uRain * 0.05 * sin(phase * 7.3));
+    world.xyz += wdir.zxy * (tip * uRain * 0.03 * sin(phase * 4.1));
 
     vWorldPos = world.xyz;
     vWorldNormal = normalize(mat3(uPlanetWorld) * up);
@@ -3696,14 +3699,15 @@ void main()
     // Same convention as planet terrain: uLightDir is FROM the sun.
     vec3 L = normalize(-uLightDir);
     float nDotL = max(dot(N, L), 0.0);
-    // Half-Lambert so a horizon / side-lit sun still colors the carpet.
-    float wrap = nDotL * 0.55 + 0.45;
-    float back = max(dot(-N, L), 0.0) * 0.20;
+    // Day: soft wrap. Night: collapse toward real N·L so carpet matches terrain.
+    float day = clamp(uSunIntensity, 0.0, 1.0);
+    float wrap = mix(nDotL, nDotL * 0.55 + 0.45, day);
+    float back = max(dot(-N, L), 0.0) * 0.20 * day;
     float diffuse = min(wrap + back, 1.15);
 
     float clouds = clamp(uCloudiness, 0.0, 1.0);
-    float sunI = max(0.15, uSunIntensity) * mix(1.0, 0.62, clouds);
-    float amb = max(uAmbient, 0.12) * mix(1.0, 0.80, clouds);
+    float sunI = max(0.02, uSunIntensity) * mix(1.0, 0.55, clouds);
+    float amb = max(0.02, uAmbient) * mix(1.0, 0.72, clouds);
 
     vec3 color = albedo.rgb;
     float wet = clamp(uWetness, 0.0, 1.0);

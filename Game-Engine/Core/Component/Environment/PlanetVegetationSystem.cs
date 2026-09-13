@@ -401,6 +401,90 @@ public sealed class PlanetVegetationSystem : Behavior
         TickStreaming(ResolveCameraPosition(), Math.Max(0f, (float)Time.deltaTime));
     }
 
+    /// <summary>
+    /// Remove live grass/trees whose seat sits inside a dig/build brush so they
+    /// do not float over excavated crust. Streaming will refill dry land later.
+    /// </summary>
+    public void NotifySurfaceEdit(SN.Vector3 worldCenter, float worldRadius)
+    {
+        EnsureInitialized();
+        if (_terrain?.Config == null) return;
+        var local = _terrain.WorldToLocal(worldCenter);
+        float len = local.Length();
+        if (len < 1e-5f) return;
+        var hitDir = local / len;
+
+        float planetR = Math.Max(1f, len);
+        float brushLocal = _terrain.WorldToLocalLength(Math.Max(0.75f, worldRadius));
+        // Expand past brush so patch footprints / tall blades over the rim clear too.
+        float clearR = brushLocal + Math.Max(2.5f, planetR * 0.004f);
+        float ang = Math.Clamp(clearR / planetR, 0.002f, 0.45f);
+        float minDot = MathF.Cos(ang);
+
+        _carpetStale.Clear();
+        foreach (var kv in _carpetDirs)
+        {
+            if (SN.Vector3.Dot(kv.Value, hitDir) >= minDot)
+                _carpetStale.Add(kv.Key);
+        }
+        for (int i = 0; i < _carpetStale.Count; i++)
+        {
+            int token = _carpetStale[i];
+            PlanetGpuGrass.RemovePatch(this, token);
+            _carpetDirs.Remove(token);
+        }
+
+        _carpetStale.Clear();
+        foreach (var kv in _carpetTreeDirs)
+        {
+            if (SN.Vector3.Dot(kv.Value, hitDir) >= minDot)
+                _carpetStale.Add(kv.Key);
+        }
+        for (int i = 0; i < _carpetStale.Count; i++)
+            RemoveLocalCarpetTree(_carpetStale[i]);
+
+        _staleAssetIndices.Clear();
+        foreach (var kv in _assetActive)
+        {
+            var e = kv.Value;
+            var dir = e.SurfaceDir.LengthSquared() > 1e-8f
+                ? SN.Vector3.Normalize(e.SurfaceDir)
+                : SN.Vector3.UnitY;
+            if (SN.Vector3.Dot(dir, hitDir) < minDot)
+                continue;
+            _staleAssetIndices.Add(kv.Key);
+        }
+        for (int i = 0; i < _staleAssetIndices.Count; i++)
+        {
+            int idx = _staleAssetIndices[i];
+            if (!_assetActive.TryGetValue(idx, out var old))
+                continue;
+            if (old.IsGrass)
+                PlanetGpuGrass.RemovePatch(this, old.GpuGrassToken != 0 ? old.GpuGrassToken : idx);
+            else
+                old.GameObject?.RemoveFromParent();
+            _assetActive.Remove(idx);
+        }
+
+        // Also drop procedural leaf instances planted in the brush cone.
+        foreach (var group in _leafEntries.Values)
+        {
+            for (int i = group.Count - 1; i >= 0; i--)
+            {
+                var e = group[i];
+                var dir = e.SurfaceDir.LengthSquared() > 1e-8f
+                    ? SN.Vector3.Normalize(e.SurfaceDir)
+                    : SN.Vector3.UnitY;
+                if (SN.Vector3.Dot(dir, hitDir) < minDot)
+                    continue;
+                if (e.IsGrass && e.GpuGrassToken != 0)
+                    PlanetGpuGrass.RemovePatch(this, e.GpuGrassToken);
+                e.GameObject?.RemoveFromParent();
+                group.RemoveAt(i);
+            }
+        }
+    }
+
     public override void OnDestroy()
     {
         s_activeSystems.Remove(this);
@@ -440,8 +524,9 @@ public sealed class PlanetVegetationSystem : Behavior
         cloudiness = _cloudiness;
         windMul = _windMultiplier;
         var atmo = _terrain?.Atmosphere;
-        sunIntensity = Math.Max(0.12f, atmo?.SunIntensity ?? 1f);
-        atmoAmbient = Math.Max(0.10f, atmo?.Ambient ?? 0.18f);
+        // Follow day/night exactly — do not floor into "always dusk" values.
+        sunIntensity = Math.Clamp(atmo?.SunIntensity ?? 1f, 0.02f, 2f);
+        atmoAmbient = Math.Clamp(atmo?.Ambient ?? 0.18f, 0.02f, 1f);
     }
 
     public static bool TryGetActiveFoliageEnvironment(
