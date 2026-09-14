@@ -1105,6 +1105,56 @@ public sealed class PlanetChunkManager
         return 0f;
     }
 
+    /// <summary>
+    /// Visible shell surface radius (exact mesh vertex grid), falling back to the
+    /// coarser stand grid. Use for seating props; collision keeps the stand grid.
+    /// </summary>
+    public float SampleVisibleLocalRadius(SN.Vector3 sphereDir)
+    {
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        var node = FindRenderableAtDirectionExact(sphereDir);
+        if (node != null && node.TrySampleShellLocalRadius(sphereDir, Config.ChunkSize + 1, out float shellR))
+            return shellR;
+        // Stand grid is binned with the approximate projection; look it up the same way.
+        node = FindRenderableAtDirection(sphereDir);
+        if (node != null && node.TrySampleStandLocalRadius(sphereDir, out float r))
+            return r;
+        return 0f;
+    }
+
+    /// <summary>
+    /// Node lookup in generation UV (exact inverse of the cube→sphere warp). Node bounds
+    /// and vertex grids live in that space; <see cref="FindRenderableAtDirection"/> uses
+    /// the approximate projection the stand grid was binned with.
+    /// </summary>
+    QuadNode? FindRenderableAtDirectionExact(SN.Vector3 sphereDir)
+    {
+        var (face, u, v) = CubeSphereMath.SphereToCubeExact(sphereDir);
+        if ((uint)face >= 6)
+            return null;
+        return Faces[face].Root.FindRenderableAtUv(Math.Clamp(u, 0f, 1f), Math.Clamp(v, 0f, 1f));
+    }
+
+    /// <summary>
+    /// Shell radius from a renderable node whose mesh is current (not dirty, not
+    /// regenerating). False near pending digs / LOD swaps so callers keep the cubemap.
+    /// </summary>
+    public bool TrySampleFreshShellLocalRadius(SN.Vector3 sphereDir, out float localR)
+    {
+        localR = 0f;
+        if (sphereDir.LengthSquared() < 1e-12f)
+            return false;
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        var node = FindRenderableAtDirectionExact(sphereDir);
+        if (node == null || node.NeedsMeshRebuild || node.IsGenerating || node.GeneratedMesh == null)
+            return false;
+        return node.TrySampleShellLocalRadius(sphereDir, Config.ChunkSize + 1, out localR);
+    }
+
     public QuadNode? FindRenderableAtDirection(SN.Vector3 sphereDir)
     {
         if (sphereDir.LengthSquared() < 1e-12f)

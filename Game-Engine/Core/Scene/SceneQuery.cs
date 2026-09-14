@@ -7,12 +7,24 @@ namespace Game_Engine.Core;
 
 public static class SceneQuery
 {
+    // Explicit stack instead of recursive yield: nested iterators allocate one enumerator
+    // per depth level and cost O(depth) per yielded node.
     private static IEnumerable<GameObject> Traverse(GameObject n)
     {
         if (!n.Enabled) yield break;
-        yield return n;
-        foreach (var c in n.Children)
-            foreach (var s in Traverse(c)) yield return s;
+        var stack = new Stack<GameObject>();
+        stack.Push(n);
+        while (stack.Count > 0)
+        {
+            var go = stack.Pop();
+            yield return go;
+            var children = go.Children;
+            for (int i = children.Count - 1; i >= 0; i--)
+            {
+                var c = children[i];
+                if (c.Enabled) stack.Push(c);
+            }
+        }
     }
 
     public static IEnumerable<T> FindBehaviors<T>() where T : Behavior
@@ -21,6 +33,33 @@ public static class SceneQuery
             foreach (var go in Traverse(root))
                 foreach (var b in go.Behaviors)
                     if (b.IsActiveAndEnabled && b is T t) yield return t;
+    }
+
+    /// <summary>Allocation-free variant of <see cref="FindBehaviors{T}"/> for per-tick callers.</summary>
+    public static void CollectBehaviors<T>(List<T> into, Stack<GameObject> scratch) where T : Behavior
+    {
+        scratch.Clear();
+        var roots = SceneService.Root;
+        for (int r = roots.Count - 1; r >= 0; r--)
+        {
+            if (roots[r].Enabled) scratch.Push(roots[r]);
+        }
+        while (scratch.Count > 0)
+        {
+            var go = scratch.Pop();
+            var behaviors = go.Behaviors;
+            for (int i = 0; i < behaviors.Count; i++)
+            {
+                var b = behaviors[i];
+                if (b is T t && b.IsActiveAndEnabled) into.Add(t);
+            }
+            var children = go.Children;
+            for (int i = children.Count - 1; i >= 0; i--)
+            {
+                var c = children[i];
+                if (c.Enabled) scratch.Push(c);
+            }
+        }
     }
 
     public static GameObject? FindByName(string name)

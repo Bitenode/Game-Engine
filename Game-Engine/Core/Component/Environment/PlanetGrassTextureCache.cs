@@ -92,8 +92,24 @@ public static class PlanetGrassTextureCache
                     s_carpetMix.Add(pick);
             }
         }
+        // Request() hits File.Exists, so only (re)issue for cards that are neither
+        // loaded nor in flight. Self-heals if a mix card was ever evicted.
         for (int i = 0; i < s_carpetMix.Count; i++)
-            Request(s_carpetMix[i]);
+        {
+            string rel = s_carpetMix[i];
+            if (!s_ready.ContainsKey(rel) && !s_queued.ContainsKey(rel))
+                Request(rel);
+        }
+    }
+
+    static bool IsCarpetMixKeyUnlocked(string rel)
+    {
+        for (int i = 0; i < s_carpetMix.Count; i++)
+        {
+            if (string.Equals(s_carpetMix[i], rel, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     public static int ReadyMixCount()
@@ -133,10 +149,10 @@ public static class PlanetGrassTextureCache
         string rel = PlanetAssetIO.NormalizeAssetReference(projectRelative ?? "");
         if (string.IsNullOrWhiteSpace(rel) || !IsGrassImageExt(Path.GetExtension(rel)))
             return;
+        if (s_ready.ContainsKey(rel) || s_queued.ContainsKey(rel))
+            return;
         string abs = PlanetAssetIO.ToAbsolutePath(rel);
         if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
-            return;
-        if (s_ready.ContainsKey(rel))
             return;
         if (!s_queued.TryAdd(rel, 0))
             return;
@@ -209,12 +225,25 @@ public static class PlanetGrassTextureCache
                     if (generation != Volatile.Read(ref s_loadGeneration))
                         break;
                     s_ready[rel] = tex;
-                    while (s_ready.Count > MaxReadyTextures)
+                    // Never evict the carpet mix: planted patches keep their key forever,
+                    // and a missing key renders as the flat green stand-in card.
+                    int guard = 0;
+                    while (s_ready.Count > MaxReadyTextures && guard++ < MaxReadyTextures * 2)
                     {
-                        var oldest = s_ready.Keys.FirstOrDefault();
-                        if (oldest == null || !s_ready.TryRemove(oldest, out _))
+                        string? victim = null;
+                        lock (s_catalogLock)
+                        {
+                            foreach (var key in s_ready.Keys)
+                            {
+                                if (IsCarpetMixKeyUnlocked(key))
+                                    continue;
+                                victim = key;
+                                break;
+                            }
+                        }
+                        if (victim == null || !s_ready.TryRemove(victim, out _))
                             break;
-                        s_queued.TryRemove(oldest, out _);
+                        s_queued.TryRemove(victim, out _);
                     }
                     Interlocked.Increment(ref s_readyStamp);
                 }

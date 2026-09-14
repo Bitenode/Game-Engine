@@ -799,6 +799,13 @@ public sealed class PlanetTerrain : Behavior
         => SampleStandWorldRadius(sphereDir);
 
     /// <summary>
+    /// True when <see cref="SampleStandWorldRadius"/> is a cheap cubemap bilerp. While false
+    /// (bake pending / scratch map) every stand sample runs the live biome-graph noise and
+    /// water carve, so per-tick callers should skip dense probing.
+    /// </summary>
+    public bool HasBakedStandSurface => _surfaceCubemap != null && _surfaceCubemap.HasBaseHeights && _config != null;
+
+    /// <summary>
     /// Fast crust stand: cubemap height + digs only. No live river/biome carve.
     /// Used by the player every physics tick.
     /// </summary>
@@ -812,8 +819,20 @@ public sealed class PlanetTerrain : Behavior
 
         if (_surfaceCubemap != null && _surfaceCubemap.HasBaseHeights && _config != null)
         {
-            float local = _surfaceCubemap.SampleEditedSurfaceRadius(_config.Radius, sphereDir);
-            return MathF.Max(1f, local) * worldScale;
+            float local = MathF.Max(1f, _surfaceCubemap.SampleEditedSurfaceRadius(_config.Radius, sphereDir));
+            // The drawn shell is linear between chunk verts while the cubemap is a
+            // bilerp at a different resolution; between verts they disagree by tens of
+            // cm on hills, which reads as the collider clipping into (or floating
+            // over) the ground. Stand on the mesh you can see when it is current.
+            // Large disagreement means a coarse/stale LOD — keep the cubemap then.
+            if (_chunkManager != null
+                && _chunkManager.TrySampleFreshShellLocalRadius(sphereDir, out float shellLocal)
+                && shellLocal > 1f
+                && MathF.Abs(shellLocal - local) <= WorldToLocalLength(2.5f))
+            {
+                local = shellLocal;
+            }
+            return local * worldScale;
         }
 
         float crustLocal = _config != null ? SampleLocalCrustRadius(sphereDir) : Radius;
@@ -882,7 +901,7 @@ public sealed class PlanetTerrain : Behavior
 
         if (_chunkManager != null)
         {
-            float r = _chunkManager.SampleCollisionLocalRadius(sphereDir);
+            float r = _chunkManager.SampleVisibleLocalRadius(sphereDir);
             if (r > 1e-3f)
                 return sphereDir * r;
         }

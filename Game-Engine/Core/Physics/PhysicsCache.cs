@@ -38,6 +38,10 @@ namespace Game_Engine.Core.Physics
         /// <summary>
         /// Refresh all caches. Safe to call multiple times per frame — only rebuilds once.
         /// </summary>
+        static readonly List<Terrain> _terrainScratch = new(4);
+        static readonly List<Collider> _colliderScratch = new(64);
+        static readonly Stack<GameObject> _walkScratch = new(64);
+
         public static void RefreshFrame()
         {
             int frame = UnityFrameCounter;
@@ -51,8 +55,11 @@ namespace Game_Engine.Core.Physics
             _triggerColliders.Clear();
 
             // Terrains
-            foreach (var t in SceneQuery.FindBehaviors<Terrain>())
+            _terrainScratch.Clear();
+            SceneQuery.CollectBehaviors(_terrainScratch, _walkScratch);
+            for (int ti = 0; ti < _terrainScratch.Count; ti++)
             {
+                var t = _terrainScratch[ti];
                 if (!t.Enabled || t.gameObject == null) continue;
                 _terrains.Add(t);
                 _terrainGOs.Add(t.gameObject);
@@ -60,16 +67,20 @@ namespace Game_Engine.Core.Physics
                     _terrainGOs.Add(t.gameObject.Children[i]);
             }
 
-            // Planet shell / water / LOD chunks — contact is heightfield, not triangles.
+            // Planet roots only — mesh colliders check ancestry instead of us hashing the
+            // whole planet hierarchy (chunks + vegetation) every physics tick.
             foreach (var p in PlanetTerrain.ActivePlanets)
             {
                 if (p?.gameObject == null) continue;
-                CollectHierarchy(p.gameObject, _terrainGOs);
+                _terrainGOs.Add(p.gameObject);
             }
 
             // All colliders in one pass
-            foreach (var c in SceneQuery.FindBehaviors<Collider>())
+            _colliderScratch.Clear();
+            SceneQuery.CollectBehaviors(_colliderScratch, _walkScratch);
+            for (int ci = 0; ci < _colliderScratch.Count; ci++)
             {
+                var c = _colliderScratch[ci];
                 if (!c.Enabled) continue;
 
                 if (c.IsTrigger)
@@ -80,8 +91,8 @@ namespace Game_Engine.Core.Physics
 
                 if (c is MeshCollider mc)
                 {
-                    // Skip MeshColliders on terrain GameObjects — use heightmap instead
-                    if (mc.gameObject != null && _terrainGOs.Contains(mc.gameObject)) continue;
+                    // Skip MeshColliders on terrain / planet GameObjects — use heightfield instead
+                    if (mc.gameObject != null && IsUnderTerrain(mc.gameObject)) continue;
                     _meshColliders.Add(mc);
                 }
                 else if (c is PlanetCollider)
@@ -123,21 +134,32 @@ namespace Game_Engine.Core.Physics
             return anyHit;
         }
 
-        // Simple frame counter — increments each time FixedUpdate is called
+        // Advances once per render frame. Several fixed steps run back-to-back inside one
+        // frame and see the same scene graph, so a rebuild per step was wasted traversal.
         private static int _frameCount;
+        private static int _lastRenderFrame = int.MinValue;
         private static int UnityFrameCounter => _frameCount;
 
         /// <summary>Call at the start of each physics tick to advance the frame counter.</summary>
-        public static void Tick() => _frameCount++;
+        public static void Tick()
+        {
+            int render = Time.frameCount;
+            if (render == _lastRenderFrame && _frameCount > 0)
+                return;
+            _lastRenderFrame = render;
+            _frameCount++;
+        }
 
         /// <summary>Force a cache rebuild on next access.</summary>
         public static void Invalidate() => _lastFrame = -1;
 
-        static void CollectHierarchy(GameObject go, HashSet<GameObject> into)
+        static bool IsUnderTerrain(GameObject go)
         {
-            if (!into.Add(go)) return;
-            for (int i = 0; i < go.Children.Count; i++)
-                CollectHierarchy(go.Children[i], into);
+            for (var cur = go; cur != null; cur = cur.Parent)
+            {
+                if (_terrainGOs.Contains(cur)) return true;
+            }
+            return false;
         }
     }
 }

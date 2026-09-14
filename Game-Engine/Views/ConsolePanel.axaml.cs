@@ -17,6 +17,13 @@ public partial class ConsolePanel : UserControl
     public ObservableCollection<LogItem> AllLogs { get; } = new();
     public ObservableCollection<LogItem> VisibleLogs { get; } = new();
 
+    // The console shares the UI thread with the game loop. Rebuilding the whole
+    // visible list per log line made every message cost O(n) layout work, so appends
+    // are incremental, the buffer is capped, and autoscroll is coalesced per tick.
+    const int MaxRetainedLogs = 2000;
+    const int TrimBatch = 250;
+    bool _scrollQueued;
+
     private static readonly object InstancesLock = new();
     private static readonly System.Collections.Generic.List<ConsolePanel> Instances = new();
 
@@ -48,17 +55,6 @@ public partial class ConsolePanel : UserControl
         List.DoubleTapped += OnListDoubleTapped;
 
         Log.Logged += OnLogged;
-
-        AllLogs.CollectionChanged += (_, e) =>
-        {
-            if (e.Action != NotifyCollectionChangedAction.Add) return;
-            LogItem? added = null;
-            if (e.NewItems?.Count > 0)
-                added = e.NewItems[0] as LogItem;
-            RebuildVisibleLogs();
-            if (ChkAutoScroll.IsChecked == true && added != null && VisibleLogs.Contains(added) && VisibleLogs.Count > 0)
-                List.ScrollIntoView(VisibleLogs[^1]);
-        };
 
         RebuildVisibleLogs();
         Log.Info("Console ready. Type 'help' for commands. Double-click a line with a .cs path to open the editor.");
@@ -99,9 +95,47 @@ public partial class ConsolePanel : UserControl
     private void OnLogged(object? sender, LogItem e)
     {
         if (!Dispatcher.UIThread.CheckAccess())
-            Dispatcher.UIThread.Post(() => AllLogs.Add(e));
+            Dispatcher.UIThread.Post(() => AppendLog(e), DispatcherPriority.Background);
         else
-            AllLogs.Add(e);
+            AppendLog(e);
+    }
+
+    void AppendLog(LogItem item)
+    {
+        if (AllLogs.Count >= MaxRetainedLogs)
+        {
+            for (int i = 0; i < TrimBatch && AllLogs.Count > 0; i++)
+            {
+                var old = AllLogs[0];
+                AllLogs.RemoveAt(0);
+                if (VisibleLogs.Count > 0 && ReferenceEquals(VisibleLogs[0], old))
+                    VisibleLogs.RemoveAt(0);
+            }
+        }
+
+        AllLogs.Add(item);
+        if (!PassesFilter(item))
+            return;
+
+        VisibleLogs.Add(item);
+        if (ChkAutoScroll.IsChecked != true || _scrollQueued)
+            return;
+
+        _scrollQueued = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _scrollQueued = false;
+            if (VisibleLogs.Count > 0)
+                List.ScrollIntoView(VisibleLogs[^1]);
+        }, DispatcherPriority.Background);
+    }
+
+    bool PassesFilter(LogItem item)
+    {
+        if (!SeverityVisible(item.Severity)) return false;
+        var q = (FilterText.Text ?? "").Trim();
+        return q.Length == 0
+            || (item.Message?.IndexOf(q, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
     }
 
     bool SeverityVisible(LogSeverity s) => s switch
@@ -116,14 +150,11 @@ public partial class ConsolePanel : UserControl
 
     void RebuildVisibleLogs()
     {
-        var q = (FilterText.Text ?? "").Trim();
         VisibleLogs.Clear();
         foreach (var item in AllLogs)
         {
-            if (!SeverityVisible(item.Severity)) continue;
-            if (q.Length > 0 && (item.Message?.IndexOf(q, StringComparison.OrdinalIgnoreCase) ?? -1) < 0)
-                continue;
-            VisibleLogs.Add(item);
+            if (PassesFilter(item))
+                VisibleLogs.Add(item);
         }
     }
 

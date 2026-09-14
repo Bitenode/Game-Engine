@@ -2796,14 +2796,10 @@ vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 ba, float t)
     vec3 cxz = texture(tex, p.xz).rgb;
     vec3 cxy = texture(tex, p.xy).rgb;
 
-    // abs(radial) weights zero the only valid projection on the XYZ planes, which
-    // draws a plus of stretched texels through each cube-face pole. Weight by UV
-    // area (|y|*|z| for the YZ plane, etc.) and fall back to facing at the poles.
-    vec3 mag = abs(local);
-    vec3 q = vec3(mag.y * mag.z, mag.x * mag.z, mag.x * mag.y);
-    float qsum = q.x + q.y + q.z;
-    vec3 w = qsum < 1e-4 ? abs(ba) : q / qsum;
-    w = pow(max(w, vec3(0.0)), vec3(1.6));
+    // ba = surface-normal axes on cliffs, radial axes on flats (see main()).
+    // Position-based weights smear albedo down steep slopes; normal axes pick the
+    // correct projection plane so cliff faces stay sharp instead of streaking.
+    vec3 w = pow(max(abs(ba), vec3(0.001)), vec3(5.0));
     w /= (w.x + w.y + w.z + 0.001);
     return cyz * w.x + cxz * w.y + cxy * w.z;
 }
@@ -2936,11 +2932,12 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadi
     float lum = dot(texCol, vec3(0.299, 0.587, 0.114));
     vec3 topCol = (lum > 0.98) ? baseCol : texCol;
 
-    // Dig walls / floors + cliffs: sample biome-graph UnderTexture when bound.
-    if (uBiomeHasUnder[idx] > 0.5)
+    // Dig walls / floors + cliffs: dedicated under map when bound, else reuse top albedo.
     {
         float ut = max(uBiomeUnderTiling[idx], 0.25);
-        vec3 underTex = sampleBiomeUnder(idx, worldPos, ba, ut);
+        vec3 underTex = (uBiomeHasUnder[idx] > 0.5)
+            ? sampleBiomeUnder(idx, worldPos, ba, ut)
+            : sampleBiome(idx, worldPos, ba, ut);
         float ulum = dot(underTex, vec3(0.299, 0.587, 0.114));
         underCol = (ulum > 0.98) ? underCol : underTex;
     }
@@ -3023,7 +3020,7 @@ void main()
     float nDotRadial = dot(N, radialDir);
 
     float slope = abs(nDotRadial);
-    float slopeBlend = smoothstep(0.22, 0.78, slope);
+    float slopeBlend = smoothstep(0.18, 0.62, slope);
     float digDepth = sampleDigDepthMeters(radialDir);
     float digBlend = smoothstep(0.25, 2.0, digDepth);
 

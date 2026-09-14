@@ -32,10 +32,16 @@ public static class PlanetGpuGrass
         public string Key = "";
         public float[] Packed = Array.Empty<float>();
         public int Count;
+        /// <summary>Per-texture instance VBO; re-uploaded only when the packed data changed.</summary>
+        public uint Vbo;
+        public int GpuFloats;
+        public bool GpuDirty = true;
     }
 
     static readonly Dictionary<Key, Patch> s_patches = new();
     static readonly List<TexBatch> s_batches = new();
+    static readonly Dictionary<string, TexBatch> s_batchByKey = new(StringComparer.OrdinalIgnoreCase);
+    static PlanetVegetationSystem? s_batchOwner;
     static readonly Dictionary<Texture2D, GPUTexture> s_gpuTex = new();
     static Texture2D? s_fallbackTex;
     static bool s_batchDirty = true;
@@ -85,28 +91,40 @@ public static class PlanetGpuGrass
         float yawDeg,
         float patchRadiusLocal,
         int bladeCount,
-        string? texturePath = null)
+        string? texturePath = null,
+        SN.Vector3? diskNormalLocal = null)
     {
         if (owner == null)
             return 0;
 
         var up = SafeNormalize(upLocal, SN.Vector3.UnitY);
-        var t = SN.Vector3.Cross(MathF.Abs(up.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, up);
+        // Blade roots scatter on the ground plane (true surface normal), while the
+        // blades themselves lean with the softer `up`. Using `up` for the disk left
+        // edge blades hanging off hillsides.
+        var disk = diskNormalLocal.HasValue ? SafeNormalize(diskNormalLocal.Value, up) : up;
+        var t = SN.Vector3.Cross(MathF.Abs(disk.Y) > 0.95f ? SN.Vector3.UnitX : SN.Vector3.UnitY, disk);
         if (t.LengthSquared() < 1e-8f) t = SN.Vector3.UnitX;
         t = SN.Vector3.Normalize(t);
-        var b = SN.Vector3.Normalize(SN.Vector3.Cross(up, t));
+        var b = SN.Vector3.Normalize(SN.Vector3.Cross(disk, t));
 
         float localR = Math.Max(0.04f, patchRadiusLocal);
         float localH = Math.Max(0.06f, localHeight);
         int blades = Math.Clamp(bladeCount, 4, MaxBladesPerPatch);
         var packed = new float[blades * FloatsPerInstance];
-        int seed = Hash(centerLocal) ^ (token * 397);
+        // Token-only seed: a re-seat (same token, new height) must not reshuffle blades.
+        uint seed = unchecked((uint)token * 0x9E3779B1u);
         int written = 0;
         for (int i = 0; i < blades; i++)
         {
-            float u1 = Fract(seed * 0.1031f + i * 0.17f);
-            float u2 = Fract(seed * 0.2101f + i * 0.31f);
-            float u3 = Fract(seed * 0.3771f + i * 0.53f);
+            // Integer hash → [0,1). `Fract(seed * 0.1031f)` on a ~1e9 seed is a float
+            // with no fractional bits, so every blade landed at the disk centre with the
+            // same yaw — each clump was one card drawn 12 times.
+            uint h = Hash32(seed + (uint)i * 0x85EBCA6Bu);
+            float u1 = (h & 0xFFFFFF) * (1f / 16777216f);
+            h = Hash32(h ^ 0x27D4EB2Fu);
+            float u2 = (h & 0xFFFFFF) * (1f / 16777216f);
+            h = Hash32(h ^ 0x165667B1u);
+            float u3 = (h & 0xFFFFFF) * (1f / 16777216f);
             float ang = u1 * MathF.Tau;
             float rad = MathF.Sqrt(u2) * localR;
             var pos = centerLocal + t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
@@ -225,23 +243,48 @@ public static class PlanetGpuGrass
         s_shader.SetTexture("uAlbedoTex", 0);
 
         gl.BindVertexArray(s_vao);
-        gl.BindBuffer(BufferTargetARB.ArrayBuffer, s_instanceVbo);
         int uploadsLeft = 4;
 
         for (int b = 0; b < s_batches.Count; b++)
         {
             var batch = s_batches[b];
             if (batch.Count <= 0) continue;
-            var cpuTex = ResolveCpuTexture(batch.Key);
-            BindGrassTexture(gl, cpuTex, ref uploadsLeft);
-            fixed (float* ptr = batch.Packed)
+            if (!PlanetGrassTextureCache.TryGet(batch.Key, out var cpuTex))
             {
-                gl.BufferData(
-                    BufferTargetARB.ArrayBuffer,
-                    (nuint)(batch.Count * FloatsPerInstance * sizeof(float)),
-                    ptr,
-                    BufferUsageARB.DynamicDraw);
+                // Card not loaded (or evicted): re-request and skip rather than draw
+                // the flat green stand-in — that is the "untextured mesh" look.
+                PlanetGrassTextureCache.Request(batch.Key);
+                continue;
             }
+            BindGrassTexture(gl, cpuTex, ref uploadsLeft);
+
+            if (batch.Vbo == 0)
+            {
+                batch.Vbo = gl.GenBuffer();
+                batch.GpuDirty = true;
+            }
+            gl.BindBuffer(BufferTargetARB.ArrayBuffer, batch.Vbo);
+            int floats = batch.Count * FloatsPerInstance;
+            if (batch.GpuDirty)
+            {
+                // Re-streaming every batch every frame was several MB per frame
+                // even while standing still; now only changed textures upload.
+                fixed (float* ptr = batch.Packed)
+                {
+                    if (floats <= batch.GpuFloats)
+                        gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
+                    else
+                    {
+                        int cap = Math.Max(floats, batch.GpuFloats * 3 / 2);
+                        gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(cap * sizeof(float)), null, BufferUsageARB.DynamicDraw);
+                        gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
+                        batch.GpuFloats = cap;
+                    }
+                }
+                batch.GpuDirty = false;
+            }
+            gl.VertexAttribPointer(2, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)0);
+            gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)(4 * sizeof(float)));
             gl.DrawElementsInstanced(
                 PrimitiveType.Triangles,
                 (uint)s_indexCount,
@@ -293,30 +336,38 @@ public static class PlanetGpuGrass
 
     static void RebuildPackedIfNeeded(PlanetVegetationSystem owner)
     {
-        if (!s_batchDirty)
+        if (!s_batchDirty && ReferenceEquals(s_batchOwner, owner))
             return;
         s_batchDirty = false;
-        s_batches.Clear();
-        var map = new Dictionary<string, TexBatch>(StringComparer.OrdinalIgnoreCase);
+        s_batchOwner = owner;
+
+        // Batches persist across rebuilds so the packed arrays are reused instead
+        // of re-grown (that Array.Resize churn was steady GC pressure while walking).
+        for (int i = 0; i < s_batches.Count; i++)
+            s_batches[i].Count = 0;
+
         foreach (var kv in s_patches)
         {
             if (!ReferenceEquals(kv.Key.Owner, owner)) continue;
             var patch = kv.Value;
             if (patch.BladeCount <= 0) continue;
             string key = patch.TextureKey ?? "";
-            if (!map.TryGetValue(key, out var batch))
+            if (!s_batchByKey.TryGetValue(key, out var batch))
             {
                 batch = new TexBatch { Key = key };
-                map[key] = batch;
+                s_batchByKey[key] = batch;
                 s_batches.Add(batch);
             }
             int n = patch.BladeCount * FloatsPerInstance;
             int start = batch.Count * FloatsPerInstance;
             if (batch.Packed.Length < start + n)
-                Array.Resize(ref batch.Packed, Math.Max(start + n, 64));
+                Array.Resize(ref batch.Packed, Math.Max(start + n, Math.Max(64, batch.Packed.Length * 2)));
             Array.Copy(patch.Blades, 0, batch.Packed, start, n);
             batch.Count += patch.BladeCount;
         }
+
+        for (int i = 0; i < s_batches.Count; i++)
+            s_batches[i].GpuDirty = true;
     }
 
     static Texture2D CreateSharedCard()
@@ -375,10 +426,12 @@ public static class PlanetGpuGrass
                  0f, 1f,  halfW, 1f, 0f,
                  0f, 1f, -halfW, 0f, 0f,
             };
+            // Render() disables face culling, so a single winding per quad is enough.
+            // The old set drew every card twice (both windings) = 2x fragment work.
             uint[] idx =
             {
-                0,1,2, 0,2,3, 0,2,1, 0,3,2,
-                4,5,6, 4,6,7, 4,6,5, 4,7,6
+                0,1,2, 0,2,3,
+                4,5,6, 4,6,7
             };
             s_indexCount = idx.Length;
 
@@ -430,8 +483,19 @@ public static class PlanetGpuGrass
             if (s_meshVbo != 0) s_gl.DeleteBuffer(s_meshVbo);
             if (s_meshEbo != 0) s_gl.DeleteBuffer(s_meshEbo);
             if (s_instanceVbo != 0) s_gl.DeleteBuffer(s_instanceVbo);
+            for (int i = 0; i < s_batches.Count; i++)
+            {
+                var b = s_batches[i];
+                if (b.Vbo != 0) s_gl.DeleteBuffer(b.Vbo);
+            }
         }
         catch { }
+        for (int i = 0; i < s_batches.Count; i++)
+        {
+            s_batches[i].Vbo = 0;
+            s_batches[i].GpuFloats = 0;
+            s_batches[i].GpuDirty = true;
+        }
         foreach (var tex in s_gpuTex.Values)
         {
             try { tex.Dispose(); } catch { }
@@ -461,10 +525,13 @@ public static class PlanetGpuGrass
         return len > 1e-8f ? v / len : fallback;
     }
 
-    static int Hash(SN.Vector3 v)
-        => HashCode.Combine(BitConverter.SingleToInt32Bits(v.X),
-            BitConverter.SingleToInt32Bits(v.Y),
-            BitConverter.SingleToInt32Bits(v.Z));
-
-    static float Fract(float x) => x - MathF.Floor(x);
+    static uint Hash32(uint x)
+    {
+        x ^= x >> 16;
+        x *= 0x7FEB352Du;
+        x ^= x >> 15;
+        x *= 0x846CA68Bu;
+        x ^= x >> 16;
+        return x;
+    }
 }

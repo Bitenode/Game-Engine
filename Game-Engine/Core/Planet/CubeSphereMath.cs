@@ -84,6 +84,67 @@ public static class CubeSphereMath
         };
     }
 
+    /// <summary>
+    /// Exact inverse of <see cref="FaceUVToDirection"/>. <see cref="SphereToCube"/> is a
+    /// plain central projection and does NOT invert the Everitt warp in
+    /// <see cref="CubeToSphere"/> — it lands up to ~4% of a face away. Use this when
+    /// indexing anything laid out in generation UV (chunk vertex grids, node bounds).
+    /// </summary>
+    public static (int Face, float U, float V) SphereToCubeExact(SN.Vector3 dir)
+    {
+        float ax = MathF.Abs(dir.X);
+        float ay = MathF.Abs(dir.Y);
+        float az = MathF.Abs(dir.Z);
+
+        // Minor components s1/s2 relative to the major axis; the warp keeps the
+        // major axis, so face selection by max component is still valid.
+        int face;
+        float s1, s2;
+        if (ax >= ay && ax >= az)
+        {
+            face = dir.X > 0 ? 0 : 1;
+            s1 = dir.X > 0 ? -dir.Z : dir.Z;
+            s2 = dir.Y;
+        }
+        else if (ay >= ax && ay >= az)
+        {
+            face = dir.Y > 0 ? 2 : 3;
+            s1 = dir.X;
+            s2 = dir.Y > 0 ? -dir.Z : dir.Z;
+        }
+        else
+        {
+            face = dir.Z > 0 ? 4 : 5;
+            s1 = dir.Z > 0 ? dir.X : -dir.X;
+            s2 = dir.Y;
+        }
+
+        InvertEverittFace(s1, s2, out float a, out float b);
+        return (face, (a + 1f) * 0.5f, (b + 1f) * 0.5f);
+    }
+
+    /// <summary>
+    /// Given the two minor sphere components on a face, recover the cube-face
+    /// coordinates in [-1,1] (Nowell's closed-form inverse of the Everitt warp).
+    /// </summary>
+    static void InvertEverittFace(float s1, float s2, out float c1, out float c2)
+    {
+        double x = s1, y = s2;
+        double a2 = x * x * 2.0;
+        double b2 = y * y * 2.0;
+        double inner = -a2 + b2 - 3.0;
+        double disc = inner * inner - 12.0 * a2;
+        double innersqrt = -Math.Sqrt(Math.Max(0.0, disc));
+        const double isqrt2 = 0.70710678118654752;
+
+        double cx = Math.Abs(x) < 1e-9 ? 0.0 : Math.Sqrt(Math.Max(0.0, innersqrt + a2 - b2 + 3.0)) * isqrt2;
+        double cy = Math.Abs(y) < 1e-9 ? 0.0 : Math.Sqrt(Math.Max(0.0, innersqrt - a2 + b2 + 3.0)) * isqrt2;
+        if (x < 0) cx = -cx;
+        if (y < 0) cy = -cy;
+        c1 = (float)Math.Clamp(cx, -1.0, 1.0);
+        c2 = (float)Math.Clamp(cy, -1.0, 1.0);
+    }
+
     public static (int Face, float U, float V) SphereToCube(SN.Vector3 dir)
     {
         float ax = MathF.Abs(dir.X);

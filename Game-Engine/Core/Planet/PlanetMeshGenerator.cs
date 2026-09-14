@@ -791,7 +791,6 @@ public sealed class PlanetMeshGenerator
                 float alt = _biomeMap.NormalizeAltitude(surfaceR - _config.Radius);
                 var blends = _biomeMap.GetBiomes(sphereDir, alt);
                 var pos = sphereDir * surfaceR;
-                var normal = EstimateShellNormal(sphereDir, vertexSpacing);
 
                 var blendIdx = new SN.Vector4(0, 0, 0, 0);
                 var blendWt = new SN.Vector4(0, 0, 0, 0);
@@ -815,10 +814,35 @@ public sealed class PlanetMeshGenerator
                 ApplyShoreSand(sphereDir, surfaceR, ref blendIdx, ref blendWt);
 
                 data.Positions.Add(pos);
-                data.Normals.Add(normal);
+                data.Normals.Add(sphereDir);
                 data.UVs.Add(new SN.Vector2(u, v));
                 data.BlendIndices.Add(blendIdx);
                 data.BlendWeights.Add(blendWt);
+            }
+        }
+
+        // Grid cross-product normals track steep ridges; fixed sphere eps was too radial
+        // on coarse cells and made the terrain shader treat cliffs as flat (streaking).
+        for (int iy = 0; iy < n; iy++)
+        {
+            int iyD = Math.Max(0, iy - 1);
+            int iyU = Math.Min(size, iy + 1);
+            for (int ix = 0; ix < n; ix++)
+            {
+                int ixL = Math.Max(0, ix - 1);
+                int ixR = Math.Min(size, ix + 1);
+                int i = iy * n + ix;
+                var dU = data.Positions[iy * n + ixR] - data.Positions[iy * n + ixL];
+                var dV = data.Positions[iyU * n + ix] - data.Positions[iyD * n + ix];
+                var nn = SN.Vector3.Cross(dU, dV);
+                float len = nn.Length();
+                if (len < 1e-8f)
+                    continue;
+                nn /= len;
+                var radial = data.Positions[i];
+                if (radial.LengthSquared() > 1e-8f && SN.Vector3.Dot(nn, radial) < 0f)
+                    nn = -nn;
+                data.Normals[i] = nn;
             }
         }
 

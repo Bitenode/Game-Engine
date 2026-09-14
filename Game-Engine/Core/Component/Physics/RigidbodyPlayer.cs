@@ -125,9 +125,18 @@ namespace Game_Engine.Core.Component
         /// <summary>While set, FP eye may run cheap density push (hills / dig walls).</summary>
         float _steepSurfaceUntil;
 
+        // Last resolved standing pose. Reused while idle so the dig-wall capsule solve
+        // (hundreds of heightfield samples) does not run every fixed step.
+        bool _restValid;
+        SN.Vector3 _restPos;
+        SN.Vector3 _restUp;
+        float _restCrustR;
+        bool _restSteep;
+
         /// <summary>Clear stand-radius cache after digs so the next sample hits the live cubemap.</summary>
         public void InvalidateCollisionCache()
         {
+            _restValid = false;
             _collisionCacheTime = float.NegativeInfinity;
             _collisionCacheDir = new SN.Vector3(float.NaN);
             _collisionCacheR = 0f;
@@ -449,9 +458,8 @@ namespace Game_Engine.Core.Component
             {
                 float stand = crustR + capsuleH;
                 pos = center + up * stand;
-                // Always seat against steep hills / dig walls — standing still in a
-                // crater still clips the capsule and camera if we skip this.
-                if (ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH, out crustR))
+                bool idle = wish.LengthSquared() <= 1e-8f;
+                if (ResolveStandPose(planet, center, ref pos, ref up, radius, capsuleH, idle, out crustR))
                     MarkSteepSurface();
                 WriteCollisionRadiusCache(up, crustR);
                 onContact = true;
@@ -504,7 +512,7 @@ namespace Game_Engine.Core.Component
                 if (_surfaceMode && _verticalVel <= 0f && dist <= stand + 0.02f)
                 {
                     pos = center + up * stand;
-                    if (ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH, out crustR))
+                    if (ResolveStandPose(planet, center, ref pos, ref up, radius, capsuleH, false, out crustR))
                         MarkSteepSurface();
                     WriteCollisionRadiusCache(up, crustR);
                     _airborne = false;
@@ -557,7 +565,7 @@ namespace Game_Engine.Core.Component
             else if (_surfaceMode)
             {
                 pos = center + up * (crustR + capsuleH);
-                if (ResolveDigWallCapsule(planet, center, ref pos, ref up, radius, capsuleH, out crustR))
+                if (ResolveStandPose(planet, center, ref pos, ref up, radius, capsuleH, wish.LengthSquared() <= 1e-8f, out crustR))
                     MarkSteepSurface();
                 WriteCollisionRadiusCache(up, crustR);
                 onContact = true;
@@ -876,6 +884,52 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>
+        /// Seat the capsule on the stand and clear dig walls / steep hills. While idle the
+        /// previous solution is reused (one stand sample to detect terrain changes) instead
+        /// of re-running the probe solve every fixed step. Skips the dense solve while the
+        /// surface bake is pending, when every stand sample is a full live-noise evaluation.
+        /// </summary>
+        bool ResolveStandPose(
+            PlanetTerrain planet,
+            SN.Vector3 center,
+            ref SN.Vector3 pos,
+            ref SN.Vector3 up,
+            float capsuleRadius,
+            float capsuleH,
+            bool idle,
+            out float crustR)
+        {
+            if (!planet.HasBakedStandSurface)
+            {
+                _restValid = false;
+                RefreshRadialUp(pos, center, ref up);
+                crustR = planet.SampleStandWorldRadius(up);
+                pos = center + up * (crustR + capsuleH);
+                return false;
+            }
+
+            if (idle && _restValid && SN.Vector3.Dot(up, _restUp) > 0.999999f)
+            {
+                float liveR = planet.SampleStandWorldRadius(_restUp);
+                if (MathF.Abs(liveR - _restCrustR) < 0.01f)
+                {
+                    pos = _restPos;
+                    up = _restUp;
+                    crustR = _restCrustR;
+                    return _restSteep;
+                }
+            }
+
+            bool steep = ResolveDigWallCapsule(planet, center, ref pos, ref up, capsuleRadius, capsuleH, out crustR);
+            _restValid = true;
+            _restPos = pos;
+            _restUp = up;
+            _restCrustR = crustR;
+            _restSteep = steep;
+            return steep;
+        }
+
+        /// <summary>
         /// Keep the capsule (waist → head) out of steep heightfield faces. Dig walls are
         /// neighbor columns, not volumetric solids — probe world points and shove until clear.
         /// </summary>
@@ -888,12 +942,14 @@ namespace Game_Engine.Core.Component
             float capsuleH,
             out float cachedCrustR)
         {
-            const int iters = 10;
+            const int iters = 5;
             const int ring = 8;
             float skin = MathF.Max(0.1f, capsuleRadius * 0.4f);
             float maxStep = MathF.Max(0.35f, Rigidbody.PlanetWalkStepUp);
             bool steep = false;
             float rBody = MathF.Max(0.22f, capsuleRadius);
+            bool inDepression = false;
+            bool depressionChecked = false;
 
             for (int it = 0; it < iters; it++)
             {
@@ -924,9 +980,12 @@ namespace Game_Engine.Core.Component
                     pushMag = MathF.Max(pushMag, excess);
                 }
 
-                bool needVolume = pushMag > 1e-4f
-                    || DetectDigDepression(planet, up, crustR, capsuleRadius)
-                    || it > 0;
+                if (!depressionChecked)
+                {
+                    inDepression = DetectDigDepression(planet, up, crustR, capsuleRadius);
+                    depressionChecked = true;
+                }
+                bool needVolume = pushMag > 1e-4f || inDepression;
 
                 if (needVolume)
                 {
@@ -934,9 +993,9 @@ namespace Game_Engine.Core.Component
                     {
                         float height = hi == 0 ? 0f : (hi == 1 ? capsuleH * 0.55f : capsuleH * 1.05f);
                         var probeOrigin = pos + up * height;
-                        for (int ri = 0; ri < 3; ri++)
+                        for (int ri = 0; ri < 2; ri++)
                         {
-                            float reach = rBody * (1f + ri * 0.7f);
+                            float reach = rBody * (1f + ri * 0.9f);
                             for (int i = 0; i < ring; i++)
                             {
                                 float a = i * (MathF.PI * 2f / ring);
@@ -964,7 +1023,7 @@ namespace Game_Engine.Core.Component
             RefreshRadialUp(pos, center, ref up);
             cachedCrustR = planet.SampleStandWorldRadius(up);
             pos = center + up * (cachedCrustR + capsuleH);
-            if (!steep && DetectDigDepression(planet, up, cachedCrustR, capsuleRadius))
+            if (!steep && inDepression)
                 steep = true;
             return steep;
         }
@@ -1473,6 +1532,11 @@ namespace Game_Engine.Core.Component
                     eye = _planetCenter + up * standEyeR;
                 else if (radial > standEyeR + 0.35f && !_airborne)
                     eye = _planetCenter + up * standEyeR + (eye - _planetCenter - up * radial);
+
+                // Bake pending: each heightfield sample is a full live-noise evaluation, so
+                // the probe shell would cost tens of ms per frame. Radial seat only until then.
+                if (!planet.HasBakedStandSurface)
+                    return eye;
 
                 float nearPad = MathF.Max(0.45f, (_cam?.Near ?? 0.1f) + MathF.Max(0.25f, CameraCollisionPadding));
                 eye = ResolveHeightfieldEyeClearance(planet, eye, lookFwd, nearPad);

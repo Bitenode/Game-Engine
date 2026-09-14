@@ -471,6 +471,61 @@ public sealed class QuadNode
         }
     }
 
+    /// <summary>
+    /// Exact visible-surface radius from the shell vertex grid (first gridN² verts of
+    /// <see cref="GeneratedMesh"/>, row-major over UV). The 16×16 stand grid is a
+    /// max-binned collision approximation and sits up to a metre off on hills.
+    /// </summary>
+    public bool TrySampleShellLocalRadius(SN.Vector3 sphereDir, int gridN, out float localR)
+    {
+        localR = 0f;
+        var verts = GeneratedMesh?.Vertices;
+        if (verts == null || gridN < 2 || verts.Length < gridN * gridN)
+            return false;
+        if (sphereDir.LengthSquared() < 1e-12f)
+            return false;
+
+        // Vertex (ix,iy) was generated at FaceUVToDirection(U0 + ix/size·(U1-U0), ...),
+        // so index it with the exact inverse. SphereToCube (central projection) is off
+        // by many cells and read hillside heights from the wrong spot.
+        var (face, u, v) = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(sphereDir));
+        if (face != Face)
+            return false;
+
+        float tu = (u - U0) / MathF.Max(1e-6f, U1 - U0);
+        float tv = (v - V0) / MathF.Max(1e-6f, V1 - V0);
+        if (tu < -0.01f || tu > 1.01f || tv < -0.01f || tv > 1.01f)
+            return false;
+        tu = Math.Clamp(tu, 0f, 1f);
+        tv = Math.Clamp(tv, 0f, 1f);
+
+        float fx = tu * (gridN - 1);
+        float fy = tv * (gridN - 1);
+        int x0 = Math.Min(gridN - 2, (int)MathF.Floor(fx));
+        int y0 = Math.Min(gridN - 2, (int)MathF.Floor(fy));
+        float ax = fx - x0;
+        float ay = fy - y0;
+
+        float r00 = verts[y0 * gridN + x0].Length();
+        float r10 = verts[y0 * gridN + x0 + 1].Length();
+        float r01 = verts[(y0 + 1) * gridN + x0].Length();
+        float r11 = verts[(y0 + 1) * gridN + x0 + 1].Length();
+        if (r00 <= 1e-4f || r10 <= 1e-4f || r01 <= 1e-4f || r11 <= 1e-4f)
+            return false;
+
+        // Shell cells are split along one diagonal; interpolate on the matching triangle
+        // so the result lies on the rasterized surface rather than the bilinear patch.
+        float r;
+        if (ax + ay <= 1f)
+            r = r00 + (r10 - r00) * ax + (r01 - r00) * ay;
+        else
+            r = r11 + (r01 - r11) * (1f - ax) + (r10 - r11) * (1f - ay);
+        if (r <= 1e-4f)
+            return false;
+        localR = r;
+        return true;
+    }
+
     public bool TrySampleStandLocalRadius(SN.Vector3 sphereDir, out float localR)
     {
         localR = 0f;

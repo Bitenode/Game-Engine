@@ -238,6 +238,7 @@ namespace Game_Engine.Core
 
         static readonly Dictionary<string, ScriptAccum> _scriptByType = new(64);
         static readonly Dictionary<string, long> _scriptSpikeLog = new(32);
+        static long _lastAnySpikeLog;
         static readonly ScriptCost[] _latestTop = new ScriptCost[TopScriptCount];
         static readonly ScriptCost[] _spikeTop = new ScriptCost[TopScriptCount];
         static int _latestTopCount;
@@ -320,14 +321,19 @@ namespace Game_Engine.Core
             if (ms < ScriptSpikeMs)
                 return;
 
+            // The profiler panel already shows the spike snapshot. Console lines cost UI
+            // thread time (shared with the game loop), so keep these sparse and Debug-only.
             long now = Stopwatch.GetTimestamp();
+            if ((now - _lastAnySpikeLog) * 1000.0 / Stopwatch.Frequency < 1000.0)
+                return;
             if (_scriptSpikeLog.TryGetValue(typeName, out long last)
-                && (now - last) * 1000.0 / Stopwatch.Frequency < 2000.0)
+                && (now - last) * 1000.0 / Stopwatch.Frequency < 5000.0)
                 return;
 
             _scriptSpikeLog[typeName] = now;
+            _lastAnySpikeLog = now;
             string owner = b.gameObject?.Name ?? "?";
-            Log.Warning($"[Scripts] {typeName}.{phase} {ms:F1} ms on '{owner}'");
+            Log.Debug($"[Scripts] {typeName}.{phase} {ms:F1} ms on '{owner}'");
         }
 
         /// <summary>

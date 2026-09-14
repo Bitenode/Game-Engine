@@ -136,12 +136,15 @@ public sealed class PlanetDensitySampler
             _basinNoise,
             sphereDir);
 
+    // Live graph noise is the expensive path (all biome FBMs + erosion/ridge/basin).
+    // Only pay for it when no baked base height exists.
     float SampleAuthoredHeight(SN.Vector3 sphereDir)
     {
+        var cube = _surfaceCubemap;
+        if (cube != null && cube.HasBaseHeights)
+            return cube.SampleAuthoredHeight(sphereDir, 0f);
         float live = SampleLiveGraphHeight(sphereDir);
-        if (_surfaceCubemap != null)
-            return _surfaceCubemap.SampleAuthoredHeight(sphereDir, live);
-        return live;
+        return cube != null ? cube.SampleAuthoredHeight(sphereDir, live) : live;
     }
 
     float SampleCarvedHeight(SN.Vector3 sphereDir)
@@ -279,10 +282,10 @@ public sealed class PlanetDensitySampler
         if (lenSq < 1e-12f)
             return _config.Radius;
         var dir = sphereDir / MathF.Sqrt(lenSq);
-        float live = SampleLiveGraphHeight(dir);
-        float height = _surfaceCubemap != null
-            ? _surfaceCubemap.SampleAuthoredBaseHeight(dir, live)
-            : live;
+        var cube = _surfaceCubemap;
+        float height = cube != null && cube.HasBaseHeights
+            ? cube.SampleAuthoredBaseHeight(dir, 0f)
+            : SampleLiveGraphHeight(dir);
 
         var carve = CreateCarveContext();
         height = PlanetWaterSampler.ApplyWaterCarving(
