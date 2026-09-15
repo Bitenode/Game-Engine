@@ -1017,39 +1017,20 @@ public partial class ScriptEditorWindow : Window
         return Task.Run(() =>
         {
             var roots = CandidateScriptRoots().ToList();
-            var allFiles = new List<string>();
-            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var r in roots)
-            {
-                try
-                {
-                    foreach (var f in Directory.EnumerateFiles(r, "*.cs", SearchOption.AllDirectories))
-                    {
-                        var normalized = f.Replace('/', Path.DirectorySeparatorChar);
-                        var d = Path.DirectorySeparatorChar;
-                        if (normalized.IndexOf($"{d}obj{d}", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                        if (normalized.IndexOf($"{d}bin{d}", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                        if (normalized.IndexOf($"{d}.git{d}", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-
-                        var full = Path.GetFullPath(f);
-                        if (seenFiles.Add(full)) allFiles.Add(full);
-                    }
-                }
-                catch { }
-            }
+            var allFiles = ScriptCompiler.CollectProjectCsFiles(roots, playerBuild: false);
 
             if (allFiles.Count == 0)
                 throw new InvalidOperationException("No .cs files found under your Assets/Packages folders.");
 
             var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
             var trees = allFiles
-                .Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), parseOpts, f))
+                .Select(f => CSharpSyntaxTree.ParseText(ScriptCompiler.ReadScriptSource(f), parseOpts, f))
                 .ToList();
 
             const string Prelude = @"
                 global using Avalonia.Controls;
                 global using Game_Engine.Views;
+                global using SystemDecorations = Avalonia.Controls.WindowDecorations;
             ";
             trees.Insert(0, CSharpSyntaxTree.ParseText(Prelude, parseOpts, "ScriptPrelude.g.cs"));
 

@@ -351,7 +351,7 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `ProjectService` | Project lifecycle — create, open, close projects; manages `project.json` manifest, folder structure, asset paths, timestamps |
 | `SelectionService` | Tracks currently selected GameObjects with **multi-select** support (`Selected` list, `Current` primary, `Set/Add/Remove/Toggle/Clear` methods) |
 | `UndoService` | Command-pattern undo/redo with dual stacks; `ICmd` interface with `Do()`/`Undo()`; `PropertyChangeCmd` for property edits |
-| `Input` | Frame-based input polling with axis smoothing, action bindings, mouse delta tracking, and save/load to `input.bindings.json` |
+| `Input` | Frame-based input: axes/actions, keyboard, mouse, XInput gamepads, remapping UI, `input.bindings.json` |
 | `CameraService` | Tracks active cameras in the scene |
 | `ExtensionService` | Discovers, loads, and hot-reloads editor extensions from compiled assemblies using collectible `AssemblyLoadContext` |
 | `CommandRegistry` | Central command registration and invocation system for menus and shortcuts |

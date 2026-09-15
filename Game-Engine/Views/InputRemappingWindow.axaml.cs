@@ -7,6 +7,7 @@ using Game_Engine.Core;
 using Game_Engine.Core.Input;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using Avalonia.Threading;
 using System.Linq;
@@ -16,15 +17,11 @@ namespace Game_Engine.Views
 {
     public partial class InputRemappingWindow : Window
     {
-        private enum WaitingKind { None, AxisPositive, AxisNegative, ActionKey, ActionMouse }
+        private enum WaitingKind { None, AxisPositive, AxisNegative, AxisPositivePad, AxisNegativePad, AxisAnalog, ActionKey, ActionMouse, ActionGamepad }
         private WaitingKind _waiting = WaitingKind.None;
-        private string _targetName;
+        private string? _targetName;
 
-        // Snapshot for "Reset to Defaults"
-        private readonly List<AxisBindingInfo> _defaultAxes;
-        private readonly List<ActionBindingInfo> _defaultActions;
-
-        private readonly float _defaultMouseSensitivity;
+        private readonly DispatcherTimer _padTimer;
 
         public InputRemappingWindow()
         {
@@ -33,31 +30,125 @@ namespace Game_Engine.Views
             if (ProjectService.Current != null)
                 Input.TryLoadBindingsFromProject();
 
-            _defaultMouseSensitivity = Input.MouseSensitivity;
-
-            // Take a snapshot of current bindings when the window opens
-            _defaultAxes = Input.GetAxisNames()
-                                .Select(Input.GetAxisInfo)
-                                .Where(a => a != null)
-                                .ToList();
-            _defaultActions = Input.GetActionNames()
-                                   .Select(Input.GetActionInfo)
-                                   .Where(a => a != null)
-                                   .ToList();
+            DeadzoneBox.Text = Input.GamepadDeadzone.ToString("0.##", CultureInfo.InvariantCulture);
+            LookScaleBox.Text = Input.GamepadLookSensitivity.ToString("0.##", CultureInfo.InvariantCulture);
+            DeadzoneBox.LostFocus += (_, __) => CommitScalarFields();
+            LookScaleBox.LostFocus += (_, __) => CommitScalarFields();
 
             BuildAxesUI();
             BuildActionsUI();
+            UpdatePadStatus();
 
             BtnReset.Click += OnResetClicked;
             BtnClose.Click += (_, __) => Close();
             BtnSave.Click += OnSaveClicked;
             AddActionBtn.Click += OnAddActionClicked;
 
-            // Listen for rebind input
             KeyDown += OnHostKeyDown;
             PointerPressed += OnHostPointerPressed;
 
+            _padTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            _padTimer.Tick += OnPadTimerTick;
+            _padTimer.Start();
+
+            Closed += (_, __) => _padTimer.Stop();
+
             UpdateTitleWithPath();
+        }
+
+        void CommitScalarFields()
+        {
+            if (float.TryParse(DeadzoneBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var dz))
+                Input.GamepadDeadzone = Math.Clamp(dz, 0f, 0.9f);
+            if (float.TryParse(LookScaleBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var look))
+                Input.GamepadLookSensitivity = Math.Clamp(look, 0f, 80f);
+        }
+
+        void OnPadTimerTick(object? sender, EventArgs e)
+        {
+            if (!GameView.IsAnyViewPlaying)
+                Input.NewFrame(0.016f);
+            Input.PollGamepads();
+            UpdatePadStatus();
+            if (_waiting == WaitingKind.None) return;
+
+            if (_waiting == WaitingKind.ActionGamepad ||
+                _waiting == WaitingKind.AxisPositivePad ||
+                _waiting == WaitingKind.AxisNegativePad)
+            {
+                foreach (GamepadButton b in Enum.GetValues<GamepadButton>())
+                {
+                    if (b == GamepadButton.None) continue;
+                    if (!Input.GetGamepadButtonDown(b)) continue;
+                    if (_waiting == WaitingKind.ActionGamepad)
+                    {
+                        var info = Input.GetActionInfo(_targetName!);
+                        if (info != null && !info.GamepadButtons.Contains(b))
+                        {
+                            info.GamepadButtons.Add(b);
+                            Input.ApplyActionInfo(info);
+                        }
+                        BuildActionsUI();
+                    }
+                    else
+                    {
+                        var info = Input.GetAxisInfo(_targetName!);
+                        if (info != null)
+                        {
+                            var list = _waiting == WaitingKind.AxisPositivePad ? info.PositiveButtons : info.NegativeButtons;
+                            if (!list.Contains(b)) list.Add(b);
+                            Input.ApplyAxisInfo(info);
+                        }
+                        BuildAxesUI();
+                    }
+                    CancelWaiting();
+                    return;
+                }
+            }
+
+            if (_waiting == WaitingKind.AxisAnalog)
+            {
+                GamepadAxis picked = GamepadAxis.None;
+                float best = 0.6f;
+                TryStick(GamepadAxis.LeftStickX, ref picked, ref best);
+                TryStick(GamepadAxis.LeftStickY, ref picked, ref best);
+                TryStick(GamepadAxis.RightStickX, ref picked, ref best);
+                TryStick(GamepadAxis.RightStickY, ref picked, ref best);
+                float lt = Input.GetGamepadAxis(GamepadAxis.LeftTrigger);
+                float rt = Input.GetGamepadAxis(GamepadAxis.RightTrigger);
+                if (lt > best) { best = lt; picked = GamepadAxis.LeftTrigger; }
+                if (rt > best) { picked = GamepadAxis.RightTrigger; }
+
+                if (picked != GamepadAxis.None)
+                {
+                    var info = Input.GetAxisInfo(_targetName);
+                    if (info != null)
+                    {
+                        info.AnalogAxis = picked;
+                        Input.ApplyAxisInfo(info);
+                    }
+                    BuildAxesUI();
+                    CancelWaiting();
+                }
+            }
+        }
+
+        static void TryStick(GamepadAxis axis, ref GamepadAxis picked, ref float best)
+        {
+            float a = Math.Abs(Input.GetGamepadAxis(axis));
+            if (a > best)
+            {
+                best = a;
+                picked = axis;
+            }
+        }
+
+        void UpdatePadStatus()
+        {
+            int n = Input.ConnectedGamepadCount;
+            PadStatusText.Text = n > 0
+                ? $"Gamepad: {n} connected (XInput). Left stick = move, right stick = look, A = Jump, RT/RB = Fire1, X = Interact, B = Crouch."
+                : "Gamepad: none (connect an Xbox-compatible pad; Windows XInput).";
         }
 
         // ---------- UI Builders ----------
@@ -74,39 +165,83 @@ namespace Game_Engine.Views
 
                 var row = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4 };
 
-                row.Children.Add(new TextBlock
-                {
-                    Text = name,
-                    FontWeight = FontWeight.SemiBold
-                });
-
-                var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-
-                var posLbl = new TextBlock { Text = "Positive:", VerticalAlignment = VerticalAlignment.Center, Width = 70 };
-                var posKeys = new TextBlock { Text = string.Join(", ", info.Positive.Select(k => k.ToString())), Width = 220 };
-
-                var negLbl = new TextBlock { Text = "Negative:", VerticalAlignment = VerticalAlignment.Center, Width = 70 };
-                var negKeys = new TextBlock { Text = string.Join(", ", info.Negative.Select(k => k.ToString())), Width = 220 };
-
-                var posBtn = new Button { Content = "Rebind +", Tag = name, IsEnabled = !info.IsMouseX && !info.IsMouseY };
-                var negBtn = new Button { Content = "Rebind -", Tag = name, IsEnabled = !info.IsMouseX && !info.IsMouseY };
-
-                posBtn.Click += delegate { BeginAxisRebind(name, true); };
-                negBtn.Click += delegate { BeginAxisRebind(name, false); };
-
-                line.Children.Add(posLbl);
-                line.Children.Add(posKeys);
-                line.Children.Add(posBtn);
-                line.Children.Add(negLbl);
-                line.Children.Add(negKeys);
-                line.Children.Add(negBtn);
+                row.Children.Add(new TextBlock { Text = name, FontWeight = FontWeight.SemiBold });
 
                 if (info.IsMouseX || info.IsMouseY)
-                {
-                    row.Children.Add(new TextBlock { Text = "Mouse axis (read-only)", Opacity = 0.7 });
-                }
+                    row.Children.Add(new TextBlock { Text = "Mouse delta + optional look stick", Opacity = 0.7 });
 
-                row.Children.Add(line);
+                row.Children.Add(LabeledChips("Positive keys", info.Positive, k =>
+                {
+                    info.Positive.Remove(k);
+                    Input.ApplyAxisInfo(info);
+                    BuildAxesUI();
+                }));
+                row.Children.Add(LabeledChips("Negative keys", info.Negative, k =>
+                {
+                    info.Negative.Remove(k);
+                    Input.ApplyAxisInfo(info);
+                    BuildAxesUI();
+                }));
+                row.Children.Add(LabeledChips("Pad +", info.PositiveButtons, b =>
+                {
+                    info.PositiveButtons.Remove(b);
+                    Input.ApplyAxisInfo(info);
+                    BuildAxesUI();
+                }));
+                row.Children.Add(LabeledChips("Pad −", info.NegativeButtons, b =>
+                {
+                    info.NegativeButtons.Remove(b);
+                    Input.ApplyAxisInfo(info);
+                    BuildAxesUI();
+                }));
+
+                var analogLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                analogLine.Children.Add(new TextBlock
+                {
+                    Text = "Analog: " + (info.AnalogAxis == GamepadAxis.None ? "(none)" : info.AnalogAxis.ToString()),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    MinWidth = 180
+                });
+                var analogBtn = new Button { Content = "Rebind analog", Tag = name };
+                analogBtn.Click += (_, __) => BeginWait(name, WaitingKind.AxisAnalog, "Move a stick or pull a trigger… (Esc to cancel)");
+                var clearAnalog = new Button { Content = "Clear analog" };
+                clearAnalog.Click += (_, __) =>
+                {
+                    info.AnalogAxis = GamepadAxis.None;
+                    Input.ApplyAxisInfo(info);
+                    BuildAxesUI();
+                };
+                var invert = new CheckBox
+                {
+                    Content = "Invert",
+                    IsChecked = info.InvertAnalog,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                invert.IsCheckedChanged += (_, __) =>
+                {
+                    info.InvertAnalog = invert.IsChecked == true;
+                    Input.ApplyAxisInfo(info);
+                };
+                analogLine.Children.Add(analogBtn);
+                analogLine.Children.Add(clearAnalog);
+                analogLine.Children.Add(invert);
+                row.Children.Add(analogLine);
+
+                var keyBtns = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var posBtn = new Button { Content = "Add + key", IsEnabled = !info.IsMouseX && !info.IsMouseY };
+                var negBtn = new Button { Content = "Add − key", IsEnabled = !info.IsMouseX && !info.IsMouseY };
+                var posPadBtn = new Button { Content = "Add pad +" };
+                var negPadBtn = new Button { Content = "Add pad −" };
+                posBtn.Click += (_, __) => BeginWait(name, WaitingKind.AxisPositive, "Press a key for + … (Esc to cancel)");
+                negBtn.Click += (_, __) => BeginWait(name, WaitingKind.AxisNegative, "Press a key for − … (Esc to cancel)");
+                posPadBtn.Click += (_, __) => BeginWait(name, WaitingKind.AxisPositivePad, "Press a gamepad button for + … (Esc to cancel)");
+                negPadBtn.Click += (_, __) => BeginWait(name, WaitingKind.AxisNegativePad, "Press a gamepad button for − … (Esc to cancel)");
+                keyBtns.Children.Add(posBtn);
+                keyBtns.Children.Add(negBtn);
+                keyBtns.Children.Add(posPadBtn);
+                keyBtns.Children.Add(negPadBtn);
+                row.Children.Add(keyBtns);
+
                 row.Children.Add(new Separator());
                 AxesHost.Children.Add(row);
             }
@@ -125,7 +260,6 @@ namespace Game_Engine.Views
 
                 var row = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4 };
 
-                // Header with Delete button (right-aligned)
                 var header = new DockPanel();
                 var delBtn = new Button { Content = "Delete", Tag = name };
                 DockPanel.SetDock(delBtn, Dock.Right);
@@ -134,67 +268,90 @@ namespace Game_Engine.Views
                 {
                     Text = name,
                     FontWeight = FontWeight.SemiBold,
-                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                    VerticalAlignment = VerticalAlignment.Center
                 });
                 row.Children.Add(header);
 
-                delBtn.Click += delegate
+                delBtn.Click += (_, __) =>
                 {
-                    // remove and rebuild list
                     if (Input.RemoveAction(name))
                         BuildActionsUI();
                 };
 
-                // Keys line
-                var line1 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                var keyLbl = new TextBlock { Text = "Keys:", Width = 70, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
-                var keyList = new TextBlock { Text = string.Join(", ", info.Keys.Select(k => k.ToString())), Width = 260 };
-                var rebindKeyBtn = new Button { Content = "Rebind Keys (add)", Tag = name };
-                rebindKeyBtn.Click += delegate { BeginActionKeyRebind(name); };
+                row.Children.Add(LabeledChips("Keys", info.Keys, k =>
+                {
+                    info.Keys.Remove(k);
+                    Input.ApplyActionInfo(info);
+                    BuildActionsUI();
+                }));
+                row.Children.Add(LabeledChips("Mouse", info.MouseButtons, m =>
+                {
+                    info.MouseButtons.Remove(m);
+                    Input.ApplyActionInfo(info);
+                    BuildActionsUI();
+                }));
+                row.Children.Add(LabeledChips("Gamepad", info.GamepadButtons, g =>
+                {
+                    info.GamepadButtons.Remove(g);
+                    Input.ApplyActionInfo(info);
+                    BuildActionsUI();
+                }));
 
-                line1.Children.Add(keyLbl);
-                line1.Children.Add(keyList);
-                line1.Children.Add(rebindKeyBtn);
+                var btns = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var rebindKeyBtn = new Button { Content = "Add key" };
+                rebindKeyBtn.Click += (_, __) => BeginWait(name, WaitingKind.ActionKey, "Press a key… (Esc to cancel)");
+                var rebindMouseBtn = new Button { Content = "Add mouse" };
+                rebindMouseBtn.Click += (_, __) => BeginWait(name, WaitingKind.ActionMouse, "Click a mouse button… (Esc to cancel)");
+                var rebindPadBtn = new Button { Content = "Add gamepad" };
+                rebindPadBtn.Click += (_, __) => BeginWait(name, WaitingKind.ActionGamepad, "Press a gamepad button or trigger… (Esc to cancel)");
+                btns.Children.Add(rebindKeyBtn);
+                btns.Children.Add(rebindMouseBtn);
+                btns.Children.Add(rebindPadBtn);
+                row.Children.Add(btns);
 
-                // Mouse line
-                var line2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                var mouseLbl = new TextBlock { Text = "Mouse:", Width = 70, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
-                var mouseList = new TextBlock { Text = string.Join(", ", info.MouseButtons.Select(m => m.ToString())), Width = 260 };
-                var rebindMouseBtn = new Button { Content = "Rebind Mouse (add)", Tag = name };
-                rebindMouseBtn.Click += delegate { BeginActionMouseRebind(name); };
-
-                line2.Children.Add(mouseLbl);
-                line2.Children.Add(mouseList);
-                line2.Children.Add(rebindMouseBtn);
-
-                row.Children.Add(line1);
-                row.Children.Add(line2);
                 row.Children.Add(new Separator());
                 ActionsHost.Children.Add(row);
             }
         }
 
-
-        // ---------- Rebinding ----------
-        private void BeginAxisRebind(string axisName, bool positive)
+        static StackPanel LabeledChips<T>(string label, List<T> items, Action<T> onRemove)
         {
-            _targetName = axisName;
-            _waiting = positive ? WaitingKind.AxisPositive : WaitingKind.AxisNegative;
-            Title = "Input Remapping — waiting for key… (Esc to cancel)";
+            var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            line.Children.Add(new TextBlock
+            {
+                Text = label + ":",
+                Width = 90,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            if (items.Count == 0)
+            {
+                wrap.Children.Add(new TextBlock { Text = "(none)", Opacity = 0.5, VerticalAlignment = VerticalAlignment.Center });
+            }
+            else
+            {
+                foreach (var item in items.ToList())
+                {
+                    var captured = item;
+                    var chip = new Button
+                    {
+                        Content = captured + "  ×",
+                        Padding = new Avalonia.Thickness(8, 2),
+                        Margin = new Avalonia.Thickness(0, 0, 4, 2)
+                    };
+                    chip.Click += (_, __) => onRemove(captured);
+                    wrap.Children.Add(chip);
+                }
+            }
+            line.Children.Add(wrap);
+            return line;
         }
 
-        private void BeginActionKeyRebind(string actionName)
+        void BeginWait(string target, WaitingKind kind, string title)
         {
-            _targetName = actionName;
-            _waiting = WaitingKind.ActionKey;
-            Title = "Input Remapping — waiting for key… (Esc to cancel)";
-        }
-
-        private void BeginActionMouseRebind(string actionName)
-        {
-            _targetName = actionName;
-            _waiting = WaitingKind.ActionMouse;
-            Title = "Input Remapping — click a mouse button… (Esc to cancel)";
+            _targetName = target;
+            _waiting = kind;
+            Title = "Input Remapping — " + title;
         }
 
         private void CancelWaiting()
@@ -204,19 +361,23 @@ namespace Game_Engine.Views
             UpdateTitleWithPath();
         }
 
-        private void OnHostKeyDown(object sender, KeyEventArgs e)
+        private void OnHostKeyDown(object? sender, KeyEventArgs e)
         {
             if (_waiting == WaitingKind.None) return;
 
             if (e.Key == Avalonia.Input.Key.Escape)
             {
                 CancelWaiting();
+                e.Handled = true;
                 return;
             }
 
-            KeyCode code;
-            // full Avalonia Key → KeyCode map (letters, digits, F-keys, OEM, media, etc.)
-            if (!KeyMap.TryFromAvalonia(e.Key, out code))
+            if (_waiting == WaitingKind.ActionGamepad || _waiting == WaitingKind.ActionMouse ||
+                _waiting == WaitingKind.AxisAnalog || _waiting == WaitingKind.AxisPositivePad ||
+                _waiting == WaitingKind.AxisNegativePad)
+                return;
+
+            if (!KeyMap.TryFromAvalonia(e.Key, out var code))
                 return;
 
             if (_waiting == WaitingKind.AxisPositive || _waiting == WaitingKind.AxisNegative)
@@ -226,7 +387,7 @@ namespace Game_Engine.Views
                 {
                     var list = _waiting == WaitingKind.AxisPositive ? info.Positive : info.Negative;
                     if (!list.Contains(code)) list.Add(code);
-                    Input.SetAxis(info.Name, info.Positive, info.Negative, info.Sensitivity, info.Gravity, info.Snap);
+                    Input.ApplyAxisInfo(info);
                 }
                 BuildAxesUI();
             }
@@ -236,15 +397,16 @@ namespace Game_Engine.Views
                 if (info != null && !info.Keys.Contains(code))
                 {
                     info.Keys.Add(code);
-                    Input.SetAction(info.Name, info.Keys, info.MouseButtons);
+                    Input.ApplyActionInfo(info);
                 }
                 BuildActionsUI();
             }
 
             CancelWaiting();
+            e.Handled = true;
         }
 
-        private void OnHostPointerPressed(object sender, PointerPressedEventArgs e)
+        private void OnHostPointerPressed(object? sender, PointerPressedEventArgs e)
         {
             if (_waiting != WaitingKind.ActionMouse) return;
 
@@ -260,53 +422,27 @@ namespace Game_Engine.Views
                 if (info != null && !info.MouseButtons.Contains(mb.Value))
                 {
                     info.MouseButtons.Add(mb.Value);
-                    Input.SetAction(info.Name, info.Keys, info.MouseButtons);
+                    Input.ApplyActionInfo(info);
                 }
                 BuildActionsUI();
                 CancelWaiting();
+                e.Handled = true;
             }
         }
 
-        private void OnResetClicked(object sender, RoutedEventArgs e)
+        private void OnResetClicked(object? sender, RoutedEventArgs e)
         {
-            // Remove any actions that were created after the snapshot
-            var defaultActionNames = new HashSet<string>(
-                _defaultActions.Select(a => a.Name), StringComparer.Ordinal);
-
-            var existingActions = Input.GetActionNames();
-            for (int i = 0; i < existingActions.Count; i++)
-            {
-                var name = existingActions[i];
-                if (!defaultActionNames.Contains(name))
-                    Input.RemoveAction(name); 
-            }
-
-            // Restore axes to snapshot values
-            for (int i = 0; i < _defaultAxes.Count; i++)
-            {
-                var a = _defaultAxes[i];
-                Input.SetAxis(a.Name, a.Positive, a.Negative, a.Sensitivity, a.Gravity, a.Snap);
-            }
-
-            // Restore actions to snapshot values (re-creates any deleted built-ins)
-            for (int j = 0; j < _defaultActions.Count; j++)
-            {
-                var ac = _defaultActions[j];
-                Input.SetAction(ac.Name, ac.Keys, ac.MouseButtons);
-            }
-
-            //  restore mouse sensitivity to snapshot
-            Input.MouseSensitivity = _defaultMouseSensitivity;
-
-            //Rebuild UI
+            Input.ResetToEngineDefaults();
+            DeadzoneBox.Text = Input.GamepadDeadzone.ToString("0.##", CultureInfo.InvariantCulture);
+            LookScaleBox.Text = Input.GamepadLookSensitivity.ToString("0.##", CultureInfo.InvariantCulture);
             BuildAxesUI();
             BuildActionsUI();
             UpdateTitleWithPath();
         }
 
-
-        private void OnSaveClicked(object sender, RoutedEventArgs e)
+        private void OnSaveClicked(object? sender, RoutedEventArgs e)
         {
+            CommitScalarFields();
             if (ProjectService.Current == null)
             {
                 Title = "Input Remapping — open a project to save";
@@ -324,7 +460,7 @@ namespace Game_Engine.Views
             restore.Start();
         }
 
-        private void OnAddActionClicked(object sender, RoutedEventArgs e)
+        private void OnAddActionClicked(object? sender, RoutedEventArgs e)
         {
             var name = (NewActionNameBox.Text ?? "").Trim();
             if (!IsValidActionName(name)) { AddActionHint.Text = "Invalid name"; return; }
@@ -335,8 +471,7 @@ namespace Game_Engine.Views
                 return;
             }
 
-            // create empty custom action
-            Input.SetAction(name, new List<KeyCode>(), new List<Core.Input.MouseButton>());
+            Input.SetAction(name, new List<KeyCode>(), new List<Core.Input.MouseButton>(), new List<GamepadButton>());
             BuildActionsUI();
             AddActionHint.Text = "(added)";
             NewActionNameBox.Text = "";

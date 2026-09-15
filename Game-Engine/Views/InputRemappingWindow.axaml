@@ -2,28 +2,35 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Game_Engine.Views.InputRemappingWindow"
         Title="Input Remapping"
-        Width="560" Height="500"
-        CanResize="False">
+        Width="720" Height="560"
+        CanResize="True">
   <Grid RowDefinitions="Auto,*,Auto" Margin="10">
-    <!-- Title / instructions -->
     <StackPanel Orientation="Vertical" Spacing="6">
       <TextBlock Text="Input Remapping" FontSize="18" FontWeight="SemiBold"/>
-      <TextBlock Text="Click a Rebind button, then press a key (Esc to cancel)."
+      <TextBlock x:Name="HintText"
+                 Text="Rebind: click a button, then press a key, mouse button, or gamepad control (Esc to cancel). Click a chip to remove it."
+                 TextWrapping="Wrap"
                  Opacity="0.8"/>
+      <TextBlock x:Name="PadStatusText" Opacity="0.7" FontSize="12"/>
     </StackPanel>
 
     <TabControl Grid.Row="1" Margin="0,10,0,10">
-      <!-- Axes -->
       <TabItem Header="Axes">
-        <ScrollViewer>
-          <StackPanel x:Name="AxesHost" Spacing="8" Margin="4"/>
-        </ScrollViewer>
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="10" Margin="4,0,4,8">
+            <TextBlock Text="Stick deadzone" VerticalAlignment="Center"/>
+            <TextBox x:Name="DeadzoneBox" Width="64"/>
+            <TextBlock Text="Look stick scale" VerticalAlignment="Center"/>
+            <TextBox x:Name="LookScaleBox" Width="64"/>
+          </StackPanel>
+          <ScrollViewer>
+            <StackPanel x:Name="AxesHost" Spacing="8" Margin="4"/>
+          </ScrollViewer>
+        </DockPanel>
       </TabItem>
 
-      <!-- Actions -->
       <TabItem Header="Actions">
         <DockPanel>
-          <!-- Add custom action -->
           <Border DockPanel.Dock="Top" Padding="6" Margin="0,0,0,6" CornerRadius="4" Background="#1AFFFFFF">
             <StackPanel Orientation="Horizontal" Spacing="8">
               <TextBlock Text="New action:" VerticalAlignment="Center"/>
@@ -43,7 +50,6 @@
       </TabItem>
     </TabControl>
 
-    <!-- Bottom bar -->
     <DockPanel Grid.Row="2">
       <Button x:Name="BtnReset"
               Content="Reset to Defaults"

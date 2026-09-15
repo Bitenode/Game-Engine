@@ -767,6 +767,7 @@ namespace Game_Engine.Views
 
             Log.Info("[Build] Step 4/5: Copying scenes...");
             CopyBuildScenes(dataDir, scenePaths);
+            CopyInputBindings(proj, dataDir);
 
             Log.Info("[Build] Step 5/5: Writing build manifest...");
             var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
@@ -811,6 +812,7 @@ namespace Game_Engine.Views
                 }
 
                 CopyBuildScenes(dataDir, scenePaths);
+                CopyInputBindings(proj, dataDir);
 
                 var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
                 SaveBuildSettings(info, sceneOrder);
@@ -849,7 +851,8 @@ namespace Game_Engine.Views
             var compileResult = ScriptCompiler.CompileToDll(
                 scriptRoots, dllOut,
                 assemblyName: "GameScripts",
-                optimized: optimized);
+                optimized: optimized,
+                playerBuild: true);
 
             if (!compileResult.Success)
                 throw new Exception($"Script compilation failed:\n{compileResult.ErrorText}");
@@ -881,6 +884,16 @@ namespace Game_Engine.Views
                     Log.Warning($"[Build] Could not copy scene '{Path.GetFileName(src)}': {ex.Message}");
                 }
             }
+        }
+
+        static void CopyInputBindings(Project proj, string dataDir)
+        {
+            var src = Path.Combine(proj.RootPath, "ProjectSettings", "input.bindings.json");
+            if (!File.Exists(src)) return;
+            var dstDir = Path.Combine(dataDir, "ProjectSettings");
+            Directory.CreateDirectory(dstDir);
+            File.Copy(src, Path.Combine(dstDir, "input.bindings.json"), overwrite: true);
+            Log.Info("[Build] Copied input.bindings.json");
         }
 
         private List<string> WriteDataManifest(string dataDir, List<string> scenePaths, BuildInfo info)

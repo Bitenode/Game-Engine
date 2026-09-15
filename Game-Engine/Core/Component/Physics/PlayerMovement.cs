@@ -102,18 +102,16 @@ namespace Game_Engine.Core.Component
             _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
             _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -89f, 89f);
 
-            // --- Move intent (normalized, camera-local) ---
-            int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
-                       - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.S) ? 1 : 0);
-            int xRight = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.D) ? 1 : 0)
-                       - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.A) ? 1 : 0);
-
-            var local = new SN.Vector2(xRight, -zFwd);
+            // --- Move intent (camera-local). Preserve analog magnitude; clamp if over 1. ---
+            float axisV = GEInput.GetAxis("Vertical");
+            float axisH = GEInput.GetAxis("Horizontal");
+            var local = new SN.Vector2(axisH, -axisV);
             float m2 = local.X * local.X + local.Y * local.Y;
-            if (m2 > 1e-6f)
+            if (m2 > 1f)
             {
                 float inv = 1f / MathF.Sqrt(m2);
                 local.X *= inv; local.Y *= inv;
+                m2 = 1f;
             }
             _wishLocal = local;
 

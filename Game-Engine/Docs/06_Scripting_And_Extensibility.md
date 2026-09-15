@@ -138,31 +138,25 @@ bool hasMesh = HasComponent<MeshFilter>();            // Check existence
 
 #### Input System (Play Mode Only)
 ```csharp
-// Axis input (smoothed, -1 to 1)
-float h = Input.GetAxis("Horizontal");  // A/D or Left/Right
-float v = Input.GetAxis("Vertical");    // W/S or Up/Down
+// Axes (keyboard + left stick + D-pad). Query by name so remapping works.
+float h = Input.GetAxis("Horizontal");
+float v = Input.GetAxis("Vertical");
 
-// Raw mouse movement
-Vector2 mouse = Input.MouseDelta;       // Per-frame pixel delta
-float mouseX = Input.GetAxis("Mouse X"); // Raw X delta
-float mouseY = Input.GetAxis("Mouse Y"); // Raw Y delta
+// Look: mouse delta plus right stick (see GamepadLookSensitivity)
+float lookX = Input.GetAxis("Mouse X");
+float lookY = Input.GetAxis("Mouse Y");
 
-// Action input
-bool jumpDown = Input.GetActionDown("Jump");     // True on the frame Space is pressed
-bool jumping = Input.GetAction("Jump");           // True while Space is held
-bool jumpUp = Input.GetActionUp("Jump");          // True on the frame Space is released
+// Actions (keys, mouse, and gamepad — use these instead of raw KeyCode)
+bool jumpDown = Input.GetActionDown("Jump");     // Space or gamepad A
+bool sprinting = Input.GetAction("Sprint");      // Shift, L3, or LB
+bool fired = Input.GetActionDown("Fire1");       // LMB, RB, or RT
+bool use = Input.GetActionDown("Interact");      // E or X
+bool crouch = Input.GetAction("Crouch");         // Ctrl or B
 
-bool sprinting = Input.GetAction("Sprint");       // Left Shift held
-bool fired = Input.GetActionDown("Fire1");         // Left mouse button pressed
-
-// Key input
-bool wHeld = Input.GetKey(KeyCode.W);             // Direct key state
-bool wDown = Input.GetKeyDown(KeyCode.W);          // Key pressed this frame
-bool wUp = Input.GetKeyUp(KeyCode.W);              // Key released this frame
-
-// Mouse button input
-bool leftMouse = Input.GetMouseButton(MouseButton.Left);
-bool rightDown = Input.GetMouseButtonDown(MouseButton.Right);
+// Raw devices (avoid in gameplay if the action map can express it)
+bool wHeld = Input.GetKey(KeyCode.W);
+bool aDown = Input.GetGamepadButtonDown(GamepadButton.A);
+int pads = Input.ConnectedGamepadCount;
 ```
 
 #### Time
@@ -546,6 +540,7 @@ MyProject/
 - Place editor extensions and reusable tools in `Packages/`
 - Both `Assets/` and `Packages/` are compiled together into a single DLL
 - Use `Assets/` for game-specific code and `Packages/` for cross-project utilities
+- Player builds skip editor extensions (Custom Menus, Scene/Project/Batch Tools) and Standard Assets UI scripts already linked into the player. If the same `.cs` filename exists in `Assets/Scripts` and Standard Assets, the Scripts copy is used.
 
 ---
 

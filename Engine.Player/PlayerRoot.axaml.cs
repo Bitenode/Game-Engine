@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Game_Engine.Core;
+using Game_Engine.Core.Input;
 using Game_Engine.Core.Networking;
 using System;
 using System.IO;
@@ -99,6 +100,7 @@ public partial class PlayerRoot : UserControl
 
         _tempRoot = ExtractAssetDll(dataDir);
         SetupProject(_tempRoot, productName);
+        TryInstallInputBindings(dataDir, _tempRoot);
 
         var scriptsDll = Path.Combine(dataDir, "GameScripts.dll");
         if (File.Exists(scriptsDll))
@@ -179,11 +181,31 @@ public partial class PlayerRoot : UserControl
             };
 
             ProjectService.SetRuntime(proj);
+            Input.ResetToEngineDefaults();
             Log.Info($"[Player] Project set: {productName} at {rootPath}");
         }
         catch (Exception ex)
         {
             Log.Warning($"[Player] Failed to set up project: {ex.Message}");
+        }
+    }
+
+    static void TryInstallInputBindings(string dataDir, string? projectRoot)
+    {
+        if (string.IsNullOrEmpty(projectRoot)) return;
+        var src = Path.Combine(dataDir, "ProjectSettings", "input.bindings.json");
+        if (!File.Exists(src)) return;
+        try
+        {
+            var dstDir = Path.Combine(projectRoot, "ProjectSettings");
+            Directory.CreateDirectory(dstDir);
+            File.Copy(src, Path.Combine(dstDir, "input.bindings.json"), overwrite: true);
+            Input.ResetToEngineDefaults();
+            Input.TryLoadBindingsFromProject();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[Player] Could not load input bindings: {ex.Message}");
         }
     }
 }

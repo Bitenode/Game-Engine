@@ -1586,10 +1586,11 @@ var cam = GetComponent<Camera>();
 var renderer = GetOrAddComponent<MeshRenderer>();
 bool hasMesh = HasComponent<MeshFilter>();
 
-// Input (play mode only)
+// Input (play mode only) — use axes/actions so gamepad remapping applies
 float h = Input.GetAxis("Horizontal");
 float v = Input.GetAxis("Vertical");
 bool jumped = Input.GetActionDown("Jump");
+bool used = Input.GetActionDown("Interact");
 Vector2 mouse = Input.MouseDelta;
 
 // Time

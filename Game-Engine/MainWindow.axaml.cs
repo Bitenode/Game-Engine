@@ -200,11 +200,14 @@ public partial class MainWindow : Window
         {
             EditorShortcutBindings.ReloadForCurrentProject();
             ExtensionService.RefreshForCurrentProject();
+            Input.ResetToEngineDefaults();
+            Input.TryLoadBindingsFromProject();
         };
         ProjectService.ProjectClosed += () =>
         {
             EditorShortcutBindings.ReloadForCurrentProject();
             ExtensionService.RefreshForCurrentProject();
+            Input.ResetToEngineDefaults();
         };
 
         // Final: window title etc.
@@ -942,8 +945,6 @@ public partial class MainWindow : Window
     public void RefreshProjectUI()
     {
         var has = ProjectService.Current is not null;
-        ProjectService.ProjectOpened += () => Input.TryLoadBindingsFromProject();
-
         MI_CloseProject.IsEnabled = has;
         MI_RevealInExplorer.IsEnabled = has;
         MI_SaveScene.IsEnabled = has;

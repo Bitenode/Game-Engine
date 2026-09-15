@@ -501,47 +501,58 @@ public sealed class PlanetTerrain : Behavior
         var preserve = _surfaceCubemap;
         var self = new WeakReference<PlanetTerrain>(this);
 
-        _ = Editor.EditorJobs.RunCpuAsync(ct =>
+        PlanetCubemapBaker.BakeResult Bake(CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             return PlanetCubemapBaker.Bake(
                 config, biomeMap, noise,
                 PlanetSurfaceCubemap.DefaultResolution,
                 preserve);
-        }).ContinueWith(t =>
+        }
+
+        void OnBakeDone(Task<PlanetCubemapBaker.BakeResult> t)
         {
-            Editor.EditorJobs.PostToUi(() =>
+            if (!self.TryGetTarget(out var terrain))
+                return;
+            if (generation != Volatile.Read(ref terrain._surfaceBakeGeneration))
+                return;
+
+            if (t.IsFaulted)
             {
-                if (!self.TryGetTarget(out var terrain))
-                    return;
-                if (generation != Volatile.Read(ref terrain._surfaceBakeGeneration))
-                    return;
+                var msg = t.Exception?.GetBaseException().Message ?? "unknown";
+                Log.Warning($"[PlanetTerrain] Async surface bake failed: {msg}");
+                terrain.SurfaceBakePending = false;
+                return;
+            }
 
-                if (t.IsFaulted)
-                {
-                    var msg = t.Exception?.GetBaseException().Message ?? "unknown";
-                    Log.Warning($"[PlanetTerrain] Async surface bake failed: {msg}");
-                    terrain.SurfaceBakePending = false;
-                    return;
-                }
+            if (t.IsCanceled)
+            {
+                terrain.SurfaceBakePending = false;
+                return;
+            }
 
-                if (t.IsCanceled)
-                {
-                    terrain.SurfaceBakePending = false;
-                    return;
-                }
+            try
+            {
+                terrain.ApplySurfaceBakeResult(t.Result, remesh: true);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[PlanetTerrain] Applying async bake failed: {ex.Message}");
+                terrain.SurfaceBakePending = false;
+            }
+        }
 
-                try
-                {
-                    terrain.ApplySurfaceBakeResult(t.Result, remesh: true);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning($"[PlanetTerrain] Applying async bake failed: {ex.Message}");
-                    terrain.SurfaceBakePending = false;
-                }
-            }, Editor.EditorUiPostPriority.Normal);
+#if !PLAYER
+        _ = Editor.EditorJobs.RunCpuAsync(Bake).ContinueWith(t =>
+        {
+            Editor.EditorJobs.PostToUi(() => OnBakeDone(t), Editor.EditorUiPostPriority.Normal);
         }, TaskContinuationOptions.ExecuteSynchronously);
+#else
+        _ = Task.Run(() => Bake(CancellationToken.None)).ContinueWith(t =>
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => OnBakeDone(t));
+        }, TaskContinuationOptions.ExecuteSynchronously);
+#endif
     }
 
     void ApplySurfaceBakeResult(PlanetCubemapBaker.BakeResult baked, bool remesh)

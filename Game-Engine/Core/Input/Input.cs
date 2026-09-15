@@ -20,6 +20,10 @@ namespace Game_Engine.Core.Input
         public float Value;             // runtime
         public bool IsMouseX;           // special: reads from mouse delta X
         public bool IsMouseY;           // special: reads from mouse delta Y
+        public GamepadAxis AnalogAxis = GamepadAxis.None;
+        public bool InvertAnalog;
+        public List<GamepadButton> PositiveButtons = new List<GamepadButton>();
+        public List<GamepadButton> NegativeButtons = new List<GamepadButton>();
 
         public AxisBinding(string name) { Name = name; }
     }
@@ -29,6 +33,7 @@ namespace Game_Engine.Core.Input
         public string Name;
         public List<KeyCode> Keys = new List<KeyCode>();
         public List<MouseButton> MouseButtons = new List<MouseButton>();
+        public List<GamepadButton> GamepadButtons = new List<GamepadButton>();
         public ActionBinding(string name) { Name = name; }
     }
 
@@ -42,12 +47,20 @@ namespace Game_Engine.Core.Input
     {
         // ------------ Public knobs ------------
         public static float MouseSensitivity = 0.12f;  // scales Mouse X/Y axes
+        /// <summary>Stick/trigger ignore magnitude below this (0–1). Triggers use half of this.</summary>
+        public static float GamepadDeadzone = 0.20f;
+        /// <summary>Added to Mouse X/Y when those axes have a gamepad analog binding.</summary>
+        public static float GamepadLookSensitivity = 2.5f;
 
         // ------------ Internal state ------------
         static readonly HashSet<KeyCode> sHeldKeys = new HashSet<KeyCode>();
         static readonly HashSet<KeyCode> sDownKeys = new HashSet<KeyCode>();
         static readonly HashSet<KeyCode> sUpKeys = new HashSet<KeyCode>();
         static readonly HashSet<KeyCode> sHardwareHeld = new HashSet<KeyCode>();
+
+        static readonly HashSet<GamepadButton> sHeldGamepad = new HashSet<GamepadButton>();
+        static readonly HashSet<GamepadButton> sDownGamepad = new HashSet<GamepadButton>();
+        static readonly HashSet<GamepadButton> sUpGamepad = new HashSet<GamepadButton>();
 
         static readonly HashSet<MouseButton> sHeldMouse = new HashSet<MouseButton>();
         static readonly HashSet<MouseButton> sDownMouse = new HashSet<MouseButton>();
@@ -68,30 +81,76 @@ namespace Game_Engine.Core.Input
         // ------------ Init ------------
         static Input()
         {
-            // Axes
+            RegisterBuiltInBindings();
+            s_json.Converters.Add(new JsonStringEnumConverter());
+        }
+
+        static void RegisterBuiltInBindings()
+        {
             var horiz = new AxisBinding("Horizontal");
             horiz.Negative.Add(KeyCode.A); horiz.Negative.Add(KeyCode.LeftArrow);
             horiz.Positive.Add(KeyCode.D); horiz.Positive.Add(KeyCode.RightArrow);
+            horiz.AnalogAxis = GamepadAxis.LeftStickX;
+            horiz.PositiveButtons.Add(GamepadButton.DPadRight);
+            horiz.NegativeButtons.Add(GamepadButton.DPadLeft);
             sAxes[horiz.Name] = horiz;
 
             var vert = new AxisBinding("Vertical");
             vert.Negative.Add(KeyCode.S); vert.Negative.Add(KeyCode.DownArrow);
             vert.Positive.Add(KeyCode.W); vert.Positive.Add(KeyCode.UpArrow);
+            vert.AnalogAxis = GamepadAxis.LeftStickY;
+            vert.PositiveButtons.Add(GamepadButton.DPadUp);
+            vert.NegativeButtons.Add(GamepadButton.DPadDown);
             sAxes[vert.Name] = vert;
 
-            var mx = new AxisBinding("Mouse X") { IsMouseX = true };
-            var my = new AxisBinding("Mouse Y") { IsMouseY = true };
-            // No smoothing for mouse deltas; read raw per frame:
-            mx.Sensitivity = my.Sensitivity = 1f; mx.Gravity = my.Gravity = 0f; mx.Snap = my.Snap = false;
+            var mx = new AxisBinding("Mouse X")
+            {
+                IsMouseX = true,
+                AnalogAxis = GamepadAxis.RightStickX,
+                Sensitivity = 1f, Gravity = 0f, Snap = false
+            };
+            var my = new AxisBinding("Mouse Y")
+            {
+                IsMouseY = true,
+                AnalogAxis = GamepadAxis.RightStickY,
+                InvertAnalog = true,
+                Sensitivity = 1f, Gravity = 0f, Snap = false
+            };
             sAxes[mx.Name] = mx; sAxes[my.Name] = my;
 
-            // Actions
-            var jump = new ActionBinding("Jump"); jump.Keys.Add(KeyCode.Space);
-            var sprint = new ActionBinding("Sprint"); sprint.Keys.Add(KeyCode.LeftShift);
-            var fire = new ActionBinding("Fire1"); fire.MouseButtons.Add(MouseButton.Left);
-            sActions[jump.Name] = jump; sActions[sprint.Name] = sprint; sActions[fire.Name] = fire;
+            var jump = new ActionBinding("Jump");
+            jump.Keys.Add(KeyCode.Space);
+            jump.GamepadButtons.Add(GamepadButton.A);
+            var sprint = new ActionBinding("Sprint");
+            sprint.Keys.Add(KeyCode.LeftShift);
+            sprint.GamepadButtons.Add(GamepadButton.LeftStick);
+            sprint.GamepadButtons.Add(GamepadButton.LeftShoulder);
+            var fire = new ActionBinding("Fire1");
+            fire.MouseButtons.Add(MouseButton.Left);
+            fire.GamepadButtons.Add(GamepadButton.RightShoulder);
+            fire.GamepadButtons.Add(GamepadButton.RightTrigger);
+            var interact = new ActionBinding("Interact");
+            interact.Keys.Add(KeyCode.E);
+            interact.GamepadButtons.Add(GamepadButton.X);
+            var crouch = new ActionBinding("Crouch");
+            crouch.Keys.Add(KeyCode.LeftCtrl);
+            crouch.GamepadButtons.Add(GamepadButton.B);
+            sActions[jump.Name] = jump;
+            sActions[sprint.Name] = sprint;
+            sActions[fire.Name] = fire;
+            sActions[interact.Name] = interact;
+            sActions[crouch.Name] = crouch;
+        }
 
-            s_json.Converters.Add(new JsonStringEnumConverter());
+        /// <summary>Restore built-in keyboard + gamepad map (clears custom actions).</summary>
+        public static void ResetToEngineDefaults()
+        {
+            sAxes.Clear();
+            sActions.Clear();
+            MouseSensitivity = 0.12f;
+            GamepadDeadzone = 0.20f;
+            GamepadLookSensitivity = 2.5f;
+            RegisterBuiltInBindings();
         }
 
         // ------------ Frame lifecycle ------------
@@ -103,6 +162,7 @@ namespace Game_Engine.Core.Input
             // Clear per-frame edges.
             sDownKeys.Clear(); sUpKeys.Clear();
             sDownMouse.Clear(); sUpMouse.Clear();
+            sDownGamepad.Clear(); sUpGamepad.Clear();
 
             // IMPORTANT: do NOT clear mouse deltas here.
             // We want PlayerMovement to consume the deltas that were accumulated
@@ -124,6 +184,7 @@ namespace Game_Engine.Core.Input
         {
             sHeldKeys.Clear(); sDownKeys.Clear(); sUpKeys.Clear();
             sHardwareHeld.Clear();
+            sHeldGamepad.Clear(); sDownGamepad.Clear(); sUpGamepad.Clear();
             sHeldMouse.Clear(); sDownMouse.Clear(); sUpMouse.Clear();
             sMouseDX = sMouseDY = 0f;
             PlayViewportCaptureActive = false;
@@ -191,6 +252,45 @@ namespace Game_Engine.Core.Input
             SyncHardwareKey(0x67, KeyCode.NumPad7);
             SyncHardwareKey(0x68, KeyCode.NumPad8);
             SyncHardwareKey(0x69, KeyCode.NumPad9);
+            PollGamepads();
+        }
+
+        /// <summary>Read Xbox-compatible pads (XInput on Windows). Safe to call from the remapper while the editor is idle.</summary>
+        public static void PollGamepads()
+        {
+            Gamepad.PollHardware();
+            ushort bits = Gamepad.MergedButtons();
+            SyncGamepadButton(GamepadButton.A, Gamepad.ButtonBit(bits, GamepadButton.A));
+            SyncGamepadButton(GamepadButton.B, Gamepad.ButtonBit(bits, GamepadButton.B));
+            SyncGamepadButton(GamepadButton.X, Gamepad.ButtonBit(bits, GamepadButton.X));
+            SyncGamepadButton(GamepadButton.Y, Gamepad.ButtonBit(bits, GamepadButton.Y));
+            SyncGamepadButton(GamepadButton.LeftShoulder, Gamepad.ButtonBit(bits, GamepadButton.LeftShoulder));
+            SyncGamepadButton(GamepadButton.RightShoulder, Gamepad.ButtonBit(bits, GamepadButton.RightShoulder));
+            SyncGamepadButton(GamepadButton.LeftStick, Gamepad.ButtonBit(bits, GamepadButton.LeftStick));
+            SyncGamepadButton(GamepadButton.RightStick, Gamepad.ButtonBit(bits, GamepadButton.RightStick));
+            SyncGamepadButton(GamepadButton.Start, Gamepad.ButtonBit(bits, GamepadButton.Start));
+            SyncGamepadButton(GamepadButton.Back, Gamepad.ButtonBit(bits, GamepadButton.Back));
+            SyncGamepadButton(GamepadButton.DPadUp, Gamepad.ButtonBit(bits, GamepadButton.DPadUp));
+            SyncGamepadButton(GamepadButton.DPadDown, Gamepad.ButtonBit(bits, GamepadButton.DPadDown));
+            SyncGamepadButton(GamepadButton.DPadLeft, Gamepad.ButtonBit(bits, GamepadButton.DPadLeft));
+            SyncGamepadButton(GamepadButton.DPadRight, Gamepad.ButtonBit(bits, GamepadButton.DPadRight));
+            SyncGamepadButton(GamepadButton.LeftTrigger, Gamepad.DigitalTriggerHeld(left: true));
+            SyncGamepadButton(GamepadButton.RightTrigger, Gamepad.DigitalTriggerHeld(left: false));
+        }
+
+        static void SyncGamepadButton(GamepadButton button, bool down)
+        {
+            if (button == GamepadButton.None) return;
+            if (down)
+            {
+                if (!sHeldGamepad.Contains(button)) sDownGamepad.Add(button);
+                sHeldGamepad.Add(button);
+            }
+            else if (sHeldGamepad.Contains(button))
+            {
+                sUpGamepad.Add(button);
+                sHeldGamepad.Remove(button);
+            }
         }
 
         static void SyncHardwareKey(int vk, KeyCode code)
@@ -272,6 +372,25 @@ namespace Game_Engine.Core.Input
         public static bool GetMouseDown(MouseButton btn) { return sDownMouse.Contains(btn); }
         public static bool GetMouseUp(MouseButton btn) { return sUpMouse.Contains(btn); }
 
+        public static bool GetGamepadButton(GamepadButton button) { return sHeldGamepad.Contains(button); }
+        public static bool GetGamepadButtonDown(GamepadButton button) { return sDownGamepad.Contains(button); }
+        public static bool GetGamepadButtonUp(GamepadButton button) { return sUpGamepad.Contains(button); }
+        public static int ConnectedGamepadCount => Gamepad.ConnectedCount;
+
+        /// <summary>Deadzoned analog from the first connected pad.</summary>
+        public static float GetGamepadAxis(GamepadAxis axis) => ApplyDeadzone(Gamepad.GetAxisRaw(axis), axis);
+
+        static float ApplyDeadzone(float v, GamepadAxis axis)
+        {
+            float dz = GamepadDeadzone;
+            if (axis == GamepadAxis.LeftTrigger || axis == GamepadAxis.RightTrigger)
+                dz = Math.Max(0.02f, dz * 0.5f);
+            float a = Math.Abs(v);
+            if (a <= dz) return 0f;
+            float sign = v < 0f ? -1f : 1f;
+            return sign * Math.Clamp((a - dz) / Math.Max(1e-5f, 1f - dz), 0f, 1f);
+        }
+
         public static SN.Vector2 MouseDelta
         {
             get { return new SN.Vector2(sMouseDX, sMouseDY); }
@@ -297,6 +416,7 @@ namespace Game_Engine.Core.Input
 
             for (int i = 0; i < b.Keys.Count; i++) if (sHeldKeys.Contains(b.Keys[i])) return true;
             for (int i = 0; i < b.MouseButtons.Count; i++) if (sHeldMouse.Contains(b.MouseButtons[i])) return true;
+            for (int i = 0; i < b.GamepadButtons.Count; i++) if (sHeldGamepad.Contains(b.GamepadButtons[i])) return true;
             return false;
         }
 
@@ -308,6 +428,7 @@ namespace Game_Engine.Core.Input
             bool hit = false;
             for (int i = 0; i < b.Keys.Count; i++) if (sDownKeys.Contains(b.Keys[i])) hit = true;
             for (int i = 0; i < b.MouseButtons.Count; i++) if (sDownMouse.Contains(b.MouseButtons[i])) hit = true;
+            for (int i = 0; i < b.GamepadButtons.Count; i++) if (sDownGamepad.Contains(b.GamepadButtons[i])) hit = true;
 
            // if (hit) Debug.WriteLine($"[Input] GetActionDown \"{name}\" TRUE (frame={sFrameId})");
             return hit;
@@ -320,6 +441,7 @@ namespace Game_Engine.Core.Input
 
             for (int i = 0; i < b.Keys.Count; i++) if (sUpKeys.Contains(b.Keys[i])) return true;
             for (int i = 0; i < b.MouseButtons.Count; i++) if (sUpMouse.Contains(b.MouseButtons[i])) return true;
+            for (int i = 0; i < b.GamepadButtons.Count; i++) if (sUpGamepad.Contains(b.GamepadButtons[i])) return true;
             return false;
         }
 
@@ -329,9 +451,9 @@ namespace Game_Engine.Core.Input
             AxisBinding a;
             if (!sAxes.TryGetValue(name, out a)) return 0f;
 
-            // Mouse axes: read raw delta and scale per-frame
-            if (a.IsMouseX) return sMouseDX * MouseSensitivity;
-            if (a.IsMouseY) return sMouseDY * MouseSensitivity;
+            // Mouse axes: raw delta plus optional right-stick look
+            if (a.IsMouseX) return sMouseDX * MouseSensitivity + ReadAnalog(a) * GamepadLookSensitivity;
+            if (a.IsMouseY) return sMouseDY * MouseSensitivity + ReadAnalog(a) * GamepadLookSensitivity;
 
             EnsureAxesUpdatedOncePerFrame();
             return a.Value;
@@ -342,13 +464,10 @@ namespace Game_Engine.Core.Input
             AxisBinding a;
             if (!sAxes.TryGetValue(name, out a)) return 0f;
 
-            if (a.IsMouseX) return sMouseDX;
-            if (a.IsMouseY) return sMouseDY;
+            if (a.IsMouseX) return sMouseDX + ReadAnalog(a);
+            if (a.IsMouseY) return sMouseDY + ReadAnalog(a);
 
-            int pos = 0, neg = 0;
-            for (int i = 0; i < a.Positive.Count; i++) if (sHeldKeys.Contains(a.Positive[i])) pos = 1;
-            for (int i = 0; i < a.Negative.Count; i++) if (sHeldKeys.Contains(a.Negative[i])) neg = 1;
-            return (float)(pos - neg);
+            return ComputeAxisTarget(a);
         }
 
         static void EnsureAxesUpdatedOncePerFrame()
@@ -365,16 +484,20 @@ namespace Game_Engine.Core.Input
                 if (a.IsMouseX || a.IsMouseY)
                     continue; // mouse axes are raw per-frame
 
-                int pos = 0, neg = 0;
-                for (int i = 0; i < a.Positive.Count; i++) if (sHeldKeys.Contains(a.Positive[i])) pos = 1;
-                for (int i = 0; i < a.Negative.Count; i++) if (sHeldKeys.Contains(a.Negative[i])) neg = 1;
+                float analog = ReadAnalog(a);
+                float target = ComputeAxisTarget(a); // -1…1
 
-                int target = pos - neg; // -1, 0, +1
+                // Analog already is the target — don't ease it like a key (feels sluggish).
+                if (Math.Abs(analog) > 0.01f)
+                {
+                    a.Value = target;
+                    continue;
+                }
 
                 if (a.Snap && Math.Sign(a.Value) != Math.Sign(target) && target != 0)
                     a.Value = 0f;
 
-                if (target == 0)
+                if (Math.Abs(target) < 0.001f)
                 {
                     // decay toward 0
                     float gstep = a.Gravity * dt;
@@ -383,19 +506,45 @@ namespace Game_Engine.Core.Input
                 }
                 else
                 {
-                    // accelerate toward target
-                    float s = a.Sensitivity * dt * target;
-                    a.Value += s;
+                    // accelerate toward target (analog sticks already are the target)
+                    float s = a.Sensitivity * dt;
+                    if (a.Value < target) a.Value = Math.Min(target, a.Value + s);
+                    else if (a.Value > target) a.Value = Math.Max(target, a.Value - s);
                     if (a.Value > 1f) a.Value = 1f;
                     if (a.Value < -1f) a.Value = -1f;
                 }
             }
         }
 
+        static float ComputeAxisTarget(AxisBinding a)
+        {
+            int pos = 0, neg = 0;
+            for (int i = 0; i < a.Positive.Count; i++) if (sHeldKeys.Contains(a.Positive[i])) pos = 1;
+            for (int i = 0; i < a.Negative.Count; i++) if (sHeldKeys.Contains(a.Negative[i])) neg = 1;
+            for (int i = 0; i < a.PositiveButtons.Count; i++) if (sHeldGamepad.Contains(a.PositiveButtons[i])) pos = 1;
+            for (int i = 0; i < a.NegativeButtons.Count; i++) if (sHeldGamepad.Contains(a.NegativeButtons[i])) neg = 1;
+            float digital = pos - neg;
+            float analog = ReadAnalog(a);
+            float v = digital + analog;
+            if (v > 1f) return 1f;
+            if (v < -1f) return -1f;
+            return v;
+        }
+
+        static float ReadAnalog(AxisBinding a)
+        {
+            if (a.AnalogAxis == GamepadAxis.None) return 0f;
+            float v = ApplyDeadzone(Gamepad.GetAxisRaw(a.AnalogAxis), a.AnalogAxis);
+            return a.InvertAnalog ? -v : v;
+        }
+
        
         // ------------ Remapping API  ------------
         public static void SetAxis(string name, IEnumerable<KeyCode> positive, IEnumerable<KeyCode> negative,
-                                   float sensitivity = 6f, float gravity = 12f, bool snap = true)
+                                   float sensitivity = 6f, float gravity = 12f, bool snap = true,
+                                   GamepadAxis? analogAxis = null, bool? invertAnalog = null,
+                                   IEnumerable<GamepadButton>? positiveButtons = null,
+                                   IEnumerable<GamepadButton>? negativeButtons = null)
         {
             AxisBinding a;
             if (!sAxes.TryGetValue(name, out a)) { a = new AxisBinding(name); sAxes[name] = a; }
@@ -403,15 +552,33 @@ namespace Game_Engine.Core.Input
             if (positive != null) a.Positive.AddRange(positive);
             if (negative != null) a.Negative.AddRange(negative);
             a.Sensitivity = sensitivity; a.Gravity = gravity; a.Snap = snap;
+            if (analogAxis.HasValue) a.AnalogAxis = analogAxis.Value;
+            if (invertAnalog.HasValue) a.InvertAnalog = invertAnalog.Value;
+            if (positiveButtons != null)
+            {
+                a.PositiveButtons.Clear();
+                a.PositiveButtons.AddRange(positiveButtons);
+            }
+            if (negativeButtons != null)
+            {
+                a.NegativeButtons.Clear();
+                a.NegativeButtons.AddRange(negativeButtons);
+            }
         }
 
-        public static void SetAction(string name, IEnumerable<KeyCode> keys, IEnumerable<MouseButton> mouse)
+        public static void SetAction(string name, IEnumerable<KeyCode> keys, IEnumerable<MouseButton> mouse,
+                                     IEnumerable<GamepadButton>? gamepad = null)
         {
             ActionBinding b;
             if (!sActions.TryGetValue(name, out b)) { b = new ActionBinding(name); sActions[name] = b; }
             b.Keys.Clear(); b.MouseButtons.Clear();
             if (keys != null) b.Keys.AddRange(keys);
             if (mouse != null) b.MouseButtons.AddRange(mouse);
+            if (gamepad != null)
+            {
+                b.GamepadButtons.Clear();
+                b.GamepadButtons.AddRange(gamepad);
+            }
         }
 
         // Public, read-only snapshots for UI
@@ -425,6 +592,10 @@ namespace Game_Engine.Core.Input
             public bool Snap;
             public bool IsMouseX;
             public bool IsMouseY;
+            public GamepadAxis AnalogAxis;
+            public bool InvertAnalog;
+            public List<GamepadButton> PositiveButtons = new List<GamepadButton>();
+            public List<GamepadButton> NegativeButtons = new List<GamepadButton>();
         }
 
         public sealed class ActionBindingInfo
@@ -432,6 +603,7 @@ namespace Game_Engine.Core.Input
             public string Name;
             public List<KeyCode> Keys = new List<KeyCode>();
             public List<MouseButton> MouseButtons = new List<MouseButton>();
+            public List<GamepadButton> GamepadButtons = new List<GamepadButton>();
         }
 
         // ----- Read current bindings (snapshots) -----
@@ -457,6 +629,10 @@ namespace Game_Engine.Core.Input
             info.Snap = a.Snap;
             info.IsMouseX = a.IsMouseX;
             info.IsMouseY = a.IsMouseY;
+            info.AnalogAxis = a.AnalogAxis;
+            info.InvertAnalog = a.InvertAnalog;
+            info.PositiveButtons.AddRange(a.PositiveButtons);
+            info.NegativeButtons.AddRange(a.NegativeButtons);
             return info;
         }
 
@@ -476,6 +652,7 @@ namespace Game_Engine.Core.Input
             info.Name = b.Name;
             info.Keys.AddRange(b.Keys);
             info.MouseButtons.AddRange(b.MouseButtons);
+            info.GamepadButtons.AddRange(b.GamepadButtons);
             return info;
         }
 
@@ -483,6 +660,19 @@ namespace Game_Engine.Core.Input
         {
             if (string.IsNullOrWhiteSpace(name)) return false;
             return sActions.Remove(name);
+        }
+
+        public static void ApplyAxisInfo(AxisBindingInfo info)
+        {
+            if (info == null || string.IsNullOrWhiteSpace(info.Name)) return;
+            SetAxis(info.Name, info.Positive, info.Negative, info.Sensitivity, info.Gravity, info.Snap,
+                    info.AnalogAxis, info.InvertAnalog, info.PositiveButtons, info.NegativeButtons);
+        }
+
+        public static void ApplyActionInfo(ActionBindingInfo info)
+        {
+            if (info == null || string.IsNullOrWhiteSpace(info.Name)) return;
+            SetAction(info.Name, info.Keys, info.MouseButtons, info.GamepadButtons);
         }
 
         // ---------- Persistence (save/load to project) ----------
@@ -497,6 +687,10 @@ namespace Game_Engine.Core.Input
             public bool Snap { get; set; }
             public bool IsMouseX { get; set; }
             public bool IsMouseY { get; set; }
+            public GamepadAxis AnalogAxis { get; set; }
+            public bool InvertAnalog { get; set; }
+            public List<GamepadButton> PositiveButtons { get; set; }
+            public List<GamepadButton> NegativeButtons { get; set; }
         }
 
         class ActionDTO
@@ -504,11 +698,14 @@ namespace Game_Engine.Core.Input
             public string Name { get; set; }
             public List<KeyCode> Keys { get; set; }
             public List<MouseButton> MouseButtons { get; set; }
+            public List<GamepadButton> GamepadButtons { get; set; }
         }
 
         class BindingsFile
         {
             public float MouseSensitivity { get; set; }
+            public float GamepadDeadzone { get; set; } = 0.20f;
+            public float GamepadLookSensitivity { get; set; } = 2.5f;
             public List<AxisDTO> Axes { get; set; }
             public List<ActionDTO> Actions { get; set; }
         }
@@ -539,6 +736,8 @@ namespace Game_Engine.Core.Input
             var bf = new BindingsFile
             {
                 MouseSensitivity = MouseSensitivity,
+                GamepadDeadzone = GamepadDeadzone,
+                GamepadLookSensitivity = GamepadLookSensitivity,
                 Axes = new List<AxisDTO>(),
                 Actions = new List<ActionDTO>()
             };
@@ -555,7 +754,11 @@ namespace Game_Engine.Core.Input
                     Gravity = a.Gravity,
                     Snap = a.Snap,
                     IsMouseX = a.IsMouseX,
-                    IsMouseY = a.IsMouseY
+                    IsMouseY = a.IsMouseY,
+                    AnalogAxis = a.AnalogAxis,
+                    InvertAnalog = a.InvertAnalog,
+                    PositiveButtons = new List<GamepadButton>(a.PositiveButtons),
+                    NegativeButtons = new List<GamepadButton>(a.NegativeButtons)
                 });
             }
 
@@ -566,14 +769,17 @@ namespace Game_Engine.Core.Input
                 {
                     Name = b.Name,
                     Keys = new List<KeyCode>(b.Keys),
-                    MouseButtons = new List<MouseButton>(b.MouseButtons)
+                    MouseButtons = new List<MouseButton>(b.MouseButtons),
+                    GamepadButtons = new List<GamepadButton>(b.GamepadButtons)
                 });
             }
 
             var json = JsonSerializer.Serialize(bf, s_json);
             if (path != null)
+            {
                 File.WriteAllText(path, json);
                 Core.Log.Success("Saved input bindings.");
+            }
             return path;
         }
 
@@ -588,23 +794,102 @@ namespace Game_Engine.Core.Input
             if (bf == null) return false;
 
             MouseSensitivity = bf.MouseSensitivity;
+            if (bf.GamepadDeadzone > 0f) GamepadDeadzone = bf.GamepadDeadzone;
+            if (bf.GamepadLookSensitivity > 0f) GamepadLookSensitivity = bf.GamepadLookSensitivity;
 
             if (bf.Axes != null)
                 for (int i = 0; i < bf.Axes.Count; i++)
                 {
                     var a = bf.Axes[i];
                     SetAxis(a.Name, a.Positive ?? new List<KeyCode>(), a.Negative ?? new List<KeyCode>(),
-                            a.Sensitivity, a.Gravity, a.Snap);
+                            a.Sensitivity, a.Gravity, a.Snap,
+                            a.AnalogAxis, a.InvertAnalog,
+                            a.PositiveButtons ?? new List<GamepadButton>(),
+                            a.NegativeButtons ?? new List<GamepadButton>());
+                    if (sAxes.TryGetValue(a.Name, out var live))
+                    {
+                        live.IsMouseX = a.IsMouseX;
+                        live.IsMouseY = a.IsMouseY;
+                    }
                 }
 
             if (bf.Actions != null)
                 for (int j = 0; j < bf.Actions.Count; j++)
                 {
                     var b = bf.Actions[j];
-                    SetAction(b.Name, b.Keys ?? new List<KeyCode>(), b.MouseButtons ?? new List<MouseButton>());
+                    SetAction(b.Name, b.Keys ?? new List<KeyCode>(), b.MouseButtons ?? new List<MouseButton>(),
+                              b.GamepadButtons ?? new List<GamepadButton>());
                 }
 
+            if (!BindingsIncludeGamepad(bf))
+                EnsureDefaultGamepadBindings();
             return true;
+        }
+
+        static bool BindingsIncludeGamepad(BindingsFile bf)
+        {
+            if (bf.Axes != null)
+            {
+                for (int i = 0; i < bf.Axes.Count; i++)
+                {
+                    var a = bf.Axes[i];
+                    if (a.AnalogAxis != GamepadAxis.None) return true;
+                    if (a.PositiveButtons != null && a.PositiveButtons.Count > 0) return true;
+                    if (a.NegativeButtons != null && a.NegativeButtons.Count > 0) return true;
+                }
+            }
+            if (bf.Actions != null)
+            {
+                for (int j = 0; j < bf.Actions.Count; j++)
+                {
+                    var g = bf.Actions[j].GamepadButtons;
+                    if (g != null && g.Count > 0) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Fill analog / pad defaults on built-in names when an older JSON file omitted them.
+        /// Does not overwrite keys the user already remapped.
+        /// </summary>
+        public static void EnsureDefaultGamepadBindings()
+        {
+            FillAxisGamepad("Horizontal", GamepadAxis.LeftStickX, false, GamepadButton.DPadRight, GamepadButton.DPadLeft);
+            FillAxisGamepad("Vertical", GamepadAxis.LeftStickY, false, GamepadButton.DPadUp, GamepadButton.DPadDown);
+            FillAxisGamepad("Mouse X", GamepadAxis.RightStickX, false, null, null);
+            FillAxisGamepad("Mouse Y", GamepadAxis.RightStickY, true, null, null);
+
+            FillActionGamepad("Jump", GamepadButton.A);
+            FillActionGamepad("Sprint", GamepadButton.LeftStick, GamepadButton.LeftShoulder);
+            FillActionGamepad("Fire1", GamepadButton.RightShoulder, GamepadButton.RightTrigger);
+            if (!sActions.ContainsKey("Interact"))
+                SetAction("Interact", new[] { KeyCode.E }, Array.Empty<MouseButton>(), new[] { GamepadButton.X });
+            else
+                FillActionGamepad("Interact", GamepadButton.X);
+            if (!sActions.ContainsKey("Crouch"))
+                SetAction("Crouch", new[] { KeyCode.LeftCtrl }, Array.Empty<MouseButton>(), new[] { GamepadButton.B });
+            else
+                FillActionGamepad("Crouch", GamepadButton.B);
+        }
+
+        static void FillAxisGamepad(string name, GamepadAxis analog, bool invert, GamepadButton? pos, GamepadButton? neg)
+        {
+            if (!sAxes.TryGetValue(name, out var a)) return;
+            if (a.AnalogAxis == GamepadAxis.None)
+            {
+                a.AnalogAxis = analog;
+                a.InvertAnalog = invert;
+            }
+            if (pos.HasValue && a.PositiveButtons.Count == 0) a.PositiveButtons.Add(pos.Value);
+            if (neg.HasValue && a.NegativeButtons.Count == 0) a.NegativeButtons.Add(neg.Value);
+        }
+
+        static void FillActionGamepad(string name, params GamepadButton[] buttons)
+        {
+            if (!sActions.TryGetValue(name, out var b)) return;
+            if (b.GamepadButtons.Count > 0) return;
+            b.GamepadButtons.AddRange(buttons);
         }
 
 

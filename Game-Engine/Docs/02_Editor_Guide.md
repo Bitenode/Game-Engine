@@ -828,29 +828,36 @@ Access via **Project > Build Settings**.
 Access via **Settings > Input** or the Input Remapping window.
 
 ### Default Axis Bindings
-| Axis | Positive Keys | Negative Keys | Type | Sensitivity | Gravity | Snap |
-|------|---------------|---------------|------|-------------|---------|------|
-| Horizontal | D, Right Arrow | A, Left Arrow | Key | 6.0 | 12.0 | true |
-| Vertical | W, Up Arrow | S, Down Arrow | Key | 6.0 | 12.0 | true |
-| Mouse X | — | — | Mouse | 1.0 | 0 | false |
-| Mouse Y | — | — | Mouse | 1.0 | 0 | false |
+| Axis | Positive Keys | Negative Keys | Gamepad | Type |
+|------|---------------|---------------|---------|------|
+| Horizontal | D, Right Arrow | A, Left Arrow | Left stick X, D-pad L/R | Key + analog |
+| Vertical | W, Up Arrow | S, Down Arrow | Left stick Y, D-pad U/D | Key + analog |
+| Mouse X | — | — | Right stick X | Mouse delta + analog |
+| Mouse Y | — | — | Right stick Y (inverted) | Mouse delta + analog |
 
 ### Default Action Bindings
-| Action | Key/Button |
-|--------|------------|
-| Jump | Space |
-| Sprint | Left Shift |
-| Fire1 | Left Mouse Button |
+| Action | Keyboard / mouse | Gamepad |
+|--------|------------------|---------|
+| Jump | Space | A |
+| Sprint | Left Shift | Left stick click, LB |
+| Fire1 | Left mouse | RB, Right trigger |
+| Interact | E | X |
+| Crouch | Left Ctrl | B |
+
+### Gamepad (XInput)
+Windows polls Xbox-compatible pads every frame (`Input.PollGamepads`, also from `PollHardwareHeldKeys`). Stick **deadzone** and **look stick scale** (look units at full deflection, default 2.5) are at the top of the Axes tab. Gameplay should use `GetAxis` / `GetAction` only — `PlayerMovement` and `RigidbodyPlayer` no longer hardcode WASD.
+
+Rebind listen accepts a key, mouse button, or pad control. Click a chip to remove that binding.
 
 ### Axis Smoothing
 Axes use acceleration-based smoothing:
 - **Sensitivity** — how fast the axis value moves toward the target (default: 6.0)
 - **Gravity** — how fast the axis returns to zero when released (default: 12.0)
 - **Snap** — if true, axis snaps to zero when input direction reverses (default: true for key axes)
-- Mouse axes use raw per-frame deltas with no smoothing
+- Mouse axes use raw per-frame deltas with no smoothing; right stick is added through `GamepadLookSensitivity`
 
 ### Persistence
-Bindings are saved per-project to `ProjectSettings/input.bindings.json` in JSON format, including all axes, actions, and mouse sensitivity settings. They can be customized through the Input Remapping UI or programmatically via `Input.SetAxis()` and `Input.SetAction()`.
+Bindings are saved per-project to `ProjectSettings/input.bindings.json` (axes, actions, mouse sensitivity, deadzone, look scale, gamepad sources). Customize in the remapping UI or via `Input.SetAxis()` / `Input.SetAction()`. **Reset to Defaults** restores the built-in keyboard + gamepad map.
 
 ---
 

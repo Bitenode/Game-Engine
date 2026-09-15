@@ -221,37 +221,24 @@ namespace Game_Engine.Core.Component
             _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
 
             // ── Move intent ──
-            int zFwd = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.W) ? 1 : 0)
-                     - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.S) ? 1 : 0);
-            int xRight = (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.D) ? 1 : 0)
-                       - (GEInput.GetKey(Game_Engine.Core.Input.KeyCode.A) ? 1 : 0);
-            if (zFwd == 0 && xRight == 0)
-            {
-                float axisV = GEInput.GetAxis("Vertical");
-                float axisH = GEInput.GetAxis("Horizontal");
-                if (MathF.Abs(axisV) > 0.15f) zFwd = axisV > 0f ? 1 : -1;
-                if (MathF.Abs(axisH) > 0.15f) xRight = axisH > 0f ? 1 : -1;
-            }
-
-            var local = new SN.Vector2(xRight, -zFwd);
+            float axisV = GEInput.GetAxis("Vertical");
+            float axisH = GEInput.GetAxis("Horizontal");
+            var local = new SN.Vector2(axisH, -axisV);
             float m2 = local.X * local.X + local.Y * local.Y;
-            if (m2 > 1e-6f)
+            if (m2 > 1f)
             {
                 float inv = 1f / MathF.Sqrt(m2);
                 local.X *= inv; local.Y *= inv;
+                m2 = 1f;
             }
             _wishLocal = local;
 
-            _sprintHeld = GEInput.GetAction("Sprint")
-                || GEInput.GetKey(Game_Engine.Core.Input.KeyCode.LeftShift);
+            _sprintHeld = GEInput.GetAction("Sprint");
 
-            _jumpHeld = GEInput.GetAction("Jump")
-                || GEInput.GetKey(Game_Engine.Core.Input.KeyCode.Space);
-            _diveHeld = GEInput.GetKey(Game_Engine.Core.Input.KeyCode.LeftCtrl)
-                || GEInput.GetKey(Game_Engine.Core.Input.KeyCode.RightCtrl)
-                || GEInput.GetAction("Crouch");
+            _jumpHeld = GEInput.GetAction("Jump");
+            _diveHeld = GEInput.GetAction("Crouch");
 
-            if (GEInput.GetActionDown("Jump") || GEInput.GetKeyDown(Game_Engine.Core.Input.KeyCode.Space))
+            if (GEInput.GetActionDown("Jump"))
                 _jumpBuf = JumpBufferSeconds;
             else if (_jumpHeld)
                 _jumpBuf = Math.Max(_jumpBuf, 0.04f);
