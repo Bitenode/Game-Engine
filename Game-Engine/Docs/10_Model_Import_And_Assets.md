@@ -9,10 +9,10 @@ The engine uses **AssimpNet** (the .NET binding for the Open Asset Import Librar
 |--------|-------------------|--------------------------------------|
 | FBX    | `.fbx`            | Autodesk FBX (most common, best skeletal support) |
 | OBJ    | `.obj`            | Wavefront OBJ (with `.mtl` material file)        |
-| glTF   | `.gltf`, `.glb`   | Khronos glTF 2.0 (modern, PBR-ready)             |
-| DAE    | `.dae`            | Collada (exchange format)                          |
+| glTF   | `.gltf`, `.glb`   | Listed in the file dialog; **AssimpNet 4.1 in this build often cannot load glTF/GLB** — use FBX or DAE instead |
+| DAE    | `.dae`            | Collada (recommended for shipped Standard Assets such as **StarterCharacter**) |
 
-AssimpNet supports additional formats beyond these — any format that the Assimp library can read will work.
+AssimpNet supports additional formats beyond these — any format that the Assimp library can read will work. For skinned characters with baked clips, prefer **FBX** or **Collada (`.dae`)** until glTF import is upgraded.
 
 ### How to Import
 1. **Right-click** in the Hierarchy Panel
@@ -193,6 +193,19 @@ When animations are detected during import:
 2. Each imported animation becomes an animation state
 3. The first animation is set as the default state
 4. Transitions between states can be configured in the Animation panel
+5. `StateList` entries (name + `.boneanim` path) are written when the scene is saved
+
+### Shipped learning character — StarterCharacter
+`Standard Assets/Characters/StarterCharacter/` is a CC0 blocky skinned dummy with albedo atlas and four baked clips (**Idle**, **Walk**, **Run**, **Wave**).
+
+| File | Purpose |
+|------|---------|
+| `StarterCharacter.dae` | **Import this** — mesh, skeleton, material, and matrix-based bone clips Assimp 4.1 reads correctly |
+| `StarterCharacter.gltf` + `.bin` | Source copy only — do not import with the current Assimp build |
+| `textures/StarterCharacter_albedo.png` | 512×512 albedo atlas |
+| `{import folder}/StarterCharacter_Animations/*.boneanim` | Clips written on import |
+
+After import, preview clips in the **Animation** panel (Scene View) or press **Play** in the Game View. See [02 — Editor Guide](02_Editor_Guide.md#animation-panel).
 
 ---
 

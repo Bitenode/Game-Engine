@@ -1498,6 +1498,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             _cache?.InvalidateAll();
             RequestNextFrameRendering();
         };
+        SceneService.FrameRequested += () => RequestNextFrameRendering();
 
         // Full scene replacement (e.g. File > Load Scene) needs a heavier reset
         // than the incremental Changed handler above.

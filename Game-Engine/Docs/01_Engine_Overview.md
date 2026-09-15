@@ -255,6 +255,7 @@ Game-Engine/
 ├── Standard Assets/             # Built-in assets (copied to Assets/Standard Assets/ in new projects)
 │   ├── BiomeGraph/              # Starter planet biome graphs (e.g. PlanetBiomes.biomegraph)
 │   ├── Biomes/                  # vegetation-profiles.json presets
+│   ├── Characters/              # StarterCharacter (skinned .dae + Idle/Walk/Run/Wave clips)
 │   ├── Planet Textures/         # Ground albedo/normal packs for biome layers
 │   ├── Planet Vegetation/       # Default grass/tree FBX and materials
 │   ├── Skybox/                  # 47 equirectangular sky textures

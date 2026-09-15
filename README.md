@@ -28,7 +28,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 ### World Building
 - **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
 - **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs), async scene-load baking, chunk LOD streaming, planet water/atmosphere, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
-- **3D Model Import** — FBX, OBJ, glTF/GLB, DAE via AssimpNet with automatic material extraction, skeleton building, and bone animation import
+- **3D Model Import** — FBX, OBJ, DAE (and glTF where Assimp supports it) via AssimpNet with automatic material extraction, skeleton building, and bone animation import; shipped **StarterCharacter** learning asset with Idle/Walk/Run/Wave
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
 - **Runtime UI System** — GPU-rendered in-game UI with Canvas (Overlay/Camera/WorldSpace), RectTransform anchor layout, 8 widget types (Text, Image, Button, Panel, Slider, Toggle, InputField), pointer event system, bitmap font rendering (BMFont/SDF), and responsive scaling
@@ -38,7 +38,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Physics & Collision** — BoxCollider, CapsuleCollider, MeshCollider, BVH spatial acceleration, CharacterController with gravity, slope limiting, step climbing, coyote time, and CCD
 - **Physics Joints** — Fixed, Hinge, Spring, Slider, and Ball-Socket joint constraints
 - **Player Controllers** — PlayerMovement (sweep-and-slide) and RigidbodyPlayer (momentum-based with planet surface walk and planet swimming)
-- **Animation System** — Bone-based skeletal animation with GPU skinning, animation state machine, blend trees, and keyframe editing
+- **Animation System** — Bone-based skeletal animation with GPU skinning, persisted Animator state machine, Scene View preview from the Animation panel, blend trees, and keyframe editing
 - **Inverse Kinematics** — IKConstraint with TwoBone (arms/legs), LookAt (head tracking), and FABRIK (multi-joint chains)
 
 ### Audio & Networking

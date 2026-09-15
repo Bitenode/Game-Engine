@@ -32,6 +32,9 @@ public static class EditorJobScheduler
 
     static Dispatcher UiDispatcher => _dispatcher ?? Dispatcher.UIThread;
 
+    /// <summary>True when the caller is already on the editor UI dispatcher.</summary>
+    public static bool IsUiThread => UiDispatcher.CheckAccess();
+
     static DispatcherPriority MapPriority(EditorUiPostPriority p) => p switch
     {
         EditorUiPostPriority.Low => DispatcherPriority.Background,

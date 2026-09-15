@@ -6306,6 +6306,8 @@ public partial class InspectorPanel : UserControl
                 new PrimitiveChoice { Name = "Sphere",   Factory = () => Game_Engine.Core.Mesh.CreateUvSphere(24, 16, 0.5f) },
                 new PrimitiveChoice { Name = "Cylinder", Factory = () => Game_Engine.Core.Mesh.CreateCylinder(24, 0.5f, 1f, true) },
                 new PrimitiveChoice { Name = "Cone",     Factory = () => Game_Engine.Core.Mesh.CreateCone(24, 0.5f, 1f, true) },
+                // Display-only: procedural / imported meshes must not be forced to a primitive.
+                new PrimitiveChoice { Name = "Custom",   Factory = () => null },
             };
 
             var cb = new ComboBox
@@ -6315,25 +6317,30 @@ public partial class InspectorPanel : UserControl
                 DisplayMemberBinding = new Binding(nameof(PrimitiveChoice.Name))
             };
 
-            // preselect based on current mesh type
+            // preselect based on current mesh type (suppress apply while initializing)
+            bool suppressMeshApply = true;
             var cur = p.GetValue(target) as Game_Engine.Core.Mesh;
             if (cur is null) cb.SelectedIndex = 0;
             else
             {
                 int v = cur.Vertices.Length, tri = cur.TriIndices.Length;
-                cb.SelectedIndex = options.ToList().FindIndex(o =>
+                int match = options.ToList().FindIndex(o =>
                 {
+                    if (o.Name == "Custom") return false;
                     var m = o.Factory();
                     return m is not null && m.Vertices.Length == v && m.TriIndices.Length == tri;
                 });
-                if (cb.SelectedIndex < 0) cb.SelectedIndex = 1; // default to Cube
+                cb.SelectedIndex = match >= 0 ? match : options.Length - 1; // Custom
             }
+            suppressMeshApply = false;
 
             cb.DropDownOpened += (_, __) => BeginPropertyEdit(target, p);
             cb.SelectionChanged += (_, __) =>
             {
+                if (suppressMeshApply) return;
                 var sel = cb.SelectedItem as PrimitiveChoice;
-                p.SetValue(target, sel?.Factory());
+                if (sel == null || sel.Name == "Custom") return;
+                p.SetValue(target, sel.Factory());
                 SceneService.NotifyChanged();
                 CommitPropertyEdit(target, p);
             };

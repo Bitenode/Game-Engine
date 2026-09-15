@@ -835,13 +835,25 @@ Audio listener component that provides the reference point for spatial audio cal
 Skeletal animation state machine with bone-based animation support and GPU skinning integration.
 
 **Features:**
-- **Animation states** — each state references a bone animation clip
-- **State transitions** — switch between animation states
+- **Animation states** — each state references a property clip (`.anim`) and/or a bone clip (`.boneanim`)
+- **State transitions** — switch between animation states (parameter, exit time, or duration-based)
 - **Bone matrix computation** — computes per-bone transformation matrices each frame
 - **GPU skinning integration** — passes bone matrices to `SkinnedMeshRenderer` for vertex deformation
 - **Flexible bone matching** — handles bone name prefixes (e.g., "mixamorig:") for cross-format compatibility
+- **Scene persistence** — `StateList`, `TransitionList`, and `DefaultStateName` are saved in `.scene` files and restored when Play mode stops
+- **Recovery** — if an older scene has an `Animator` but no saved states, states are rebuilt from `{ModelPath}_Animations/*.boneanim` on the next `EnsureBuilt()`
 
-Animation clips are imported automatically from 3D model files (FBX, glTF) and stored as `.boneanim` files. The `Animator` component is auto-created during model import when animations are detected.
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PlayOnAwake` | `bool` | `true` | Start the default state when Play mode begins |
+| `Speed` | `float` | `1.0` | Global playback speed multiplier |
+| `DefaultStateName` | `string` | `""` | Name of the state to play on awake (often `Idle`) |
+| `StateList` | `List<AnimStateDTO>` | empty | Persisted states (name, clip paths, editor layout) |
+| `TransitionList` | `List<AnimTransitionDTO>` | empty | Persisted transitions between states |
+
+Animation clips are imported automatically from 3D model files (FBX, DAE recommended; see [10 — Model Import](10_Model_Import_And_Assets.md)) and stored as `.boneanim` files. The `Animator` component is auto-created during model import when animations are detected.
+
+**Editor preview:** The Animation panel can drive `CurrentBonePose` and refresh Scene View without Play mode. Call `Play(stateName)` or use the panel transport controls.
 
 ---
 

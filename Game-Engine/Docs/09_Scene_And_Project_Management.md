@@ -357,6 +357,8 @@ When pressing **Play** in the Game View, the engine creates a snapshot of the en
 
 This ensures that **runtime changes don't persist** — moved objects, modified properties, spawned/destroyed objects all revert on stop.
 
+**Animator and Animation panel:** Before the snapshot is taken, each `Animator`'s runtime state machine is synced into `StateList` / `TransitionList` so Idle, Walk, Run, and other bone states survive Play → Stop. Save the scene to write those lists into the project `.scene` file permanently. Older scenes without saved states can still recover clips from the model's `{ModelName}_Animations/` folder when the `Animator` is rebuilt in the editor.
+
 ### Terrain Data During Play/Stop
 Terrain data (heights, layers, splatmaps) persists across play/stop cycles because it's stored on disk:
 

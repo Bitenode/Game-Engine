@@ -639,7 +639,13 @@ namespace Game_Engine.Core.Component
             if (!File.Exists(abs))
                 TrySaveToFile();   // saves a flat terrain .terrain.json on attach
             else
-                TryLoadFromFile(); // if user already has a file, load it immediately
+            {
+                int need = ResX * ResZ;
+                bool heightsOk = Heights != null && Heights.Length == need && need >= 4;
+                // Same guard as PostDeserialize: don't replace a valid heightmap with a stub asset.
+                if (!heightsOk || TerrainFileMatchesDimensions(abs, ResX, ResZ, SizeX, SizeZ))
+                    TryLoadFromFile();
+            }
 
             // Build the terrain mesh now (this will override the MeshFilter’s default cube)
             RebuildMesh();
@@ -650,9 +656,8 @@ namespace Game_Engine.Core.Component
 
         /// <summary>
         /// Called by the scene deserializer AFTER all [Persist] properties are applied.
-        /// This ensures the .terrain.json data takes precedence over stale scene-file
-        /// data (Heights, ResX, ResZ etc.) that property setters overwrote after
-        /// OnEnable() had already loaded the correct data.
+        /// Prefers .terrain.json when it matches the scene resolution; keeps scene heightmaps
+        /// when the asset path resolves to a different/stub terrain (avoids play-stop shrink).
         /// </summary>
         public override void PostDeserialize()
         {
@@ -662,8 +667,14 @@ namespace Game_Engine.Core.Component
 
             if (File.Exists(abs))
             {
-                // Reload from .terrain.json -- overrides stale [Persist] data
-                TryLoadFromFile();
+                int need = ResX * ResZ;
+                bool sceneHeightsOk = Heights != null && Heights.Length == need && need >= 4;
+
+                // Only let the file override when it matches scene dimensions, or when the
+                // scene has no usable heightmap yet. A remapped Assets/ path can point at a
+                // tiny stub .terrain.json that must not replace authored scene data.
+                if (!sceneHeightsOk || TerrainFileMatchesDimensions(abs, ResX, ResZ, SizeX, SizeZ))
+                    TryLoadFromFile();
             }
 
             // Rebuild chunks/mesh with the definitive terrain data
@@ -839,7 +850,8 @@ namespace Game_Engine.Core.Component
                 mc.Mesh = mesh;
             }
 
-            if (AutoSaveOnChange) TrySaveToFile();
+            // Never auto-save during play — snapshot restore / rebuilds must not rewrite assets.
+            if (AutoSaveOnChange && !SceneService.PlayMode) TrySaveToFile();
 
             // Proactively notify editors/views to repaint
             Game_Engine.Core.SceneService.NotifyChanged();
@@ -1030,6 +1042,52 @@ namespace Game_Engine.Core.Component
             ProjectService.TouchModified();
 
             LogInfo("Terrain loaded: " + TerrainAssetPath);
+        }
+
+        /// <summary>
+        /// True when the on-disk terrain asset reports the same resolution/size as the scene.
+        /// Used to avoid applying a stub/wrong .terrain.json over a full in-scene heightmap.
+        /// </summary>
+        static bool TerrainFileMatchesDimensions(string absPath, int resX, int resZ, float sizeX, float sizeZ)
+        {
+            try
+            {
+                if (LooksLikeTerrainBinary(absPath))
+                {
+                    using var fs = File.OpenRead(absPath);
+                    Span<byte> magic = stackalloc byte[4];
+                    if (fs.Read(magic) != 4) return false;
+                    // layout: magic(4) + version(i32) + resX + resZ + sizeX + sizeZ + ...
+                    Span<byte> buf = stackalloc byte[4];
+                    if (fs.Read(buf) != 4) return false; // version
+                    if (fs.Read(buf) != 4) return false;
+                    int fileResX = BinaryPrimitives.ReadInt32LittleEndian(buf);
+                    if (fs.Read(buf) != 4) return false;
+                    int fileResZ = BinaryPrimitives.ReadInt32LittleEndian(buf);
+                    if (fs.Read(buf) != 4) return false;
+                    float fileSizeX = BinaryPrimitives.ReadSingleLittleEndian(buf);
+                    if (fs.Read(buf) != 4) return false;
+                    float fileSizeZ = BinaryPrimitives.ReadSingleLittleEndian(buf);
+                    return fileResX == resX && fileResZ == resZ
+                        && Math.Abs(fileSizeX - sizeX) < 0.01f
+                        && Math.Abs(fileSizeZ - sizeZ) < 0.01f;
+                }
+
+                // Lightweight peek: only deserialize header fields via JsonDocument
+                using var doc = JsonDocument.Parse(File.ReadAllText(absPath));
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("ResX", out var jx) || !root.TryGetProperty("ResZ", out var jz))
+                    return false;
+                if (!root.TryGetProperty("SizeX", out var jsx) || !root.TryGetProperty("SizeZ", out var jsz))
+                    return false;
+                return jx.GetInt32() == resX && jz.GetInt32() == resZ
+                    && Math.Abs(jsx.GetSingle() - sizeX) < 0.01f
+                    && Math.Abs(jsz.GetSingle() - sizeZ) < 0.01f;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         static bool IsBinaryTerrainPath(string? rel) =>

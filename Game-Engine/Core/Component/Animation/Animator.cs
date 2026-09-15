@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using SN = System.Numerics;
@@ -287,11 +288,24 @@ namespace Game_Engine.Core.Component
         /// <summary>Current bone poses (sampled each frame for skeletal animation). Null if no bone clip.</summary>
         public BonePose[]? CurrentBonePose { get; set; }
 
+        /// <summary>Bone clip on the current state, if any.</summary>
+        public BoneAnimationClip? CurrentBoneClip
+        {
+            get
+            {
+                EnsureBuilt();
+                return _currentState?.BoneClip;
+            }
+        }
+
         /// <summary>Rebuild runtime state machine from DTOs if not yet built (needed in editor).</summary>
         public void EnsureBuilt()
         {
-            if (_states.Count == 0 && StateList.Count > 0)
+            if (_states.Count > 0) return;
+            if (StateList.Count > 0)
                 RebuildFromDTO();
+            else
+                TryRecoverStatesFromModel();
         }
 
         // ── State Machine API ──
@@ -349,6 +363,7 @@ namespace Game_Engine.Core.Component
         /// <summary>Force-play a specific state immediately.</summary>
         public void Play(string stateName, float transitionDuration = 0f)
         {
+            EnsureBuilt();
             if (!_states.TryGetValue(stateName, out var state)) return;
 
             if (transitionDuration > 0f && _currentState != null)
@@ -370,8 +385,17 @@ namespace Game_Engine.Core.Component
         /// Used by the Animation Panel for preview scrubbing.</summary>
         public void SampleAt(float time)
         {
-            if (_currentState?.Clip == null) return;
-            ApplyTracks(_currentState.Clip, time);
+            EnsureBuilt();
+            if (_currentState?.Clip != null)
+                ApplyTracks(_currentState.Clip, time);
+            if (_currentState?.BoneClip != null)
+            {
+                int boneCount = 0;
+                foreach (var track in _currentState.BoneClip.Tracks)
+                    if (track.BoneIndex >= boneCount) boneCount = track.BoneIndex + 1;
+                if (boneCount > 0)
+                    CurrentBonePose = _currentState.BoneClip.SampleAllBones(boneCount, time);
+            }
         }
 
         /// <summary>Public wrapper for ApplyPropertyValue so the Animation Panel can
@@ -380,9 +404,7 @@ namespace Game_Engine.Core.Component
 
         public override void Start()
         {
-            // Rebuild runtime state machine from persisted data if available
-            if (StateList.Count > 0 && _states.Count == 0)
-                RebuildFromDTO();
+            EnsureBuilt();
 
             if (PlayOnAwake && _currentState != null)
                 _stateTime = 0f;
@@ -390,6 +412,7 @@ namespace Game_Engine.Core.Component
 
         public override void Update()
         {
+            EnsureBuilt();
             bool hasPropertyClip = _currentState?.Clip != null;
             bool hasBoneClip = _currentState?.BoneClip != null;
             if (!hasPropertyClip && !hasBoneClip) return;
@@ -900,13 +923,88 @@ namespace Game_Engine.Core.Component
 
             if (!string.IsNullOrEmpty(DefaultStateName) && _states.TryGetValue(DefaultStateName, out var def))
                 _currentState = def;
+            else if (_states.TryGetValue("Idle", out var idle))
+            {
+                _currentState = idle;
+                if (string.IsNullOrEmpty(DefaultStateName))
+                    DefaultStateName = idle.Name;
+            }
             else
                 _currentState = _states.Values.FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Old scenes dropped StateList on save. Rebuild Idle/Walk/Run/… from the
+        /// skinned model's sibling <c>_Animations</c> folder when nothing is persisted.
+        /// </summary>
+        private void TryRecoverStatesFromModel()
+        {
+            var modelPath = FindModelPath(gameObject);
+            if (string.IsNullOrWhiteSpace(modelPath)) return;
+
+            var proj = ProjectService.Current;
+            if (proj == null) return;
+
+            var animDirRel = Path.ChangeExtension(modelPath, null) + "_Animations";
+            var animDirAbs = Path.Combine(proj.RootPath, animDirRel);
+            if (!Directory.Exists(animDirAbs)) return;
+
+            string[] files;
+            try { files = Directory.GetFiles(animDirAbs, "*.boneanim"); }
+            catch { return; }
+            if (files.Length == 0) return;
+
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+            StateList.Clear();
+            foreach (var file in files)
+            {
+                var relPath = Path.GetRelativePath(proj.RootPath, file).Replace('\\', '/');
+                var clip = BoneAnimationClipAsset.Load(relPath);
+                if (clip == null) continue;
+                var name = string.IsNullOrWhiteSpace(clip.Name)
+                    ? Path.GetFileNameWithoutExtension(file)
+                    : clip.Name;
+                StateList.Add(new AnimStateDTO
+                {
+                    Name = name,
+                    BoneClipPath = relPath,
+                    Speed = 1f,
+                    EditorX = StateList.Count * 200f
+                });
+            }
+
+            if (StateList.Count == 0) return;
+            if (string.IsNullOrEmpty(DefaultStateName))
+            {
+                var idle = StateList.FirstOrDefault(s =>
+                    string.Equals(s.Name, "Idle", StringComparison.OrdinalIgnoreCase));
+                DefaultStateName = idle?.Name ?? StateList[0].Name;
+            }
+            RebuildFromDTO();
+        }
+
+        static string? FindModelPath(GameObject? go)
+        {
+            if (go == null) return null;
+            foreach (var b in go.Behaviors)
+            {
+                if (b is MeshFilter mf && !string.IsNullOrWhiteSpace(mf.ModelPath))
+                    return mf.ModelPath;
+            }
+            foreach (var child in go.Children)
+            {
+                var found = FindModelPath(child);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         /// <summary>Sync runtime states/transitions back to DTO lists for persistence.</summary>
         public void SyncToDTO()
         {
+            EnsureBuilt();
+            if (_states.Count == 0) return;
+
             StateList.Clear();
             foreach (var (name, state) in _states)
             {
@@ -937,7 +1035,8 @@ namespace Game_Engine.Core.Component
                 });
             }
 
-            DefaultStateName = _currentState?.Name ?? "";
+            if (string.IsNullOrEmpty(DefaultStateName))
+                DefaultStateName = _currentState?.Name ?? "";
         }
     }
 }

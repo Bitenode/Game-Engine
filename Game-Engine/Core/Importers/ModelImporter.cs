@@ -55,7 +55,16 @@ namespace Game_Engine.Core.Importers
 
             var scene = ctx.ImportFile(absModel, pp);
             if (scene is null || !scene.HasMeshes)
+            {
+                var ext = Path.GetExtension(absModel);
+                if (ext.Equals(".gltf", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".glb", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        "No meshes in file, or import failed. Assimp 4.1 in this engine does not load glTF/GLB correctly (it is mis-detected as OBJ). Import FBX, OBJ, or DAE instead — for Starter Character use StarterCharacter.dae.");
+                }
                 throw new InvalidDataException("No meshes in file, or import failed.");
+            }
 
             // Build materials first (index -> engine Material)
             string? assetsSearchRoot = ProjectService.Current?.AssetsPath;

@@ -63,6 +63,13 @@ namespace Game_Engine.Views
             // Listen for selection changes (both scene hierarchy and scene service)
             SelectionService.Changed += OnSceneChanged;
             SceneService.Changed += () => Dispatcher.UIThread.Post(RefreshGameObjectDropdown);
+            SceneService.SceneReplaced += () => Dispatcher.UIThread.Post(() =>
+            {
+                _selectedGO = null;
+                _animator = null;
+                _clip = null;
+                _boneClip = null;
+            });
 
             // Preview timer (60 fps)
             _previewTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -94,7 +101,7 @@ namespace Game_Engine.Views
             _selectedGO = sel;
             _animator = sel?.Behaviors?.OfType<Animator>().FirstOrDefault();
             _animator?.EnsureBuilt();   // rebuild state machine from DTOs if needed (editor)
-            _clip = _animator?.CurrentClip;
+            BindClipsFromAnimator();
 
             // Sync the GO dropdown to match
             RefreshGameObjectDropdown();
@@ -163,7 +170,7 @@ namespace Game_Engine.Views
             _selectedGO = go;
             _animator = go.Behaviors?.OfType<Animator>().FirstOrDefault();
             _animator?.EnsureBuilt();
-            _clip = _animator?.CurrentClip;
+            BindClipsFromAnimator();
 
             UpdateAddAnimatorButton();
             RefreshTransformSection();
@@ -251,6 +258,35 @@ namespace Game_Engine.Views
             BtnAddAnimator.IsVisible = hasGO && !hasAnimator;
         }
 
+        private void BindClipsFromAnimator()
+        {
+            _clip = _animator?.CurrentClip;
+            _boneClip = _animator?.CurrentBoneClip;
+            if (_boneClip == null && _animator != null)
+            {
+                foreach (var state in _animator.States.Values)
+                {
+                    if (state.BoneClip == null) continue;
+                    _boneClip = state.BoneClip;
+                    break;
+                }
+            }
+        }
+
+        public void PreviewAnimatorState(string stateName, bool refreshDropdown = true)
+        {
+            if (_animator == null || string.IsNullOrWhiteSpace(stateName)) return;
+            _animator.Play(stateName);
+            BindClipsFromAnimator();
+            _playheadTime = 0f;
+            ApplyPreview();
+            RefreshTimeDisplay();
+            if (refreshDropdown)
+                RefreshClipDropdown();
+            SmCanvas.InvalidateVisual();
+            Canvas.InvalidateVisual();
+        }
+
         // ── Clip Management ──
 
         private void RefreshClipDropdown()
@@ -311,14 +347,22 @@ namespace Game_Engine.Views
 
                 if (_animator != null)
                 {
-                    foreach (var (_, state) in _animator.States)
+                    foreach (var (stateName, state) in _animator.States)
                     {
-                        if (state.BoneClip?.Name == boneName) { _boneClip = state.BoneClip; break; }
+                        if (state.BoneClip?.Name == boneName)
+                        {
+                            _boneClip = state.BoneClip;
+                            PreviewAnimatorState(stateName, refreshDropdown: false);
+                            RefreshBoneTreeSection();
+                            RefreshTrackList();
+                            return;
+                        }
                     }
                 }
                 if (_boneClip == null)
                     _boneClip = BoneAnimationClipAsset.AllCached().FirstOrDefault(c => c.Name == boneName);
 
+                ApplyPreview();
                 RefreshBoneTreeSection();
                 RefreshTrackList();
                 Canvas.InvalidateVisual();
@@ -331,9 +375,15 @@ namespace Game_Engine.Views
             // Find clip in animator states
             if (_animator != null)
             {
-                foreach (var (_, state) in _animator.States)
+                foreach (var (stateName, state) in _animator.States)
                 {
-                    if (state.Clip?.Name == name) { _clip = state.Clip; break; }
+                    if (state.Clip?.Name == name)
+                    {
+                        _clip = state.Clip;
+                        PreviewAnimatorState(stateName, refreshDropdown: false);
+                        RefreshTrackList();
+                        return;
+                    }
                 }
             }
 
@@ -1364,8 +1414,12 @@ namespace Game_Engine.Views
 
         private void StartPreview()
         {
+            if (_clip == null && _boneClip == null)
+                BindClipsFromAnimator();
+            if (_clip == null && _boneClip == null) return;
             _isPlaying = true;
             _previewTimer?.Start();
+            ApplyPreview();
         }
 
         private void PausePreview()
@@ -1411,6 +1465,10 @@ namespace Game_Engine.Views
 
         public void ApplyPreview()
         {
+            // In Play mode the Animator's Update samples poses; don't fight it.
+            if (SceneService.PlayMode)
+                return;
+
             if (_animator != null && _clip != null)
             {
                 // Apply all property tracks at current playhead time
@@ -1436,6 +1494,8 @@ namespace Game_Engine.Views
                 var smr = _selectedGO != null ? FindSkinnedMeshRenderer(_selectedGO) : null;
                 smr?.ComputeBoneMatrices();
             }
+
+            SceneService.RequestFrame();
         }
 
         private void RefreshTimeDisplay()
@@ -2082,6 +2142,7 @@ namespace Game_Engine.Views
                     _selectedNodeIdx = i;
                     _selectedTransIdx = -1;
                     _dragOffset = new Point(pos.X - rect.X, pos.Y - rect.Y);
+                    Panel?.PreviewAnimatorState(states[i].Name);
                     e.Handled = true;
                     InvalidateVisual();
                     return;

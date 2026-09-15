@@ -535,6 +535,8 @@ namespace Game_Engine.Core
                 postShader.SetFloat("uSaturation", 1f);
                 postShader.SetFloat("uBrightness", 0f);
                 postShader.SetInt("uToneMap", 0);
+                postShader.SetFloat("uBloomThreshold", 1f);
+                postShader.SetFloat("uBloomIntensity", 0f);
             }
             else
             {

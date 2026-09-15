@@ -524,15 +524,26 @@ Built-in C# script editor integrated into the editor (default window about **128
 
 ## Animation Panel
 
-The Animation panel provides a timeline-based editor for bone animations and a state machine graph for the Animator component.
+The Animation panel provides a timeline-based editor for bone animations and a state machine graph for the `Animator` component.
 
 ### Animation Clip Editor
-- **Animation clip selection** — choose which clip to edit
+- **Animation clip selection** — choose which clip to edit (property clips or `[Bone] Idle`, `[Bone] Walk`, etc.)
 - **Keyframe editing** — add, move, and delete keyframes on the timeline
 - **Timeline scrubbing** — drag the playhead to preview animation at any point
 - **Bone visualization** — see which bones are affected by each keyframe
+- **Transport controls** — Play / Pause / Stop preview the selected clip on the **Scene View** character without entering Play mode
 
-Bone animations are imported automatically from 3D model files (FBX, glTF) and stored as `.boneanim` files.
+Bone animations are imported automatically from 3D model files (FBX, DAE; see [10 — Model Import](10_Model_Import_And_Assets.md)) and stored as `.boneanim` files next to the model in a `{ModelName}_Animations/` folder.
+
+### Editor Preview (No Play Mode Required)
+Skinned characters animate in **Scene View** when you preview from the Animation panel:
+
+1. Select a GameObject with an `Animator` and `SkinnedMeshRenderer` (e.g. **StarterCharacter**).
+2. Open the **Animation** tab.
+3. Pick a clip from the dropdown (`[Bone] Walk`, etc.) **or** click a state node in the **State Machine** view.
+4. Press **Play** on the transport bar — the Scene View updates each frame.
+
+The Game View stays dark while stopped; use Scene View for editor animation preview. During **Play** mode, the Animation panel does not override the runtime `Animator` (live gameplay drives poses instead).
 
 ### Animator State Machine
 When a GameObject with an `Animator` component is selected, the Animation panel displays an interactive state machine graph:
@@ -541,10 +552,10 @@ When a GameObject with an `Animator` component is selected, the Animation panel 
 - **Add State** — right-click the canvas or use the "Add State" button to create new animation states with a clip reference
 - **Add Transition** — click a state, then click another state to create a transition between them
 - **Delete** — select a state or transition and press Delete to remove it
-- **Selection** — click states or transitions to select them (highlighted with a distinct color)
+- **Selection** — click states or transitions to select them (highlighted with a distinct color); **clicking a state** switches the active clip and previews it in Scene View
 - **Inspector integration** — selected states show their clip assignment and transition conditions in the Inspector
 
-Changes are automatically persisted via DTO synchronization.
+States and transitions are stored on the `Animator` as `StateList` / `TransitionList` and **persist in `.scene` files** and across **Play → Stop** snapshot restore. Save the scene after editing the state machine so clip paths are written to disk.
 
 ---
 

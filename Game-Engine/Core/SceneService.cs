@@ -1,6 +1,8 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Threading;
+using Avalonia.Threading;
 using Game_Engine.Core.Planet;
 
 namespace Game_Engine.Core
@@ -91,6 +93,19 @@ namespace Game_Engine.Core
         /// <summary>Signal listeners that something in the scene changed.</summary>
         public static void NotifyChanged() => RaiseChanged(markDirty: true);
         public static void NotifyChanged(bool markDirty) => RaiseChanged(markDirty);
+
+        /// <summary>
+        /// Request Scene/Game views to redraw without marking the scene dirty
+        /// (animation preview, playhead scrub).
+        /// </summary>
+        public static event Action? FrameRequested;
+        public static void RequestFrame()
+        {
+            if (Dispatcher.UIThread.CheckAccess())
+                FrameRequested?.Invoke();
+            else
+                Dispatcher.UIThread.Post(() => FrameRequested?.Invoke(), DispatcherPriority.Render);
+        }
 
         public static event Action? Changed;
         public static event Action<bool>? DirtyStateChanged;
@@ -246,11 +261,38 @@ namespace Game_Engine.Core
         private static void OnRootChanged(object? sender, NotifyCollectionChangedEventArgs e)
             => RaiseChanged(markDirty: true);
 
+        static int _pendingRaise;
+        static int _pendingMarkDirty;
+
         private static void RaiseChanged(bool markDirty)
         {
             if (PlayMode)
                 return;
+
+            // Transform/GameObject construction (model import) may run off the UI thread.
+            // SceneView/GameView handlers call Avalonia RequestNextFrameRendering and must not.
+            if (!Dispatcher.UIThread.CheckAccess())
+            {
+                if (markDirty && !_suppressDirtyTracking)
+                    Interlocked.Exchange(ref _pendingMarkDirty, 1);
+                if (Interlocked.Exchange(ref _pendingRaise, 1) != 0)
+                    return;
+                Dispatcher.UIThread.Post(FlushPendingChanged, DispatcherPriority.Render);
+                return;
+            }
+
             if (markDirty && !_suppressDirtyTracking)
+                SetDirty(true);
+            Changed?.Invoke();
+        }
+
+        static void FlushPendingChanged()
+        {
+            Interlocked.Exchange(ref _pendingRaise, 0);
+            var dirty = Interlocked.Exchange(ref _pendingMarkDirty, 0) == 1;
+            if (PlayMode)
+                return;
+            if (dirty && !_suppressDirtyTracking)
                 SetDirty(true);
             Changed?.Invoke();
         }

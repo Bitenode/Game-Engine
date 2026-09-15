@@ -319,6 +319,14 @@ namespace Game_Engine.Core
 
             var bag = new Dictionary<string, object?>(StringComparer.Ordinal);
 
+            // Runtime Animator states live in _states; flush them to [Persist] DTOs
+            // before save so Stop-play restore and .scene files keep Idle/Walk/….
+            if (behavior is Animator animator)
+            {
+                animator.EnsureBuilt();
+                animator.SyncToDTO();
+            }
+
             foreach (var p in props)
             {
                 if (!p.CanRead || !p.CanWrite) continue;
@@ -720,8 +728,13 @@ namespace Game_Engine.Core
                 var args = t.GetGenericArguments();
 
                 if ((genDef == typeof(List<>) || genDef == typeof(ICollection<>) || genDef == typeof(IEnumerable<>))
-                    && args.Length == 1 && IsSimpleOrVec3(args[0]))
-                    return value;
+                    && args.Length == 1)
+                {
+                    if (IsSimpleOrVec3(args[0]))
+                        return value;
+                    if (IsPersistableDto(args[0]))
+                        return JsonSerializer.SerializeToElement(value, _json);
+                }
 
                 if (genDef == typeof(Dictionary<,>) && args.Length == 2 && args[0] == typeof(string) && IsSimpleOrVec3(args[1]))
                     return value;
@@ -793,6 +806,12 @@ namespace Game_Engine.Core
             return t.IsPrimitive || t.IsEnum || t == typeof(string) ||
                    t == typeof(double) || t == typeof(float) || t == typeof(decimal) ||
                    t == typeof(Vector3);
+        }
+
+        static bool IsPersistableDto(Type t)
+        {
+            return t == typeof(Animator.AnimStateDTO)
+                || t == typeof(Animator.AnimTransitionDTO);
         }
 
         static object? ConvertPersisted(object? jsonValue, Type targetType)
@@ -1045,13 +1064,11 @@ namespace Game_Engine.Core
                     }
                 }
 
-                // Fallback: if the path contains an Assets folder anywhere (e.g. bin/Debug/.../Assets/...),
-                // persist from Assets/ onward so scene files remain portable.
+                // Outside the current project: keep the absolute path.
+                // Do NOT strip to "Assets/..." — that silently remaps paths from another
+                // tree (e.g. a different engine bin/Assets) onto this project's Assets and
+                // can load the wrong .terrain.json / texture after play-snapshot restore.
                 var norm = full.Replace('\\', '/');
-                const string marker = "/Assets/";
-                int idx = norm.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                if (idx >= 0)
-                    return norm.Substring(idx + 1); // keep "Assets/..."
 
                 // Already relative and includes Assets prefix (defensive path normalization).
                 var relNorm = path.Replace('\\', '/');

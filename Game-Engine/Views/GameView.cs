@@ -210,6 +210,12 @@ namespace Game_Engine.Views
                 _cache?.InvalidateAll();
                 RequestNextFrameRendering();
             };
+            SceneService.FrameRequested += () =>
+            {
+                if (State == GamePanel.GameState.Stopped)
+                    return;
+                RequestNextFrameRendering();
+            };
 
             // Full scene replacement: request a full GPU cache flush on the next render pass
             SceneService.SceneReplaced += () =>
@@ -820,7 +826,10 @@ namespace Game_Engine.Views
             var sunSD = fallbackPlanetSunDir;
             bool isES = _glCtx.IsES;
 
-            bool useDeferred = ProjectRenderingSettings.UseDeferredRendering;
+            // Scene View always uses forward + optional post FBO. Deferred + PostProcessVolume
+            // in Game View was wiping the frame (sky/teal only). Use the same forward path
+            // whenever a post volume or underwater FX needs the scene-color blit.
+            bool useDeferred = ProjectRenderingSettings.UseDeferredRendering && !usePostFX;
             bool useTaa = postVolume?.TAAEnabled == true && useDeferred;
             if (cam != null && cam.InvalidateTemporalHistory)
             {
@@ -1269,7 +1278,11 @@ namespace Game_Engine.Views
 
             if (usePostFX && finalSceneTex != null)
             {
+                // Clear so the earlier sky pass on Avalonia's FB cannot show through
+                // if the blit/post pass has any incomplete coverage.
                 g.Disable(EnableCap.DepthTest);
+                g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+                g.Clear(ClearBufferMask.ColorBufferBit);
                 g.BindVertexArray(_fsQuad!.VAO);
                 SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, finalSceneTex, W, H,
                     postVolume, underwater, (float)Core.Time.time);
