@@ -15,7 +15,7 @@ Github Engine/
 │   ├── Program.cs                  # Editor entry point
 │   ├── App.axaml                   # Editor Avalonia application
 │   ├── MainWindow.axaml            # Editor main window
-│   └── Standard Assets/            # Built-in assets (BiomeGraph, Planet Textures, Planet Vegetation, Skybox, Shader, Scenes, Code Examples)
+│   └── Standard Assets/            # Built-in assets (BiomeGraph, Planet Textures, Planet Vegetation, Skybox, Shader, Scenes, Prefabs, Code Examples)
 │
 └── Engine.Player/                  # Standalone player project (desktop + Windows TFM for packaging)
     ├── Engine.Player.csproj        # Player project file (net9.0, net9.0-windows10.0.19041.0)
@@ -218,7 +218,7 @@ The player **`<Compile Include="...">`** list adds the Standard Assets **UI** sa
 
 | Linked path | Purpose |
 |-------------|---------|
-| `Standard Assets/Code Examples/UI/*.cs` | **MainMenuController**, **ServerHostController**, and any future UI samples colocated there |
+| `Standard Assets/Code Examples/UI/*.cs` | **MainMenuController**, **ServerHostController**, **HotbarController**, and any future UI samples colocated there |
 
 Other Standard Assets scripts (gameplay demos, planet tools, etc.) are **not** linked automatically; ship them via **GameScripts.dll** or add explicit `<Compile Include="...">` entries if your scenes reference those types.
 

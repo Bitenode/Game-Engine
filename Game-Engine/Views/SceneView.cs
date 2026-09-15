@@ -2333,7 +2333,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         base.OnKeyDown(e);
 
-        if (TryGetBookmarkSlot(e.Key, out var slot))
+        // Digit keys are gameplay (hotbar, weapons) while playing — don't steal 1–5 for camera bookmarks.
+        if (TryGetBookmarkSlot(e.Key, out var slot) && !GameView.IsAnyViewPlaying)
         {
             if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
             {

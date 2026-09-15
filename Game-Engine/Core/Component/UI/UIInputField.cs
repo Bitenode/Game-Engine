@@ -93,6 +93,20 @@ namespace Game_Engine.Core.Component.UI
         /// <summary>Whether this input field currently has focus.</summary>
         public bool IsFocused => _isFocused;
 
+        /// <summary>True if any enabled input field is capturing keyboard .</summary>
+        public static bool AnyFocused
+        {
+            get
+            {
+                for (int i = 0; i < s_instances.Count; i++)
+                {
+                    var f = s_instances[i];
+                    if (f._isFocused && f.IsActiveAndEnabled) return true;
+                }
+                return false;
+            }
+        }
+
         public override void OnEnable()
         {
             base.OnEnable();

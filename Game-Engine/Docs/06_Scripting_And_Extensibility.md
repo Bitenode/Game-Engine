@@ -653,9 +653,12 @@ if (!UIEventSystem.PointerOverUI)
 {
     // Process game input (shooting, camera, etc.)
 }
+
+// Standard Assets hotbar prefab (HotbarController on the canvas root)
+var hotbar = SceneQuery.FindBehaviors<HotbarController>().FirstOrDefault();
+hotbar?.SetSlotIcon(0, "Assets/Icons/sword.png");
 ```
 
-See the [Components Reference](03_Components_Reference.md) for full UI component documentation.
 
 ---
 

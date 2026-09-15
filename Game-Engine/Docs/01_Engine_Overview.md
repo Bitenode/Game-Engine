@@ -267,6 +267,7 @@ Game-Engine/
 │   │   ├── Steel PBR.shader    # Cook-Torrance PBR shader
 │   │   └── *.shadergraph       # Pre-built shader graph assets
 │   ├── Scenes/                  # Main Menu, Server lobby templates
+│   ├── Prefabs/                 # Drop-in prefabs (UI/Hotbar.prefab)
 │   └── Code Examples/           # Extension code samples (UI, gameplay, planet tools)
 ├── Program.cs                   # Application entry point
 ├── MainWindow.axaml(.cs)        # Main editor window with menus

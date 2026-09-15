@@ -688,6 +688,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (dt > 0.05) dt = 0.05;
         Core.Time.BeginUpdate(dt);
         Input.NewFrame((float)dt);
+        Input.PollHardwareHeldKeys();
         Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
         {
             int vpW = Math.Max(1, (int)Bounds.Width);

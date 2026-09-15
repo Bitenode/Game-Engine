@@ -47,6 +47,7 @@ namespace Game_Engine.Core.Input
         static readonly HashSet<KeyCode> sHeldKeys = new HashSet<KeyCode>();
         static readonly HashSet<KeyCode> sDownKeys = new HashSet<KeyCode>();
         static readonly HashSet<KeyCode> sUpKeys = new HashSet<KeyCode>();
+        static readonly HashSet<KeyCode> sHardwareHeld = new HashSet<KeyCode>();
 
         static readonly HashSet<MouseButton> sHeldMouse = new HashSet<MouseButton>();
         static readonly HashSet<MouseButton> sDownMouse = new HashSet<MouseButton>();
@@ -122,6 +123,7 @@ namespace Game_Engine.Core.Input
         public static void ClearAll()
         {
             sHeldKeys.Clear(); sDownKeys.Clear(); sUpKeys.Clear();
+            sHardwareHeld.Clear();
             sHeldMouse.Clear(); sDownMouse.Clear(); sUpMouse.Clear();
             sMouseDX = sMouseDY = 0f;
             PlayViewportCaptureActive = false;
@@ -148,8 +150,9 @@ namespace Game_Engine.Core.Input
         }
 
         /// <summary>
-        /// Read WASD / arrows / Space / Shift from the OS even if Hierarchy has keyboard focus.
+        /// Read movement / digit keys from the OS even if Hierarchy has keyboard focus.
         /// Call after <see cref="NewFrame"/> so down-edges land in the same Update.
+        /// Digit keys (1–9, 0, numpad) are included so HUD hotbars keep working in the editor.
         /// </summary>
         public static void PollHardwareHeldKeys()
         {
@@ -166,13 +169,52 @@ namespace Game_Engine.Core.Input
             SyncHardwareKey(0x28, KeyCode.DownArrow);
             SyncHardwareKey(0x46, KeyCode.F);
             SyncHardwareKey(0x47, KeyCode.G);
+            // Top-row 0–9 (VK_0..VK_9)
+            SyncHardwareKey(0x30, KeyCode.D0);
+            SyncHardwareKey(0x31, KeyCode.D1);
+            SyncHardwareKey(0x32, KeyCode.D2);
+            SyncHardwareKey(0x33, KeyCode.D3);
+            SyncHardwareKey(0x34, KeyCode.D4);
+            SyncHardwareKey(0x35, KeyCode.D5);
+            SyncHardwareKey(0x36, KeyCode.D6);
+            SyncHardwareKey(0x37, KeyCode.D7);
+            SyncHardwareKey(0x38, KeyCode.D8);
+            SyncHardwareKey(0x39, KeyCode.D9);
+            // Numpad 0–9 (VK_NUMPAD0..VK_NUMPAD9)
+            SyncHardwareKey(0x60, KeyCode.NumPad0);
+            SyncHardwareKey(0x61, KeyCode.NumPad1);
+            SyncHardwareKey(0x62, KeyCode.NumPad2);
+            SyncHardwareKey(0x63, KeyCode.NumPad3);
+            SyncHardwareKey(0x64, KeyCode.NumPad4);
+            SyncHardwareKey(0x65, KeyCode.NumPad5);
+            SyncHardwareKey(0x66, KeyCode.NumPad6);
+            SyncHardwareKey(0x67, KeyCode.NumPad7);
+            SyncHardwareKey(0x68, KeyCode.NumPad8);
+            SyncHardwareKey(0x69, KeyCode.NumPad9);
         }
 
         static void SyncHardwareKey(int vk, KeyCode code)
         {
             bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-            if (down) FeedKeyDown(code);
-            else if (sHeldKeys.Contains(code)) FeedKeyUp(code);
+            bool wasHw = sHardwareHeld.Contains(code);
+            if (down)
+            {
+                // NewFrame clears sDownKeys. Avalonia may already have put the key in
+                // sHeldKeys, which would make FeedKeyDown skip the down-edge — restore
+                // it from the hardware rising edge so GetKeyDown still works.
+                if (!wasHw) sDownKeys.Add(code);
+                sHeldKeys.Add(code);
+                sHardwareHeld.Add(code);
+            }
+            else
+            {
+                if (sHeldKeys.Contains(code))
+                {
+                    sUpKeys.Add(code);
+                    sHeldKeys.Remove(code);
+                }
+                sHardwareHeld.Remove(code);
+            }
         }
 
         /// <summary>

@@ -1509,7 +1509,11 @@ namespace Game_Engine.Views
         static bool IsGameplayKey(Key key) =>
             key is Key.W or Key.A or Key.S or Key.D
                 or Key.Up or Key.Down or Key.Left or Key.Right
-                or Key.Space or Key.LeftShift or Key.RightShift;
+                or Key.Space or Key.LeftShift or Key.RightShift
+                or Key.D0 or Key.D1 or Key.D2 or Key.D3 or Key.D4
+                or Key.D5 or Key.D6 or Key.D7 or Key.D8 or Key.D9
+                or Key.NumPad0 or Key.NumPad1 or Key.NumPad2 or Key.NumPad3 or Key.NumPad4
+                or Key.NumPad5 or Key.NumPad6 or Key.NumPad7 or Key.NumPad8 or Key.NumPad9;
 
         void BindPlayKeyboard()
         {

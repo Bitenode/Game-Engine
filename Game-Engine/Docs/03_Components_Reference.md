@@ -1946,6 +1946,44 @@ public class HealthBar : Behavior
 }
 ```
 
+### HUD Hotbar (Standard Assets)
+
+Shipped prefab **`Standard Assets/Prefabs/UI/Hotbar.prefab`** — a self-contained Screen Space Overlay canvas with a 9-slot bar at the bottom of the screen. Drag it from the Project panel onto the Hierarchy (or **Instantiate Prefab**). After **Include standard assets**, the path is `Assets/Standard Assets/Prefabs/UI/Hotbar.prefab`.
+
+Controller: **`HotbarController`** (`Standard Assets/Code Examples/UI/HotbarController.cs`, compiled into the editor and linked into the player with the other UI samples).
+
+```
+Hotbar (Canvas SortOrder=10, HotbarController, RectTransform stretch)
+└── Bar (UIPanel)
+    └── Slot 1 … Slot 9 (UIImage + UIButton)
+        ├── Selection (UIPanel highlight)
+        ├── Icon (UIImage)
+        ├── Cooldown (UIProgressBar, TopToBottom)
+        ├── KeyHint (UIText)
+        └── Count (UIText)
+```
+
+**Play mode:** keys **1–9** (and **0** if you add a 10th slot) select a slot; clicking a slot does the same. The prefab ships with five colored placeholder icons so it reads as a hotbar before you hook inventory.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SlotCount` | `int` | `9` | Visible slots (1–10). Extra prefab slots are hidden. |
+| `UseNumberKeys` | `bool` | `true` | Digit / numpad select |
+| `PopulateDemoItems` | `bool` | `false` | If true, `Start` fills sample placeholder items |
+| `SelectedIndex` | `int` | `0` | Zero-based selected slot |
+| `SlotNormalColor` / `SlotSelectedColor` | `Color` | dark / blue-grey | Unselected / selected slot chrome |
+
+**Script API:**
+```csharp
+var hotbar = SceneQuery.FindBehaviors<HotbarController>().FirstOrDefault();
+if (hotbar == null) return;
+
+hotbar.SetSlotIcon(0, "Assets/Icons/sword.png");
+hotbar.SetSlotCount(2, 16);          // hidden when count ≤ 1
+hotbar.SetSlotCooldown(0, 0.4f);     // 0 = none, 1 = full overlay
+hotbar.SelectionChanged += index => LogInfo($"Equipped slot {index}");
+```
+
 ---
 
 ## PlanetAtmosphere
