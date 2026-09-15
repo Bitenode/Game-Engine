@@ -31,7 +31,7 @@ namespace Game_Engine.Core.Component.UI
         }
 
         /// <summary>Current text content.</summary>
-        [Persist] public string Text
+        [Persist, HideInInspector] public string Text
         {
             get => _text;
             set
@@ -48,35 +48,35 @@ namespace Game_Engine.Core.Component.UI
         private string _text = "";
 
         /// <summary>Placeholder text shown when the field is empty.</summary>
-        [Persist] public string Placeholder { get; set; } = "Enter text...";
+        [Persist, HideInInspector] public string Placeholder { get; set; } = "Enter text...";
 
         /// <summary>Maximum number of characters (0 = unlimited).</summary>
-        [Persist] public int CharacterLimit { get; set; } = 0;
+        [Persist, HideInInspector] public int CharacterLimit { get; set; } = 0;
 
         /// <summary>Content type for input validation.</summary>
-        [Persist] public InputFieldContentType ContentType { get; set; } = InputFieldContentType.Standard;
+        [Persist, HideInInspector] public InputFieldContentType ContentType { get; set; } = InputFieldContentType.Standard;
 
         /// <summary>Font size in canvas pixels.</summary>
-        [Persist] public float FontSize { get; set; } = 20f;
+        [Persist, HideInInspector] public float FontSize { get; set; } = 20f;
 
         /// <summary>Path to the BMFont .fnt file.</summary>
-        [Persist] public string FontPath { get; set; } = "";
+        [Persist, HideInInspector] public string FontPath { get; set; } = "";
 
         /// <summary>Whether this field is read-only.</summary>
-        [Persist] public bool ReadOnly { get; set; } = false;
+        [Persist, HideInInspector] public bool ReadOnly { get; set; } = false;
 
         // ── Colors ──
-        [Persist] public Color BackgroundColor { get; set; } = Color.FromRgb(0x30, 0x30, 0x30);
-        [Persist] public Color TextColor { get; set; } = Colors.White;
-        [Persist] public Color PlaceholderColor { get; set; } = Color.FromRgb(0x80, 0x80, 0x80);
-        [Persist] public Color CursorColor { get; set; } = Colors.White;
-        [Persist] public Color SelectionColor { get; set; } = Color.FromArgb(0x60, 0x40, 0xA0, 0xFF);
+        [Persist, HideInInspector] public Color BackgroundColor { get; set; } = Color.FromRgb(0x30, 0x30, 0x30);
+        [Persist, HideInInspector] public Color TextColor { get; set; } = Colors.White;
+        [Persist, HideInInspector] public Color PlaceholderColor { get; set; } = Color.FromRgb(0x80, 0x80, 0x80);
+        [Persist, HideInInspector] public Color CursorColor { get; set; } = Colors.White;
+        [Persist, HideInInspector] public Color SelectionColor { get; set; } = Color.FromArgb(0x60, 0x40, 0xA0, 0xFF);
         /// <summary>Border drawn when focused (alpha 0 disables).</summary>
-        [Persist] public Color FocusedBorderColor { get; set; } = Color.FromArgb(0xFF, 0x40, 0xA0, 0xFF);
+        [Persist, HideInInspector] public Color FocusedBorderColor { get; set; } = Color.FromArgb(0xFF, 0x40, 0xA0, 0xFF);
         /// <summary>Thickness in canvas pixels for the focus border.</summary>
-        [Persist] public float FocusBorderWidth { get; set; } = 2f;
+        [Persist, HideInInspector] public float FocusBorderWidth { get; set; } = 2f;
         /// <summary>When true, clicking outside the field clears focus.</summary>
-        [Persist] public bool DeselectOnClickOutside { get; set; } = true;
+        [Persist, HideInInspector] public bool DeselectOnClickOutside { get; set; } = true;
 
         // ── Events ──
         /// <summary>Fired when the text changes.</summary>

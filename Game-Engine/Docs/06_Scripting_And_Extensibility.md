@@ -430,9 +430,49 @@ Commands can be invoked from:
 
 ---
 
+## Inspector attributes and custom inspectors
+
+### Default property list
+The inspector lists public instance properties that are **readable and writable**, have no index parameters, and are not marked `[HideInInspector]`. GameObject **Enabled** and Behavior **Enabled** use header checkboxes; those properties are typically hidden with `[HideInInspector]` on the type.
+
+### Inspector attributes (`Game_Engine.Core`)
+
+```csharp
+using Game_Engine.Core;
+
+public class MyLight : Behavior
+{
+    [Persist, HideInInspector]
+    public bool Enabled { get; set; } = true; // edited via component header
+
+    [Persist, Range(0f, 10f)]
+    public float Intensity { get; set; } = 1f;
+
+    [Persist, AssetPath(AssetPathKind.Image, Label = "Cookie")]
+    public string CookiePath { get; set; } = "";
+
+    [Persist, AssetPath(".wav", ".ogg")]
+    public string CustomSfxPath { get; set; } = "";
+}
+```
+
+| Attribute | Purpose |
+|-----------|---------|
+| `[HideInInspector]` | Skip in the auto-generated property grid |
+| `[Range(min, max)]` | Slider + numeric field (`float`, `int`, etc.) |
+| `[AssetPath(AssetPathKind.Audio\|Image\|ModelOrImage)]` | Preset filters and drop zones |
+| `[AssetPath(".ext", ...)]` | Custom extension list; optional `Label`, `DialogTitle`, `Watermark`, `DropHint`, `FilterName` |
+
+Path strings are stored project-relative when possible. Import uses the shared `AssetPathEditor` in `Views/Inspector/`.
+
+### Built-in component inspectors
+Engine components with non-trivial UI register through `ComponentInspectorRegistry` (see `Views/Inspector/BuiltinComponentInspectors.cs`). User scripts do not need this unless you ship editor-only chrome for your own types.
+
+---
+
 ## Custom Inspectors
 
-Override how a component appears in the Inspector panel for specialized editing experiences.
+Override how a component appears in the Inspector panel for specialized editing experiences. Public contracts live in `Game_Engine.Views` (`InspectorContext`, `ICustomInspector`, `[CustomInspector]`) so compiled game scripts keep working.
 
 ### Method 1: ICustomInspector Interface
 
@@ -445,21 +485,13 @@ public class MyComponent : Behavior, ICustomInspector
 {
     [Persist] public float Value { get; set; } = 1f;
 
-    public void BuildInspector(StackPanel panel)
+    public Control? BuildInspectorUI(InspectorContext ctx)
     {
-        // Build custom Avalonia UI for the inspector
-        var slider = new Slider
-        {
-            Minimum = 0,
-            Maximum = 100,
-            Value = Value
-        };
-        slider.PropertyChanged += (s, e) =>
-        {
-            if (e.Property == Slider.ValueProperty)
-                Value = (float)slider.Value;
-        };
-        panel.Children.Add(slider);
+        var panel = new StackPanel();
+        panel.Children.Add(ctx.Header("Custom section"));
+        panel.Children.Add(ctx.Row("Value", ctx.EditorForProperty(
+            typeof(MyComponent).GetProperty(nameof(Value))!)));
+        return panel;
     }
 }
 ```
@@ -472,10 +504,11 @@ Create a separate inspector class without modifying the target component:
 [CustomInspector(typeof(TargetComponent))]
 public class TargetComponentInspector
 {
-    public void BuildInspector(StackPanel panel, Behavior target)
+    public Control? BuildInspectorUI(InspectorContext ctx)
     {
-        var component = (TargetComponent)target;
-        // Build custom UI using the target component's data
+        var component = (TargetComponent)ctx.Target;
+        // Build custom UI; reuse ctx.EditorForProperty / ctx.DefaultInspector as needed
+        return null; // null → fall back to default property grid
     }
 }
 ```

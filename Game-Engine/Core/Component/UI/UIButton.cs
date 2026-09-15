@@ -15,16 +15,16 @@ namespace Game_Engine.Core.Component.UI
     public sealed class UIButton : UIElement
     {
         /// <summary>Whether the button can be interacted with.</summary>
-        [Persist] public bool Interactable { get; set; } = true;
+        [Persist, HideInInspector] public bool Interactable { get; set; } = true;
 
         // ── Color transitions ──
-        [Persist] public Color NormalColor { get; set; } = Color.FromRgb(0xFF, 0xFF, 0xFF);
-        [Persist] public Color HighlightedColor { get; set; } = Color.FromRgb(0xE0, 0xE0, 0xE0);
-        [Persist] public Color PressedColor { get; set; } = Color.FromRgb(0xB0, 0xB0, 0xB0);
-        [Persist] public Color DisabledColor { get; set; } = Color.FromRgb(0x80, 0x80, 0x80);
+        [Persist, HideInInspector] public Color NormalColor { get; set; } = Color.FromRgb(0xFF, 0xFF, 0xFF);
+        [Persist, HideInInspector] public Color HighlightedColor { get; set; } = Color.FromRgb(0xE0, 0xE0, 0xE0);
+        [Persist, HideInInspector] public Color PressedColor { get; set; } = Color.FromRgb(0xB0, 0xB0, 0xB0);
+        [Persist, HideInInspector] public Color DisabledColor { get; set; } = Color.FromRgb(0x80, 0x80, 0x80);
 
         /// <summary>Color transition speed (0 = instant, higher = faster).</summary>
-        [Persist] public float FadeDuration { get; set; } = 0.1f;
+        [Persist, HideInInspector] public float FadeDuration { get; set; } = 0.1f;
 
         // ── Events ──
         /// <summary>Fired when the button is clicked.</summary>

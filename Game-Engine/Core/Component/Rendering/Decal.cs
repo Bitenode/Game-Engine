@@ -23,7 +23,9 @@ namespace Game_Engine.Core.Component
         private float _width = 1f;
         private float _height = 1f;
 
-        [Persist] public string TexturePath
+        [Persist]
+        [AssetPath(AssetPathKind.Image, DialogTitle = "Import Decal Texture")]
+        public string TexturePath
         {
             get => _texturePath;
             set { if (_texturePath != value) { _texturePath = value; ApplyDecalMaterial(); } }
@@ -40,11 +42,11 @@ namespace Game_Engine.Core.Component
         }
         [Persist] public float Depth { get; set; } = 0.5f;        // projection depth
         [Persist] public SN.Vector4 Color { get; set; } = SN.Vector4.One;
-        [Persist] public float Opacity { get; set; } = 1f;
+        [Persist, Range(0f, 1f)] public float Opacity { get; set; } = 1f;
 
         // ── Projection ──
         [Persist] public DecalProjection Projection { get; set; } = DecalProjection.Forward;
-        [Persist] public float AngleFade { get; set; } = 60f;     // fade at steep angles (degrees)
+        [Persist, Range(0f, 90f)] public float AngleFade { get; set; } = 60f;     // fade at steep angles (degrees)
 
         // ── Lifetime ──
         [Persist] public float Lifetime { get; set; } = 0f;       // 0 = infinite

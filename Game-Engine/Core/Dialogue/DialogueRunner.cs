@@ -58,28 +58,33 @@ namespace Game_Engine.Core.Dialogue
     public sealed class DialogueRunner : Behavior
     {
         /// <summary>The dialogue tree to run.</summary>
+        [HideInInspector]
         public DialogueTree? Tree { get; set; }
 
         /// <summary>Variable store for conditions and actions.</summary>
+        [HideInInspector]
         public DialogueVariableStore Variables { get; set; } = new();
 
         // ── Voice / Text Mode ──
         /// <summary>Dialogue presentation mode: text, voice, or both.</summary>
-        [Persist] public DialogueMode Mode { get; set; } = DialogueMode.TextAndVoice;
+        [Persist, HideInInspector] public DialogueMode Mode { get; set; } = DialogueMode.TextAndVoice;
 
         /// <summary>Volume for voice line playback (0-1).</summary>
-        [Persist] public float VoiceVolume { get; set; } = 1f;
+        [Persist, HideInInspector, Range(0f, 1f)] public float VoiceVolume { get; set; } = 1f;
 
         /// <summary>Whether to auto-advance when a voice clip finishes (instead of waiting for input).</summary>
-        [Persist] public bool AutoAdvanceOnVoiceEnd { get; set; } = true;
+        [Persist, HideInInspector] public bool AutoAdvanceOnVoiceEnd { get; set; } = true;
 
         /// <summary>Whether dialogue is currently active.</summary>
+        [HideInInspector]
         public bool IsRunning { get; private set; }
 
         /// <summary>Whether we're waiting for player input (advance or choice).</summary>
+        [HideInInspector]
         public bool IsWaitingForInput { get; private set; }
 
         /// <summary>The current node being displayed.</summary>
+        [HideInInspector]
         public DialogueNode? CurrentNode { get; private set; }
 
         // Timer for auto-advance

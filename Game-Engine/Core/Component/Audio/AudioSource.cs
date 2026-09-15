@@ -14,20 +14,22 @@ namespace Game_Engine.Core.Component
     public sealed class AudioSource : Behavior
     {
         // ── Clip ──
-        [Persist] public string ClipPath { get; set; } = "";
+        [Persist]
+        [AssetPath(AssetPathKind.Audio)]
+        public string ClipPath { get; set; } = "";
 
         // ── Playback ──
-        [Persist] public float Volume { get; set; } = 1f;
-        [Persist] public float Pitch { get; set; } = 1f;
+        [Persist, Range(0f, 2f)] public float Volume { get; set; } = 1f;
+        [Persist, Range(0.1f, 3f)] public float Pitch { get; set; } = 1f;
         [Persist] public bool Loop { get; set; } = false;
         [Persist] public bool PlayOnAwake { get; set; } = true;
         [Persist] public bool Mute { get; set; } = false;
 
         // ── Spatial ──
-        [Persist] public float SpatialBlend { get; set; } = 1f;    // 0 = 2D, 1 = full 3D
+        [Persist, Range(0f, 1f)] public float SpatialBlend { get; set; } = 1f;    // 0 = 2D, 1 = full 3D
         [Persist] public float MinDistance { get; set; } = 1f;
         [Persist] public float MaxDistance { get; set; } = 50f;
-        [Persist] public float DopplerLevel { get; set; } = 0f;
+        [Persist, Range(0f, 1f)] public float DopplerLevel { get; set; } = 0f;
 
         // ── Channel ──
         [Persist] public AudioChannel Channel { get; set; } = AudioChannel.SFX;

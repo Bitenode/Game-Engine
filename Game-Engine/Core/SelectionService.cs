@@ -17,8 +17,20 @@ public static class SelectionService
     /// <summary>True when more than one object is selected.</summary>
     public static bool IsMultiSelect => _selected.Count > 1;
 
+    /// <summary>
+    /// Bumped by Set/Add/Remove/Clear/SetMultiple. <see cref="Touch"/> does not change this,
+    /// so the inspector can skip a full rebuild on gizmo drags and undo refresh.
+    /// </summary>
+    public static int Version { get; private set; }
+
     public static event Action? Changed;
     public static event Action<GameObject>? FrameRequested;
+
+    static void NotifySelectionChanged(bool bumpVersion)
+    {
+        if (bumpVersion) Version++;
+        Changed?.Invoke();
+    }
 
     /// <summary>Set a single selection (replaces any existing selection).</summary>
     public static void Set(GameObject? go)
@@ -27,7 +39,7 @@ public static class SelectionService
         if (go != null)
             _selected.Add(go);
         Current = go;
-        Changed?.Invoke();
+        NotifySelectionChanged(bumpVersion: true);
     }
 
     /// <summary>Add a GameObject to the selection (for multi-select via Ctrl+Click or Shift+Click).</summary>
@@ -37,7 +49,7 @@ public static class SelectionService
         if (!_selected.Contains(go))
             _selected.Add(go);
         Current = go; // last added becomes primary
-        Changed?.Invoke();
+        NotifySelectionChanged(bumpVersion: true);
     }
 
     /// <summary>Remove a GameObject from the selection.</summary>
@@ -45,7 +57,7 @@ public static class SelectionService
     {
         _selected.Remove(go);
         Current = _selected.Count > 0 ? _selected[^1] : null;
-        Changed?.Invoke();
+        NotifySelectionChanged(bumpVersion: true);
     }
 
     /// <summary>Toggle a GameObject's selection state (Ctrl+Click behavior).</summary>
@@ -64,7 +76,7 @@ public static class SelectionService
         _selected.Clear();
         _selected.AddRange(objects);
         Current = _selected.Count > 0 ? _selected[^1] : null;
-        Changed?.Invoke();
+        NotifySelectionChanged(bumpVersion: true);
     }
 
     /// <summary>Clear all selection.</summary>
@@ -72,10 +84,11 @@ public static class SelectionService
     {
         _selected.Clear();
         Current = null;
-        Changed?.Invoke();
+        NotifySelectionChanged(bumpVersion: true);
     }
 
-    public static void Touch() => Changed?.Invoke();
+    /// <summary>Re-raise <see cref="Changed"/> without treating it as a new selection (gizmo / undo refresh).</summary>
+    public static void Touch() => NotifySelectionChanged(bumpVersion: false);
 
     /// <summary>
     /// Request SceneView to frame/focus a specific object.

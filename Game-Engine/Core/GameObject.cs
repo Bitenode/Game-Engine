@@ -202,4 +202,7 @@ public class GameObject : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void OnChanged(string n) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
+
+    /// <summary>Raise <see cref="PropertyChanged"/> after reflection writes (undo) so inspector bindings update in place.</summary>
+    public void NotifyPropertyChanged(string name) => OnChanged(name);
 }

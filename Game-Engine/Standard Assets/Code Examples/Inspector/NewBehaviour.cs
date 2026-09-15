@@ -4,7 +4,7 @@ using Game_Engine.Views;
 
 public class NewBehaviour : Behavior, ICustomInspector
 {
-    [Persist] public float Test { get; set; } = 1.0f;
+    [Persist, Range(0f, 10f)] public float Test { get; set; } = 1.0f;
 
     public Control? BuildInspectorUI(InspectorContext ctx)
     {

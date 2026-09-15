@@ -232,7 +232,10 @@ Game-Engine/
 ├── Views/                       # Editor UI panels (Avalonia controls)
 │   ├── SceneView.cs             # 3D scene editing viewport
 │   ├── GameView.cs              # Game runtime viewport
-│   ├── InspectorPanel.axaml.cs  # Property inspector
+│   ├── InspectorPanel.axaml.cs  # Property inspector shell
+│   ├── InspectorPanel.Host.cs   # IInspectorHost forwarding
+│   ├── DialogueEditorWindow.cs  # Dialogue tree editor (opened from inspector)
+│   ├── Inspector/               # Inspector helpers (catalog, asset paths, component registry, folds)
 │   ├── HierarchyPanel.axaml.cs  # Scene tree view (name/component filters + collapsible filter strip)
 │   ├── EditorCommandPaletteWindow.cs # Ctrl+Shift+P command palette (CommandRegistry)
 │   ├── EditorQuickOpenWindow.cs # Ctrl+P project file quick open

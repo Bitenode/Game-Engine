@@ -13,15 +13,15 @@ namespace Game_Engine.Core.Blueprint
     public sealed class VisualBlueprintBehavior : Behavior
     {
         /// <summary>Project-relative path, e.g. <c>Assets/Blueprints/MyBehavior.blueprint</c> or absolute.</summary>
-        [Persist] public string? BlueprintAssetPath { get; set; }
+        [Persist, HideInInspector] public string? BlueprintAssetPath { get; set; }
 
-        [Persist] public bool LogSteps { get; set; } = true;
+        [Persist, HideInInspector] public bool LogSteps { get; set; } = true;
 
         /// <summary>If false, Tick event nodes are not run (Begin Play still runs).</summary>
-        [Persist] public bool RunTickGraph { get; set; } = true;
+        [Persist, HideInInspector] public bool RunTickGraph { get; set; } = true;
 
         /// <summary>String key/value store readable by Branch (<c>conditionKey</c>) and set by <c>Set Variable</c>.</summary>
-        [Persist] public Dictionary<string, string> Variables { get; set; } =
+        [Persist, HideInInspector] public Dictionary<string, string> Variables { get; set; } =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         BlueprintGraph? _graph;

@@ -264,8 +264,10 @@ PropertyChangeCmd:
 
 ### After Each Undo/Redo
 The following refresh operations occur:
-1. `SelectionService.Touch()` — refreshes the Inspector panel to display updated values
+1. `SelectionService.Touch()` — re-raises selection `Changed` without changing the selection set (does not bump `SelectionService.Version`)
 2. `SceneService.NotifyChanged()` — triggers a scene repaint in all views
+
+`PropertyChangeCmd` raises `PropertyChanged` on the edited target after applying values, so inspector fields bound to those properties update **in place** without a full inspector rebuild.
 
 ### UndoService API
 | Method | Description |
@@ -288,7 +290,8 @@ Tracks the currently selected GameObjects with **multi-select support**:
 | `Current` | `GameObject?` | The primary selected object (or null) |
 | `Selected` | `List<GameObject>` | All selected objects (for multi-select) |
 | `IsMultiSelect` | `bool` | True when multiple objects are selected |
-| `Changed` | `event` | Fired when selection changes |
+| `Version` | `int` | Increments when the selection **set** changes (`Set`, `Add`, `Remove`, `Clear`, `SetMultiple`); unchanged by `Touch()` |
+| `Changed` | `event` | Fired when selection changes or on `Touch()` |
 | `FrameRequested` | `event` | Fired when UI requests Scene View camera focus for a specific object |
 
 ### Selection Methods
@@ -300,7 +303,7 @@ Tracks the currently selected GameObjects with **multi-select support**:
 | `Toggle(go)` | Toggle an object in/out of the selection |
 | `SetMultiple(list)` | Replace the selection with a list of objects |
 | `Clear()` | Deselect everything |
-| `Touch()` | Refresh the Inspector without changing selection |
+| `Touch()` | Re-fire `Changed` without changing selection or bumping `Version` (undo refresh, gizmo drag); inspector skips full rebuild when `Version` is unchanged |
 | `RequestFrame(go)` | Request Scene View to frame/focus an object (used by Hierarchy selection) |
 
 ### Selection Flow

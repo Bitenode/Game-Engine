@@ -14,4 +14,8 @@ public abstract class ObservableObject : INotifyPropertyChanged
         return true;
     }
     protected void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    /// <summary>Raise <see cref="PropertyChanged"/> from undo/inspector when a setter did not (auto-properties, reflection).</summary>
+    public void NotifyPropertyChanged(string name)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

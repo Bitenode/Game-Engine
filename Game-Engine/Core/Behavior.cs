@@ -37,6 +37,7 @@ namespace Game_Engine.Core
 
         /// Enable/disable this component. Triggers OnEnable/OnDisable and refreshes UI.
         [Persist]
+        [HideInInspector]
         public bool Enabled
         {
             get => _enabled;
@@ -73,6 +74,7 @@ namespace Game_Engine.Core
         // ---- attach-time auto require (editor-time) --------------------------
         GameObject? _owner;
         [Persist]
+        [HideInInspector]
         public GameObject? gameObject
         {
             get => _owner;

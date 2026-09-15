@@ -19,8 +19,27 @@ namespace Game_Engine.Core
             _newValue = newValue;
         }
 
-        public void Do() => _prop.SetValue(_target, CloneForAssign(_prop.PropertyType, _newValue));
-        public void Undo() => _prop.SetValue(_target, CloneForAssign(_prop.PropertyType, _oldValue));
+        public void Do() => Apply(_newValue);
+        public void Undo() => Apply(_oldValue);
+
+        void Apply(object? value)
+        {
+            _prop.SetValue(_target, CloneForAssign(_prop.PropertyType, value));
+            NotifyTarget(_target, _prop.Name);
+        }
+
+        static void NotifyTarget(object target, string name)
+        {
+            switch (target)
+            {
+                case ObservableObject o:
+                    o.NotifyPropertyChanged(name);
+                    break;
+                case GameObject go:
+                    go.NotifyPropertyChanged(name);
+                    break;
+            }
+        }
 
         // Create a safe instance for assignment when needed (e.g., mutable classes).
         static object? CloneForAssign(Type t, object? v)

@@ -17,13 +17,13 @@ namespace Game_Engine.Core.Component.UI
     public sealed class UISlider : UIElement
     {
         /// <summary>Minimum value of the slider.</summary>
-        [Persist] public float MinValue { get; set; } = 0f;
+        [Persist, HideInInspector] public float MinValue { get; set; } = 0f;
 
         /// <summary>Maximum value of the slider.</summary>
-        [Persist] public float MaxValue { get; set; } = 1f;
+        [Persist, HideInInspector] public float MaxValue { get; set; } = 1f;
 
         /// <summary>Current value of the slider.</summary>
-        [Persist] public float Value
+        [Persist, HideInInspector] public float Value
         {
             get => _value;
             set
@@ -40,26 +40,26 @@ namespace Game_Engine.Core.Component.UI
         private float _value = 0f;
 
         /// <summary>Whether to restrict value to whole numbers.</summary>
-        [Persist] public bool WholeNumbers { get; set; } = false;
+        [Persist, HideInInspector] public bool WholeNumbers { get; set; } = false;
 
         /// <summary>When false, pointer interaction is ignored.</summary>
-        [Persist] public bool Interactable { get; set; } = true;
+        [Persist, HideInInspector] public bool Interactable { get; set; } = true;
 
         /// <summary>Step between values (0 = continuous). Applied after pointer updates.</summary>
-        [Persist] public float StepSize { get; set; }
+        [Persist, HideInInspector] public float StepSize { get; set; }
 
         /// <summary>Slider direction.</summary>
-        [Persist] public SliderDirection Direction { get; set; } = SliderDirection.LeftToRight;
+        [Persist, HideInInspector] public SliderDirection Direction { get; set; } = SliderDirection.LeftToRight;
 
         // ── Colors ──
         /// <summary>Background track color.</summary>
-        [Persist] public Color BackgroundColor { get; set; } = Color.FromRgb(0x40, 0x40, 0x40);
+        [Persist, HideInInspector] public Color BackgroundColor { get; set; } = Color.FromRgb(0x40, 0x40, 0x40);
         /// <summary>Fill bar color.</summary>
-        [Persist] public Color FillColor { get; set; } = Color.FromRgb(0x40, 0xA0, 0xFF);
+        [Persist, HideInInspector] public Color FillColor { get; set; } = Color.FromRgb(0x40, 0xA0, 0xFF);
         /// <summary>Handle color.</summary>
-        [Persist] public Color HandleColor { get; set; } = Colors.White;
+        [Persist, HideInInspector] public Color HandleColor { get; set; } = Colors.White;
         /// <summary>Handle size as fraction of slider height (0-1).</summary>
-        [Persist] public float HandleSize { get; set; } = 0.8f;
+        [Persist, HideInInspector, Range(0f, 1f)] public float HandleSize { get; set; } = 0.8f;
 
         /// <summary>Fired when the value changes.</summary>
         public event Action<float>? OnValueChanged;

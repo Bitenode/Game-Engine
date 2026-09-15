@@ -861,6 +861,8 @@ Animation clips are imported automatically from 3D model files (FBX, DAE recomme
 
 Component that walks a `DialogueTree` asset, publishing events via the `EventBus` for UI display. Supports text subtitles, voice line audio, or both simultaneously.
 
+**Inspector:** Shows name, mode, voice volume, auto-advance, and a node summary. Use **Open Dialogue Editor** for the full node list, choices, variables, and voice clip paths (separate editor window).
+
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `Mode` | `DialogueMode` | `TextAndVoice` | Presentation mode: `TextOnly`, `VoiceOnly`, or `TextAndVoice` |

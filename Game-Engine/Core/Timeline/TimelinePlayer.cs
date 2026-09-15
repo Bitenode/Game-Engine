@@ -23,18 +23,21 @@ namespace Game_Engine.Core.Timeline
     public sealed class TimelinePlayer : Behavior
     {
         /// <summary>The timeline to play.</summary>
-        [Persist] public TimelineAsset? Timeline { get; set; }
+        [Persist, HideInInspector] public TimelineAsset? Timeline { get; set; }
 
         [Persist] public bool PlayOnAwake { get; set; } = false;
         [Persist] public float Speed { get; set; } = 1f;
 
         /// <summary>Current playback time in seconds.</summary>
+        [HideInInspector]
         public float CurrentTime { get; private set; }
 
         /// <summary>Whether the timeline is currently playing.</summary>
+        [HideInInspector]
         public bool IsPlaying { get; private set; }
 
         /// <summary>Whether the timeline has finished (non-looping).</summary>
+        [HideInInspector]
         public bool IsFinished { get; private set; }
 
         /// <summary>Event raised when playback completes.</summary>

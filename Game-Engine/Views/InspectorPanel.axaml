@@ -8,7 +8,7 @@
       <TextBlock Text="Inspector" FontSize="14"/>
     </DockPanel>
 
-    <ScrollViewer Margin="6">
+    <ScrollViewer x:Name="InspectorScroll" Margin="6">
       <StackPanel x:Name="Host" Spacing="12"/>
     </ScrollViewer>
   </DockPanel>

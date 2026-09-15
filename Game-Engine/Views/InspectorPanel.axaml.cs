@@ -19,9 +19,11 @@ using Game_Engine.Core.Blueprint;
 using Game_Engine.Core.Dialogue;
 using Game_Engine.Core.Rendering;
 using Game_Engine.Core.Timeline;
+using Game_Engine.Views.Inspector;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -30,7 +32,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using static Assimp.Metadata;
 using CoreTransform = Game_Engine.Core.Component.Transform;
 using CoreVector3 = Game_Engine.Core.Vector3;
@@ -79,206 +80,33 @@ file sealed class NumberConverter : IValueConverter
     }
 }
 
-// === User-extensible custom inspector contract ===
-[AttributeUsage(AttributeTargets.Method, Inherited = true, AllowMultiple = false)]
-public sealed class CustomInspectorAttribute : Attribute { }
-
-// Optional interface (users may implement instead of using the attribute)
-public interface ICustomInspector
-{
-    // Return a root Control (return null to fall back to default inspector)
-    Control? BuildInspectorUI(InspectorContext ctx);
-}
-
-// Helper handed to user code so they can reuse the built-in editors safely.
-public sealed class InspectorContext
-{
-    public Behavior Target { get; }
-    public Func<PropertyInfo, Control> EditorForProperty { get; }
-    public Func<string, Control> Header { get; }
-    public Func<string, Control, Control> Row { get; }
-    public Func<Control> DefaultInspector { get; }
-    public IEnumerable<PropertyInfo> Properties => _props();
-    private readonly Func<IEnumerable<PropertyInfo>> _props;
-
-    public InspectorContext(
-        Behavior target,
-        Func<PropertyInfo, Control> editorForProperty,
-        Func<string, Control> header,
-        Func<string, Control, Control> row,
-        Func<Control> defaultInspector,
-        Func<IEnumerable<PropertyInfo>> props)
-    {
-        Target = target;
-        EditorForProperty = editorForProperty;
-        Header = header;
-        Row = row;
-        DefaultInspector = defaultInspector;
-        _props = props;
-    }
-}
-
-
 public partial class InspectorPanel : UserControl
 {
     private GameObject? _target;   // what THIS inspector is showing
     private bool _isLocked;        // lock state for THIS inspector
     private Window? OwnerWindow => this.GetVisualRoot() as Window;
 
+    Control PathRow(object target, PropertyInfo pathProp, AssetPathEditorOptions options)
+        => AssetPathEditor.Create(target, pathProp, OwnerWindow, BeginPropertyEdit, CommitPropertyEdit, options);
+
     /// <summary>Serialized <see cref="SceneSerialization.BehaviorDTO"/> from the last Copy Component.</summary>
     static string? _behaviorClipboardJson;
 
     private bool _assetInspectorActive;
+
+    /// <summary><see cref="SelectionService.Version"/> last shown by <see cref="BuildUI"/> / <see cref="BuildMultiUI"/> / asset mode.</summary>
+    int _builtSelectionVersion = int.MinValue;
 
     // Use the custom delegate type
     private AssetSelectedHandler _onAssetSelected;
 
     private Action _onSelChanged, _onProjOpened, _onProjClosed, _onProjChanged;
 
-    static readonly HashSet<string> UIElemInspectorBaseDeferred = new(StringComparer.Ordinal)
-    {
-        nameof(UIElement.Raycastable),
-        nameof(UIElement.Color),
-        nameof(UIElement.Opacity),
-        nameof(UIElement.Focusable),
-        nameof(UIElement.OpacityTransitionSpeed),
-        nameof(UIElement.OpacityTargetEnabled),
-        nameof(UIElement.OpacityTarget),
-    };
-
-    static readonly HashSet<string> UIButtonInspectorDeferred = new(StringComparer.Ordinal)
-    {
-        nameof(UIButton.Interactable),
-        nameof(UIButton.NormalColor),
-        nameof(UIButton.HighlightedColor),
-        nameof(UIButton.PressedColor),
-        nameof(UIButton.DisabledColor),
-        nameof(UIButton.FadeDuration),
-    };
-
-    static readonly HashSet<string> UISliderInspectorDeferred = new(StringComparer.Ordinal)
-    {
-        nameof(UISlider.MinValue),
-        nameof(UISlider.MaxValue),
-        nameof(UISlider.Value),
-        nameof(UISlider.WholeNumbers),
-        nameof(UISlider.Interactable),
-        nameof(UISlider.StepSize),
-        nameof(UISlider.Direction),
-        nameof(UISlider.BackgroundColor),
-        nameof(UISlider.FillColor),
-        nameof(UISlider.HandleColor),
-        nameof(UISlider.HandleSize),
-    };
-
-    static readonly HashSet<string> UIToggleInspectorDeferred = new(StringComparer.Ordinal)
-    {
-        nameof(UIToggle.IsOn),
-        nameof(UIToggle.Interactable),
-        nameof(UIToggle.BackgroundColor),
-        nameof(UIToggle.ActiveColor),
-        nameof(UIToggle.CheckmarkColor),
-        nameof(UIToggle.CheckmarkInset),
-        nameof(UIToggle.HoverBackgroundColor),
-    };
-
-    static readonly HashSet<string> UIInputFieldInspectorDeferred = new(StringComparer.Ordinal)
-    {
-        nameof(UIInputField.Text),
-        nameof(UIInputField.Placeholder),
-        nameof(UIInputField.CharacterLimit),
-        nameof(UIInputField.ContentType),
-        nameof(UIInputField.FontSize),
-        nameof(UIInputField.FontPath),
-        nameof(UIInputField.ReadOnly),
-        nameof(UIInputField.BackgroundColor),
-        nameof(UIInputField.TextColor),
-        nameof(UIInputField.PlaceholderColor),
-        nameof(UIInputField.CursorColor),
-        nameof(UIInputField.SelectionColor),
-        nameof(UIInputField.FocusedBorderColor),
-        nameof(UIInputField.FocusBorderWidth),
-        nameof(UIInputField.DeselectOnClickOutside),
-    };
-
-    static readonly HashSet<string> UIProgressBarInspectorDeferred = new(StringComparer.Ordinal)
-    {
-        nameof(UIProgressBar.MinValue),
-        nameof(UIProgressBar.MaxValue),
-        nameof(UIProgressBar.Direction),
-        nameof(UIProgressBar.BackgroundColor),
-        nameof(UIProgressBar.FillColor),
-    };
-
-    static bool IsDeferredUIInspectorProperty(Behavior b, string name)
-    {
-        if (b is not UIElement) return false;
-        if (name is nameof(UIElement.IsPointerOver) or nameof(UIElement.IsPointerPressed)) return true;
-        if (UIElemInspectorBaseDeferred.Contains(name)) return true;
-        if (b is UIButton && UIButtonInspectorDeferred.Contains(name)) return true;
-        if (b is UISlider && UISliderInspectorDeferred.Contains(name)) return true;
-        if (b is UIToggle && UIToggleInspectorDeferred.Contains(name)) return true;
-        if (b is UIInputField && UIInputFieldInspectorDeferred.Contains(name)) return true;
-        if (b is UIProgressBar && UIProgressBarInspectorDeferred.Contains(name)) return true;
-        return false;
-    }
-
-    // Build the list of default/inspectable properties for a Behavior
     IEnumerable<PropertyInfo> InspectableProps(Behavior b)
     {
         return b.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
-            .Where(p => p.Name is not nameof(Behavior.Enabled) && p.Name is not nameof(Behavior.gameObject))
-            .Where(p => !IsDeferredUIInspectorProperty(b, p.Name))
-            // hide MeshCollider internals; they are drawn in MeshColliderTargetRow(...)
-            .Where(p => !(b is MeshCollider) ||
-                        (p.Name != nameof(MeshCollider.TargetFilters) &&
-                         p.Name != nameof(MeshCollider.TargetPaths) &&
-                         p.Name != nameof(MeshCollider.BindToTargetTransform) &&
-                         p.Name != nameof(MeshCollider.Mesh)))
-            // hide BehaviorTreeRunner properties handled by the custom BT editor
-            .Where(p => !(b is BehaviorTreeRunner) ||
-                        (p.Name != nameof(BehaviorTreeRunner.Tree) &&
-                         p.Name != nameof(BehaviorTreeRunner.Blackboard) &&
-                         p.Name != nameof(BehaviorTreeRunner.LastStatus)))
-            .Where(p => !(b is VisualBlueprintBehavior) ||
-                        (p.Name != nameof(VisualBlueprintBehavior.BlueprintAssetPath) &&
-                         p.Name != nameof(VisualBlueprintBehavior.LogSteps) &&
-                         p.Name != nameof(VisualBlueprintBehavior.RunTickGraph) &&
-                         p.Name != nameof(VisualBlueprintBehavior.Variables)))
-            // hide DialogueRunner properties handled by the custom Dialogue Tree editor
-            .Where(p => !(b is DialogueRunner) ||
-                        (p.Name != nameof(DialogueRunner.Tree) &&
-                         p.Name != nameof(DialogueRunner.Variables) &&
-                         p.Name != nameof(DialogueRunner.IsRunning) &&
-                         p.Name != nameof(DialogueRunner.IsWaitingForInput) &&
-                         p.Name != nameof(DialogueRunner.CurrentNode) &&
-                         p.Name != nameof(DialogueRunner.Mode) &&
-                         p.Name != nameof(DialogueRunner.VoiceVolume) &&
-                         p.Name != nameof(DialogueRunner.AutoAdvanceOnVoiceEnd)))
-            // hide TimelinePlayer properties handled by the custom timeline editor
-            .Where(p => !(b is TimelinePlayer) ||
-                        (p.Name != nameof(TimelinePlayer.Timeline) &&
-                         p.Name != nameof(TimelinePlayer.CurrentTime) &&
-                         p.Name != nameof(TimelinePlayer.IsPlaying) &&
-                         p.Name != nameof(TimelinePlayer.IsFinished)))
-            .Where(p => !(b is MeshLodGroup) ||
-                        (p.Name != nameof(MeshLodGroup.Lod0) &&
-                         p.Name != nameof(MeshLodGroup.Lod1) &&
-                         p.Name != nameof(MeshLodGroup.Lod2) &&
-                         p.Name != nameof(MeshLodGroup.Lod3) &&
-                         p.Name != nameof(MeshLodGroup.Lod1Distance) &&
-                         p.Name != nameof(MeshLodGroup.Lod2Distance) &&
-                         p.Name != nameof(MeshLodGroup.Lod3Distance) &&
-                         p.Name != nameof(MeshLodGroup.CurrentLodLevel)))
-            .Where(p => !(b is TriggerVolume) ||
-                        (p.Name != nameof(TriggerVolume.OnEnterKinds) &&
-                         p.Name != nameof(TriggerVolume.OnEnterStrings) &&
-                         p.Name != nameof(TriggerVolume.OnEnterBools) &&
-                         p.Name != nameof(TriggerVolume.OnExitKinds) &&
-                         p.Name != nameof(TriggerVolume.OnExitStrings) &&
-                         p.Name != nameof(TriggerVolume.OnExitBools)))
-            .Where(p => !(b is ReflectionProbe) || p.Name != nameof(ReflectionProbe.GpuCubemap));
+            .Where(p => p.GetCustomAttribute<HideInInspectorAttribute>() == null);
     }
 
     // Default property panel (what we previously inlined)
@@ -288,31 +116,9 @@ public partial class InspectorPanel : UserControl
         TryAppendUICustomInspector(panel, b);
         foreach (var p in InspectableProps(b))
         {
-            // ── AudioSource.ClipPath: custom row with Import + drag-and-drop ──
-            if (b is Game_Engine.Core.Component.AudioSource && p.Name == "ClipPath")
+            if (p.GetCustomAttribute<AssetPathAttribute>() != null)
             {
-                panel.Children.Add(BuildAudioClipRow(b, p));
-                continue;
-            }
-
-            // ── Decal.TexturePath: custom row with Import + drag-and-drop ──
-            if (b is Game_Engine.Core.Component.Decal && p.Name == "TexturePath")
-            {
-                panel.Children.Add(BuildDecalTextureRow(b, p));
-                continue;
-            }
-
-            // ── VegetationPainter.CustomMeshPath: custom row with Import + drag-and-drop ──
-            if (b is Game_Engine.Core.Component.VegetationPainter && p.Name == "CustomMeshPath")
-            {
-                panel.Children.Add(BuildVegetationMeshRow(b, p));
-                continue;
-            }
-
-            // ── VegetationPainter.TexturePath: custom row with Import + drag-and-drop ──
-            if (b is Game_Engine.Core.Component.VegetationPainter && p.Name == "TexturePath")
-            {
-                panel.Children.Add(BuildVegetationTextureRow(b, p));
+                panel.Children.Add(PropertyEditor(b, p));
                 continue;
             }
 
@@ -322,323 +128,10 @@ public partial class InspectorPanel : UserControl
             panel.Children.Add(row);
         }
 
-        if (b is ReflectionProbe rpProbe)
-            panel.Children.Add(ReflectionProbeGpuCubemapRow(rpProbe));
-
-        // ── VegetationPainter: Build / Rebuild / Clear buttons + instance count ──
-        if (b is Game_Engine.Core.Component.VegetationPainter vp)
-        {
-            panel.Children.Add(BuildVegetationActionsPanel(vp));
-        }
-        else if (b is Game_Engine.Core.Component.PlanetAtmosphere pa)
-        {
-            panel.Children.Add(BuildPlanetAtmospherePresetPanel(pa));
-        }
+        foreach (var extra in ComponentInspectorRegistry.BuildBodySuffix(this, b))
+            panel.Children.Add(extra);
 
         return panel;
-    }
-
-    /// <summary>Convert an absolute path to a project-relative path, if possible.</summary>
-    static string AudioAbsToRel(string abs)
-    {
-        var root = ProjectService.Current?.RootPath;
-        if (string.IsNullOrWhiteSpace(root)) return abs.Replace('\\', '/');
-        try
-        {
-            var full = Path.GetFullPath(abs);
-            var projFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                           + Path.DirectorySeparatorChar;
-            if (full.StartsWith(projFull, StringComparison.OrdinalIgnoreCase))
-                return full.Substring(projFull.Length).Replace('\\', '/');
-            return full.Replace('\\', '/');
-        }
-        catch { return abs.Replace('\\', '/'); }
-    }
-
-    /// <summary>Builds a custom Inspector row for AudioSource.ClipPath with Import button + drag-and-drop.</summary>
-    Control BuildAudioClipRow(Behavior audioSource, PropertyInfo clipPathProp)
-    {
-        var container = new StackPanel { Spacing = 4 };
-
-        // ── Row 1: Label + path text + Import + Clear ──
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        row.Children.Add(new TextBlock { Text = "ClipPath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
-
-        var tbPath = new TextBox
-        {
-            Width = 200,
-            Watermark = "(none — import or drop audio file)",
-            Text = (clipPathProp.GetValue(audioSource) as string) ?? ""
-        };
-        tbPath.GotFocus += (_, __) => BeginPropertyEdit(audioSource, clipPathProp);
-        tbPath.LostFocus += (_, __) =>
-        {
-            clipPathProp.SetValue(audioSource, tbPath.Text);
-            SceneService.NotifyChanged();
-            CommitPropertyEdit(audioSource, clipPathProp);
-        };
-
-        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
-        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
-
-        row.Children.Add(tbPath);
-        row.Children.Add(btnImport);
-        row.Children.Add(btnClear);
-        container.Children.Add(row);
-
-        // ── Row 2: Drag-and-drop zone ──
-        var dropText = new TextBlock
-        {
-            Text = "Drop audio file here  (.wav, .ogg, .mp3)",
-            Opacity = 0.6,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
-        };
-        var dropZone = new Border
-        {
-            Margin = new Thickness(120, 0, 0, 0),  // indent to match label column
-            Padding = new Thickness(10, 6),
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Background = Brushes.Transparent,
-            MinWidth = 280,
-            MinHeight = 32,
-            Child = dropText
-        };
-        DragDrop.SetAllowDrop(dropZone, true);
-        container.Children.Add(dropZone);
-
-        // Audio file extensions
-        var audioExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { ".wav", ".ogg", ".mp3", ".flac", ".aiff", ".aif", ".wma", ".m4a" };
-
-        // ── Import button handler ──
-        btnImport.Click += async (_, __) =>
-        {
-            var win = OwnerWindow;
-            if (win == null) return;
-
-            // Start in the project's Assets folder (like all other importers)
-            var assetsDir = ProjectService.Current?.AssetsPath;
-
-            var dlg = new OpenFileDialog
-            {
-                Title = "Import Audio Clip",
-                AllowMultiple = false,
-                Directory = assetsDir,
-                Filters = new List<FileDialogFilter>
-                {
-                    new FileDialogFilter { Name = "Audio Files", Extensions = { "wav", "ogg", "mp3", "flac", "aiff" } },
-                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
-                }
-            };
-            var files = await dlg.ShowAsync(win);
-            var picked = files?.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(picked)) return;
-
-            var relPath = AudioAbsToRel(picked);
-            tbPath.Text = relPath;
-            clipPathProp.SetValue(audioSource, relPath);
-            SceneService.NotifyChanged();
-        };
-
-        // ── Clear button handler ──
-        btnClear.Click += (_, __) =>
-        {
-            tbPath.Text = "";
-            clipPathProp.SetValue(audioSource, "");
-            SceneService.NotifyChanged();
-        };
-
-        // ── Drag-over handler ──
-        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
-        {
-            if (e.Payload().HasFiles)
-                e.DragEffects = DragDropEffects.Copy;
-            else
-                e.DragEffects = DragDropEffects.None;
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        // ── Drop handler ──
-        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
-        {
-            string? pickedPath = null;
-
-            if (e.Payload().HasFiles)
-            {
-                var names = e.Payload().GetFilePaths();
-                if (names != null) pickedPath = names.FirstOrDefault();
-            }
-
-            if (pickedPath == null && e.Payload().HasFiles)
-            {
-                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
-                if (items != null)
-                {
-                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
-                    if (file != null)
-                    {
-                        var local = file.TryGetLocalPath();
-                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
-                    }
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(pickedPath)) return;
-            if (!audioExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
-
-            var relPath = AudioAbsToRel(pickedPath);
-            tbPath.Text = relPath;
-            clipPathProp.SetValue(audioSource, relPath);
-            SceneService.NotifyChanged();
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        return container;
-    }
-
-    /// <summary>Builds a custom Inspector row for Decal.TexturePath with Import button + drag-and-drop.</summary>
-    Control BuildDecalTextureRow(Behavior decal, PropertyInfo texPathProp)
-    {
-        var container = new StackPanel { Spacing = 4 };
-
-        // ── Row 1: Label + path text + Import + Clear ──
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        row.Children.Add(new TextBlock { Text = "TexturePath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
-
-        var tbPath = new TextBox
-        {
-            Width = 200,
-            Watermark = "(none — import or drop image)",
-            Text = (texPathProp.GetValue(decal) as string) ?? ""
-        };
-        tbPath.GotFocus += (_, __) => BeginPropertyEdit(decal, texPathProp);
-        tbPath.LostFocus += (_, __) =>
-        {
-            texPathProp.SetValue(decal, tbPath.Text);
-            SceneService.NotifyChanged();
-            CommitPropertyEdit(decal, texPathProp);
-        };
-
-        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
-        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
-
-        row.Children.Add(tbPath);
-        row.Children.Add(btnImport);
-        row.Children.Add(btnClear);
-        container.Children.Add(row);
-
-        // ── Row 2: Drag-and-drop zone ──
-        var dropText = new TextBlock
-        {
-            Text = "Drop image file here  (.png, .jpg, .tga, .bmp)",
-            Opacity = 0.6,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
-        };
-        var dropZone = new Border
-        {
-            Margin = new Thickness(120, 0, 0, 0),
-            Padding = new Thickness(10, 6),
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Background = Brushes.Transparent,
-            MinWidth = 280,
-            MinHeight = 32,
-            Child = dropText
-        };
-        DragDrop.SetAllowDrop(dropZone, true);
-        container.Children.Add(dropZone);
-
-        var imageExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp" };
-
-        // ── Import button handler ──
-        btnImport.Click += async (_, __) =>
-        {
-            var win = OwnerWindow;
-            if (win == null) return;
-
-            var assetsDir = ProjectService.Current?.AssetsPath;
-
-            var dlg = new OpenFileDialog
-            {
-                Title = "Import Decal Texture",
-                AllowMultiple = false,
-                Directory = assetsDir,
-                Filters = new List<FileDialogFilter>
-                {
-                    new FileDialogFilter { Name = "Image Files", Extensions = { "png", "jpg", "jpeg", "tga", "bmp", "tiff" } },
-                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
-                }
-            };
-            var files = await dlg.ShowAsync(win);
-            var picked = files?.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(picked)) return;
-
-            var relPath = AudioAbsToRel(picked);
-            tbPath.Text = relPath;
-            texPathProp.SetValue(decal, relPath);
-            SceneService.NotifyChanged();
-        };
-
-        // ── Clear button handler ──
-        btnClear.Click += (_, __) =>
-        {
-            tbPath.Text = "";
-            texPathProp.SetValue(decal, "");
-            SceneService.NotifyChanged();
-        };
-
-        // ── Drag-over handler ──
-        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
-        {
-            if (e.Payload().HasFiles)
-                e.DragEffects = DragDropEffects.Copy;
-            else
-                e.DragEffects = DragDropEffects.None;
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        // ── Drop handler ──
-        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
-        {
-            string? pickedPath = null;
-
-            if (e.Payload().HasFiles)
-            {
-                var names = e.Payload().GetFilePaths();
-                if (names != null) pickedPath = names.FirstOrDefault();
-            }
-
-            if (pickedPath == null && e.Payload().HasFiles)
-            {
-                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
-                if (items != null)
-                {
-                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
-                    if (file != null)
-                    {
-                        var local = file.TryGetLocalPath();
-                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
-                    }
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(pickedPath)) return;
-            if (!imageExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
-
-            var relPath = AudioAbsToRel(pickedPath);
-            tbPath.Text = relPath;
-            texPathProp.SetValue(decal, relPath);
-            SceneService.NotifyChanged();
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        return container;
     }
 
     /// <summary>Builds action buttons for VegetationPainter: Build / Rebuild / Clear + instance count.</summary>
@@ -758,297 +251,6 @@ public partial class InspectorPanel : UserControl
         return container;
     }
 
-    /// <summary>Builds a custom Inspector row for VegetationPainter.CustomMeshPath with Import button + drag-and-drop.</summary>
-    Control BuildVegetationMeshRow(Behavior painter, PropertyInfo meshPathProp)
-    {
-        var container = new StackPanel { Spacing = 4 };
-
-        // ── Row 1: Label + path text + Import + Clear ──
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        row.Children.Add(new TextBlock { Text = "CustomMeshPath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
-
-        var tbPath = new TextBox
-        {
-            Width = 200,
-            Watermark = "(none — import or drop 3D model / texture)",
-            Text = (meshPathProp.GetValue(painter) as string) ?? ""
-        };
-        tbPath.GotFocus += (_, __) => BeginPropertyEdit(painter, meshPathProp);
-        tbPath.LostFocus += (_, __) =>
-        {
-            meshPathProp.SetValue(painter, tbPath.Text);
-            SceneService.NotifyChanged();
-            CommitPropertyEdit(painter, meshPathProp);
-        };
-
-        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
-        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
-
-        row.Children.Add(tbPath);
-        row.Children.Add(btnImport);
-        row.Children.Add(btnClear);
-        container.Children.Add(row);
-
-        // ── Row 2: Drag-and-drop zone ──
-        var dropText = new TextBlock
-        {
-            Text = "Drop grass model or texture  (.fbx .obj .glb .png .jpg)",
-            Opacity = 0.6,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
-        };
-        var dropZone = new Border
-        {
-            Margin = new Thickness(120, 0, 0, 0),
-            Padding = new Thickness(10, 6),
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Background = Brushes.Transparent,
-            MinWidth = 280,
-            MinHeight = 32,
-            Child = dropText
-        };
-        DragDrop.SetAllowDrop(dropZone, true);
-        container.Children.Add(dropZone);
-
-        // Accept both 3D models and texture images
-        var validExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            // 3D models
-            ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds",
-            // Textures
-            ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp"
-        };
-
-        // ── Import button handler ──
-        btnImport.Click += async (_, __) =>
-        {
-            var win = OwnerWindow;
-            if (win == null) return;
-
-            var assetsDir = ProjectService.Current?.AssetsPath;
-
-            var dlg = new OpenFileDialog
-            {
-                Title = "Import Grass Model or Texture",
-                AllowMultiple = false,
-                Directory = assetsDir,
-                Filters = new List<FileDialogFilter>
-                {
-                    new FileDialogFilter { Name = "3D Models", Extensions = { "fbx", "obj", "gltf", "glb", "dae", "3ds" } },
-                    new FileDialogFilter { Name = "Textures", Extensions = { "png", "jpg", "jpeg", "tga", "bmp", "tiff" } },
-                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
-                }
-            };
-            var files = await dlg.ShowAsync(win);
-            var picked = files?.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(picked)) return;
-
-            var relPath = AudioAbsToRel(picked);
-            tbPath.Text = relPath;
-            meshPathProp.SetValue(painter, relPath);
-            SceneService.NotifyChanged();
-        };
-
-        // ── Clear button handler ──
-        btnClear.Click += (_, __) =>
-        {
-            tbPath.Text = "";
-            meshPathProp.SetValue(painter, "");
-            SceneService.NotifyChanged();
-        };
-
-        // ── Drag-over handler ──
-        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
-        {
-            if (e.Payload().HasFiles)
-                e.DragEffects = DragDropEffects.Copy;
-            else
-                e.DragEffects = DragDropEffects.None;
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        // ── Drop handler ──
-        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
-        {
-            string? pickedPath = null;
-
-            if (e.Payload().HasFiles)
-            {
-                var names = e.Payload().GetFilePaths();
-                if (names != null) pickedPath = names.FirstOrDefault();
-            }
-
-            if (pickedPath == null && e.Payload().HasFiles)
-            {
-                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
-                if (items != null)
-                {
-                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
-                    if (file != null)
-                    {
-                        var local = file.TryGetLocalPath();
-                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
-                    }
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(pickedPath)) return;
-            if (!validExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
-
-            var relPath = AudioAbsToRel(pickedPath);
-            tbPath.Text = relPath;
-            meshPathProp.SetValue(painter, relPath);
-            SceneService.NotifyChanged();
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        return container;
-    }
-
-    /// <summary>Builds a custom Inspector row for VegetationPainter.TexturePath with Import button + drag-and-drop.</summary>
-    Control BuildVegetationTextureRow(Behavior painter, PropertyInfo texPathProp)
-    {
-        var container = new StackPanel { Spacing = 4 };
-
-        // ── Row 1: Label + path text + Import + Clear ──
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        row.Children.Add(new TextBlock { Text = "TexturePath", Width = 120, VerticalAlignment = VerticalAlignment.Center });
-
-        var tbPath = new TextBox
-        {
-            Width = 200,
-            Watermark = "(none — import or drop texture)",
-            Text = (texPathProp.GetValue(painter) as string) ?? ""
-        };
-        tbPath.GotFocus += (_, __) => BeginPropertyEdit(painter, texPathProp);
-        tbPath.LostFocus += (_, __) =>
-        {
-            texPathProp.SetValue(painter, tbPath.Text);
-            SceneService.NotifyChanged();
-            CommitPropertyEdit(painter, texPathProp);
-        };
-
-        var btnImport = new Button { Content = "Import…", Padding = new Thickness(8, 2) };
-        var btnClear = new Button { Content = "Clear", Padding = new Thickness(8, 2) };
-
-        row.Children.Add(tbPath);
-        row.Children.Add(btnImport);
-        row.Children.Add(btnClear);
-        container.Children.Add(row);
-
-        // ── Row 2: Drag-and-drop zone ──
-        var dropText = new TextBlock
-        {
-            Text = "Drop texture here  (.png, .jpg, .tga, .bmp)",
-            Opacity = 0.6,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
-        };
-        var dropZone = new Border
-        {
-            Margin = new Thickness(120, 0, 0, 0),
-            Padding = new Thickness(10, 6),
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Background = Brushes.Transparent,
-            MinWidth = 280,
-            MinHeight = 32,
-            Child = dropText
-        };
-        DragDrop.SetAllowDrop(dropZone, true);
-        container.Children.Add(dropZone);
-
-        var imageExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff", ".gif", ".webp" };
-
-        // ── Import button handler ──
-        btnImport.Click += async (_, __) =>
-        {
-            var win = OwnerWindow;
-            if (win == null) return;
-
-            var assetsDir = ProjectService.Current?.AssetsPath;
-
-            var dlg = new OpenFileDialog
-            {
-                Title = "Import Grass Texture",
-                AllowMultiple = false,
-                Directory = assetsDir,
-                Filters = new List<FileDialogFilter>
-                {
-                    new FileDialogFilter { Name = "Image Files", Extensions = { "png", "jpg", "jpeg", "tga", "bmp", "tiff" } },
-                    new FileDialogFilter { Name = "All Files", Extensions = { "*" } }
-                }
-            };
-            var files = await dlg.ShowAsync(win);
-            var picked = files?.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(picked)) return;
-
-            var relPath = AudioAbsToRel(picked);
-            tbPath.Text = relPath;
-            texPathProp.SetValue(painter, relPath);
-            SceneService.NotifyChanged();
-        };
-
-        // ── Clear button handler ──
-        btnClear.Click += (_, __) =>
-        {
-            tbPath.Text = "";
-            texPathProp.SetValue(painter, "");
-            SceneService.NotifyChanged();
-        };
-
-        // ── Drag-over handler ──
-        dropZone.AddHandler(DragDrop.DragOverEvent, (s, e) =>
-        {
-            if (e.Payload().HasFiles)
-                e.DragEffects = DragDropEffects.Copy;
-            else
-                e.DragEffects = DragDropEffects.None;
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        // ── Drop handler ──
-        dropZone.AddHandler(DragDrop.DropEvent, (s, e) =>
-        {
-            string? pickedPath = null;
-
-            if (e.Payload().HasFiles)
-            {
-                var names = e.Payload().GetFilePaths();
-                if (names != null) pickedPath = names.FirstOrDefault();
-            }
-
-            if (pickedPath == null && e.Payload().HasFiles)
-            {
-                var items = e.Payload().GetStorageItems() as IEnumerable<Avalonia.Platform.Storage.IStorageItem>;
-                if (items != null)
-                {
-                    var file = items.FirstOrDefault() as Avalonia.Platform.Storage.IStorageFile;
-                    if (file != null)
-                    {
-                        var local = file.TryGetLocalPath();
-                        if (!string.IsNullOrWhiteSpace(local)) pickedPath = local;
-                    }
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(pickedPath)) return;
-            if (!imageExts.Contains(System.IO.Path.GetExtension(pickedPath))) return;
-
-            var relPath = AudioAbsToRel(pickedPath);
-            tbPath.Text = relPath;
-            texPathProp.SetValue(painter, relPath);
-            SceneService.NotifyChanged();
-            e.Handled = true;
-        }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-
-        return container;
-    }
-
     // Try to obtain a custom inspector UI from the user's script
     bool TryBuildCustomInspectorUI(Behavior b, out Control? ui)
     {
@@ -1124,182 +326,6 @@ public partial class InspectorPanel : UserControl
 
         ui = null;
         return false;
-    }
-
-    static bool IsEditorScriptAssembly(Assembly asm)
-    {
-        try
-        {
-            // Hot build loaded into a collectible ALC
-            if (AssemblyLoadContext.GetLoadContext(asm)?.IsCollectible == true)
-                return true;
-
-            var loc = asm.Location;
-            if (string.IsNullOrWhiteSpace(loc)) return false;
-
-            // Persisted editor build (the files ScriptEditor saves)
-            if (Path.GetFileName(loc).StartsWith("EditorScripts_", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Anything under an ".../EditorScripts/..." folder
-            var marker = Path.DirectorySeparatorChar + "EditorScripts" + Path.DirectorySeparatorChar;
-            var norm = Path.GetFullPath(loc);
-            return norm.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-        catch { return false; }
-    }
-
-    // ---------- Project Script Discovery (source .cs,  DLLs) ----------
-    sealed class ScriptInfo
-    {
-        public string Name { get; }
-        public string FullName { get; }
-        public string FilePath { get; }
-        public ScriptInfo(string name, string fullName, string filePath)
-        {
-            Name = name; FullName = fullName; FilePath = filePath;
-        }
-    }
-
-    sealed class ComboItem
-    {
-        public string Display { get; set; } = "";   // <— property (not field)
-        public string Category { get; set; } = "";  // category for grouping
-        public Type Type { get; set; }              // non-null if loaded/instantiable
-        public ScriptInfo Script { get; set; }      // non-null for source scripts
-    }
-
-    // tolerant: captures class name and the entire base list up to '{' or newline
-    static readonly Regex RxClassDecl =
-        new Regex(@"(?:(?:\[[^\]]*\]\s*)|(?:public|internal|protected|private|sealed|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)\s*:\s*([^\r\n{]+)",
-                  RegexOptions.Compiled);
-
-    // used to decide if the base list contains Behavior (with or without namespace)
-    static readonly Regex RxBaseContainsBehavior =
-        new Regex(@"\b(?:global::)?(?:[A-Za-z_]\w*\.)*Behavior\b", RegexOptions.Compiled);
-
-
-    static List<ScriptInfo> _scriptCache = new List<ScriptInfo>();
-    static string _scriptCacheRoot = "";
-    static DateTime _scriptCacheStamp = DateTime.MinValue;
-
-    static void InvalidateScriptCache()
-    {
-        _scriptCache.Clear();
-        _scriptCacheRoot = "";
-        _scriptCacheStamp = DateTime.MinValue;
-    }
-
-    // Scan all likely project roots (dedup + exists)
-    static IEnumerable<string> CandidateScriptRoots()
-    {
-        var p = ProjectService.Current;
-        if (p == null) yield break;
-
-        var dirs = new[]
-        {
-        p.RootPath,
-        p.AssetsPath,
-        p.ScenesPath,
-        p.PackagesPath,
-        p.BuildsPath
-    };
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var d in dirs)
-        {
-            if (string.IsNullOrWhiteSpace(d)) continue;
-            var full = Path.GetFullPath(d);
-            if (!Directory.Exists(full)) continue;
-            if (seen.Add(full)) yield return full;
-        }
-    }
-
-    // Find .cs files that declare "class X : Behavior" (tolerant of attributes, whitespace, fqns)
-    static List<ScriptInfo> DiscoverProjectBehaviorScripts()
-    {
-        var p = ProjectService.Current;
-        if (p == null) return new List<ScriptInfo>();
-
-        // small cache
-        var rootSig = p.RootPath ?? "";
-        if (_scriptCache.Count > 0 && string.Equals(_scriptCacheRoot, rootSig, StringComparison.OrdinalIgnoreCase))
-        {
-            if ((DateTime.UtcNow - _scriptCacheStamp).TotalSeconds < 2)
-                return new List<ScriptInfo>(_scriptCache);
-        }
-
-        // local tolerant regex (don’t rely on outer fields)
-        var rxNamespace = new Regex(@"namespace\s+([A-Za-z_][\w\.]*)", RegexOptions.Compiled);
-        var rxClassDecl = new Regex(
-            @"(?:(?:\[[^\]]*\]\s*)|(?:public|internal|protected|private|sealed|abstract|partial)\s+)*class\s+([A-Za-z_]\w*)\s*:\s*([^\r\n{]+)",
-            RegexOptions.Compiled);
-        var rxBaseContainsBehavior = new Regex(@"\b(?:global::)?(?:[A-Za-z_]\w*\.)*Behavior\b", RegexOptions.Compiled);
-
-        var found = new List<ScriptInfo>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var root in CandidateScriptRoots())
-        {
-            IEnumerable<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-                                 .Where(f =>
-                                 {
-                                     // skip common build/metadata folders
-                                     var s = f.Replace('/', Path.DirectorySeparatorChar);
-                                     var sep = Path.DirectorySeparatorChar;
-                                     return s.IndexOf($"{sep}obj{sep}", StringComparison.OrdinalIgnoreCase) < 0
-                                         && s.IndexOf($"{sep}bin{sep}", StringComparison.OrdinalIgnoreCase) < 0
-                                         && s.IndexOf($"{sep}.git{sep}", StringComparison.OrdinalIgnoreCase) < 0;
-                                 })
-                                 .Take(5000); // safety cap
-            }
-            catch { continue; }
-
-            foreach (var f in files)
-            {
-                string text;
-                try { text = File.ReadAllText(f); } catch { continue; }
-
-                // choose last namespace in file (typical pattern for one-class files)
-                string ns = "";
-                var nsMatches = rxNamespace.Matches(text);
-                if (nsMatches.Count > 0)
-                    ns = nsMatches[nsMatches.Count - 1].Groups[1].Value.Trim();
-
-                var clsMatches = rxClassDecl.Matches(text);
-                if (clsMatches.Count == 0) continue;
-
-                for (int m = 0; m < clsMatches.Count; m++)
-                {
-                    var cm = clsMatches[m];
-                    var className = cm.Groups[1].Value.Trim();
-                    var baseList = cm.Groups[2].Value.Trim();
-
-                    // must inherit Behavior somewhere in the base list
-                    if (!rxBaseContainsBehavior.IsMatch(baseList)) continue;
-
-                    // skip abstract classes (quick header check around decl)
-                    var headStart = Math.Max(0, cm.Index - 64);
-                    var headLen = Math.Min(text.Length - headStart, cm.Length + 64);
-                    var header = text.Substring(headStart, headLen);
-                    if (header.IndexOf("abstract class", StringComparison.OrdinalIgnoreCase) >= 0)
-                        continue;
-
-                    var full = string.IsNullOrEmpty(ns) ? className : (ns + "." + className);
-                    if (!seen.Add(full)) continue;
-
-                    found.Add(new ScriptInfo(className, full, f));
-                }
-            }
-        }
-
-        _scriptCache = found;
-        _scriptCacheRoot = rootSig;
-        _scriptCacheStamp = DateTime.UtcNow;
-        return new List<ScriptInfo>(_scriptCache);
     }
 
     static Type? TryResolveLoadedType(string fullName)
@@ -1598,33 +624,14 @@ public partial class InspectorPanel : UserControl
         _onSelChanged = () =>
         {
             if (_isLocked) return;
-
-            if (_assetInspectorActive)
-            {
-                // leave material inspector when the user picks a GameObject
-                Avalonia.Threading.Dispatcher.UIThread.Post(ExitAssetInspector);
-                return;
-            }
-
-            _target = SelectionService.Current;
-            var all = SelectionService.Selected;
-            if (all.Count > 1)
-            {
-                // Multi-select: show all GameObjects
-                var snapshot = new List<GameObject>(all);
-                Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildMultiUI(snapshot));
-            }
-            else
-            {
-                Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildUI(_target));
-            }
+            Avalonia.Threading.Dispatcher.UIThread.Post(ApplySelectionChanged);
         };
 
         SelectionService.Changed += _onSelChanged;
 
-        _onProjOpened = () => { s_triedLoadPersisted = false; EnsurePersistedEditorScriptsLoaded(); InvalidateScriptCache(); };
-        _onProjClosed = InvalidateScriptCache;
-        _onProjChanged = InvalidateScriptCache;
+        _onProjOpened = () => { s_triedLoadPersisted = false; EnsurePersistedEditorScriptsLoaded(); ComponentCatalog.Invalidate(); };
+        _onProjClosed = ComponentCatalog.Invalidate;
+        _onProjChanged = ComponentCatalog.InvalidateScripts;
 
         ProjectService.ProjectOpened += _onProjOpened;
         ProjectService.ProjectClosed += _onProjClosed;
@@ -1676,6 +683,36 @@ public partial class InspectorPanel : UserControl
         }
     }
 
+    void ApplySelectionChanged()
+    {
+        if (_isLocked) return;
+        // Touch() / undo / gizmo: same Version — keep the current tree, let bindings refresh in place.
+        if (SelectionService.Version == _builtSelectionVersion) return;
+
+        if (_assetInspectorActive)
+        {
+            ExitAssetInspector();
+            return;
+        }
+
+        _target = SelectionService.Current;
+        var all = SelectionService.Selected;
+        if (all.Count > 1)
+            BuildMultiUI(new List<GameObject>(all));
+        else
+            BuildUI(_target);
+    }
+
+    void RememberBuiltSelection() => _builtSelectionVersion = SelectionService.Version;
+
+    /// <summary>Full rebuild after add / remove / paste. Keeps the inspector scroll offset.</summary>
+    void RebuildForStructure(GameObject go)
+    {
+        var offset = InspectorScroll.Offset;
+        BuildUI(go);
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => InspectorScroll.Offset = offset);
+    }
+
     private void ExitAssetInspector()
     {
         _assetInspectorActive = false;
@@ -1688,6 +725,7 @@ public partial class InspectorPanel : UserControl
     void BuildUI(GameObject? go)
     {
         Host.Children.Clear();
+        RememberBuiltSelection();
 
         if (go is null)
         {
@@ -1722,48 +760,33 @@ public partial class InspectorPanel : UserControl
 
         Host.Children.Add(nameRow);
 
-        Host.Children.Add(SectionHeader("Object"));
-        Host.Children.Add(BuildObjectTagLayerRow(go));
+        Host.Children.Add(InspectorFold.Section(
+            "Object",
+            BuildObjectTagLayerRow(go),
+            InspectorFold.GetObject(go),
+            v => InspectorFold.SetObject(go, v)));
 
-        // ---- Transform (mandatory) -----------------------------------------
-        Host.Children.Add(SectionHeader("Transform"));
-        Host.Children.Add(EditorForTransform(go.Transform));
+        Host.Children.Add(InspectorFold.Section(
+            "Transform",
+            EditorForTransform(go.Transform),
+            InspectorFold.GetTransform(go),
+            v => InspectorFold.SetTransform(go, v)));
 
-        // ---- Add Component --------------------------------------------------
-        // Built-ins = engine/editor components only (exclude any Script assemblies)
-        var builtInTypes = AppDomain.CurrentDomain.GetAssemblies()
-            .Where(a => !IsEditorScriptAssembly(a))
-            .SelectMany(LoadableTypes)
-            .Where(t => t != null && t.IsClass && !t.IsAbstract && typeof(Behavior).IsAssignableFrom(t))
-            .Where(t => t != typeof(CoreTransform))
-            .ToList();
-
-        // Project scripts discovered from source files
-        var scriptInfos = DiscoverProjectBehaviorScripts();
-        scriptInfos.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
-
-        var scriptFullNames = new HashSet<string>(scriptInfos.Select(s => s.FullName), StringComparer.Ordinal);
-
-        static string GetCategory(Type t)
+        var behaviors = go.Behaviors.ToList();
+        for (int i = 0; i < behaviors.Count; i++)
         {
-            var attr = t.GetCustomAttributes(typeof(ComponentCategoryAttribute), false);
-            if (attr.Length > 0) return ((ComponentCategoryAttribute)attr[0]).Category;
-            return "Misc";
+            Host.Children.Add(EditorForBehavior(go, behaviors[i]));
+            if (i < behaviors.Count - 1)
+                Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
         }
 
-        var categoryMap = new SortedDictionary<string, List<ComboItem>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var t in builtInTypes)
-        {
-            var fn = t.FullName ?? t.Name;
-            if (scriptFullNames.Contains(fn)) continue;
-            var cat = GetCategory(t);
-            if (!categoryMap.TryGetValue(cat, out var list)) { list = new List<ComboItem>(); categoryMap[cat] = list; }
-            list.Add(new ComboItem { Display = t.Name, Category = cat, Type = t });
-        }
-        foreach (var list in categoryMap.Values)
-            list.Sort((a, b) => string.Compare(a.Display, b.Display, StringComparison.OrdinalIgnoreCase));
+        Host.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 4) });
+        Host.Children.Add(BuildAddComponentBar(go));
+    }
 
-
+    Control BuildAddComponentBar(GameObject go)
+    {
+        var (categoryMap, scriptInfos) = ComponentCatalog.Get();
         var addComponentMenu = BuildAddComponentMenu(go, categoryMap, scriptInfos);
 
         var pasteBtn = new Button
@@ -1787,7 +810,7 @@ public partial class InspectorPanel : UserControl
                 if (dto == null) { ShowInfo("Clipboard data is invalid."); return; }
                 SceneSerialization.PasteBehaviorFromClipboard(go, dto);
                 SceneService.NotifyChanged();
-                BuildUI(go);
+                RebuildForStructure(go);
             }
             catch (Exception ex) { ShowInfo("Paste failed:\n" + ex.Message); }
         };
@@ -1811,27 +834,16 @@ public partial class InspectorPanel : UserControl
 
         addBtn.Click += (_, __) => addComponentMenu.Open(addBtn);
         quickAddBtn.Click += (_, __) => ShowQuickAddComponentPicker(go, categoryMap, scriptInfos);
-        Host.Children.Add(pasteBtn);
-        Host.Children.Add(quickAddBtn);
-        Host.Children.Add(addBtn);
 
-        // ---- Separator before components ------------------------------------
-        Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
-
-        // ---- Other behaviors -----------------------------------------------
-        var behaviors = go.Behaviors.ToList();
-        for (int i = 0; i < behaviors.Count; i++)
-        {
-            Host.Children.Add(EditorForBehavior(go, behaviors[i]));
-
-            // Add a separator between components (not after the last one)
-            if (i < behaviors.Count - 1)
-                Host.Children.Add(new Separator { Margin = new Thickness(0, 4) });
-        }
+        var bar = new StackPanel { Spacing = 0 };
+        bar.Children.Add(pasteBtn);
+        bar.Children.Add(quickAddBtn);
+        bar.Children.Add(addBtn);
+        return bar;
     }
 
     ContextMenu BuildAddComponentMenu(GameObject go,
-        SortedDictionary<string, List<ComboItem>> categoryMap,
+        SortedDictionary<string, List<ComponentCatalogItem>> categoryMap,
         List<ScriptInfo> scriptInfos)
     {
         var menu = new ContextMenu();
@@ -1849,7 +861,7 @@ public partial class InspectorPanel : UserControl
                     {
                         go.AddBehavior((Behavior)Activator.CreateInstance(ci.Type)!);
                         SceneService.NotifyChanged();
-                        BuildUI(go);
+                        RebuildForStructure(go);
                     }
                     catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
                 };
@@ -1876,7 +888,7 @@ public partial class InspectorPanel : UserControl
                         {
                             go.AddBehavior((Behavior)Activator.CreateInstance(sType)!);
                             SceneService.NotifyChanged();
-                            BuildUI(go);
+                            RebuildForStructure(go);
                         }
                         catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
                     }
@@ -1896,7 +908,7 @@ public partial class InspectorPanel : UserControl
     }
 
     void ShowQuickAddComponentPicker(GameObject go,
-        SortedDictionary<string, List<ComboItem>> categoryMap,
+        SortedDictionary<string, List<ComponentCatalogItem>> categoryMap,
         List<ScriptInfo> scriptInfos)
     {
         var rows = new List<(string Label, Action Add)>();
@@ -1910,7 +922,7 @@ public partial class InspectorPanel : UserControl
                 {
                     go.AddBehavior((Behavior)Activator.CreateInstance(t)!);
                     SceneService.NotifyChanged();
-                    BuildUI(go);
+                    RebuildForStructure(go);
                 }));
             }
         }
@@ -1932,7 +944,7 @@ public partial class InspectorPanel : UserControl
                 {
                     go.AddBehavior((Behavior)Activator.CreateInstance(t)!);
                     SceneService.NotifyChanged();
-                    BuildUI(go);
+                    RebuildForStructure(go);
                 }));
             }
         }
@@ -1997,6 +1009,7 @@ public partial class InspectorPanel : UserControl
     void BuildMultiUI(List<GameObject> objects)
     {
         Host.Children.Clear();
+        RememberBuiltSelection();
 
         if (objects.Count == 0)
         {
@@ -2055,12 +1068,17 @@ public partial class InspectorPanel : UserControl
 
             Host.Children.Add(nameRow);
 
-            Host.Children.Add(SectionHeader("Object"));
-            Host.Children.Add(BuildObjectTagLayerRow(go));
+            Host.Children.Add(InspectorFold.Section(
+                "Object",
+                BuildObjectTagLayerRow(go),
+                InspectorFold.GetObject(go),
+                v => InspectorFold.SetObject(go, v)));
 
-            // ---- Transform ----
-            Host.Children.Add(SectionHeader("Transform"));
-            Host.Children.Add(EditorForTransform(go.Transform));
+            Host.Children.Add(InspectorFold.Section(
+                "Transform",
+                EditorForTransform(go.Transform),
+                InspectorFold.GetTransform(go),
+                v => InspectorFold.SetTransform(go, v)));
 
             // ---- Behaviors ----
             var behaviors = go.Behaviors.ToList();
@@ -2089,6 +1107,7 @@ public partial class InspectorPanel : UserControl
         }
 
         _assetInspectorActive = true;
+        RememberBuiltSelection();
 
         try
         {
@@ -2152,13 +1171,6 @@ public partial class InspectorPanel : UserControl
         }
     }
 
-    private static IEnumerable<Type> LoadableTypes(Assembly a)
-    {
-        try { return a.GetTypes(); }
-        catch (ReflectionTypeLoadException ex) { return ex.Types!.Where(t => t is not null)!; }
-        catch { return Array.Empty<Type>(); }
-    }
-
     // UI-only preview cache for Texture2D properties
     // key: owner object -> (prop -> IImage)
     static readonly ConditionalWeakTable<object, Dictionary<PropertyInfo, IImage>> _texPreviewCache = new();
@@ -2211,6 +1223,18 @@ public partial class InspectorPanel : UserControl
         return sp;
     }
 
+    static string FormatGpuCubemapDetail(ReflectionProbe probe)
+    {
+        var tex = probe.GpuCubemap;
+        if (tex == null || tex.Handle == 0)
+            return "Not allocated yet. The renderer creates this cubemap when Scene view, Game view, or play mode initializes probe GPU resources (see ReflectionProbe.EnsureGpuResources). It is not a file you assign here.";
+
+        var detail = $"Runtime RGBA8 cubemap — {tex.Width}×{tex.Width} per face, OpenGL texture handle {tex.Handle}. Filled by the engine’s reflection capture; not editable as a 2D import.";
+        if (probe.NeedsCapture)
+            detail += " Pending capture.";
+        return detail;
+    }
+
     /// <summary>Runtime GPU cubemap is not a project asset; show status + recapture instead of a bogus type label.</summary>
     Control ReflectionProbeGpuCubemapRow(ReflectionProbe probe)
     {
@@ -2225,26 +1249,14 @@ public partial class InspectorPanel : UserControl
         });
 
         var col = new StackPanel { Spacing = 4, MaxWidth = 420 };
-        var tex = probe.GpuCubemap;
-        string detail;
-        if (tex == null || tex.Handle == 0)
+        var detailTb = new TextBlock
         {
-            detail = "Not allocated yet. The renderer creates this cubemap when Scene view, Game view, or play mode initializes probe GPU resources (see ReflectionProbe.EnsureGpuResources). It is not a file you assign here.";
-        }
-        else
-        {
-            detail = $"Runtime RGBA8 cubemap — {tex.Width}×{tex.Width} per face, OpenGL texture handle {tex.Handle}. Filled by the engine’s reflection capture; not editable as a 2D import.";
-            if (probe.NeedsCapture)
-                detail += " Pending capture.";
-        }
-
-        col.Children.Add(new TextBlock
-        {
-            Text = detail,
+            Text = FormatGpuCubemapDetail(probe),
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.92,
             FontSize = 12
-        });
+        };
+        col.Children.Add(detailTb);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var recapture = new Button { Content = "Request recapture", Padding = new Thickness(10, 4) };
@@ -2252,8 +1264,7 @@ public partial class InspectorPanel : UserControl
         {
             probe.NeedsCapture = true;
             SceneService.NotifyChanged();
-            if (probe.gameObject != null)
-                BuildUI(probe.gameObject);
+            detailTb.Text = FormatGpuCubemapDetail(probe);
         };
         actions.Children.Add(recapture);
         col.Children.Add(actions);
@@ -2290,69 +1301,77 @@ public partial class InspectorPanel : UserControl
 
     Control BuildTriggerReactionList(GameObject owner, List<string> kinds, List<string> strings, List<bool> bools)
     {
-        AlignTriggerReactionLists(kinds, strings, bools);
+        _ = owner;
         var box = new StackPanel { Spacing = 4 };
         var kindNames = Enum.GetNames(typeof(TriggerReactionKind));
 
-        for (int i = 0; i < kinds.Count; i++)
+        void RebuildRows()
         {
-            int idx = i;
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            AlignTriggerReactionLists(kinds, strings, bools);
+            box.Children.Clear();
 
-            var kindCb = new ComboBox { MinWidth = 140, ItemsSource = kindNames, SelectedItem = kinds[idx] };
-            kindCb.SelectionChanged += (_, __) =>
+            for (int i = 0; i < kinds.Count; i++)
             {
-                if (kindCb.SelectedItem is string sel) { kinds[idx] = sel; SceneService.NotifyChanged(); }
-            };
-            row.Children.Add(kindCb);
+                int idx = i;
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
 
-            var primTb = new TextBox
+                var kindCb = new ComboBox { MinWidth = 140, ItemsSource = kindNames, SelectedItem = kinds[idx] };
+                kindCb.SelectionChanged += (_, __) =>
+                {
+                    if (kindCb.SelectedItem is string sel) { kinds[idx] = sel; SceneService.NotifyChanged(); }
+                };
+                row.Children.Add(kindCb);
+
+                var primTb = new TextBox
+                {
+                    MinWidth = 160,
+                    Watermark = "Scene / path / channel",
+                    Text = idx < strings.Count ? strings[idx] : ""
+                };
+                primTb.LostFocus += (_, __) =>
+                {
+                    AlignTriggerReactionLists(kinds, strings, bools);
+                    strings[idx] = primTb.Text ?? "";
+                    SceneService.NotifyChanged();
+                };
+                row.Children.Add(primTb);
+
+                var boolCb = new CheckBox { Content = "Bool", IsChecked = idx < bools.Count && bools[idx] };
+                boolCb.IsCheckedChanged += (_, __) =>
+                {
+                    AlignTriggerReactionLists(kinds, strings, bools);
+                    bools[idx] = boolCb.IsChecked == true;
+                    SceneService.NotifyChanged();
+                };
+                row.Children.Add(boolCb);
+
+                var rm = new Button { Content = "×", Padding = new Thickness(6, 0), Margin = new Thickness(4, 0, 0, 0) };
+                rm.Click += (_, __) =>
+                {
+                    if (idx < 0 || idx >= kinds.Count) return;
+                    kinds.RemoveAt(idx);
+                    AlignTriggerReactionLists(kinds, strings, bools);
+                    SceneService.NotifyChanged();
+                    RebuildRows();
+                };
+                row.Children.Add(rm);
+                box.Children.Add(row);
+            }
+
+            var add = new Button { Content = "+ Add reaction", HorizontalAlignment = HorizontalAlignment.Left };
+            add.Click += (_, __) =>
             {
-                MinWidth = 160,
-                Watermark = "Scene / path / channel",
-                Text = idx < strings.Count ? strings[idx] : ""
-            };
-            primTb.LostFocus += (_, __) =>
-            {
+                kinds.Add(nameof(TriggerReactionKind.PublishChannel));
+                strings.Add("");
+                bools.Add(false);
                 AlignTriggerReactionLists(kinds, strings, bools);
-                strings[idx] = primTb.Text ?? "";
                 SceneService.NotifyChanged();
+                RebuildRows();
             };
-            row.Children.Add(primTb);
-
-            var boolCb = new CheckBox { Content = "Bool", IsChecked = idx < bools.Count && bools[idx] };
-            boolCb.IsCheckedChanged += (_, __) =>
-            {
-                AlignTriggerReactionLists(kinds, strings, bools);
-                bools[idx] = boolCb.IsChecked == true;
-                SceneService.NotifyChanged();
-            };
-            row.Children.Add(boolCb);
-
-            var rm = new Button { Content = "×", Padding = new Thickness(6, 0), Margin = new Thickness(4, 0, 0, 0) };
-            rm.Click += (_, __) =>
-            {
-                if (idx < 0 || idx >= kinds.Count) return;
-                kinds.RemoveAt(idx);
-                AlignTriggerReactionLists(kinds, strings, bools);
-                SceneService.NotifyChanged();
-                BuildUI(owner);
-            };
-            row.Children.Add(rm);
-            box.Children.Add(row);
+            box.Children.Add(add);
         }
 
-        var add = new Button { Content = "+ Add reaction", HorizontalAlignment = HorizontalAlignment.Left };
-        add.Click += (_, __) =>
-        {
-            kinds.Add(nameof(TriggerReactionKind.PublishChannel));
-            strings.Add("");
-            bools.Add(false);
-            AlignTriggerReactionLists(kinds, strings, bools);
-            SceneService.NotifyChanged();
-            BuildUI(owner);
-        };
-        box.Children.Add(add);
+        RebuildRows();
         return box;
     }
 
@@ -2430,7 +1449,7 @@ public partial class InspectorPanel : UserControl
     {
         panel.Children.Add(SectionHeader("Button"));
         var t = typeof(UIButton);
-        foreach (var name in UIButtonInspectorDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            foreach (var name in UIElementInspector.ButtonDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
             var p = t.GetProperty(name);
             if (p == null) continue;
@@ -2442,7 +1461,7 @@ public partial class InspectorPanel : UserControl
     {
         panel.Children.Add(SectionHeader("Slider"));
         var t = typeof(UISlider);
-        foreach (var name in UISliderInspectorDeferred)
+            foreach (var name in UIElementInspector.SliderDeferred)
         {
             var p = t.GetProperty(name);
             if (p == null) continue;
@@ -2454,7 +1473,7 @@ public partial class InspectorPanel : UserControl
     {
         panel.Children.Add(SectionHeader("Toggle"));
         var t = typeof(UIToggle);
-        foreach (var name in UIToggleInspectorDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            foreach (var name in UIElementInspector.ToggleDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
             var p = t.GetProperty(name);
             if (p == null) continue;
@@ -2466,7 +1485,7 @@ public partial class InspectorPanel : UserControl
     {
         panel.Children.Add(SectionHeader("Input field"));
         var t = typeof(UIInputField);
-        foreach (var name in UIInputFieldInspectorDeferred)
+            foreach (var name in UIElementInspector.InputFieldDeferred)
         {
             var p = t.GetProperty(name);
             if (p == null) continue;
@@ -2488,7 +1507,7 @@ public partial class InspectorPanel : UserControl
     {
         panel.Children.Add(SectionHeader("Progress bar"));
         var t = typeof(UIProgressBar);
-        foreach (var name in UIProgressBarInspectorDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            foreach (var name in UIElementInspector.ProgressBarDeferred.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
             var p = t.GetProperty(name);
             if (p == null) continue;
@@ -2546,6 +1565,25 @@ public partial class InspectorPanel : UserControl
         return grid;
     }
 
+    /// <summary>Keep a snapshot editor in sync when undo/gizmo writes the property without rebuilding the inspector.</summary>
+    static void SyncControlToProperty(object target, string propertyName, Control lifetime, Action sync)
+    {
+        if (target is not INotifyPropertyChanged npc) return;
+        void Handler(object? s, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName is not null && e.PropertyName != propertyName) return;
+            sync();
+        }
+        npc.PropertyChanged += Handler;
+        EventHandler<VisualTreeAttachmentEventArgs>? detach = null;
+        detach = (_, _) =>
+        {
+            npc.PropertyChanged -= Handler;
+            lifetime.DetachedFromVisualTree -= detach;
+        };
+        lifetime.DetachedFromVisualTree += detach;
+    }
+
     // Simple numeric binder (still useful for Vector3 fields)
     TextBox BoundNumber(object source, string path, Type targetType)
     {
@@ -2563,14 +1601,15 @@ public partial class InspectorPanel : UserControl
     // A Vector3 editor that records a single undo step against property 'p' on owner 'owner'
     Control Vector3EditorWithUndo(object owner, PropertyInfo p)
     {
-        var v = (CoreVector3)(p.GetValue(owner) ?? new CoreVector3());
-        if (!ReferenceEquals(v, p.GetValue(owner))) p.SetValue(owner, v);
+        if (p.GetValue(owner) is not CoreVector3)
+            p.SetValue(owner, new CoreVector3());
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 6) };
 
         TextBox Make(string comp)
         {
-            var tb = BoundNumber(v, comp, typeof(double));
+            // Bind through owner.Property.X so gizmo / undo replacing the Vector3 updates this box.
+            var tb = BoundNumber(owner, $"{p.Name}.{comp}", typeof(double));
             tb.GotFocus += (_, __) => BeginPropertyEdit(owner, p);
             tb.LostFocus += (_, __) => CommitPropertyEdit(owner, p);
             tb.PropertyChanged += (_, __) => Game_Engine.Core.SceneService.NotifyChanged(); // live repaint
@@ -2587,12 +1626,14 @@ public partial class InspectorPanel : UserControl
     {
         var v = (SNVector3)(p.GetValue(owner) ?? new SNVector3());
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        bool applyingRgb = false;
 
         var swatch = new Border
         {
             Width = 24, Height = 24,
             CornerRadius = new CornerRadius(3),
             BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1),
+            Cursor = new Cursor(StandardCursorType.Hand),
             Background = new SolidColorBrush(Avalonia.Media.Color.FromRgb(
                 (byte)Math.Clamp(v.X * 255f, 0, 255),
                 (byte)Math.Clamp(v.Y * 255f, 0, 255),
@@ -2616,6 +1657,7 @@ public partial class InspectorPanel : UserControl
 
         void Commit()
         {
+            if (applyingRgb) return;
             if (float.TryParse(tbR.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var r) &&
                 float.TryParse(tbG.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var g) &&
                 float.TryParse(tbB.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var b))
@@ -2646,6 +1688,54 @@ public partial class InspectorPanel : UserControl
         row.Children.Add(tbG);
         row.Children.Add(new TextBlock { Text = "B", VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
         row.Children.Add(tbB);
+
+        SyncControlToProperty(owner, p.Name, row, () =>
+        {
+            if (p.GetValue(owner) is not SNVector3 nv) return;
+            applyingRgb = true;
+            tbR.Text = nv.X.ToString("F3", CultureInfo.InvariantCulture);
+            tbG.Text = nv.Y.ToString("F3", CultureInfo.InvariantCulture);
+            tbB.Text = nv.Z.ToString("F3", CultureInfo.InvariantCulture);
+            swatch.Background = new SolidColorBrush(Avalonia.Media.Color.FromRgb(
+                (byte)Math.Clamp(nv.X * 255f, 0, 255),
+                (byte)Math.Clamp(nv.Y * 255f, 0, 255),
+                (byte)Math.Clamp(nv.Z * 255f, 0, 255)));
+            applyingRgb = false;
+        });
+
+        Color RgbToColor()
+        {
+            var nv = p.GetValue(owner) is SNVector3 s ? s : default;
+            return Color.FromRgb(
+                (byte)Math.Clamp(nv.X * 255f, 0, 255),
+                (byte)Math.Clamp(nv.Y * 255f, 0, 255),
+                (byte)Math.Clamp(nv.Z * 255f, 0, 255));
+        }
+
+        void ColorToRgb(Color c)
+        {
+            applyingRgb = true;
+            var next = new SNVector3(c.R / 255f, c.G / 255f, c.B / 255f);
+            p.SetValue(owner, next);
+            tbR.Text = next.X.ToString("F3", CultureInfo.InvariantCulture);
+            tbG.Text = next.Y.ToString("F3", CultureInfo.InvariantCulture);
+            tbB.Text = next.Z.ToString("F3", CultureInfo.InvariantCulture);
+            swatch.Background = new SolidColorBrush(c);
+            applyingRgb = false;
+            SceneService.NotifyChanged();
+        }
+
+        var rgbFlyout = new Flyout { Placement = PlacementMode.Bottom };
+        rgbFlyout.Opened += (_, __) => BeginPropertyEdit(owner, p);
+        rgbFlyout.Closed += (_, __) => CommitPropertyEdit(owner, p);
+        FlyoutBase.SetAttachedFlyout(swatch, rgbFlyout);
+        swatch.PointerPressed += (_, e) =>
+        {
+            rgbFlyout.Content = BuildColorFlyout(RgbToColor, ColorToRgb);
+            FlyoutBase.ShowAttachedFlyout(swatch);
+            e.Handled = true;
+        };
+
         return row;
     }
 
@@ -2695,74 +1785,21 @@ public partial class InspectorPanel : UserControl
         {
             owner.RemoveBehavior(b);
             SceneService.NotifyChanged();
-            BuildUI(owner);
+            RebuildForStructure(owner);
         };
 
         header.Children.Add(enabled);
         header.Children.Add(title);
         if (copy != null) header.Children.Add(copy);
         header.Children.Add(remove);
+
+        var foldedOpen = InspectorFold.GetComponent(owner, b);
+        var chevron = InspectorFold.Chevron(foldedOpen);
+        header.Children.Insert(0, chevron);
         outer.Children.Add(header);
 
-        // MeshCollider extra UI
-        if (b is MeshCollider mc)
-            outer.Children.Add(MeshColliderTargetRow(owner, mc));
-
-        if (b is TriggerVolume trigVol)
-            outer.Children.Add(TriggerVolumeReactionsUI(owner, trigVol));
-
-        // Terrain extra UI (tools + brush masks + layers)
-        if (b is Terrain terr)
-        {
-            outer.Children.Add(TerrainToolsRow(owner, terr));
-            outer.Children.Add(TerrainBrushMasks(terr));
-            outer.Children.Add(TerrainLayersUI(owner, terr));
-        }
-
-        if (b is PlanetTerrain planetTerr)
-            outer.Children.Add(PlanetToolsRow(owner, planetTerr));
-
-        // Tree extra UI (procedural / import settings)
-        if (b is Tree treeComp)
-        {
-            outer.Children.Add(TreeInspectorUI(owner, treeComp));
-        }
-
-        // Planet vegetation runtime controls (manual Scene View spawn)
-        if (b is PlanetVegetationSystem vegSys)
-        {
-            outer.Children.Add(PlanetVegetationInspectorUI(owner, vegSys));
-        }
-
-        // DialogueRunner: full dialogue tree editor
-        if (b is DialogueRunner dialogueRunner)
-        {
-            outer.Children.Add(DialogueRunnerInspectorUI(dialogueRunner));
-        }
-
-        // BehaviorTreeRunner: visual behavior tree editor
-        if (b is BehaviorTreeRunner btRunner)
-        {
-            outer.Children.Add(BehaviorTreeRunnerInspectorUI(btRunner));
-        }
-
-        // VisualBlueprint: assign .blueprint asset to run on this GameObject
-        if (b is VisualBlueprintBehavior vpb)
-        {
-            outer.Children.Add(VisualBlueprintBehaviorInspectorUI(vpb));
-        }
-
-        // TimelinePlayer: inline timeline asset editor
-        if (b is TimelinePlayer tlPlayer)
-        {
-            outer.Children.Add(TimelinePlayerInspectorUI(tlPlayer));
-        }
-
-        // MeshLodGroup: LOD slots + distances (meshes use full Material/Mesh pickers)
-        if (b is MeshLodGroup mlg)
-        {
-            outer.Children.Add(MeshLodGroupInspectorUI(mlg));
-        }
+        foreach (var extra in ComponentInspectorRegistry.BuildChrome(this, owner, b))
+            outer.Children.Add(extra);
 
         // --------- BODY: custom inspector first, else default ----------
         Control body = TryBuildCustomInspectorUI(b, out var custom) && custom != null
@@ -2776,6 +1813,23 @@ public partial class InspectorPanel : UserControl
         bodyHost.Children.Add(body);
 
         outer.Children.Add(bodyHost);
+
+        void ApplyFold(bool open)
+        {
+            InspectorFold.SetComponent(owner, b, open);
+            chevron.Text = InspectorFold.Glyph(open);
+            // Chrome + property body sit after the header (index 0).
+            for (int i = 1; i < outer.Children.Count; i++)
+                outer.Children[i].IsVisible = open;
+        }
+
+        chevron.PointerPressed += (_, e) =>
+        {
+            ApplyFold(!InspectorFold.GetComponent(owner, b));
+            e.Handled = true;
+        };
+        chevron.Cursor = new Cursor(StandardCursorType.Hand);
+        ApplyFold(foldedOpen);
 
         return new Border
         {
@@ -6290,9 +5344,222 @@ public partial class InspectorPanel : UserControl
 
 
 
+    Control RangeNumberEditor(object target, PropertyInfo p, RangeAttribute range)
+    {
+        var t = p.PropertyType;
+        double current = 0;
+        try { current = Convert.ToDouble(p.GetValue(target) ?? 0, CultureInfo.InvariantCulture); }
+        catch { current = range.Min; }
+        current = Math.Clamp(current, range.Min, range.Max);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var slider = new Slider
+        {
+            Minimum = range.Min,
+            Maximum = range.Max,
+            Width = 168,
+            Value = current
+        };
+        var tb = new TextBox
+        {
+            Width = 56,
+            Text = FormatRangeValue(current, t)
+        };
+
+        bool applying = false;
+
+        void Apply(double v, bool commit)
+        {
+            v = Math.Clamp(v, range.Min, range.Max);
+            if (t == typeof(int) || t == typeof(short) || t == typeof(long))
+                v = Math.Round(v);
+
+            applying = true;
+            slider.Value = v;
+            tb.Text = FormatRangeValue(v, t);
+            applying = false;
+
+            p.SetValue(target, ConvertRangeValue(v, t));
+            SceneService.NotifyChanged();
+            if (commit) CommitPropertyEdit(target, p);
+        }
+
+        SyncControlToProperty(target, p.Name, row, () =>
+        {
+            if (applying) return;
+            double next = 0;
+            try { next = Convert.ToDouble(p.GetValue(target) ?? 0, CultureInfo.InvariantCulture); }
+            catch { return; }
+            next = Math.Clamp(next, range.Min, range.Max);
+            applying = true;
+            slider.Value = next;
+            tb.Text = FormatRangeValue(next, t);
+            applying = false;
+        });
+
+        slider.AddHandler(InputElement.PointerPressedEvent, (_, _) => BeginPropertyEdit(target, p), RoutingStrategies.Tunnel);
+        slider.AddHandler(InputElement.PointerReleasedEvent, (_, _) => CommitPropertyEdit(target, p), RoutingStrategies.Tunnel);
+        slider.GotFocus += (_, _) => BeginPropertyEdit(target, p);
+        slider.LostFocus += (_, _) => CommitPropertyEdit(target, p);
+        slider.PropertyChanged += (_, e) =>
+        {
+            if (applying || e.Property != RangeBase.ValueProperty) return;
+            Apply(slider.Value, commit: false);
+        };
+
+        tb.GotFocus += (_, _) => BeginPropertyEdit(target, p);
+        tb.LostFocus += (_, _) =>
+        {
+            if (double.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+                Apply(parsed, commit: true);
+            else
+            {
+                tb.Text = FormatRangeValue(slider.Value, t);
+                CommitPropertyEdit(target, p);
+            }
+        };
+
+        row.Children.Add(slider);
+        row.Children.Add(tb);
+        return row;
+    }
+
+    static string FormatRangeValue(double v, Type t)
+    {
+        if (t == typeof(int) || t == typeof(short) || t == typeof(long))
+            return ((long)Math.Round(v)).ToString(CultureInfo.InvariantCulture);
+        if (Math.Abs(v) >= 100) return v.ToString("0.##", CultureInfo.InvariantCulture);
+        return v.ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    static object ConvertRangeValue(double v, Type t)
+    {
+        if (t == typeof(int)) return (int)Math.Round(v);
+        if (t == typeof(short)) return (short)Math.Round(v);
+        if (t == typeof(long)) return (long)Math.Round(v);
+        if (t == typeof(float)) return (float)v;
+        if (t == typeof(decimal)) return (decimal)v;
+        return v;
+    }
+
+    Control ColorPropertyEditor(object target, PropertyInfo p)
+    {
+        Color Read() => p.GetValue(target) is Color c ? c : Colors.White;
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var swatch = new Border
+        {
+            Width = 28,
+            Height = 22,
+            CornerRadius = new CornerRadius(3),
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var tb = new TextBox { Width = 120, Watermark = "#RRGGBB or name" };
+        tb.Bind(TextBox.TextProperty, new Binding(p.Name)
+        {
+            Source = target,
+            Mode = BindingMode.TwoWay,
+            Converter = ColorStringConverter.Instance
+        });
+        tb.GotFocus += (_, __) => BeginPropertyEdit(target, p);
+        tb.LostFocus += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(target, p); };
+
+        void Paint() => swatch.Background = new SolidColorBrush(Read());
+        Paint();
+        SyncControlToProperty(target, p.Name, row, Paint);
+
+        void Write(Color c)
+        {
+            p.SetValue(target, c);
+            if (target is ObservableObject obs) obs.NotifyPropertyChanged(p.Name);
+            Paint();
+            SceneService.NotifyChanged();
+        }
+
+        var flyout = new Flyout { Placement = PlacementMode.Bottom };
+        flyout.Content = BuildColorFlyout(Read, Write);
+        flyout.Opened += (_, __) => BeginPropertyEdit(target, p);
+        flyout.Closed += (_, __) => CommitPropertyEdit(target, p);
+        FlyoutBase.SetAttachedFlyout(swatch, flyout);
+        swatch.PointerPressed += (_, e) =>
+        {
+            flyout.Content = BuildColorFlyout(Read, Write);
+            FlyoutBase.ShowAttachedFlyout(swatch);
+            e.Handled = true;
+        };
+
+        row.Children.Add(swatch);
+        row.Children.Add(tb);
+        return row;
+    }
+
+    static Control BuildColorFlyout(Func<Color> get, Action<Color> set)
+    {
+        var c = get();
+        var panel = new StackPanel { Spacing = 8, Width = 220, Margin = new Thickness(8) };
+        bool applying = false;
+
+        Slider Channel(string name, double value)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            row.Children.Add(new TextBlock { Text = name, Width = 16, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+            var sl = new Slider { Minimum = 0, Maximum = 255, Value = value, Width = 150, VerticalAlignment = VerticalAlignment.Center };
+            row.Children.Add(sl);
+            panel.Children.Add(row);
+            return sl;
+        }
+
+        var slR = Channel("R", c.R);
+        var slG = Channel("G", c.G);
+        var slB = Channel("B", c.B);
+        var slA = Channel("A", c.A);
+
+        var hex = new TextBox { FontSize = 11, Text = $"#{c.A:X2}{c.R:X2}{c.G:X2}{c.B:X2}" };
+        panel.Children.Add(hex);
+
+        void PushFromSliders()
+        {
+            if (applying) return;
+            var next = Color.FromArgb((byte)Math.Clamp(slA.Value, 0, 255), (byte)Math.Clamp(slR.Value, 0, 255),
+                (byte)Math.Clamp(slG.Value, 0, 255), (byte)Math.Clamp(slB.Value, 0, 255));
+            applying = true;
+            hex.Text = $"#{next.A:X2}{next.R:X2}{next.G:X2}{next.B:X2}";
+            applying = false;
+            set(next);
+        }
+
+        slR.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) PushFromSliders(); };
+        slG.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) PushFromSliders(); };
+        slB.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) PushFromSliders(); };
+        slA.PropertyChanged += (_, e) => { if (e.Property == RangeBase.ValueProperty) PushFromSliders(); };
+
+        hex.LostFocus += (_, __) =>
+        {
+            if (applying) return;
+            try
+            {
+                var parsed = Color.Parse(hex.Text ?? "");
+                applying = true;
+                slR.Value = parsed.R; slG.Value = parsed.G; slB.Value = parsed.B; slA.Value = parsed.A;
+                applying = false;
+                set(parsed);
+            }
+            catch { /* keep last */ }
+        };
+
+        return panel;
+    }
+
     Control PropertyEditor(object target, PropertyInfo p)
     {
         var t = p.PropertyType;
+
+        if (t == typeof(string) && p.GetCustomAttribute<AssetPathAttribute>() is { } assetPath)
+            return PathRow(target, p, AssetPathEditor.FromAttribute(assetPath, p.Name));
 
         // ---- Mesh editor (None / Cube / etc.) --------------------------------
         if (t == typeof(Game_Engine.Core.Mesh))
@@ -6350,18 +5617,7 @@ public partial class InspectorPanel : UserControl
 
         // ---- Color editor -----------------------------------------------------
         if (t == typeof(Color))
-        {
-            var tb = new TextBox { Width = 140, Watermark = "#RRGGBB or name" };
-            tb.Bind(TextBox.TextProperty, new Binding(p.Name)
-            {
-                Source = target,
-                Mode = BindingMode.TwoWay,
-                Converter = ColorStringConverter.Instance
-            });
-            tb.GotFocus += (_, __) => BeginPropertyEdit(target, p);
-            tb.LostFocus += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(target, p); };
-            return tb;
-        }
+            return ColorPropertyEditor(target, p);
 
         // ---- bool -------------------------------------------------------------
         if (t == typeof(bool))
@@ -6387,6 +5643,9 @@ public partial class InspectorPanel : UserControl
         if (t == typeof(int) || t == typeof(float) || t == typeof(double) ||
             t == typeof(decimal) || t == typeof(long) || t == typeof(short))
         {
+            if (p.GetCustomAttribute<RangeAttribute>() is { } range)
+                return RangeNumberEditor(target, p, range);
+
             var tb = new TextBox { Width = 120 };
             tb.Bind(TextBox.TextProperty, new Binding(p.Name)
             {
@@ -6866,6 +6125,27 @@ public partial class InspectorPanel : UserControl
         if (t == typeof(int) || t == typeof(float) || t == typeof(double) ||
             t == typeof(decimal) || t == typeof(long) || t == typeof(short))
         {
+            if (sp.GetCustomAttribute<RangeAttribute>() is { } range)
+            {
+                double current = 0;
+                try { current = Convert.ToDouble(val ?? 0, CultureInfo.InvariantCulture); } catch { current = range.Min; }
+                current = Math.Clamp(current, range.Min, range.Max);
+                var sl = new Slider { Minimum = range.Min, Maximum = range.Max, Width = 140, Value = current };
+                sl.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property != RangeBase.ValueProperty) return;
+                    var v = sl.Value;
+                    if (t == typeof(int)) sp.SetValue(item, (int)Math.Round(v));
+                    else if (t == typeof(float)) sp.SetValue(item, (float)v);
+                    else if (t == typeof(double)) sp.SetValue(item, v);
+                    else if (t == typeof(long)) sp.SetValue(item, (long)Math.Round(v));
+                    else if (t == typeof(short)) sp.SetValue(item, (short)Math.Round(v));
+                    else if (t == typeof(decimal)) sp.SetValue(item, (decimal)v);
+                    onChanged();
+                };
+                return sl;
+            }
+
             var tb = new TextBox { Width = 80, Text = val?.ToString() ?? "0", FontSize = 11 };
             tb.LostFocus += (_, __) =>
             {
@@ -8371,10 +7651,81 @@ public partial class InspectorPanel : UserControl
 
     Control DialogueRunnerInspectorUI(DialogueRunner runner)
     {
+        if (runner.Tree == null)
+            runner.Tree = new DialogueTree();
+        var tree = runner.Tree;
+
+        var root = new StackPanel { Spacing = 6 };
+        root.Children.Add(SectionTitle("Dialogue"));
+
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        nameRow.Children.Add(new TextBlock { Text = "Name", Width = 80, VerticalAlignment = VerticalAlignment.Center });
+        var nameBox = new TextBox { Width = 180, Text = tree.Name };
+        nameBox.LostFocus += (_, __) => { tree.Name = nameBox.Text ?? "Untitled"; SceneService.NotifyChanged(); };
+        nameRow.Children.Add(nameBox);
+        root.Children.Add(nameRow);
+
+        var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        modeRow.Children.Add(new TextBlock { Text = "Mode", Width = 80, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+        var modeCb = new ComboBox
+        {
+            ItemsSource = Enum.GetValues(typeof(DialogueMode)),
+            SelectedItem = runner.Mode,
+            MinWidth = 140,
+            FontSize = 11
+        };
+        modeCb.SelectionChanged += (_, __) =>
+        {
+            if (modeCb.SelectedItem is DialogueMode m)
+            {
+                runner.Mode = m;
+                SceneService.NotifyChanged();
+            }
+        };
+        modeRow.Children.Add(modeCb);
+        root.Children.Add(modeRow);
+
+        var pVol = typeof(DialogueRunner).GetProperty(nameof(DialogueRunner.VoiceVolume))!;
+        var volRange = pVol.GetCustomAttribute<RangeAttribute>();
+        root.Children.Add(InspectorLabeledRow("Voice Vol",
+            volRange != null ? RangeNumberEditor(runner, pVol, volRange) : PropertyEditor(runner, pVol)));
+
+        var autoAdvCb = new CheckBox
+        {
+            Content = "Auto-advance on voice end",
+            IsChecked = runner.AutoAdvanceOnVoiceEnd
+        };
+        autoAdvCb.IsCheckedChanged += (_, __) =>
+        {
+            runner.AutoAdvanceOnVoiceEnd = autoAdvCb.IsChecked ?? false;
+            SceneService.NotifyChanged();
+        };
+        root.Children.Add(autoAdvCb);
+
+        var summary = new TextBlock { FontSize = 11, Opacity = 0.75, Margin = new Thickness(0, 4, 0, 0) };
+        var start = string.IsNullOrEmpty(tree.StartNodeId) ? "no start node" : $"start #{tree.StartNodeId}";
+        summary.Text = $"{tree.Nodes.Count} nodes · {start}";
+        root.Children.Add(summary);
+
+        var open = new Button
+        {
+            Content = "Open Dialogue Editor",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Padding = new Thickness(10, 6),
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        open.Click += (_, __) =>
+            DialogueEditorWindow.Show(OwnerWindow, runner, BuildDialogueTreeEditor(runner));
+        root.Children.Add(open);
+        return root;
+    }
+
+    Control BuildDialogueTreeEditor(DialogueRunner runner)
+    {
         var root = new StackPanel { Spacing = 6 };
         root.Children.Add(SectionTitle("Dialogue Tree"));
 
-        // Ensure the runner has a tree to edit
         if (runner.Tree == null)
             runner.Tree = new DialogueTree();
 
@@ -8710,7 +8061,7 @@ public partial class InspectorPanel : UserControl
             var picked = files?.FirstOrDefault();
             if (string.IsNullOrWhiteSpace(picked)) return;
 
-            var relPath = AudioAbsToRel(picked);
+            var relPath = AssetPathEditor.ToProjectRelative(picked);
             pathBox.Text = relPath;
             node.VoiceClipPath = relPath;
             SceneService.NotifyChanged();
@@ -9037,14 +8388,14 @@ public partial class InspectorPanel : UserControl
 
     Control PlanetVegetationInspectorUI(GameObject owner, PlanetVegetationSystem veg)
     {
+        _ = owner;
         var panel = new StackPanel { Spacing = 6 };
         panel.Children.Add(SectionTitle("Planet Vegetation"));
 
-        var info = new TextBlock
-        {
-            Text = $"Leaf Groups: {veg.ActiveLeafGroups}   Instances: {veg.ActiveVegetationInstances}   Stored placements: {veg.StoredPlacementCount}",
-            Opacity = 0.8
-        };
+        var info = new TextBlock { Opacity = 0.8 };
+        void RefreshInfo() =>
+            info.Text = $"Leaf Groups: {veg.ActiveLeafGroups}   Instances: {veg.ActiveVegetationInstances}   Stored placements: {veg.StoredPlacementCount}";
+        RefreshInfo();
         panel.Children.Add(info);
 
         var fullPopulateCb = new CheckBox
@@ -9126,7 +8477,7 @@ public partial class InspectorPanel : UserControl
         {
             veg.SpawnNow(clearExisting: false);
             SceneService.NotifyChanged();
-            BuildUI(owner);
+            RefreshInfo();
         };
         row.Children.Add(spawnBtn);
 
@@ -9135,7 +8486,7 @@ public partial class InspectorPanel : UserControl
         {
             veg.SpawnNow(clearExisting: true);
             SceneService.NotifyChanged();
-            BuildUI(owner);
+            RefreshInfo();
         };
         row.Children.Add(respawnBtn);
 

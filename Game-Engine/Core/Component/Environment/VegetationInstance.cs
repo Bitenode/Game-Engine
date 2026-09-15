@@ -34,8 +34,8 @@ namespace Game_Engine.Core.Component
     {
         // ── Painting Settings ──
         [Persist] public VegetationType ActiveType { get; set; } = VegetationType.Grass;
-        [Persist] public float BrushRadius { get; set; } = 5f;
-        [Persist] public float Density { get; set; } = 10f;         // instances per unit area
+        [Persist, Range(0.1f, 50f)] public float BrushRadius { get; set; } = 5f;
+        [Persist, Range(0.1f, 50f)] public float Density { get; set; } = 10f;         // instances per unit area
         [Persist] public float MinScale { get; set; } = 0.5f;
         [Persist] public float MaxScale { get; set; } = 1.5f;
         [Persist] public bool RandomRotation { get; set; } = true;
@@ -45,11 +45,11 @@ namespace Game_Engine.Core.Component
         [Persist] public float GrassWidth { get; set; } = 0.4f;
         [Persist] public SN.Vector3 GrassBaseColor { get; set; } = new SN.Vector3(0.2f, 0.5f, 0.15f);
         [Persist] public SN.Vector3 GrassTipColor { get; set; } = new SN.Vector3(0.4f, 0.7f, 0.2f);
-        [Persist] public float GrassColorVariation { get; set; } = 0.15f;
+        [Persist, Range(0f, 1f)] public float GrassColorVariation { get; set; } = 0.15f;
 
         // ── Wind ──
-        [Persist] public float WindStrength { get; set; } = 0.5f;
-        [Persist] public float WindSpeed { get; set; } = 1f;
+        [Persist, Range(0f, 2f)] public float WindStrength { get; set; } = 0.5f;
+        [Persist, Range(0f, 5f)] public float WindSpeed { get; set; } = 1f;
 
         // ── LOD ──
         [Persist] public float FadeStartDistance { get; set; } = 30f;
@@ -57,7 +57,9 @@ namespace Game_Engine.Core.Component
 
         // ── Custom mesh / texture path ──
         private string _customMeshPath = "";
-        [Persist] public string CustomMeshPath
+        [Persist]
+        [AssetPath(AssetPathKind.ModelOrImage, DialogTitle = "Import Grass Model or Texture")]
+        public string CustomMeshPath
         {
             get => _customMeshPath;
             set
@@ -77,7 +79,11 @@ namespace Game_Engine.Core.Component
 
         // ── Explicit texture path (overrides model's built-in texture) ──
         private string _texturePath = "";
-        [Persist] public string TexturePath
+        [Persist]
+        [AssetPath(AssetPathKind.Image, DialogTitle = "Import Grass Texture",
+            Watermark = "(none — import or drop texture)",
+            DropHint = "Drop texture here  (.png, .jpg, .tga, .bmp)")]
+        public string TexturePath
         {
             get => _texturePath;
             set

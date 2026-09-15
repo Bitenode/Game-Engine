@@ -24,6 +24,7 @@ public sealed class ReflectionProbe : Behavior
     [Persist] public int RealtimeRefreshFrames { get; set; } = 60;
 
     /// <summary>GPU cubemap for this probe (owned by the probe).</summary>
+    [HideInInspector]
     public GPUTexture? GpuCubemap { get; private set; }
 
     public bool NeedsCapture { get; set; } = true;

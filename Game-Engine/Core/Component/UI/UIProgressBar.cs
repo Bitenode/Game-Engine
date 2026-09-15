@@ -11,14 +11,14 @@ namespace Game_Engine.Core.Component.UI
     [Require(typeof(RectTransform))]
     public sealed class UIProgressBar : UIElement
     {
-        [Persist] public float MinValue { get; set; }
-        [Persist] public float MaxValue { get; set; } = 1f;
-        [Persist] public float Value { get; set; } = 0.5f;
+        [Persist, HideInInspector] public float MinValue { get; set; }
+        [Persist, HideInInspector] public float MaxValue { get; set; } = 1f;
+        [Persist, HideInInspector] public float Value { get; set; } = 0.5f;
 
-        [Persist] public SliderDirection Direction { get; set; } = SliderDirection.LeftToRight;
+        [Persist, HideInInspector] public SliderDirection Direction { get; set; } = SliderDirection.LeftToRight;
 
-        [Persist] public Color BackgroundColor { get; set; } = Color.FromRgb(0x40, 0x40, 0x40);
-        [Persist] public Color FillColor { get; set; } = Color.FromRgb(0x40, 0xA0, 0xFF);
+        [Persist, HideInInspector] public Color BackgroundColor { get; set; } = Color.FromRgb(0x40, 0x40, 0x40);
+        [Persist, HideInInspector] public Color FillColor { get; set; } = Color.FromRgb(0x40, 0xA0, 0xFF);
 
         /// <summary>Fill amount in 0–1 range (clamped).</summary>
         public float NormalizedValue

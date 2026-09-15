@@ -13,7 +13,7 @@ namespace Game_Engine.Core.Component.UI
     public sealed class UIToggle : UIElement
     {
         /// <summary>Whether the toggle is currently on.</summary>
-        [Persist] public bool IsOn
+        [Persist, HideInInspector] public bool IsOn
         {
             get => _isOn;
             set
@@ -29,21 +29,21 @@ namespace Game_Engine.Core.Component.UI
         private bool _isOn = false;
 
         /// <summary>Whether the toggle can be interacted with.</summary>
-        [Persist] public bool Interactable { get; set; } = true;
+        [Persist, HideInInspector] public bool Interactable { get; set; } = true;
 
         // ── Colors ──
         /// <summary>Background color when off.</summary>
-        [Persist] public Color BackgroundColor { get; set; } = Color.FromRgb(0x50, 0x50, 0x50);
+        [Persist, HideInInspector] public Color BackgroundColor { get; set; } = Color.FromRgb(0x50, 0x50, 0x50);
         /// <summary>Background color when on.</summary>
-        [Persist] public Color ActiveColor { get; set; } = Color.FromRgb(0x40, 0xA0, 0xFF);
+        [Persist, HideInInspector] public Color ActiveColor { get; set; } = Color.FromRgb(0x40, 0xA0, 0xFF);
         /// <summary>Checkmark/indicator color.</summary>
-        [Persist] public Color CheckmarkColor { get; set; } = Colors.White;
+        [Persist, HideInInspector] public Color CheckmarkColor { get; set; } = Colors.White;
 
         /// <summary>When alpha &gt; 0 and the toggle is interactable, blended over the background while hovered.</summary>
-        [Persist] public Color HoverBackgroundColor { get; set; } = Color.FromArgb(0, 255, 255, 255);
+        [Persist, HideInInspector] public Color HoverBackgroundColor { get; set; } = Color.FromArgb(0, 255, 255, 255);
 
         /// <summary>Inset of the checkmark relative to the toggle box (0-0.5).</summary>
-        [Persist] public float CheckmarkInset { get; set; } = 0.15f;
+        [Persist, HideInInspector, Range(0f, 0.5f)] public float CheckmarkInset { get; set; } = 0.15f;
 
         /// <summary>Fired when the toggle value changes.</summary>
         public event Action<bool>? OnValueChanged;

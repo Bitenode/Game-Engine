@@ -40,13 +40,13 @@ public sealed class TriggerVolume : Behavior
     [Persist] public bool DisableTargetOnExit { get; set; }
 
     /// <summary>Parallel lists: kind name per row (<see cref="TriggerReactionKind"/>).</summary>
-    [Persist] public List<string> OnEnterKinds { get; set; } = new();
-    [Persist] public List<string> OnEnterStrings { get; set; } = new();
-    [Persist] public List<bool> OnEnterBools { get; set; } = new();
+    [Persist, HideInInspector] public List<string> OnEnterKinds { get; set; } = new();
+    [Persist, HideInInspector] public List<string> OnEnterStrings { get; set; } = new();
+    [Persist, HideInInspector] public List<bool> OnEnterBools { get; set; } = new();
 
-    [Persist] public List<string> OnExitKinds { get; set; } = new();
-    [Persist] public List<string> OnExitStrings { get; set; } = new();
-    [Persist] public List<bool> OnExitBools { get; set; } = new();
+    [Persist, HideInInspector] public List<string> OnExitKinds { get; set; } = new();
+    [Persist, HideInInspector] public List<string> OnExitStrings { get; set; } = new();
+    [Persist, HideInInspector] public List<bool> OnExitBools { get; set; } = new();
 
     float _lastFireTime = float.NegativeInfinity;
     bool _consumedOneShot;

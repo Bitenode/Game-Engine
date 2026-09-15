@@ -12,21 +12,22 @@ namespace Game_Engine.Core.Component
     [ComponentCategory("Rendering")]
     public sealed class MeshLodGroup : Behavior
     {
-        [Persist] public Mesh? Lod0 { get; set; }
-        [Persist] public Mesh? Lod1 { get; set; }
-        [Persist] public Mesh? Lod2 { get; set; }
-        [Persist] public Mesh? Lod3 { get; set; }
+        [Persist, HideInInspector] public Mesh? Lod0 { get; set; }
+        [Persist, HideInInspector] public Mesh? Lod1 { get; set; }
+        [Persist, HideInInspector] public Mesh? Lod2 { get; set; }
+        [Persist, HideInInspector] public Mesh? Lod3 { get; set; }
 
         /// <summary>World-distance at which Lod1 is used (must be &gt; 0). Ignored if Lod1 is null.</summary>
-        [Persist] public float Lod1Distance { get; set; } = 20f;
+        [Persist, HideInInspector] public float Lod1Distance { get; set; } = 20f;
 
         /// <summary>World-distance at which Lod2 is used. Ignored if Lod2 is null or threshold ≤ 0.</summary>
-        [Persist] public float Lod2Distance { get; set; } = 45f;
+        [Persist, HideInInspector] public float Lod2Distance { get; set; } = 45f;
 
         /// <summary>World-distance at which Lod3 is used. Ignored if Lod3 is null or threshold ≤ 0.</summary>
-        [Persist] public float Lod3Distance { get; set; } = 90f;
+        [Persist, HideInInspector] public float Lod3Distance { get; set; } = 90f;
 
         /// <summary>0 = Lod0 (or base mesh), 1–3 = explicit LOD slot used last frame.</summary>
+        [HideInInspector]
         public int CurrentLodLevel { get; private set; }
 
         private Mesh? _capturedBaseMesh;

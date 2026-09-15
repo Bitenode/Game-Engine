@@ -11,6 +11,7 @@ namespace Game_Engine.Core.AI
     public sealed class BehaviorTreeRunner : Behavior
     {
         /// <summary>The behavior tree to execute.</summary>
+        [HideInInspector]
         public BehaviorTree? Tree { get; set; }
 
         /// <summary>Per-agent blackboard for sharing data between nodes.</summary>
@@ -23,6 +24,7 @@ namespace Game_Engine.Core.AI
         [Persist] public float TickInterval { get; set; } = 0f;
 
         /// <summary>The result of the last tree tick.</summary>
+        [HideInInspector]
         public BTStatus LastStatus { get; private set; } = BTStatus.Running;
 
         /// <summary>Event raised after each tick with the result status.</summary>

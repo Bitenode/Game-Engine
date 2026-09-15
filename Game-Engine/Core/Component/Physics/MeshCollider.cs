@@ -14,12 +14,12 @@ namespace Game_Engine.Core.Component
         public IReadOnlyList<MeshFilter> TargetFilters => _targets;
 
         // Persisted scene paths for each target filter
-        [Persist] public List<string> TargetPaths { get; private set; } = new List<string>();
+        [Persist, HideInInspector] public List<string> TargetPaths { get; private set; } = new List<string>();
 
-        [Persist] public bool BindToTargetTransform { get; set; } = true;
+        [Persist, HideInInspector] public bool BindToTargetTransform { get; set; } = true;
 
         // manual override (if set, we ignore TargetFilters/Paths)
-        [Persist] public Mesh Mesh { get; set; }
+        [Persist, HideInInspector] public Mesh Mesh { get; set; }
 
         // ---- public API used by Inspector ----
         public void ClearTargets()

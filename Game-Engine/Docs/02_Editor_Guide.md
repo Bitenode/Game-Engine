@@ -273,43 +273,90 @@ When a new project is opened with no existing scene, a default scene is created 
 
 ## Inspector Panel
 
-Displays and edits properties of the selected GameObject. Supports single and multi-selection.
+Displays and edits properties of the selected GameObject. Supports single and multi-selection. The panel is a thin **shell** (`InspectorPanel.axaml` + code-behind) that builds UI on demand; heavy helpers live under `Views/Inspector/` (see **Architecture** below).
+
+### Lock
+The **Lock** toggle in the header freezes the current inspector view (selection or material asset). While locked, selection changes do not rebuild the panel until you unlock it.
+
+### Layout (single selection)
+1. **Name** — enabled checkbox + editable name
+2. **Object** — foldable Tag / Layer section
+3. **Transform** — foldable Position / Rotation / Scale (always the mandatory `GameObject.Transform`, not duplicated in the component list)
+4. **Components** — one bordered block per `Behavior` in `GameObject.Behaviors`
+5. **Add Component bar** — Paste, Quick Add, and **+ Add Component** at the **bottom**
+
+### Folds
+**Object**, **Transform**, and each component header use a **▾ / ▸** chevron. Click the chevron to collapse or expand that section. Fold state is remembered per GameObject while it stays in memory (same selection session). Component headers still expose **Enabled**, **Copy**, and **Remove** when collapsed.
 
 ### Header
 - **Enabled checkbox** — toggle next to the name field. Unchecking disables the entire GameObject and all its children: they are hidden from the scene, skipped during Update/FixedUpdate/LateUpdate, excluded from scene queries (`SceneQuery.FindBehaviors`), and shown in red in the Hierarchy. This does not change the individual component `Enabled` flags — it overrides them at the GameObject level.
 - **GameObject name** — editable text field
 
 ### Object (Tag & Layer)
-Below **Name**, the **Object** section edits:
+Below **Name**, the foldable **Object** section edits:
 - **Tag** — string label (default `Untagged`), saved with the scene. Used by **`TriggerVolume`** filters, gameplay queries, and scripting.
 - **Layer** — integer **0–31**, saved with the scene. Used with **`TriggerVolume.LayerMask`** and future physics filtering.
 
 ### Components
 Each component (Behavior) on the selected object shows:
 - **Enable checkbox** — toggle the component on/off
-- **Component name** — type label (e.g., "Transform", "MeshRenderer", "PlayerMovement")
-- **Copy** — serializes the component with the same rules as scene save; use **Paste component** (below **Add Component**) to add a duplicate instance on this or another GameObject. Transform is not copyable.
+- **Component name** — type label (e.g., "MeshRenderer", "PlayerMovement")
+- **Copy** — serializes the component with the same rules as scene save; use **Paste component** (bottom bar) to add a duplicate instance on this or another GameObject. Transform is not copyable.
 - **Remove button** — delete the component (Transform cannot be removed)
-- **Properties** — all `[Persist]`-marked properties with type-appropriate editors (plus a few runtime-only rows with custom UI, e.g. **`ReflectionProbe`** **GpuCubemap** status and **Request recapture** — not a texture file slot).
+- **Properties** — default rows from public read/write properties, minus `[HideInInspector]`, plus type-specific editors (see **Property editors** and **Inspector attributes** in the Scripting doc)
 
-**Paste component** appears above **+ Add Component** and applies the last copied component to the current GameObject.
+Built-in components can register extra chrome via `ComponentInspectorRegistry` (terrain tools, trigger reactions, dialogue summary, etc.) without editing the main panel.
 
-### Property Editors
+### Rebuild policy
+The inspector avoids full tree rebuilds when nothing structural changed:
+
+| Event | Rebuild? |
+|-------|----------|
+| New selection / multi-select change | Yes |
+| Lock unlock (sync to current selection) | Yes |
+| Add / remove / paste component | Yes (scroll offset preserved) |
+| Typing in a field, sliders, gizmo drag | No — controls update in place |
+| Undo / redo | No full rebuild — `PropertyChangeCmd` raises `PropertyChanged` so bindings and snapshot editors refresh |
+
+`SelectionService.Touch()` (used after undo and during gizmo drags) re-fires `Changed` but does **not** bump `SelectionService.Version`, so the inspector skips a full rebuild when the selection set is unchanged.
+
+### Property editors
 | Type | Editor | Notes |
 |------|--------|-------|
-| `string` | Text field | Single-line text input |
-| `int` | Number field | Integer spinner |
-| `float` | Number field with decimal | Floating-point spinner |
-| `bool` | Checkbox | Toggle switch |
-| `Vector3` | Three number fields (X, Y, Z) | Labeled axis inputs |
-| `Color` | Color picker | RGBA color selector with hex display |
-| `enum` | Dropdown | Lists all enum values |
-| `Material` | Material editor | Color picker + PBR sliders + texture slots |
-| `Mesh` | Read-only display | Shows vertex/triangle counts |
-| `List<>` | Expandable list | Add/remove items |
+| `string` | Text field | Single-line; path fields normalize to project-relative on commit |
+| `string` + `[AssetPath]` | Import / Clear / drop zone | Shared `AssetPathEditor`; presets for audio, image, model |
+| `int` / `float` / etc. | Text field or slider | `[Range(min,max)]` → slider + numeric box with undo on drag |
+| `bool` | Checkbox | |
+| `Vector3` (`Core.Vector3`) | Three bound fields (X, Y, Z) | Binds through `Transform.Position.X` style paths for gizmo/undo |
+| `System.Numerics.Vector3` | RGB swatch + R/G/B fields | Swatch opens the same color flyout as `Color` |
+| `Color` | Swatch + hex/name field | Swatch opens RGBA slider flyout |
+| `enum` | Dropdown | |
+| `Mesh` | Primitive combo | None / Cube / Sphere / … / Custom |
+| `List<>` | Expandable list | Add/remove/reorder; sub-editors for complex elements |
 
-### Adding Components
-Click the **"+ Add Component"** button at the bottom of the Inspector to open a hierarchical popup menu. Components are organized into category submenus, similar to Unity's component picker:
+Material assets (double-click `.material`) still use the dedicated material inspector embedded in the panel.
+
+### Inspector attributes (scripting)
+On properties and fields:
+
+| Attribute | Effect |
+|-----------|--------|
+| `[HideInInspector]` | Excluded from the default property list (use custom UI or another property) |
+| `[Range(min, max)]` | Slider + text box for numeric types |
+| `[AssetPath(...)]` | Import dialog + drag-drop; `AssetPathKind.Audio`, `.Image`, `.ModelOrImage`, or custom extensions |
+
+See [06 — Scripting & Extensibility](06_Scripting_And_Extensibility.md#inspector-attributes-and-custom-inspectors).
+
+### Adding components
+At the **bottom** of the inspector:
+
+| Control | Action |
+|---------|--------|
+| **Paste component** | Instantiates the last copied component on this GameObject |
+| **Quick Add...** | Searchable picker across all categories and scripts |
+| **+ Add Component** | Hierarchical category menu (cached catalog; see below) |
+
+Click **"+ Add Component"** to open a hierarchical popup menu. Components are organized into category submenus, similar to Unity's component picker:
 
 | Category | Components |
 |----------|-----------|
@@ -332,7 +379,10 @@ Click the **"+ Add Component"** button at the bottom of the Inspector to open a 
 Each category expands into a submenu listing its components alphabetically. The **Scripts** submenu appears below a separator at the bottom. Scripts that are present in source but not yet compiled show a "(source only)" label.
 
 Components are assigned to categories using the `[ComponentCategory("Name")]` attribute on their class declaration.
-For faster keyboard-first insertion, use **Quick Add...** above **+ Add Component** and type to filter component names across categories and scripts.
+
+**Component catalog:** Built-in types and project scripts are cached in `ComponentCatalog` (invalidated on project open/close and script recompile). Full inspector rebuilds do not rescan every assembly.
+
+For faster keyboard-first insertion, use **Quick Add...** in the bottom bar and type to filter component names across categories and scripts.
 
 ### Runtime UI components
 `UIElement` and derived UI behaviors show grouped Inspector sections: **UI (common)** (raycast, color, opacity sliders, focusable flag, optional opacity target easing), plus type-specific blocks for **Button**, **Slider**, **Toggle**, **Input field**, and **Progress bar** (with a **Value** slider tied to min/max). Runtime-only pointer flags are hidden from the default property list.
@@ -358,9 +408,23 @@ Several built-in components have dedicated custom inspectors:
 | **PlanetPlayerSpawner** | Gameplay — one-click play-mode player spawn on the crust (`RigidbodyPlayer` + capsule + camera + optional post-process) |
 | **ReflectionProbe** | **GpuCubemap** — explains runtime GPU cubemap allocation (not an importable 2D texture); **Request recapture** sets `NeedsCapture` |
 | **TriggerVolume** | **On enter** / **On exit** reaction rows (`LoadScene`, `SetObjectEnabled`, `PublishChannel`) with parallel list persistence |
-| **DialogueRunner** | Dialogue tree editor — node list with type/speaker/text, choice linking, variable store, voice clip paths per node, dialogue mode selector (Text / Voice / Both) |
+| **DialogueRunner** | Compact summary (name, mode, voice volume, auto-advance, node count) + **Open Dialogue Editor** — full node/variable editor in a separate window (`DialogueEditorWindow`) |
 | **BehaviorTreeRunner** | Behavior tree editor — hierarchical node view with type selectors, child management, blackboard key-value editor, tick interval and running state |
 | **TimelinePlayer** | Timeline asset editor — name/duration/loop, playback status, track list with type badges and mute toggles, per-clip start/duration/blend/speed editors, track-type-specific fields |
+
+### Dialogue Editor window
+Opened from **DialogueRunner → Open Dialogue Editor**. Hosts the full dialogue tree UI (nodes, choices, variables, voice paths) that previously lived inline in the inspector. The window clamps to the monitor work area, includes a bottom **Close** button, and closes on **Escape**.
+
+### Inspector architecture (`Views/Inspector/`)
+| File | Role |
+|------|------|
+| `InspectorContext.cs` | Public `ICustomInspector`, `[CustomInspector]`, `InspectorContext` API for user scripts |
+| `AssetPathEditor.cs` | Shared Import / Clear / drop-zone for `[AssetPath]` properties |
+| `ComponentCatalog.cs` | Cached built-in + script list for **Add Component** |
+| `IComponentInspector.cs` / `ComponentInspectorRegistry.cs` | Per-component chrome and hidden-property hooks |
+| `BuiltinComponentInspectors.cs` | Registrations for terrain, dialogue, BT, timeline, etc. |
+| `IInspectorHost.cs` / `InspectorPanel.Host.cs` | Host surface for heavy builders still on the panel |
+| `InspectorFold.cs` | Object / Transform / component fold state |
 
 ### List Property Editor
 `List<T>` properties are rendered with a dedicated expandable editor that supports:
