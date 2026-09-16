@@ -55,7 +55,16 @@ namespace Game_Engine.Core
         /// <summary>Play a one-shot sound at a world position (fire-and-forget).</summary>
         public static void PlayOneShot(string clipPath, SN.Vector3 position, float volume = 1f)
         {
-            AudioBackend.PlayOneShot(clipPath, volume);
+            float spatial = 1f;
+            var listener = _listener;
+            if (listener != null)
+            {
+                var lp = listener.GetWorldPosition();
+                float dist = SN.Vector3.Distance(lp, position);
+                spatial = Math.Clamp(1f - dist / 50f, 0.05f, 1f);
+                spatial *= Game_Engine.Core.Audio.AudioOcclusion.ComputeOcclusion(lp, position);
+            }
+            AudioBackend.PlayOneShot(clipPath, volume * spatial);
         }
 
         /// <summary>Stop all playing audio sources.</summary>

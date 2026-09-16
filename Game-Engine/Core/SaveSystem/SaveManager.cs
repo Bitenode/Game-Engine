@@ -58,7 +58,10 @@ namespace Game_Engine.Core.SaveSystem
             }
         }
 
-        /// <summary>Load game state from a numbered slot.</summary>
+        static int? _pendingSlotAfterScene;
+        static Action<string>? _pendingSceneHandler;
+
+        /// <summary>Load game state from a numbered slot. Loads the saved scene first when it differs from the current scene.</summary>
         public static bool Load(int slotId)
         {
             try
@@ -74,16 +77,29 @@ namespace Game_Engine.Core.SaveSystem
                 var saveData = JsonSerializer.Deserialize<SaveData>(json, _jsonOpts);
                 if (saveData == null) return false;
 
-                // Build lookup of save entries by ID
-                var lookup = new Dictionary<string, Dictionary<string, object>>();
-                foreach (var entry in saveData.Entries)
-                    lookup[entry.SaveId] = entry.Data;
+                string wanted = saveData.SceneName ?? "";
+                string current = SceneManager.CurrentSceneName ?? "";
+                if (!string.IsNullOrWhiteSpace(wanted)
+                    && !string.Equals(wanted, current, StringComparison.OrdinalIgnoreCase))
+                {
+                    CancelPendingSceneApply();
+                    _pendingSlotAfterScene = slotId;
+                    _pendingSceneHandler = scene =>
+                    {
+                        if (!string.Equals(scene, wanted, StringComparison.OrdinalIgnoreCase))
+                            return;
+                        SceneManager.SceneLoaded -= _pendingSceneHandler;
+                        _pendingSceneHandler = null;
+                        _pendingSlotAfterScene = null;
+                        ApplySaveData(saveData);
+                    };
+                    SceneManager.SceneLoaded += _pendingSceneHandler;
+                    SceneManager.LoadScene(wanted);
+                    Log.Info($"[SaveManager] Queued scene '{wanted}' then slot {slotId}");
+                    return true;
+                }
 
-                // Apply data to all ISaveable components
-                foreach (var root in SceneService.Root)
-                    ApplySaveables(root, lookup);
-
-                Log.Info($"[SaveManager] Game loaded from slot {slotId}");
+                ApplySaveData(saveData);
                 return true;
             }
             catch (Exception ex)
@@ -91,6 +107,47 @@ namespace Game_Engine.Core.SaveSystem
                 Log.Error(ex, "SaveManager.Load");
                 return false;
             }
+        }
+
+        /// <summary>Apply ISaveable data to the scene that is already loaded.</summary>
+        public static bool LoadIntoCurrentScene(int slotId)
+        {
+            try
+            {
+                var path = GetSlotPath(slotId);
+                if (!File.Exists(path)) return false;
+                var saveData = JsonSerializer.Deserialize<SaveData>(File.ReadAllText(path), _jsonOpts);
+                if (saveData == null) return false;
+                ApplySaveData(saveData);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "SaveManager.LoadIntoCurrentScene");
+                return false;
+            }
+        }
+
+        static void ApplySaveData(SaveData saveData)
+        {
+            var lookup = new Dictionary<string, Dictionary<string, object>>();
+            foreach (var entry in saveData.Entries)
+                lookup[entry.SaveId] = entry.Data;
+
+            foreach (var root in SceneService.Root)
+                ApplySaveables(root, lookup);
+
+            Log.Info($"[SaveManager] Game loaded from slot {saveData.SlotId}");
+        }
+
+        internal static void CancelPendingLoads() => CancelPendingSceneApply();
+
+        static void CancelPendingSceneApply()
+        {
+            if (_pendingSceneHandler != null)
+                SceneManager.SceneLoaded -= _pendingSceneHandler;
+            _pendingSceneHandler = null;
+            _pendingSlotAfterScene = null;
         }
 
         /// <summary>Delete a save slot.</summary>

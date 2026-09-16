@@ -1,5 +1,6 @@
 ﻿
 using System.Reflection;
+using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core
 {
@@ -26,6 +27,12 @@ namespace Game_Engine.Core
         {
             _prop.SetValue(_target, CloneForAssign(_prop.PropertyType, value));
             NotifyTarget(_target, _prop.Name);
+            if (_target is Behavior b && b.gameObject != null && Prefab.IsPrefabInstance(b.gameObject))
+                Prefab.RecordOverride(b.gameObject, b.GetType().Name + "." + _prop.Name, value);
+            else if (_target is GameObject go && Prefab.IsPrefabInstance(go))
+                Prefab.RecordOverride(go, "GameObject." + _prop.Name, value);
+            else if (_target is Transform tr && tr.gameObject != null && Prefab.IsPrefabInstance(tr.gameObject))
+                Prefab.RecordOverride(tr.gameObject, "Transform." + _prop.Name, value);
         }
 
         static void NotifyTarget(object target, string name)

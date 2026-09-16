@@ -227,7 +227,8 @@ namespace Game_Engine.Core
                 Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
                 Children = go.Children.Where(c => !IsGeneratedChild(c)).Select(ToDTO).ToList(),
                 PrefabId = go.PrefabId,
-                PrefabPath = go.PrefabPath
+                PrefabPath = go.PrefabPath,
+                PrefabOverrides = go.PrefabOverrides.Count > 0 ? new Dictionary<string, string>(go.PrefabOverrides) : null
             };
             return dto;
         }
@@ -250,7 +251,8 @@ namespace Game_Engine.Core
                 Behaviors = go.Behaviors.Where(b => b is not Component.Transform).Select(BehaviorToDTO).ToList(),
                 Children = go.Children.Select(ToDTOFull).ToList(),
                 PrefabId = go.PrefabId,
-                PrefabPath = go.PrefabPath
+                PrefabPath = go.PrefabPath,
+                PrefabOverrides = go.PrefabOverrides.Count > 0 ? new Dictionary<string, string>(go.PrefabOverrides) : null
             };
             return dto;
         }
@@ -276,9 +278,17 @@ namespace Game_Engine.Core
 
             go.PrefabId = dto.PrefabId;
             go.PrefabPath = dto.PrefabPath;
+            if (dto.PrefabOverrides != null)
+            {
+                go.PrefabOverrides.Clear();
+                foreach (var kv in dto.PrefabOverrides)
+                    go.PrefabOverrides[kv.Key] = kv.Value;
+            }
 
             if (dto.Behaviors != null)
                 for (int i = 0; i < dto.Behaviors.Count; i++) RestoreBehavior(go, dto.Behaviors[i]);
+
+            Prefab.ApplyOverrides(go);
 
             if (dto.Children != null)
                 for (int i = 0; i < dto.Children.Count; i++) go.AddChild(FromDTO(dto.Children[i]));
@@ -1734,6 +1744,7 @@ namespace Game_Engine.Core
         public List<GameObjectDTO>? Children { get; set; }
         public string? PrefabId { get; set; }
         public string? PrefabPath { get; set; }
+        public Dictionary<string, string>? PrefabOverrides { get; set; }
     }
 
     public class TransformDTO

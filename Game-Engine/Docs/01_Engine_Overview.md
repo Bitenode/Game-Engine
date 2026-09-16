@@ -111,6 +111,8 @@ Game-Engine/
 │   │       └── DefaultFontGenerator.cs # Auto-generates a default bitmap font atlas
 │   ├── Rendering/               # Scene renderer, materials, overlays
 │   │   ├── SceneRenderer.cs     # Main rendering pipeline
+│   │   ├── GameRenderPipeline.cs # Shared Play/player deferred + planet stack
+│   │   ├── ViewRenderResources.cs # GPU programs used by GameView and PlayerView
 │   │   ├── ShaderGraph/         # Visual shader graph system
 │   │   │   ├── ShaderGraph.cs   # Node graph → GLSL compilation
 │   │   │   └── ShaderNode.cs    # Node types (Output, Texture, Math, Noise, etc.)
@@ -289,7 +291,7 @@ The fundamental entity in the scene. Every object in the scene is a `GameObject`
 - An `ObservableCollection<Behavior>` of **Behaviors** (components) that provide functionality
 - An `ObservableCollection<GameObject>` of **Children** forming the scene graph hierarchy
 - An optional **Parent** (prevents circular parent-child relationships)
-- Optional **PrefabId** / **PrefabPath** for prefab references
+- Optional **PrefabId** / **PrefabPath** for prefab references, plus **PrefabOverrides** (`Type.Property` → string) so Apply-to-instances keeps Inspector edits
 
 Key properties:
 - `Enabled` — enable/disable the entire GameObject. Toggling this calls `SceneService.NotifyChanged()` to refresh all views immediately.
@@ -351,12 +353,12 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `ProjectService` | Project lifecycle — create, open, close projects; manages `project.json` manifest, folder structure, asset paths, timestamps |
 | `SelectionService` | Tracks currently selected GameObjects with **multi-select** support (`Selected` list, `Current` primary, `Set/Add/Remove/Toggle/Clear` methods) |
 | `UndoService` | Command-pattern undo/redo with dual stacks; `ICmd` interface with `Do()`/`Undo()`; `PropertyChangeCmd` for property edits |
-| `Input` | Frame-based input: axes/actions, keyboard, mouse, XInput gamepads, remapping UI, `input.bindings.json` |
+| `Input` | Frame-based input: axes/actions, keyboard, mouse, `IInputBackend` pads (XInput + GameInput session + SDL2), rumble, `PointerLock`, remapping UI, `input.bindings.json` |
 | `CameraService` | Tracks active cameras in the scene |
 | `ExtensionService` | Discovers, loads, and hot-reloads editor extensions from compiled assemblies using collectible `AssemblyLoadContext` |
 | `CommandRegistry` | Central command registration and invocation system for menus and shortcuts |
 | `AudioManager` | Volume channels (Master/Music/SFX), `AudioSource` registry, listener management, global playback control |
-| `AudioBackend` | Cross-platform OpenAL playback (via Silk.NET) — native 3D spatial audio, Doppler, distance attenuation; NAudio for file decoding |
+| `AudioBackend` | Windows: NAudio `WaveOut`. Non-Windows player: OpenAL + PCM WAV (`OpenAlAudio`) so Linux/macOS/Android builds are not silent |
 | `Log` | Global logging with severity levels (Info, Warning, Error, Success, Debug); messages appear in the Console panel |
 | `SceneManager` | Runtime scene loading — deferred to next frame, safe tear-down/rebuild, `SceneLoaded` event |
 | `SceneQuery` | Scene search utilities — `FindByName()`, `FindByPath()`, `FindBehaviors<T>()`. Traversal skips disabled GameObjects; `FindBehaviors<T>()` only returns behaviors where `IsActiveAndEnabled` is true |
@@ -367,6 +369,7 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `Profiler` | Frame timing statistics, FPS tracking, per-system performance metrics |
 | `AudioMixer` | Hierarchical audio group mixing with volume, effects, and routing |
 | `NavMesh` | Static navigation mesh baking, A* pathfinding, and spatial queries |
+| `GameRenderPipeline` | Shared world draw for editor Play and `PlayerView` (deferred G-buffer/SSAO, planet stack, forward fallback) |
 
 ---
 

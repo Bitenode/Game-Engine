@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using Game_Engine.Core.Component;
@@ -137,6 +138,9 @@ public class GameObject : INotifyPropertyChanged
         get => _prefabPath;
         set { if (_prefabPath != value) { _prefabPath = value; OnChanged(nameof(PrefabPath)); } }
     }
+
+    /// <summary>Instance property overrides keyed as "BehaviorType.Property" or "Transform.Position".</summary>
+    public Dictionary<string, string> PrefabOverrides { get; } = new(StringComparer.Ordinal);
 
     // Mandatory component
     public Transform Transform { get; } = new();

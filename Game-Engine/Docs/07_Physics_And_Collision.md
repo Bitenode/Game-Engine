@@ -328,7 +328,8 @@ The `RayAABB()` method uses the **slab method** for ray-box intersection:
 
 Each `GameObject` has **`Layer`** (0–31), editable in the Inspector next to **Tag**. For physics:
 
-- **`Physics.Raycast`**, **`RaycastAll`**, **`OverlapSphere`**, and **`CollisionWorld.QueryAABB`** accept an optional **`layerMask`** (`int`). Set bit `1 << layer` to include that layer; **`-1`** means all layers (default). Use `PhysicsLayerMask.Includes(mask, layer)` if you build masks in code.
+- **`Physics.Raycast`**, **`RaycastAll`**, **`SphereCast`**, **`CapsuleCast`**, **`OverlapSphere`**, and **`CollisionWorld.QueryAABB`** accept an optional **`layerMask`** (`int`) and **`QueryTriggerInteraction`**. Set bit `1 << layer` to include that layer; **`-1`** means all layers (default). Use `PhysicsLayerMask.Includes(mask, layer)` if you build masks in code.
+- Broadphase uses a **BVH** rebuilt once per frame (`CollisionWorld.RebuildBroadphaseIfNeeded`). Narrow phase: **mesh colliders** run Möller–Trumbore triangle tests; other colliders use AABB. **`PlanetCollider`** is skipped — use `PlanetTerrain` density casts.
 - **`Rigidbody.CollisionLayerMask`** and **`CharacterController.CollisionLayerMask`** (default **`-1`**) restrict which layers that body collides against when resolving overlaps, mesh tests, and triggers.
 
 ---
@@ -353,6 +354,12 @@ if (Physics.Raycast(origin, direction, out var hit, maxDistance: 100f, layerMask
 
 // All hits
 var hits = Physics.RaycastAll(origin, direction, maxDistance, layerMask: -1);
+
+// Sweeps (mesh-accurate when the target is a MeshCollider)
+if (Physics.SphereCast(origin, direction, radius: 0.4f, out var sweep, maxDistance: 8f))
+    _ = sweep.Point;
+if (Physics.CapsuleCast(p0, p1, radius: 0.3f, direction, out var cap, maxDistance: 4f))
+    _ = cap.Collider;
 
 // Overlap queries
 var colliders = Physics.OverlapSphere(center, radius, layerMask: -1);

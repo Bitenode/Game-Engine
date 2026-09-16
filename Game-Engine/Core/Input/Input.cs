@@ -51,6 +51,8 @@ namespace Game_Engine.Core.Input
         public static float GamepadDeadzone = 0.20f;
         /// <summary>Added to Mouse X/Y when those axes have a gamepad analog binding.</summary>
         public static float GamepadLookSensitivity = 2.5f;
+        /// <summary>Which pad analog/buttons feed the action map (0–3).</summary>
+        public static int ActiveGamepadIndex = 0;
 
         // ------------ Internal state ------------
         static readonly HashSet<KeyCode> sHeldKeys = new HashSet<KeyCode>();
@@ -67,6 +69,7 @@ namespace Game_Engine.Core.Input
         static readonly HashSet<MouseButton> sUpMouse = new HashSet<MouseButton>();
 
         static float sMouseDX, sMouseDY;   // accumulated within current frame
+        static int sIgnoreMouseDelta;
         static float sMousePosX, sMousePosY; // absolute mouse position in viewport pixels
         static float sViewportW, sViewportH; // viewport size in the same space as mouse position
         static float sDt;                  // this frame dt (seconds)
@@ -74,6 +77,9 @@ namespace Game_Engine.Core.Input
         static int sAxesUpdatedInFrame;  // to update axes once per frame on demand
         /// <summary>True while the Game view holds pointer capture (LMB/RMB sculpting).</summary>
         public static bool PlayViewportCaptureActive;
+
+        /// <summary>When true, play/player view hides the cursor and recenters it for FPS look.</summary>
+        public static bool PointerLock;
 
         static readonly Dictionary<string, AxisBinding> sAxes = new Dictionary<string, AxisBinding>(StringComparer.Ordinal);
         static readonly Dictionary<string, ActionBinding> sActions = new Dictionary<string, ActionBinding>(StringComparer.Ordinal);
@@ -255,11 +261,15 @@ namespace Game_Engine.Core.Input
             PollGamepads();
         }
 
-        /// <summary>Read Xbox-compatible pads (XInput on Windows). Safe to call from the remapper while the editor is idle.</summary>
+        /// <summary>Read pads via the active input backend (XInput or SDL2).</summary>
         public static void PollGamepads()
         {
-            Gamepad.PollHardware();
-            ushort bits = Gamepad.MergedButtons();
+            InputBackends.Current.Poll();
+            int idx = Math.Clamp(ActiveGamepadIndex, 0, Gamepad.MaxPads - 1);
+            var pad = InputBackends.Current.GetGamepadState(idx);
+            if (!pad.Connected)
+                pad = Gamepad.GetState(idx);
+            ushort bits = pad.Connected ? pad.Buttons : Gamepad.MergedButtons();
             SyncGamepadButton(GamepadButton.A, Gamepad.ButtonBit(bits, GamepadButton.A));
             SyncGamepadButton(GamepadButton.B, Gamepad.ButtonBit(bits, GamepadButton.B));
             SyncGamepadButton(GamepadButton.X, Gamepad.ButtonBit(bits, GamepadButton.X));
@@ -332,6 +342,16 @@ namespace Game_Engine.Core.Input
         [DllImport("user32.dll")]
         static extern short GetAsyncKeyState(int vKey);
 
+        [DllImport("user32.dll")]
+        static extern bool SetCursorPos(int X, int Y);
+
+        public static void WarpCursorScreen(int screenX, int screenY)
+        {
+            sIgnoreMouseDelta = 2;
+            if (OperatingSystem.IsWindows())
+                SetCursorPos(screenX, screenY);
+        }
+
         public static void FeedMouseButtonDown(MouseButton btn)
         {
             if (!sHeldMouse.Contains(btn)) sDownMouse.Add(btn);
@@ -359,6 +379,11 @@ namespace Game_Engine.Core.Input
 
         public static void FeedMouseDelta(float dx, float dy)
         {
+            if (sIgnoreMouseDelta > 0)
+            {
+                sIgnoreMouseDelta--;
+                return;
+            }
             sMouseDX += dx;
             sMouseDY += dy;
         }
@@ -375,10 +400,36 @@ namespace Game_Engine.Core.Input
         public static bool GetGamepadButton(GamepadButton button) { return sHeldGamepad.Contains(button); }
         public static bool GetGamepadButtonDown(GamepadButton button) { return sDownGamepad.Contains(button); }
         public static bool GetGamepadButtonUp(GamepadButton button) { return sUpGamepad.Contains(button); }
-        public static int ConnectedGamepadCount => Gamepad.ConnectedCount;
+        public static int ConnectedGamepadCount => InputBackends.Current.ConnectedGamepadCount;
 
-        /// <summary>Deadzoned analog from the first connected pad.</summary>
-        public static float GetGamepadAxis(GamepadAxis axis) => ApplyDeadzone(Gamepad.GetAxisRaw(axis), axis);
+        public static GamepadState GetGamepadState(int index) => InputBackends.Current.GetGamepadState(index);
+
+        public static void SetGamepadVibration(int index, float leftMotor, float rightMotor)
+            => InputBackends.Current.SetGamepadVibration(index, leftMotor, rightMotor);
+
+        /// <summary>Deadzoned analog from <see cref="ActiveGamepadIndex"/> (falls back to the first connected pad).</summary>
+        public static float GetGamepadAxis(GamepadAxis axis)
+        {
+            var s = ResolveActivePad();
+            return ApplyDeadzone(Gamepad.AxisValue(in s, axis), axis);
+        }
+
+        static GamepadState ResolveActivePad()
+        {
+            int idx = Math.Clamp(ActiveGamepadIndex, 0, Gamepad.MaxPads - 1);
+            var s = InputBackends.Current.GetGamepadState(idx);
+            if (s.Connected) return s;
+            s = Gamepad.GetState(idx);
+            if (s.Connected) return s;
+            for (int i = 0; i < Gamepad.MaxPads; i++)
+            {
+                s = InputBackends.Current.GetGamepadState(i);
+                if (s.Connected) return s;
+                s = Gamepad.GetState(i);
+                if (s.Connected) return s;
+            }
+            return default;
+        }
 
         static float ApplyDeadzone(float v, GamepadAxis axis)
         {
@@ -534,7 +585,8 @@ namespace Game_Engine.Core.Input
         static float ReadAnalog(AxisBinding a)
         {
             if (a.AnalogAxis == GamepadAxis.None) return 0f;
-            float v = ApplyDeadzone(Gamepad.GetAxisRaw(a.AnalogAxis), a.AnalogAxis);
+            var s = ResolveActivePad();
+            float v = ApplyDeadzone(Gamepad.AxisValue(in s, a.AnalogAxis), a.AnalogAxis);
             return a.InvertAnalog ? -v : v;
         }
 

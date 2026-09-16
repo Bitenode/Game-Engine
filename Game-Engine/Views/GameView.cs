@@ -95,6 +95,7 @@ namespace Game_Engine.Views
         private bool _taaCamInSolid;
         private int _taaFrameCounter;
         private TiledLightTextureSystem? _tiledLights;
+        readonly ViewRenderResources _sharedPipe = new() { OwnsResources = false };
         #endregion
 
         #region Clocks & State
@@ -395,6 +396,7 @@ namespace Game_Engine.Views
             _standardShader?.Dispose();
             _glCtx?.Dispose();
             _glCtx = null;
+            _sharedPipe.Standard = null; _sharedPipe.Cache = null; _sharedPipe.FsQuad = null;
             _hasShadowMap = false;
             _shadowAccumSec = 0.0;
             _lastShadowCamPos = new SN.Vector3(float.NaN);
@@ -748,7 +750,6 @@ namespace Game_Engine.Views
             // --- POST-PROCESSING setup ---
             var postVolume = PostProcessVolume.GetActive();
             bool usePostFX = (postVolume != null || underwater != null) && _postProcessShader != null;
-            bool useSSAO = postVolume?.SSAOEnabled == true;
             bool useSSR = postVolume?.SSREnabled == true;
             double planetLodMs = 0.0;
 
@@ -824,13 +825,14 @@ namespace Game_Engine.Views
             PlanetVegetationSystem.TickAllStreaming(planetLodCamPos, (float)dt);
 
             var sunSD = fallbackPlanetSunDir;
-            bool isES = _glCtx.IsES;
 
-            // Scene View always uses forward + optional post FBO. Deferred + PostProcessVolume
-            // in Game View was wiping the frame (sky/teal only). Use the same forward path
-            // whenever a post volume or underwater FX needs the scene-color blit.
-            bool useDeferred = ProjectRenderingSettings.UseDeferredRendering && !usePostFX;
-            bool useTaa = postVolume?.TAAEnabled == true && useDeferred;
+            // Flat scenes: deferred + PostProcessVolume wiped the frame (sky/teal).
+            // Capture those through forward. Planet scenes need deferred even with a
+            // post volume — skipping it left the player looking through a broken blit.
+            bool onPlanet = PlanetTerrain.ActivePlanets.Count > 0;
+            bool useDeferred = ProjectRenderingSettings.UseDeferredRendering
+                && (!usePostFX || onPlanet);
+            bool useTaa = postVolume?.TAAEnabled == true && useDeferred && !onPlanet;
             if (cam != null && cam.InvalidateTemporalHistory)
             {
                 _taaResetHistory = true;
@@ -883,79 +885,10 @@ namespace Game_Engine.Views
                 }
 
                 var planetRenderSwF = Stopwatch.StartNew();
-                SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache!,
-                    view, proj,
-                    SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                GameRenderPipeline.RenderForwardWorld(g, BindSharedPipe(),
+                    view, proj, camPos, L, DiffuseK, Ambient,
                     lightIsPoint, lightPosW, lightRange,
-                    shadowFBO, shadowVP, camPos, sunSD,
-                    terrainShader: _terrainShader, isES: isES,
-                    lightColor: lightColorNorm);
-
-                if (_planetTerrainShader != null)
-                {
-                    foreach (var planet in PlanetTerrain.ActivePlanets)
-                    {
-                        if (planet?.Config == null) continue;
-                        var tp = planet.gameObject?.Transform?.Position;
-                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                        SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache!,
-                            view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                            pc, shadowFBO, shadowVP);
-                    }
-                    SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache!,
-                        view, proj, camPos,
-                        SN.Vector3.Normalize(-L), DiffuseK, Ambient,
-                        lightIsPoint, lightPosW, lightRange,
-                        shadowFBO, shadowVP, sunSD,
-                        isES: isES,
-                        lightColor: lightColorNorm);
-                }
-                if (_waterShader != null)
-                {
-                    var skyC = _sky != null
-                        ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
-                        : new SN.Vector3(0.5f, 0.6f, 0.8f);
-                    SceneRenderer.RenderWater(g, _waterShader, _cache!, view, proj,
-                        SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
-                }
-                if (_planetAtmosphereShader != null)
-                {
-                    foreach (var planet in PlanetTerrain.ActivePlanets)
-                    {
-                        if (planet?.Config == null) continue;
-                        var tp = planet.gameObject?.Transform?.Position;
-                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                        SceneRenderer.RenderPlanetAtmosphere(g, _planetAtmosphereShader, _cache!,
-                            view, proj, planet, atmo, camPos, pc);
-                    }
-                }
-                if (_planetCloudShader != null)
-                {
-                    foreach (var planet in PlanetTerrain.ActivePlanets)
-                    {
-                        if (planet?.Config == null) continue;
-                        var tp = planet.gameObject?.Transform?.Position;
-                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                        SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache!,
-                            view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
-                    }
-                }
-                if (_planetWaterShader != null)
-                {
-                    foreach (var planet in PlanetTerrain.ActivePlanets)
-                    {
-                        if (planet?.Config == null) continue;
-                        var tp = planet.gameObject?.Transform?.Position;
-                        var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                        var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                        SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache!,
-                            view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                            pc, planet.Config.SeaLevel);
-                    }
-                }
+                    shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky, fallbackPlanetSunDir);
                 planetRenderSwF.Stop();
                 planetRenderMs = planetRenderSwF.Elapsed.TotalMilliseconds;
 
@@ -976,205 +909,15 @@ namespace Game_Engine.Views
             {
 
             // ═══════════ DEFERRED RENDERING PIPELINE ═══════════
-
-            // G-BUFFER PASS — draw opaque standard geometry to MRT
-            if (_gbufferFBO == null) _gbufferFBO = new GPUFramebuffer(g);
-            if (_gbufferW != W || _gbufferH != H)
-            {
-                _gbufferFBO.SetupGBuffer(W, H);
-                _gbufferW = W; _gbufferH = H;
-            }
-
-            _gbufferFBO.Bind();
-            g.ClearColor(0f, 0f, 0f, 0f);
-            g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
-            SceneRenderer.RenderGBufferPass(g, _gbufferShader!, _cache!,
-                view, proj, camPos, shadowFBO, shadowVP, sunSD, isES);
-
-            // SSAO PASS — screen-space ambient occlusion (half resolution)
-            GPUTexture? ssaoResult = null;
-            if (useSSAO && _ssaoShader != null && _ssaoBlurShader != null)
-            {
-                int ssaoW = Math.Max(1, W / 2);
-                int ssaoH = Math.Max(1, H / 2);
-
-                if (_ssaoFBO == null) _ssaoFBO = new GPUFramebuffer(g);
-                if (_ssaoFBO.Width != ssaoW || _ssaoFBO.Height != ssaoH)
-                    _ssaoFBO.SetupColorDepth(ssaoW, ssaoH);
-
-                if (_ssaoBlurFBO == null) _ssaoBlurFBO = new GPUFramebuffer(g);
-                if (_ssaoBlurFBO.Width != ssaoW || _ssaoBlurFBO.Height != ssaoH)
-                    _ssaoBlurFBO.SetupColorDepth(ssaoW, ssaoH);
-
-                // Raw SSAO
-                _ssaoFBO.Bind();
-                g.ClearColor(1f, 1f, 1f, 1f);
-                g.Clear(ClearBufferMask.ColorBufferBit);
-
-                float ssaoRadius = postVolume != null ? Math.Clamp(postVolume.SSAORadius, 0.05f, 3f) : 0.5f;
-                float ssaoBias = postVolume != null ? Math.Clamp(postVolume.SSAOBias, 0.0001f, 0.2f) : 0.025f;
-                int ssaoSamples = postVolume != null ? Math.Clamp(postVolume.SSAOSamples, 4, 32) : 24;
-                float depthSig = postVolume != null ? Math.Clamp(postVolume.SSAODepthSigma, 1f, 500f) : 80f;
-                SceneRenderer.RenderSSAO(g, _ssaoShader, _fsQuad!, _gbufferFBO,
-                    view, proj, W, H, ssaoRadius, ssaoBias, ssaoSamples);
-
-                // Blur SSAO
-                _ssaoBlurFBO.Bind();
-                g.ClearColor(1f, 1f, 1f, 1f);
-                g.Clear(ClearBufferMask.ColorBufferBit);
-
-                SceneRenderer.RenderSSAOBlur(g, _ssaoBlurShader, _fsQuad!, _ssaoFBO.ColorTexture!, _gbufferFBO,
-                    ssaoW, ssaoH, depthSig);
-
-                ssaoResult = _ssaoBlurFBO.ColorTexture;
-            }
-
-            // SCENE FBO — setup for deferred lighting output + forward overlays
-            if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
-            if (_sceneFBO_W != W || _sceneFBO_H != H)
-            {
-                _sceneFBO.SetupColorDepth(W, H);
-                _sceneFBO_W = W; _sceneFBO_H = H;
-            }
-
-            _sceneFBO.Bind();
-            g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
-            g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
-            // SKY — render before deferred lighting (preserved because deferred discards sky pixels)
-            Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
-                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
-
-            // DEFERRED LIGHTING — fullscreen PBR lighting from G-buffer
-            g.BindVertexArray(_fsQuad!.VAO);
-            float ssaoIntensity = postVolume != null ? postVolume.SSAOIntensity : 1f;
-            foreach (var rp in ReflectionProbe.ActiveProbes)
-                rp.EnsureGpuResources(g);
-            var probePick = ReflectionProbe.GetBestForPosition(camPos);
-            SceneRenderer.RenderDeferredLighting(g, _deferredLightShader!, _fsQuad!,
-                _gbufferFBO, ssaoResult, shadowFBO,
-                view, proj, camPos, shadowVP, sunSD,
-                Ambient, 0.008f, ssaoIntensity,
-                _tiledLights, W, H,
-                probePick?.GpuCubemap, probePick?.Intensity ?? 0f);
-            g.BindVertexArray(0);
-
-            //  COPY G-BUFFER DEPTH → scene FBO (required before terrain forward pass).
-            // Prefer shader copy: reads the same depth texture the deferred pass uses (texelFetch), so depth matches
-            // what lighting sampled. glBlitFramebuffer can report success but mis-copy when one FBO fell back to
-            // depth-only attachment and the other uses D24S8 (silent terrain depth-test failure on some drivers).
-            _sceneFBO.Bind();
-            while (g.GetError() != GLEnum.NoError) { }
-            if (_depthCopyShader != null && _gbufferFBO.DepthTexture != null)
-            {
-                SceneRenderer.RenderDepthTextureToFramebufferDepth(g, _depthCopyShader, _fsQuad!, _gbufferFBO.DepthTexture);
-                g.BindVertexArray(0);
-            }
-            else
-            {
-                g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _gbufferFBO.Handle);
-                g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _sceneFBO.Handle);
-                const ClearBufferMask StencilBufferBit = (ClearBufferMask)0x400;
-                g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
-                    ClearBufferMask.DepthBufferBit | StencilBufferBit, BlitFramebufferFilter.Nearest);
-                if (g.GetError() != GLEnum.NoError)
-                {
-                    while (g.GetError() != GLEnum.NoError) { }
-                    g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
-                        ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
-                }
-#if DEBUG
-                if (g.GetError() != GLEnum.NoError)
-                    Debug.WriteLine($"[GameView] depth blit failed (no depth-copy shader): {g.GetError()}");
-#endif
-            }
-            _sceneFBO.Bind();
-
-            // FORWARD OVERLAYS — terrain, custom shaders, transparent objects
-            SceneRenderer.RenderForwardOverlays(g, _standardShader!, _cache!,
-                view, proj, camPos,
-                SN.Vector3.Normalize(-L), DiffuseK, Ambient,
-                lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunSD,
-                terrainShader: _terrainShader, isES: isES,
-                lightColor: lightColorNorm);
-
-            // PLANET TERRAIN
             var planetRenderSw = Stopwatch.StartNew();
-            if (_planetTerrainShader != null)
-            {
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config == null) continue;
-                    var tp = planet.gameObject?.Transform?.Position;
-                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                    SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache,
-                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                        pc, shadowFBO, shadowVP);
-                }
-                SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache!,
-                    view, proj, camPos,
-                    SN.Vector3.Normalize(-L), DiffuseK, Ambient,
-                    lightIsPoint, lightPosW, lightRange,
-                    shadowFBO, shadowVP, sunSD,
-                    isES: isES,
-                    lightColor: lightColorNorm);
-            }
-
-            // WATER
-            if (_waterShader != null)
-            {
-                var skyC = _sky != null
-                    ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
-                    : new SN.Vector3(0.5f, 0.6f, 0.8f);
-                SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
-                    SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
-            }
-
-            // PLANET ATMOSPHERE SHELL (visible from outside and inside)
-            if (_planetAtmosphereShader != null)
-            {
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config == null) continue;
-                    var tp = planet.gameObject?.Transform?.Position;
-                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                    SceneRenderer.RenderPlanetAtmosphere(g, _planetAtmosphereShader, _cache,
-                        view, proj, planet, atmo, camPos, pc);
-                }
-            }
-
-            // PLANET CLOUDS (separate from Skybox path)
-            if (_planetCloudShader != null)
-            {
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config == null) continue;
-                    var tp = planet.gameObject?.Transform?.Position;
-                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                    SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache,
-                        view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
-                }
-            }
-
-            // PLANET WATER — after atmosphere/cloud shells so haze does not cover the surface
-            if (_planetWaterShader != null)
-            {
-                foreach (var planet in PlanetTerrain.ActivePlanets)
-                {
-                    if (planet?.Config == null) continue;
-                    var tp = planet.gameObject?.Transform?.Position;
-                    var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                    var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, _light, fallbackPlanetSunDir, Ambient);
-                    SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache,
-                        view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                        pc, planet.Config.SeaLevel);
-                }
-            }
+            var pipe = BindSharedPipe();
+            finalSceneTex = GameRenderPipeline.RenderDeferred(g, pipe, W, H,
+                view, proj, camPos, L, DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky,
+                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
+                postVolume, fallbackPlanetSunDir);
+            SyncSharedPipe();
             planetRenderSw.Stop();
             planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;
 
@@ -1190,8 +933,8 @@ namespace Game_Engine.Views
             }
 
             // SSR — screen-space reflections (reads lit scene + G-buffer)
-            finalSceneTex = _sceneFBO.ColorTexture;
-            if (useSSR && _ssrShader != null && _sceneFBO.ColorTexture != null)
+            finalSceneTex ??= _sceneFBO?.ColorTexture;
+            if (useSSR && _ssrShader != null && _sceneFBO?.ColorTexture != null)
             {
                 if (_ssrFBO == null) _ssrFBO = new GPUFramebuffer(g);
                 if (_ssrFBO.Width != W || _ssrFBO.Height != H)
@@ -1410,6 +1153,56 @@ namespace Game_Engine.Views
             foreach (var c in SceneQuery.FindBehaviors<Camera>()) _cams.Add(c);
         }
 
+        ViewRenderResources BindSharedPipe()
+        {
+            _sharedPipe.IsES = _glCtx?.IsES ?? true;
+            _sharedPipe.Standard = _standardShader;
+            _sharedPipe.Depth = _depthShader;
+            _sharedPipe.Sky = _skyShader;
+            _sharedPipe.Terrain = _terrainShader;
+            _sharedPipe.Particle = _particleShader;
+            _sharedPipe.Water = _waterShader;
+            _sharedPipe.PlanetTerrain = _planetTerrainShader;
+            _sharedPipe.PlanetWater = _planetWaterShader;
+            _sharedPipe.PlanetAtmosphere = _planetAtmosphereShader;
+            _sharedPipe.PlanetCloud = _planetCloudShader;
+            _sharedPipe.PostProcess = _postProcessShader;
+            _sharedPipe.GBuffer = _gbufferShader;
+            _sharedPipe.DeferredLight = _deferredLightShader;
+            _sharedPipe.Ssao = _ssaoShader;
+            _sharedPipe.SsaoBlur = _ssaoBlurShader;
+            _sharedPipe.Ssr = _ssrShader;
+            _sharedPipe.VolFog = _volFogShader;
+            _sharedPipe.TaaResolve = _taaResolveShader;
+            _sharedPipe.DepthCopy = _depthCopyShader;
+            _sharedPipe.FsQuad = _fsQuad;
+            _sharedPipe.Cache = _cache;
+            _sharedPipe.Shadow = _shadow;
+            _sharedPipe.Canvas = _canvasRenderer;
+            _sharedPipe.TiledLights = _tiledLights;
+            _sharedPipe.SceneFbo = _sceneFBO;
+            _sharedPipe.SceneW = _sceneFBO_W;
+            _sharedPipe.SceneH = _sceneFBO_H;
+            _sharedPipe.GBufferFbo = _gbufferFBO;
+            _sharedPipe.GBufferW = _gbufferW;
+            _sharedPipe.GBufferH = _gbufferH;
+            _sharedPipe.SsaoFbo = _ssaoFBO;
+            _sharedPipe.SsaoBlurFbo = _ssaoBlurFBO;
+            return _sharedPipe;
+        }
+
+        void SyncSharedPipe()
+        {
+            _sceneFBO = _sharedPipe.SceneFbo;
+            _sceneFBO_W = _sharedPipe.SceneW;
+            _sceneFBO_H = _sharedPipe.SceneH;
+            _gbufferFBO = _sharedPipe.GBufferFbo;
+            _gbufferW = _sharedPipe.GBufferW;
+            _gbufferH = _sharedPipe.GBufferH;
+            _ssaoFBO = _sharedPipe.SsaoFbo;
+            _ssaoBlurFBO = _sharedPipe.SsaoBlurFbo;
+        }
+
         static void Ema(ref double acc, double sample, double a)
         { acc = acc <= 0 ? sample : (1 - a) * acc + a * sample; }
 
@@ -1485,6 +1278,7 @@ namespace Game_Engine.Views
         {
             if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
             _mouseLook = false; _hasLastMouse = false;
+            Cursor = Cursor.Default;
             Input.ClearAll(); Input.FeedMouseDelta(0, 0);
             Input.PlayViewportCaptureActive = false;
         }
@@ -1552,6 +1346,16 @@ namespace Game_Engine.Views
 
         bool IsCursorOverGameView() => IsPointerOver && Bounds.Width > 0 && Bounds.Height > 0;
 
+        void RecenterPlayPointer()
+        {
+            if (Bounds.Width <= 0 || Bounds.Height <= 0) return;
+            var mid = new Point(Bounds.Width * 0.5, Bounds.Height * 0.5);
+            var screen = this.PointToScreen(mid);
+            Input.WarpCursorScreen((int)screen.X, (int)screen.Y);
+            _lastMouse = new SN.Vector2((float)mid.X, (float)mid.Y);
+            _hasLastMouse = true;
+        }
+
         void FeedPlayPointerButtons(PointerPoint pt)
         {
             if (pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Left);
@@ -1613,6 +1417,11 @@ namespace Game_Engine.Views
             e.Pointer.Capture(this);
             _capturedPointer = e.Pointer;
             Input.PlayViewportCaptureActive = true;
+            if (Input.PointerLock)
+            {
+                Cursor = new Cursor(StandardCursorType.None);
+                RecenterPlayPointer();
+            }
         }
 
         void OnPointerReleased(object? s, PointerReleasedEventArgs e)
@@ -1644,6 +1453,8 @@ namespace Game_Engine.Views
             var pt = e.GetCurrentPoint(this);
             FeedPlayPointerButtons(pt);
             TryPlayPlanetSculpt(pt);
+            if (Input.PointerLock)
+                RecenterPlayPointer();
         }
         #endregion
 

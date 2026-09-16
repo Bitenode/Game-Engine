@@ -45,6 +45,9 @@ namespace Game_Engine.Core.Networking
         /// <summary>Is networking active?</summary>
         public static bool IsActive => _transport != null && _transport.IsRunning;
 
+        /// <summary>Local peer id (0 on server, assigned id on clients, -1 when offline).</summary>
+        public static int LocalPeerId => _transport?.LocalPeerId ?? -1;
+
         /// <summary>The transport layer.</summary>
         public static NetworkTransport? Transport => _transport;
 

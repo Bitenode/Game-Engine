@@ -30,8 +30,26 @@ namespace Game_Engine.Core.Component
         /// <summary>Peer ID of the owner (-1 = server).</summary>
         [Persist] public int OwnerPeerId { get; set; } = -1;
 
-        /// <summary>Has authority to make changes (server or owner).</summary>
-        public bool HasAuthority => NetworkManager.IsServer || IsLocalPlayer;
+        /// <summary>Has authority to make changes (server, local player flag, or owning peer).</summary>
+        public bool HasAuthority
+        {
+            get
+            {
+                if (NetworkManager.IsServer) return true;
+                if (IsLocalPlayer) return true;
+                if (!NetworkManager.IsActive) return true;
+                int local = NetworkManager.LocalPeerId;
+                return local >= 0 && OwnerPeerId == local;
+            }
+        }
+
+        /// <summary>True when this object's transform/state should be included in the next server broadcast.</summary>
+        public bool ShouldBroadcastState()
+        {
+            var nt = GetComponent<NetworkTransform>();
+            if (nt == null) return true;
+            return nt.ConsumeShouldSend();
+        }
 
         public override void OnEnable()
         {

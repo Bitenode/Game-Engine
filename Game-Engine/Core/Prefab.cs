@@ -1,7 +1,9 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text.Json;
 using Game_Engine.Core.Component;
 
@@ -112,6 +114,7 @@ namespace Game_Engine.Core
 
                 go.Name = Name;
                 StampPrefabRecursive(go, PrefabId, FilePath);
+                ApplyOverrides(go);
 
                 if (parent != null)
                     parent.AddChild(go);
@@ -140,6 +143,7 @@ namespace Game_Engine.Core
                 var pos = inst.Transform.Position;
                 var rot = inst.Transform.Rotation;
                 var scale = inst.Transform.Scale;
+                var overrides = new Dictionary<string, string>(inst.PrefabOverrides);
 
                 // Rebuild from prefab data
                 var fresh = DeserializeGameObject(SerializedData);
@@ -168,6 +172,10 @@ namespace Game_Engine.Core
                 inst.Transform.Position = pos;
                 inst.Transform.Rotation = rot;
                 inst.Transform.Scale = scale;
+                inst.PrefabOverrides.Clear();
+                foreach (var kv in overrides)
+                    inst.PrefabOverrides[kv.Key] = kv.Value;
+                ApplyOverrides(inst);
             }
 
             SceneService.NotifyChanged();
@@ -191,6 +199,7 @@ namespace Game_Engine.Core
             var pos = go.Transform.Position;
             var rot = go.Transform.Rotation;
             var scale = go.Transform.Scale;
+            go.PrefabOverrides.Clear();
 
             // Replace behaviors
             go.Behaviors.Clear();
@@ -241,6 +250,65 @@ namespace Game_Engine.Core
 
         /// <summary>Check if a GameObject is a prefab instance.</summary>
         public static bool IsPrefabInstance(GameObject go) => !string.IsNullOrEmpty(go.PrefabId);
+
+        public static void RecordOverride(GameObject go, string key, object? value)
+        {
+            if (go == null || string.IsNullOrEmpty(go.PrefabId) || string.IsNullOrEmpty(key)) return;
+            go.PrefabOverrides[key] = value == null ? "" : Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+        }
+
+        public static void ApplyOverrides(GameObject go)
+        {
+            if (go == null || go.PrefabOverrides.Count == 0) return;
+            foreach (var kv in go.PrefabOverrides)
+                TryApplyOverride(go, kv.Key, kv.Value);
+        }
+
+        static void TryApplyOverride(GameObject go, string key, string value)
+        {
+            var dot = key.IndexOf('.');
+            if (dot <= 0) return;
+            var typeName = key[..dot];
+            var propName = key[(dot + 1)..];
+
+            object? target = null;
+            if (string.Equals(typeName, "Transform", StringComparison.OrdinalIgnoreCase))
+                target = go.Transform;
+            else
+            {
+                foreach (var b in go.Behaviors)
+                {
+                    if (b.GetType().Name == typeName) { target = b; break; }
+                }
+            }
+            if (target == null) return;
+            var prop = target.GetType().GetProperty(propName);
+            if (prop == null || !prop.CanWrite) return;
+            try
+            {
+                var converted = ConvertOverride(prop.PropertyType, value);
+                prop.SetValue(target, converted);
+            }
+            catch { /* ignore bad override */ }
+        }
+
+        static object? ConvertOverride(Type t, string value)
+        {
+            t = Nullable.GetUnderlyingType(t) ?? t;
+            if (t == typeof(string)) return value;
+            if (t == typeof(bool)) return bool.Parse(value);
+            if (t.IsEnum) return Enum.Parse(t, value, true);
+            if (t == typeof(Vector3))
+            {
+                var parts = value.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 3
+                    && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x)
+                    && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)
+                    && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var z))
+                    return new Vector3(x, y, z);
+            }
+            return Convert.ChangeType(value, t, CultureInfo.InvariantCulture);
+        }
 
         /// <summary>Recursively set PrefabId and PrefabPath on a GO and all its descendants.</summary>
         private static void StampPrefabRecursive(GameObject go, string prefabId, string prefabPath)

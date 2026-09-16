@@ -6,10 +6,14 @@ using SN = System.Numerics;
 
 namespace Game_Engine.Core.Physics
 {
-    /// Central registry + super-simple broadphase queries (AABB only for now).
+    /// Central registry + BVH broadphase with mesh-accurate narrow phase.
     public static class CollisionWorld
     {
         static readonly List<Component.Collider> _colliders = new List<Component.Collider>();
+        static readonly BVH _bvh = new();
+        static readonly List<Component.Collider> _bvhBuild = new(256);
+        static readonly List<Component.Collider> _queryScratch = new(64);
+        static int _bvhFrame = -1;
 
         internal static void Register(Component.Collider c)
         {
@@ -56,6 +60,42 @@ namespace Game_Engine.Core.Physics
 
         public static IReadOnlyList<Component.Collider> All => _colliders;
 
+        internal static void RebuildBroadphaseIfNeeded()
+        {
+            int frame = Time.frameCount;
+            if (frame == _bvhFrame) return;
+            _bvhFrame = frame;
+            _bvhBuild.Clear();
+            for (int i = 0; i < _colliders.Count; i++)
+            {
+                var c = _colliders[i];
+                if (!c.IsActiveAndEnabled) continue;
+                if (c is Component.PlanetCollider) continue;
+                _bvhBuild.Add(c);
+            }
+            _bvh.Build(_bvhBuild);
+        }
+
+        static bool IncludeCollider(Component.Collider c, int layerMask, QueryTriggerInteraction triggers)
+        {
+            if (!c.IsActiveAndEnabled) return false;
+            if (c is Component.PlanetCollider) return false;
+            if (c.IsTrigger && triggers == QueryTriggerInteraction.Ignore) return false;
+            if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) return false;
+            return true;
+        }
+
+        static void CollectSwept(SN.Vector3 origin, SN.Vector3 direction, float maxDist, float radius)
+        {
+            RebuildBroadphaseIfNeeded();
+            _queryScratch.Clear();
+            if (direction.LengthSquared() < 1e-12f) direction = SN.Vector3.UnitZ;
+            var end = origin + SN.Vector3.Normalize(direction) * maxDist;
+            var min = SN.Vector3.Min(origin, end) - new SN.Vector3(radius);
+            var max = SN.Vector3.Max(origin, end) + new SN.Vector3(radius);
+            _bvh.QueryAABB(min, max, _queryScratch);
+        }
+
         // ── Raycast API ──
 
         /// <summary>Result of a physics raycast.</summary>
@@ -69,143 +109,104 @@ namespace Game_Engine.Core.Physics
         }
 
         /// <summary>
-        /// Cast a ray through the physics world. Returns true if any collider was hit.
-        /// Tests against all AABB colliders in the scene.
+        /// Cast a ray through the physics world. Mesh colliders use triangle tests; others use AABB.
+        /// Planet colliders are skipped — use <see cref="Component.PlanetTerrain.RaycastDensityGameplay"/>.
         /// </summary>
-        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDist, out RaycastHit hit, int layerMask = -1)
+        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDist, out RaycastHit hit, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
         {
             hit = default;
             direction = SN.Vector3.Normalize(direction);
-            float bestT = maxDist;
+            CollectSwept(origin, direction, maxDist, 0.01f);
+            float best = maxDist;
             bool found = false;
-
-            for (int i = 0; i < _colliders.Count; i++)
+            for (int i = 0; i < _queryScratch.Count; i++)
             {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled || c.IsTrigger) continue;
-                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
-
-                var aabb = c.GetWorldAABB();
-                if (RayAABB(origin, direction, aabb.Min, aabb.Max, out float t, out SN.Vector3 normal) && t < bestT && t >= 0f)
-                {
-                    bestT = t;
-                    hit = new RaycastHit
-                    {
-                        Point = origin + direction * t,
-                        Normal = normal,
-                        Distance = t,
-                        Collider = c
-                    };
-                    found = true;
-                }
+                var c = _queryScratch[i];
+                if (!IncludeCollider(c, layerMask, queryTriggers)) continue;
+                if (!ColliderQueries.Raycast(c, origin, direction, best, out var n)) continue;
+                best = n.Distance;
+                hit = n;
+                found = true;
             }
             return found;
         }
 
-        /// <summary>
-        /// Cast a ray and return ALL hits (unsorted). Useful for pierce queries.
-        /// </summary>
-        public static List<RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDist, int layerMask = -1)
+        /// <summary>Cast a ray and return ALL hits (unsorted).</summary>
+        public static List<RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDist, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Collide)
         {
             direction = SN.Vector3.Normalize(direction);
+            CollectSwept(origin, direction, maxDist, 0.01f);
             var results = new List<RaycastHit>();
-
-            for (int i = 0; i < _colliders.Count; i++)
+            for (int i = 0; i < _queryScratch.Count; i++)
             {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled) continue;
-                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
-
-                var aabb = c.GetWorldAABB();
-                if (RayAABB(origin, direction, aabb.Min, aabb.Max, out float t, out SN.Vector3 normal) && t <= maxDist && t >= 0f)
-                {
-                    results.Add(new RaycastHit
-                    {
-                        Point = origin + direction * t,
-                        Normal = normal,
-                        Distance = t,
-                        Collider = c
-                    });
-                }
+                var c = _queryScratch[i];
+                if (!IncludeCollider(c, layerMask, queryTriggers)) continue;
+                if (ColliderQueries.Raycast(c, origin, direction, maxDist, out var n))
+                    results.Add(n);
             }
             return results;
+        }
+
+        public static bool SphereCast(SN.Vector3 origin, SN.Vector3 direction, float radius, float maxDist,
+            out RaycastHit hit, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
+        {
+            hit = default;
+            direction = SN.Vector3.Normalize(direction);
+            CollectSwept(origin, direction, maxDist, Math.Max(0.01f, radius));
+            float best = maxDist;
+            bool found = false;
+            for (int i = 0; i < _queryScratch.Count; i++)
+            {
+                var c = _queryScratch[i];
+                if (!IncludeCollider(c, layerMask, queryTriggers)) continue;
+                if (!ColliderQueries.SphereCast(c, origin, direction, radius, best, out var n)) continue;
+                best = n.Distance;
+                hit = n;
+                found = true;
+            }
+            return found;
+        }
+
+        public static bool CapsuleCast(SN.Vector3 point1, SN.Vector3 point2, float radius, SN.Vector3 direction, float maxDist,
+            out RaycastHit hit, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
+        {
+            hit = default;
+            direction = SN.Vector3.Normalize(direction);
+            var mid = (point1 + point2) * 0.5f;
+            float extra = SN.Vector3.Distance(point1, point2) * 0.5f + radius;
+            CollectSwept(mid, direction, maxDist, extra);
+            float best = maxDist;
+            bool found = false;
+            for (int i = 0; i < _queryScratch.Count; i++)
+            {
+                var c = _queryScratch[i];
+                if (!IncludeCollider(c, layerMask, queryTriggers)) continue;
+                if (!ColliderQueries.CapsuleCast(c, point1, point2, radius, direction, best, out var n)) continue;
+                best = n.Distance;
+                hit = n;
+                found = true;
+            }
+            return found;
         }
 
         /// <summary>Sphere overlap query — returns all colliders within a sphere.</summary>
         public static List<Component.Collider> OverlapSphere(SN.Vector3 center, float radius, int layerMask = -1)
         {
+            RebuildBroadphaseIfNeeded();
+            _queryScratch.Clear();
+            _bvh.OverlapSphere(center, radius, _queryScratch);
             var results = new List<Component.Collider>();
-            for (int i = 0; i < _colliders.Count; i++)
+            for (int i = 0; i < _queryScratch.Count; i++)
             {
-                var c = _colliders[i];
-                if (!c.IsActiveAndEnabled) continue;
-                if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
-
-                var aabb = c.GetWorldAABB();
-                // Expand AABB by radius for sphere test
-                var expandedMin = aabb.Min - new SN.Vector3(radius);
-                var expandedMax = aabb.Max + new SN.Vector3(radius);
-
-                if (center.X >= expandedMin.X && center.X <= expandedMax.X &&
-                    center.Y >= expandedMin.Y && center.Y <= expandedMax.Y &&
-                    center.Z >= expandedMin.Z && center.Z <= expandedMax.Z)
-                {
-                    results.Add(c);
-                }
+                var c = _queryScratch[i];
+                if (!IncludeCollider(c, layerMask, QueryTriggerInteraction.Collide)) continue;
+                results.Add(c);
             }
             return results;
-        }
-
-        /// <summary>Ray vs AABB intersection (slab method).</summary>
-        static bool RayAABB(SN.Vector3 origin, SN.Vector3 dir, SN.Vector3 min, SN.Vector3 max,
-            out float tHit, out SN.Vector3 normal)
-        {
-            tHit = 0;
-            normal = SN.Vector3.Zero;
-
-            float tmin = float.NegativeInfinity;
-            float tmax = float.PositiveInfinity;
-            int hitAxis = 0;
-            bool hitMin = false;
-
-            for (int axis = 0; axis < 3; axis++)
-            {
-                float o = axis == 0 ? origin.X : axis == 1 ? origin.Y : origin.Z;
-                float d = axis == 0 ? dir.X : axis == 1 ? dir.Y : dir.Z;
-                float bmin = axis == 0 ? min.X : axis == 1 ? min.Y : min.Z;
-                float bmax = axis == 0 ? max.X : axis == 1 ? max.Y : max.Z;
-
-                if (MathF.Abs(d) < 1e-8f)
-                {
-                    if (o < bmin || o > bmax) return false;
-                }
-                else
-                {
-                    float t1 = (bmin - o) / d;
-                    float t2 = (bmax - o) / d;
-
-                    bool swapped = false;
-                    if (t1 > t2) { (t1, t2) = (t2, t1); swapped = true; }
-
-                    if (t1 > tmin) { tmin = t1; hitAxis = axis; hitMin = !swapped; }
-                    if (t2 < tmax) tmax = t2;
-
-                    if (tmin > tmax) return false;
-                }
-            }
-
-            if (tmax < 0) return false;
-            tHit = tmin >= 0 ? tmin : tmax;
-
-            // Compute hit normal
-            normal = SN.Vector3.Zero;
-            switch (hitAxis)
-            {
-                case 0: normal = hitMin ? -SN.Vector3.UnitX : SN.Vector3.UnitX; break;
-                case 1: normal = hitMin ? -SN.Vector3.UnitY : SN.Vector3.UnitY; break;
-                case 2: normal = hitMin ? -SN.Vector3.UnitZ : SN.Vector3.UnitZ; break;
-            }
-            return true;
         }
     }
 }

@@ -106,6 +106,8 @@ namespace Game_Engine.Core.Physics
                     _nonMeshColliders.Add(c);
                 }
             }
+
+            CollisionWorld.RebuildBroadphaseIfNeeded();
         }
 
         /// <summary>

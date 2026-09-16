@@ -12,6 +12,7 @@ using Game_Engine.Core.Component;
 using Game_Engine.Core.Input;
 using Game_Engine.Core.Networking;
 using Game_Engine.Core.Physics;
+using Game_Engine.Core.Rendering;
 using Game_Engine.Core.Rendering.GPU;
 using Game_Engine.Core.Rendering.UI;
 using Silk.NET.OpenGL;
@@ -35,24 +36,9 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     #region GPU Resources
     private GLContext? _glCtx;
-    private bool _isES = true;
-    private ShaderProgram? _standardShader;
-    private ShaderProgram? _depthShader;
-    private ShaderProgram? _skyShader;
-    private ShaderProgram? _terrainShader;
-    private ShaderProgram? _particleShader;
-    private ShaderProgram? _waterShader;
-    private ShaderProgram? _planetTerrainShader;
-    private ShaderProgram? _planetWaterShader;
-    private ShaderProgram? _planetAtmosphereShader;
-    private ShaderProgram? _planetCloudShader;
-    private ShaderProgram? _postProcessShader;
-    private FullscreenQuad? _fsQuad;
-    private ResourceCache? _cache;
-    private ShadowMapGPU? _shadow;
+    private ViewRenderResources? _res;
     private GPUFramebuffer? _sceneFBO;
     private int _sceneFBO_W, _sceneFBO_H;
-    private CanvasRenderer? _canvasRenderer;
     #endregion
 
     #region Clocks & State
@@ -76,6 +62,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     SN.Vector2 _lastMouse;
     bool _hasLastMouse;
+    IPointer? _capturedPointer;
 
     Skybox? _sky;
     Light? _light;
@@ -105,7 +92,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         };
         _fixedTimer.Tick += (_, __) => TickFixedUpdate();
 
-        SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; _cache?.InvalidateAll(); RequestNextFrameRendering(); };
+        SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; _res?.Cache?.InvalidateAll(); RequestNextFrameRendering(); };
 
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
@@ -148,47 +135,8 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             _glCtx = new GLContext(name => gl.GetProcAddress(name));
             var g = _glCtx.GL;
-            bool es = _glCtx.IsES;
-            _isES = es;
-
-            _standardShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.StandardVert, es),
-                ShaderSources.Adapt(ShaderSources.StandardFrag, es));
-            _depthShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.DepthOnlyVert, es),
-                ShaderSources.Adapt(ShaderSources.DepthOnlyFrag, es));
-            _skyShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.SkyVert, es),
-                ShaderSources.Adapt(ShaderSources.SkyFrag, es));
-            _terrainShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.TerrainVert, es),
-                ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
-            _particleShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.ParticleVert, es),
-                ShaderSources.Adapt(ShaderSources.ParticleFrag, es));
-            _waterShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.WaterVert, es),
-                ShaderSources.Adapt(ShaderSources.WaterFrag, es));
-            _planetTerrainShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es),
-                ShaderSources.Adapt(ShaderSources.PlanetTerrainFrag, es));
-            _planetWaterShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.PlanetWaterVert, es),
-                ShaderSources.Adapt(ShaderSources.PlanetWaterFrag, es));
-            _planetAtmosphereShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.PlanetAtmosphereVert, es),
-                ShaderSources.Adapt(ShaderSources.PlanetAtmosphereFrag, es));
-            _planetCloudShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.PlanetCloudsVert, es),
-                ShaderSources.Adapt(ShaderSources.PlanetCloudsFrag, es));
-            _postProcessShader = new ShaderProgram(g,
-                ShaderSources.Adapt(ShaderSources.PostProcessVert, es),
-                ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
-            _fsQuad = new FullscreenQuad(g);
-            _cache = new ResourceCache(g);
-            GpuCompressionCaps.Initialize(g);
-            _shadow = new ShadowMapGPU(g, 1024, 1024);
-            _canvasRenderer = new CanvasRenderer(g, es);
+            _res = new ViewRenderResources();
+            _res.Initialize(g, _glCtx.IsES, shadowResolution: 768);
         }
         catch (Exception ex)
         {
@@ -199,44 +147,15 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     protected override void OnOpenGlDeinit(GlInterface gl)
     {
         _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
-        _canvasRenderer?.Dispose();
-        _canvasRenderer = null;
-        _postProcessShader?.Dispose(); _postProcessShader = null;
-        _waterShader?.Dispose(); _waterShader = null;
-        _planetCloudShader?.Dispose(); _planetCloudShader = null;
-        _planetAtmosphereShader?.Dispose(); _planetAtmosphereShader = null;
-        _planetWaterShader?.Dispose(); _planetWaterShader = null;
-        _planetTerrainShader?.Dispose(); _planetTerrainShader = null;
-        _particleShader?.Dispose(); _particleShader = null;
-        _terrainShader?.Dispose();
-        _shadow?.Dispose();
-        _cache?.Dispose();
-        _fsQuad?.Dispose();
-        _skyShader?.Dispose();
-        _depthShader?.Dispose();
-        _standardShader?.Dispose();
+        _res?.Dispose(); _res = null;
         _glCtx?.Dispose();
         _glCtx = null;
         base.OnOpenGlDeinit(gl);
     }
 
-    static void WalkTreeLOD(GameObject go, SN.Vector3 cam)
-    {
-        foreach (var b in go.Behaviors)
-            if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
-        foreach (var c in go.Children) WalkTreeLOD(c, cam);
-    }
-
-    static void WalkTerrainLOD(GameObject go, SN.Vector3 cam)
-    {
-        foreach (var b in go.Behaviors)
-            if (b is Terrain t && t.Enabled) { t.UpdateLOD(cam); break; }
-        foreach (var c in go.Children) WalkTerrainLOD(c, cam);
-    }
-
     protected override void OnOpenGlRender(GlInterface gl, int fb)
     {
-        if (_glCtx == null || _standardShader == null || _skyShader == null || _fsQuad == null || _cache == null)
+        if (_glCtx == null || _res?.Standard == null || _res.Sky == null || _res.FsQuad == null || _res.Cache == null)
             return;
 
         var g = _glCtx.GL;
@@ -345,14 +264,16 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
         g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
+        var res = _res!;
+
         // --- SKY ---
-        Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
+        Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj,
             skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
 
         // --- SHADOW MAP PASS ---
         SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
         GPUFramebuffer? shadowFBO = null;
-        if (_shadow != null && _depthShader != null)
+        if (res.Shadow != null && res.Depth != null)
         {
             var sunShineDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
             SN.Matrix4x4.Invert(view, out var invV);
@@ -360,179 +281,101 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             var sceneCenter = camPos + camFwd * 12f;
             float sceneRadius = 50f;
             shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, sceneRadius);
-            _shadow.LightVP = shadowVP;
+            res.Shadow.LightVP = shadowVP;
 
-            _shadow.Begin(g);
+            res.Shadow.Begin(g);
             g.Enable(EnableCap.DepthTest);
             g.DepthFunc(DepthFunction.Less);
-            SceneRenderer.RenderShadowPass(g, _depthShader, _cache!, shadowVP);
-            _shadow.End(g, (uint)fb);
+            SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache!, shadowVP);
+            res.Shadow.End(g, (uint)fb);
 
             g.Viewport(0, 0, (uint)W, (uint)H);
-            shadowFBO = _shadow.FBO;
+            shadowFBO = res.Shadow.FBO;
         }
 
-        // --- UNDERWATER DETECTION ---
         var underwater = UnderwaterQuery.GetState(camPos);
-
-        // --- POST-PROCESSING FBO setup ---
         var postVolume = PostProcessVolume.GetActive();
-        bool usePostFX = (postVolume != null || underwater != null) && _postProcessShader != null;
+        bool usePostFX = (postVolume != null || underwater != null) && res.PostProcess != null;
+        bool useDeferred = GameRenderPipeline.UseDeferred(usePostFX);
 
-        if (usePostFX)
-        {
-            if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
-            if (_sceneFBO_W != W || _sceneFBO_H != H)
-            {
-                _sceneFBO.SetupColorDepth(W, H);
-                _sceneFBO_W = W; _sceneFBO_H = H;
-            }
-
-            _sceneFBO.Bind();
-            g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
-            g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
-            Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
-                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
-        }
-
-        // Terrain & Tree LOD
-        TerrainStreamer.SyncAll(camPos);
-        foreach (var root in SceneService.Root) WalkTerrainLOD(root, camPos);
-        foreach (var root in SceneService.Root) WalkTreeLOD(root, camPos);
-        foreach (var planet in PlanetTerrain.ActivePlanets)
-            planet?.RefreshLodAroundCamera(camPos);
-
-        // --- SCENE ---
         var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
         var fallbackPlanetSunDir = sunSD.LengthSquared() > 1e-8f
             ? SN.Vector3.Normalize(sunSD)
             : SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
-        SceneRenderer.RenderGPU(g, _standardShader!, _depthShader!, _cache,
-            view, proj,
-            SN.Vector3.Normalize(-L), DiffuseK, Ambient,
-            lightIsPoint, lightPosW, lightRange,
-            shadowFBO, shadowVP, camPos, sunSD,
-            terrainShader: _terrainShader,
-            isES: _isES,
-            lightColor: lightColorNorm);
 
-        if (_planetTerrainShader != null)
+        GameRenderPipeline.UpdateLod(camPos);
+
+        GPUTexture? finalSceneTex = null;
+        if (useDeferred)
         {
-            foreach (var planet in PlanetTerrain.ActivePlanets)
-            {
-                if (planet?.Config == null) continue;
-                var tp = planet.gameObject?.Transform?.Position;
-                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
-                SceneRenderer.RenderPlanetTerrain(g, _planetTerrainShader, _cache!,
-                    view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                    pc, shadowFBO, shadowVP);
-            }
-            SceneRenderer.RenderPlanetVegetationAfterTerrain(g, _standardShader!, _cache!,
-                view, proj, camPos,
-                SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+            finalSceneTex = GameRenderPipeline.RenderDeferred(g, res, W, H,
+                view, proj, camPos, L, DiffuseK, Ambient,
                 lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunSD,
-                isES: _isES,
-                lightColor: lightColorNorm);
+                shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky,
+                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
+                postVolume, fallbackPlanetSunDir);
+            _sceneFBO = res.SceneFbo;
+            _sceneFBO_W = res.SceneW;
+            _sceneFBO_H = res.SceneH;
         }
-
-        // --- WATER ---
-        if (_waterShader != null)
+        else
         {
-            var skyC = _sky != null
-                ? new SN.Vector3(_sky.Top.R / 255f, _sky.Top.G / 255f, _sky.Top.B / 255f)
-                : new SN.Vector3(0.5f, 0.6f, 0.8f);
-            SceneRenderer.RenderWater(g, _waterShader, _cache, view, proj,
-                SN.Vector3.Normalize(-L), Ambient, DiffuseK, camPos, skyC);
-        }
-
-        if (_planetAtmosphereShader != null)
-        {
-            foreach (var planet in PlanetTerrain.ActivePlanets)
+            if (usePostFX)
             {
-                if (planet?.Config == null) continue;
-                var tp = planet.gameObject?.Transform?.Position;
-                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
-                SceneRenderer.RenderPlanetAtmosphere(g, _planetAtmosphereShader, _cache!,
-                    view, proj, planet, atmo, camPos, pc);
+                if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
+                if (_sceneFBO_W != W || _sceneFBO_H != H)
+                {
+                    _sceneFBO.SetupColorDepth(W, H);
+                    _sceneFBO_W = W; _sceneFBO_H = H;
+                }
+                _sceneFBO.Bind();
+                g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+                g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+                Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj,
+                    skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
             }
+
+            GameRenderPipeline.RenderForwardWorld(g, res,
+                view, proj, camPos, L, DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky, fallbackPlanetSunDir);
+            finalSceneTex = usePostFX ? _sceneFBO?.ColorTexture : null;
         }
 
-        if (_planetCloudShader != null)
-        {
-            foreach (var planet in PlanetTerrain.ActivePlanets)
-            {
-                if (planet?.Config == null) continue;
-                var tp = planet.gameObject?.Transform?.Position;
-                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
-                SceneRenderer.RenderPlanetClouds(g, _planetCloudShader, _cache!,
-                    view, proj, planet, atmo, camPos, pc, (float)Core.Time.time);
-            }
-        }
-
-        if (_planetWaterShader != null)
-        {
-            foreach (var planet in PlanetTerrain.ActivePlanets)
-            {
-                if (planet?.Config == null) continue;
-                var tp = planet.gameObject?.Transform?.Position;
-                var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
-                var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
-                SceneRenderer.RenderPlanetWater(g, _planetWaterShader, _cache!,
-                    view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                    pc, planet.Config.SeaLevel);
-            }
-        }
-
-        // World-space UI (same stage as GameView — before post blit when using scene FBO)
-        if (_canvasRenderer != null && _cache != null)
+        if (res.Canvas != null && res.Cache != null)
         {
             var viewProj = view * proj;
             foreach (var wc in Core.Component.UI.Canvas.All)
             {
                 if (wc.IsActiveAndEnabled && wc.RenderMode == Core.Component.UI.CanvasRenderMode.WorldSpace)
-                    _canvasRenderer.RenderWorldCanvas(wc, in viewProj, _cache);
+                    res.Canvas.RenderWorldCanvas(wc, in viewProj, res.Cache);
             }
         }
 
-        // --- POST-PROCESSING BLIT ---
-        if (usePostFX && _sceneFBO?.ColorTexture != null)
+        if (finalSceneTex != null && res.PostProcess != null)
         {
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             g.Viewport(0, 0, (uint)W, (uint)H);
             g.Disable(EnableCap.DepthTest);
-
-            g.BindVertexArray(_fsQuad!.VAO);
-            SceneRenderer.ApplyPostProcessing(g, _postProcessShader!, _sceneFBO.ColorTexture, W, H,
-                postVolume, underwater, (float)Core.Time.time);
+            g.BindVertexArray(res.FsQuad!.VAO);
+            SceneRenderer.ApplyPostProcessing(g, res.PostProcess, finalSceneTex, W, H,
+                usePostFX ? postVolume : null, usePostFX ? underwater : null,
+                usePostFX ? (float)Core.Time.time : 0f);
             g.BindVertexArray(0);
-
             g.Enable(EnableCap.DepthTest);
-
-            g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _sceneFBO.Handle);
-            g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, (uint)fb);
-            g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
-                ClearBufferMask.DepthBufferBit, BlitFramebufferFilter.Nearest);
-            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         }
 
-        // --- PARTICLES (full viewport overlay) ---
-        if (_particleShader != null)
+        if (res.Particle != null && res.Cache != null)
         {
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             g.Viewport(0, 0, (uint)W, (uint)H);
-            SceneRenderer.RenderParticles(g, _particleShader, _cache, view, proj, W, H, overlayPass: true);
+            SceneRenderer.RenderParticles(g, res.Particle, res.Cache, view, proj, W, H, overlayPass: true);
         }
 
-        // Screen-space overlay UI (main menu, etc.) — must draw after final color is on the Avalonia FB
         g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
         g.Viewport(0, 0, (uint)W, (uint)H);
-        if (_canvasRenderer != null && _cache != null)
-            _canvasRenderer.RenderOverlays(W, H, _cache);
+        if (res.Canvas != null && res.Cache != null)
+            res.Canvas.RenderOverlays(W, H, res.Cache);
 
         g.Flush();
         CleanupGLState(g, fb);
@@ -619,14 +462,37 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));
     }
 
+    void RecenterPointer()
+    {
+        if (Bounds.Width <= 0 || Bounds.Height <= 0) return;
+        var mid = new Point(Bounds.Width * 0.5, Bounds.Height * 0.5);
+        var screen = this.PointToScreen(mid);
+        Input.WarpCursorScreen((int)screen.X, (int)screen.Y);
+        _lastMouse = new SN.Vector2((float)mid.X, (float)mid.Y);
+        _hasLastMouse = true;
+    }
+
     void OnPointerPressed(object? s, PointerPressedEventArgs e)
     {
         if (!_playing) return;
         Focus();
         var pt = e.GetCurrentPoint(this);
+        var pos = e.GetPosition(this);
+        Input.FeedMousePosition((float)pos.X, (float)pos.Y);
+        Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
+        _lastMouse = new SN.Vector2((float)pos.X, (float)pos.Y);
+        _hasLastMouse = true;
         if (pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Left);
         if (pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Middle);
         if (pt.Properties.IsRightButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Right);
+        e.Pointer.Capture(this);
+        _capturedPointer = e.Pointer;
+        Input.PlayViewportCaptureActive = true;
+        if (Input.PointerLock)
+        {
+            Cursor = new Cursor(StandardCursorType.None);
+            RecenterPointer();
+        }
     }
 
     void OnPointerReleased(object? s, PointerReleasedEventArgs e)
@@ -636,6 +502,13 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (!pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Left);
         if (!pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Middle);
         if (!pt.Properties.IsRightButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Right);
+        if (ReferenceEquals(_capturedPointer, e.Pointer) && !Input.PointerLock)
+        {
+            try { e.Pointer.Capture(null); } catch { }
+            _capturedPointer = null;
+            Input.PlayViewportCaptureActive = false;
+            Cursor = Cursor.Default;
+        }
     }
 
     void OnPointerMoved(object? s, PointerEventArgs e)
@@ -648,6 +521,8 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _lastMouse = cur;
         _hasLastMouse = true;
         Input.FeedMousePosition(cur.X, cur.Y);
+        if (Input.PointerLock)
+            RecenterPointer();
     }
     #endregion
 
@@ -689,6 +564,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Core.Time.BeginUpdate(dt);
         Input.NewFrame((float)dt);
         Input.PollHardwareHeldKeys();
+        Input.PollPlayMouseButtons(_capturedPointer != null || IsPointerOver);
         Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
         {
             int vpW = Math.Max(1, (int)Bounds.Width);
@@ -697,6 +573,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         }
         if (NetworkManager.IsActive)
             NetworkManager.Update();
+        AudioManager.UpdateListenerTransform();
         SceneService.TickActiveBehaviors(Profiler.ScriptPhase.Update);
         SceneService.TickActiveBehaviors(Profiler.ScriptPhase.LateUpdate);
         Profiler.PublishScriptCosts();

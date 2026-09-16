@@ -126,5 +126,6 @@ public static class SceneManager
     {
         _pendingScenePath = null;
         _currentSceneName = null;
+        SaveSystem.SaveManager.CancelPendingLoads();
     }
 }

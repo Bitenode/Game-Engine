@@ -9,40 +9,84 @@ using NAudio.Wave;
 namespace Game_Engine.Core
 {
 #if !WINDOWS
-    /// <summary>Placeholder audio backend on non-Windows (NAudio WinMM/WaveOut is Windows-only). Playback is disabled until a platform backend is added.</summary>
+    /// <summary>OpenAL + PCM WAV backend for Linux/macOS/Android player builds.</summary>
     public static class AudioBackend
     {
         private static readonly List<WeakReference<AudioHandle>> s_activeHandles = new();
+        static bool s_available = true;
 
-        public static string? ResolveAudioPath(string filePath) => null;
+        public static string? ResolveAudioPath(string filePath) => SharedAudioPaths.Resolve(filePath);
 
-        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop) => null;
+        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop)
+        {
+            if (!s_available) return null;
+            var abs = ResolveAudioPath(filePath);
+            if (abs == null) return null;
+            if (!OpenAlAudio.TryPlay(abs, volume, pitch, loop, out var handle) || handle == null)
+            {
+                Log.Warning($"[AudioBackend] OpenAL could not play {Path.GetFileName(abs)}");
+                return null;
+            }
+            lock (s_activeHandles) s_activeHandles.Add(new WeakReference<AudioHandle>(handle));
+            return handle;
+        }
 
-        public static void PlayOneShot(string filePath, float volume = 1f) { }
+        public static void PlayOneShot(string filePath, float volume = 1f) => Play(filePath, volume, 1f, false);
 
         public static void StopAll()
         {
-            lock (s_activeHandles) s_activeHandles.Clear();
+            lock (s_activeHandles)
+            {
+                foreach (var w in s_activeHandles)
+                    if (w.TryGetTarget(out var h)) { try { h.Stop(); } catch { } }
+                s_activeHandles.Clear();
+            }
         }
 
-        public static void Shutdown() => StopAll();
-
-        public static void EnsureInit() { }
-
-        public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up) { }
+        public static void Shutdown() { StopAll(); s_available = false; OpenAlAudio.Shutdown(); }
+        public static void EnsureInit() { s_available = true; OpenAlAudio.Ensure(); }
+        public static System.Numerics.Vector3 LastListenerPosition { get; private set; }
+        public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up)
+        {
+            LastListenerPosition = pos;
+            OpenAlAudio.SetListener(pos, forward, up);
+        }
     }
 
     public sealed class AudioHandle : IDisposable
     {
-        public bool IsPlaying => false;
-        public TimeSpan Duration => TimeSpan.Zero;
-        public float Volume { get; set; }
+        readonly uint _source;
+        bool _disposed;
+        float _volume = 1f, _pan;
+
+        internal AudioHandle(uint source, TimeSpan duration)
+        {
+            _source = source;
+            Duration = duration;
+        }
+
+        public bool IsPlaying => !_disposed && OpenAlAudio.IsPlaying(_source);
+        public TimeSpan Duration { get; }
+        public float Volume
+        {
+            get => _volume;
+            set { _volume = value; if (!_disposed) OpenAlAudio.SetGain(_source, value); }
+        }
         public bool Loop { get; set; }
-        public float Pan { get; set; }
-        public void Pause() { }
-        public void Resume() { }
+        public float Pan
+        {
+            get => _pan;
+            set { _pan = value; if (!_disposed) OpenAlAudio.SetPan(_source, value); }
+        }
+        public void Pause() { if (!_disposed) OpenAlAudio.Pause(_source); }
+        public void Resume() { if (!_disposed) OpenAlAudio.Resume(_source); }
         public void Stop() => Dispose();
-        public void Dispose() { }
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            OpenAlAudio.Stop(_source);
+        }
     }
 #else
     /// <summary>

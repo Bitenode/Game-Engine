@@ -1504,6 +1504,8 @@ Synchronizes position, rotation, and scale over the network with smooth interpol
 | `SyncRotation`        | `bool`  | `true`  | Enable rotation syncing              |
 | `SyncScale`           | `bool`  | `false` | Enable scale syncing                 |
 
+The server broadcast path calls `NetworkIdentity.ShouldBroadcastState()`, which asks `NetworkTransform.ConsumeShouldSend()`. Updates go out only when **SyncRate** elapsed and position/rotation moved past the thresholds (first tick is forced). Non-authority peers interpolate toward the last received pose.
+
 **Requires:** NetworkIdentity (auto-added via `[Require]`)
 
 ---

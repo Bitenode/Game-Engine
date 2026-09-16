@@ -241,36 +241,27 @@ namespace Game_Engine.Core.Networking
             using var bw = new BinaryWriter(ms, Encoding.UTF8);
             bw.Write((byte)NetMessageType.StateSync);
 
-            if (!OmitUnchangedStateInBroadcast)
+            var entries = new List<(uint netId, byte[] state)>();
+            foreach (var (netId, identity) in _networkedObjects)
             {
-                bw.Write(_networkedObjects.Count);
-                foreach (var (netId, identity) in _networkedObjects)
-                {
-                    bw.Write(netId);
-                    var state = identity.SerializeState();
-                    bw.Write(state.Length);
-                    bw.Write(state);
-                }
-            }
-            else
-            {
-                var entries = new List<(uint netId, byte[] state)>();
-                foreach (var (netId, identity) in _networkedObjects)
-                {
-                    var state = identity.SerializeState();
-                    if (_lastBroadcastState.TryGetValue(netId, out var prev) && prev.AsSpan().SequenceEqual(state))
-                        continue;
-                    _lastBroadcastState[netId] = state;
-                    entries.Add((netId, state));
-                }
+                if (!identity.ShouldBroadcastState())
+                    continue;
 
-                bw.Write(entries.Count);
-                foreach (var (netId, state) in entries)
-                {
-                    bw.Write(netId);
-                    bw.Write(state.Length);
-                    bw.Write(state);
-                }
+                var state = identity.SerializeState();
+                if (OmitUnchangedStateInBroadcast
+                    && _lastBroadcastState.TryGetValue(netId, out var prev)
+                    && prev.AsSpan().SequenceEqual(state))
+                    continue;
+                _lastBroadcastState[netId] = state;
+                entries.Add((netId, state));
+            }
+
+            bw.Write(entries.Count);
+            foreach (var (netId, state) in entries)
+            {
+                bw.Write(netId);
+                bw.Write(state.Length);
+                bw.Write(state);
             }
 
             _transport.SendToAll(ms.ToArray(), 0, DeliveryMode.Unreliable);

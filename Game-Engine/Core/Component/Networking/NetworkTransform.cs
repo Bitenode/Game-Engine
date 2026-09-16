@@ -46,6 +46,7 @@ namespace Game_Engine.Core.Component
         private Vector3 _lastSentPosition;
         private Vector3 _lastSentRotation;
         private float _sendTimer;
+        private bool _forceSend = true;
 
         public override void Start()
         {
@@ -62,10 +63,7 @@ namespace Game_Engine.Core.Component
             if (identity == null) return;
 
             if (identity.HasAuthority)
-            {
-                // Authority side: detect changes and mark dirty
-                // (Actual sending is handled by NetworkManager.BroadcastState)
-            }
+                _sendTimer += Time.deltaTime;
             else if (_hasTarget)
             {
                 // Non-authority side: interpolate toward the target state
@@ -86,6 +84,44 @@ namespace Game_Engine.Core.Component
         /// Set the target state from a network update.
         /// Called by NetworkIdentity.DeserializeState.
         /// </summary>
+        /// <summary>Server broadcast calls this: true when the transform moved past thresholds and the send interval elapsed.</summary>
+        internal bool ConsumeShouldSend()
+        {
+            float interval = SyncRate > 0.1f ? 1f / SyncRate : 0.05f;
+            if (!_forceSend && _sendTimer < interval) return false;
+
+            var pos = Transform.Position;
+            var rot = Transform.Rotation;
+            double dp = Dist(pos, _lastSentPosition);
+            double dr = Math.Abs(DeltaAngle(rot.X, _lastSentRotation.X))
+                + Math.Abs(DeltaAngle(rot.Y, _lastSentRotation.Y))
+                + Math.Abs(DeltaAngle(rot.Z, _lastSentRotation.Z));
+
+            bool dirty = _forceSend
+                || (SyncPosition && dp >= PositionThreshold)
+                || (SyncRotation && dr >= RotationThreshold);
+
+            if (!dirty) return false;
+
+            _forceSend = false;
+            _sendTimer = 0f;
+            _lastSentPosition = pos;
+            _lastSentRotation = rot;
+            return true;
+        }
+
+        static double Dist(Vector3 a, Vector3 b)
+        {
+            double dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        static double DeltaAngle(double a, double b)
+        {
+            double d = ((b - a + 540) % 360) - 180;
+            return d;
+        }
+
         internal void SetTargetState(Vector3 position, Vector3 rotation, Vector3 scale)
         {
             _targetPosition = position;

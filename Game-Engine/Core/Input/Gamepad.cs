@@ -93,6 +93,19 @@ namespace Game_Engine.Core.Input
             _ => 0f
         };
 
+        /// <summary>Replace pad snapshots (used by the SDL backend).</summary>
+        public static void OverwriteStates(ReadOnlySpan<GamepadState> states)
+        {
+            ConnectedCount = 0;
+            Array.Clear(s_pads, 0, s_pads.Length);
+            int n = Math.Min(MaxPads, states.Length);
+            for (int i = 0; i < n; i++)
+            {
+                s_pads[i] = states[i];
+                if (states[i].Connected) ConnectedCount++;
+            }
+        }
+
         /// <summary>Refresh <see cref="s_pads"/>. Returns how many pads are connected.</summary>
         public static int PollHardware()
         {
@@ -212,6 +225,13 @@ namespace Game_Engine.Core.Input
             public GamepadNative Gamepad;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct VibrationNative
+        {
+            public ushort wLeftMotorSpeed;
+            public ushort wRightMotorSpeed;
+        }
+
         const uint ErrorDeviceNotConnected = 1167;
 
         static readonly string[] s_dlls = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
@@ -260,22 +280,52 @@ namespace Game_Engine.Core.Input
             return false;
         }
 
+        public static bool TrySetVibration(int userIndex, float left, float right)
+        {
+            if (LibraryMissing) return false;
+            var vib = new VibrationNative
+            {
+                wLeftMotorSpeed = (ushort)Math.Clamp((int)(left * 65535f), 0, 65535),
+                wRightMotorSpeed = (ushort)Math.Clamp((int)(right * 65535f), 0, 65535)
+            };
+            try
+            {
+                uint err = s_dllIndex switch
+                {
+                    1 => Native13.XInputSetState(userIndex, ref vib),
+                    2 => Native91.XInputSetState(userIndex, ref vib),
+                    _ => Native14.XInputSetState(userIndex, ref vib)
+                };
+                return err == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         static class Native14
         {
             [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
             public static extern uint XInputGetState(int dwUserIndex, out StateNative pState);
+            [DllImport("xinput1_4.dll", EntryPoint = "XInputSetState")]
+            public static extern uint XInputSetState(int dwUserIndex, ref VibrationNative pVibration);
         }
 
         static class Native13
         {
             [DllImport("xinput1_3.dll", EntryPoint = "XInputGetState")]
             public static extern uint XInputGetState(int dwUserIndex, out StateNative pState);
+            [DllImport("xinput1_3.dll", EntryPoint = "XInputSetState")]
+            public static extern uint XInputSetState(int dwUserIndex, ref VibrationNative pVibration);
         }
 
         static class Native91
         {
             [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetState")]
             public static extern uint XInputGetState(int dwUserIndex, out StateNative pState);
+            [DllImport("xinput9_1_0.dll", EntryPoint = "XInputSetState")]
+            public static extern uint XInputSetState(int dwUserIndex, ref VibrationNative pVibration);
         }
     }
 }

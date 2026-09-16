@@ -859,6 +859,8 @@ Axes use acceleration-based smoothing:
 ### Persistence
 Bindings are saved per-project to `ProjectSettings/input.bindings.json` (axes, actions, mouse sensitivity, deadzone, look scale, gamepad sources). Customize in the remapping UI or via `Input.SetAxis()` / `Input.SetAction()`. **Reset to Defaults** restores the built-in keyboard + gamepad map.
 
+Pads use `IInputBackend`: Windows tries **XInput**, then **SDL2**, and initializes **GameInput.dll** when present (`Input.SetGamepadVibration`, `ActiveGamepadIndex`). Set `Input.PointerLock = true` in play/player for FPS mouse capture (cursor hidden + recenter).
+
 ---
 
 ## Keyboard Shortcuts

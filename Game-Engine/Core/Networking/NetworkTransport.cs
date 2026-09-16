@@ -120,6 +120,9 @@ namespace Game_Engine.Core.Networking
         /// <summary>Local port number.</summary>
         public int LocalPort => _localPort;
 
+        /// <summary>Server is 0. Clients receive an assigned id in the connect ack.</summary>
+        public int LocalPeerId { get; private set; } = -1;
+
         /// <summary>
         /// Development-only: probability in [0,1] that an inbound payload is dropped before delivery (stress testing).
         /// Does not simulate latency; use for lossy-link testing on loopback.
@@ -133,6 +136,7 @@ namespace Game_Engine.Core.Networking
         {
             if (_running) return;
             _isServer = true;
+            LocalPeerId = 0;
             _localPort = port;
             _udp = new UdpClient(port);
             _lastServerWidePingUtc = DateTime.UtcNow;
@@ -377,6 +381,7 @@ namespace Game_Engine.Core.Networking
             {
                 peer.State = ConnectionState.Connected;
                 peer.LastHeardUtc = DateTime.UtcNow;
+                LocalPeerId = assignedId;
                 Log.Info($"[Network] Connected to server (assigned peer ID: {assignedId}).");
                 OnPeerConnected?.Invoke(peer);
             }

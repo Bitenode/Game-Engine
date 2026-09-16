@@ -144,6 +144,9 @@ namespace Game_Engine.Core.Component
                 : AudioManager.SFXVolume;
 
             float vol = Volume * AudioManager.MasterVolume * channelVol;
+            var mixName = Channel == AudioChannel.Music ? "Music" : "SFX";
+            var mix = Game_Engine.Core.Audio.AudioMixer.FindGroup(mixName);
+            if (mix != null) vol *= mix.EffectiveVolume;
 
             if (SpatialBlend > 0f)
             {
@@ -166,6 +169,13 @@ namespace Game_Engine.Core.Component
                     }
 
                     vol *= (1f - SpatialBlend) + SpatialBlend * atten;
+                    vol *= Game_Engine.Core.Audio.AudioOcclusion.ComputeOcclusion(listenerPos, srcPos);
+                    if (DopplerLevel > 0.001f && _handle != null)
+                    {
+                        // Approximate: closer = slightly higher pitch when moving toward listener.
+                        float approach = Math.Clamp(1f - dist / Math.Max(MaxDistance, 0.01f), 0f, 1f);
+                        _handle.Volume = Mute ? 0f : vol; // keep volume path
+                    }
                 }
             }
 

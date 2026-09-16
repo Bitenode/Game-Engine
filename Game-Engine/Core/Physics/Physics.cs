@@ -14,25 +14,42 @@ namespace Game_Engine.Core.Physics
         /// <summary>
         /// Cast a ray and return true if any collider is hit.
         /// </summary>
-        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f, int layerMask = -1)
+        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
         {
-            return CollisionWorld.Raycast(origin, direction, maxDistance, out _, layerMask);
+            return CollisionWorld.Raycast(origin, direction, maxDistance, out _, layerMask, queryTriggers);
         }
 
         /// <summary>
         /// Cast a ray and return hit information for the closest collider.
         /// </summary>
-        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, out CollisionWorld.RaycastHit hit, float maxDistance = 1000f, int layerMask = -1)
+        public static bool Raycast(SN.Vector3 origin, SN.Vector3 direction, out CollisionWorld.RaycastHit hit, float maxDistance = 1000f, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
         {
-            return CollisionWorld.Raycast(origin, direction, maxDistance, out hit, layerMask);
+            return CollisionWorld.Raycast(origin, direction, maxDistance, out hit, layerMask, queryTriggers);
         }
 
         /// <summary>
         /// Cast a ray and return all hits along the ray.
         /// </summary>
-        public static List<CollisionWorld.RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f, int layerMask = -1)
+        public static List<CollisionWorld.RaycastHit> RaycastAll(SN.Vector3 origin, SN.Vector3 direction, float maxDistance = 1000f, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Collide)
         {
-            return CollisionWorld.RaycastAll(origin, direction, maxDistance, layerMask);
+            return CollisionWorld.RaycastAll(origin, direction, maxDistance, layerMask, queryTriggers);
+        }
+
+        public static bool SphereCast(SN.Vector3 origin, SN.Vector3 direction, float radius,
+            out CollisionWorld.RaycastHit hit, float maxDistance = 1000f, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
+        {
+            return CollisionWorld.SphereCast(origin, direction, radius, maxDistance, out hit, layerMask, queryTriggers);
+        }
+
+        public static bool CapsuleCast(SN.Vector3 point1, SN.Vector3 point2, float radius, SN.Vector3 direction,
+            out CollisionWorld.RaycastHit hit, float maxDistance = 1000f, int layerMask = -1,
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
+        {
+            return CollisionWorld.CapsuleCast(point1, point2, radius, direction, maxDistance, out hit, layerMask, queryTriggers);
         }
 
         /// <summary>
