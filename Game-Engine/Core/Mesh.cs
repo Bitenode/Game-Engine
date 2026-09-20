@@ -50,6 +50,40 @@ public sealed class Mesh
         RecalculateNormalsSmooth();
     }
 
+    int _boundsGeomVersion = int.MinValue;
+    SN.Vector3 _boundsMin;
+    SN.Vector3 _boundsMax;
+
+    /// <summary>Axis-aligned local bounds. Cached until <see cref="GeometryVersion"/> changes.</summary>
+    public void GetLocalBounds(out SN.Vector3 min, out SN.Vector3 max)
+    {
+        if (_boundsGeomVersion != GeometryVersion)
+            RecalculateLocalBounds();
+        min = _boundsMin;
+        max = _boundsMax;
+    }
+
+    void RecalculateLocalBounds()
+    {
+        _boundsGeomVersion = GeometryVersion;
+        var v = Vertices;
+        if (v == null || v.Length == 0)
+        {
+            _boundsMin = _boundsMax = SN.Vector3.Zero;
+            return;
+        }
+
+        var min = v[0];
+        var max = v[0];
+        for (int i = 1; i < v.Length; i++)
+        {
+            min = SN.Vector3.Min(min, v[i]);
+            max = SN.Vector3.Max(max, v[i]);
+        }
+        _boundsMin = min;
+        _boundsMax = max;
+    }
+
     public Mesh(SN.Vector3[] v, int[] lines, int[] tris)
     {
         Vertices = v;

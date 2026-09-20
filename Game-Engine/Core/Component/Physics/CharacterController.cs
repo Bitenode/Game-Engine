@@ -84,6 +84,8 @@ namespace Game_Engine.Core.Component
         SN.Vector3 _lastHitN = SN.Vector3.UnitY;
 
         CapsuleCollider? _capsule;
+        readonly List<int> _meshTriScratch = new(128);
+        readonly List<(SN.Vector3 A, SN.Vector3 B, SN.Vector3 C)> _worldTris = new(64);
 
         // ── Trigger tracking ──
         private readonly HashSet<Collider> _currentTriggers = new();
@@ -558,31 +560,17 @@ namespace Game_Engine.Core.Component
             }
 
             // ---- Non-terrain MeshColliders (buildings, props, etc.) ----
-            var meshColliders = PhysicsCache.MeshColliders;
-            for (int mi = 0; mi < meshColliders.Count; mi++)
+            CollectNearbyMeshTriangles(SweptAabb(starts, dir, maxDist, 0.05f));
+            for (int ti = 0; ti < _worldTris.Count; ti++)
             {
-                var mc = meshColliders[mi];
-                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
-                foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
-                {
-                    if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
-                    var vtx = mesh.Vertices; var tri = mesh.TriIndices;
+                var (a, b, c) = _worldTris[ti];
+                var n = SN.Vector3.Cross(b - a, c - a);
+                var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
+                n /= MathF.Sqrt(len2);
 
-                    for (int i = 0; i < tri.Length; i += 3)
-                    {
-                        var a = SN.Vector3.Transform(vtx[tri[i]], W);
-                        var b = SN.Vector3.Transform(vtx[tri[i + 1]], W);
-                        var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
-
-                        var n = SN.Vector3.Cross(b - a, c - a);
-                        var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
-                        n /= MathF.Sqrt(len2);
-
-                        for (int r2 = 0; r2 < starts.Length; r2++)
-                            if (RayTri_TwoSided(starts[r2], dir, a, b, c, out float t))
-                                ConsiderRay(starts[r2], t, n);
-                    }
-                }
+                for (int r2 = 0; r2 < starts.Length; r2++)
+                    if (RayTri_TwoSided(starts[r2], dir, a, b, c, out float t))
+                        ConsiderRay(starts[r2], t, n);
             }
 
             // ---- AABB tops (non-mesh colliders) ----
@@ -643,27 +631,13 @@ namespace Game_Engine.Core.Component
             }
 
             // Non-terrain MeshColliders only (terrain is ground, never ceiling)
-            var meshColliders = PhysicsCache.MeshColliders;
-            for (int mi = 0; mi < meshColliders.Count; mi++)
+            CollectNearbyMeshTriangles(SweptAabb(starts, dir, maxDist, 0.05f));
+            for (int ti = 0; ti < _worldTris.Count; ti++)
             {
-                var mc = meshColliders[mi];
-                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
-                foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
-                {
-                    if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
-                    var vtx = mesh.Vertices; var tri = mesh.TriIndices;
-
-                    for (int i = 0; i < tri.Length; i += 3)
-                    {
-                        var a = SN.Vector3.Transform(vtx[tri[i]], W);
-                        var b = SN.Vector3.Transform(vtx[tri[i + 1]], W);
-                        var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
-
-                        for (int r2 = 0; r2 < starts.Length; r2++)
-                            if (RayTri_TwoSided(starts[r2], dir, a, b, c, out float t))
-                                Consider(starts[r2], t);
-                    }
-                }
+                var (a, b, c) = _worldTris[ti];
+                for (int r2 = 0; r2 < starts.Length; r2++)
+                    if (RayTri_TwoSided(starts[r2], dir, a, b, c, out float t))
+                        Consider(starts[r2], t);
             }
 
             // AABB bottoms (ceilings)
@@ -694,6 +668,60 @@ namespace Game_Engine.Core.Component
             ceilY = bestY;
             return anyHit;
         }
+
+        static (SN.Vector3 min, SN.Vector3 max) SweptAabb(SN.Vector3[] starts, SN.Vector3 dir, float maxDist, float pad)
+        {
+            var min = starts[0];
+            var max = starts[0];
+            for (int i = 1; i < starts.Length; i++)
+            {
+                min = SN.Vector3.Min(min, starts[i]);
+                max = SN.Vector3.Max(max, starts[i]);
+            }
+            var delta = dir * maxDist;
+            var qMin = SN.Vector3.Min(min, min + delta) - new SN.Vector3(pad);
+            var qMax = SN.Vector3.Max(max, max + delta) + new SN.Vector3(pad);
+            return (qMin, qMax);
+        }
+
+        void CollectNearbyMeshTriangles((SN.Vector3 min, SN.Vector3 max) query)
+        {
+            _worldTris.Clear();
+            var meshColliders = PhysicsCache.MeshColliders;
+            for (int mi = 0; mi < meshColliders.Count; mi++)
+            {
+                var mc = meshColliders[mi];
+                if (mc.gameObject == null) continue;
+                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
+                var aabb = mc.GetWorldAABB();
+                if (!OverlapsAabb(query.min, query.max, aabb.Min, aabb.Max)) continue;
+
+                foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
+                {
+                    if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
+                    var vtx = mesh.Vertices;
+                    var tri = mesh.TriIndices;
+                    _meshTriScratch.Clear();
+                    MeshSpatialIndex.For(mesh).QueryWorldAabb(W, query.min, query.max, _meshTriScratch);
+                    for (int i = 0; i < _meshTriScratch.Count; i++)
+                    {
+                        int t = _meshTriScratch[i];
+                        if ((uint)(t + 2) >= (uint)tri.Length) continue;
+                        if ((uint)tri[t] >= (uint)vtx.Length || (uint)tri[t + 1] >= (uint)vtx.Length || (uint)tri[t + 2] >= (uint)vtx.Length)
+                            continue;
+                        _worldTris.Add((
+                            SN.Vector3.Transform(vtx[tri[t]], W),
+                            SN.Vector3.Transform(vtx[tri[t + 1]], W),
+                            SN.Vector3.Transform(vtx[tri[t + 2]], W)));
+                    }
+                }
+            }
+        }
+
+        static bool OverlapsAabb(SN.Vector3 aMin, SN.Vector3 aMax, SN.Vector3 bMin, SN.Vector3 bMax)
+            => aMin.X <= bMax.X && aMax.X >= bMin.X &&
+               aMin.Y <= bMax.Y && aMax.Y >= bMin.Y &&
+               aMin.Z <= bMax.Z && aMax.Z >= bMin.Z;
 
         static bool RayTri_TwoSided(SN.Vector3 ro, SN.Vector3 rd, SN.Vector3 a, SN.Vector3 b, SN.Vector3 c, out float t)
         {
@@ -849,37 +877,23 @@ namespace Game_Engine.Core.Component
             float bandMaxY = start.Y + (0.5f * (CapsuleHalfCylinder + CapsuleRadius));
 
             // Non-terrain MeshColliders only (terrain has no vertical walls)
-            var meshColliders = PhysicsCache.MeshColliders;
-            for (int mi = 0; mi < meshColliders.Count; mi++)
+            var wallStarts = new[] { start };
+            CollectNearbyMeshTriangles(SweptAabb(wallStarts, dir, maxDist, CapsuleRadius + 0.1f));
+            for (int ti = 0; ti < _worldTris.Count; ti++)
             {
-                var mc = meshColliders[mi];
-                if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
-                foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
+                var (a, b, c) = _worldTris[ti];
+                var n = SN.Vector3.Cross(b - a, c - a);
+                var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
+                n /= MathF.Sqrt(len2);
+
+                // ignore floors & ceilings here
+                if (MathF.Abs(n.Y) > 0.45f) continue;
+
+                if (RayTri_TwoSided(start, dir, a, b, c, out float t) && t >= 0f && t <= maxDist)
                 {
-                    if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
-
-                    var vtx = mesh.Vertices; var tri = mesh.TriIndices;
-
-                    for (int i = 0; i < tri.Length; i += 3)
-                    {
-                        var a = SN.Vector3.Transform(vtx[tri[i]], W);
-                        var b = SN.Vector3.Transform(vtx[tri[i + 1]], W);
-                        var c = SN.Vector3.Transform(vtx[tri[i + 2]], W);
-
-                        var n = SN.Vector3.Cross(b - a, c - a);
-                        var len2 = n.LengthSquared(); if (len2 < 1e-12f) continue;
-                        n /= MathF.Sqrt(len2);
-
-                        // ignore floors & ceilings here
-                        if (MathF.Abs(n.Y) > 0.45f) continue;
-
-                        if (RayTri_TwoSided(start, dir, a, b, c, out float t) && t >= 0f && t <= maxDist)
-                        {
-                            var p = start + dir * t;
-                            if (p.Y >= bandMinY && p.Y <= bandMaxY)
-                                if (t < bestT) { bestT = t; bestN = n; any = true; }
-                        }
-                    }
+                    var p = start + dir * t;
+                    if (p.Y >= bandMinY && p.Y <= bandMaxY)
+                        if (t < bestT) { bestT = t; bestN = n; any = true; }
                 }
             }
 

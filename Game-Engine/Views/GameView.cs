@@ -255,6 +255,7 @@ namespace Game_Engine.Views
             AddHandler(Avalonia.Input.InputElement.PointerPressedEvent, OnPointerPressed, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(Avalonia.Input.InputElement.PointerReleasedEvent, OnPointerReleased, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(Avalonia.Input.InputElement.PointerMovedEvent, OnPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            AddHandler(Control.ContextRequestedEvent, OnPlayContextRequested, RoutingStrategies.Tunnel);
 
             RebuildSceneCaches();
             _fpsTick.Restart();
@@ -469,6 +470,8 @@ namespace Game_Engine.Views
             try
             {
                 SceneRenderer.SkipPlanetVegetationDraws = false;
+                SceneRenderer.SkipPlanetAtmosphereClouds = false;
+                SceneRenderer.SkipPlanetLeafShadows = false;
                 var g = _glCtx.GL;
 
             // Flush any GL errors accumulated by the other view's rendering.
@@ -1365,6 +1368,8 @@ namespace Game_Engine.Views
 
         void TryPlayPlanetSculpt(PointerPoint pt)
         {
+            if (!Input.WorldInputEnabled) return;
+            if (Core.Rendering.UI.UIEventSystem.PointerOverUI) return;
             if (State != GamePanel.GameState.Playing) return;
             var props = pt.Properties;
             bool shift = Input.GetKey(KeyCode.LeftShift);
@@ -1402,6 +1407,12 @@ namespace Game_Engine.Views
             _playKeyHost = null;
         }
 
+        void OnPlayContextRequested(object? s, ContextRequestedEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            e.Handled = true;
+        }
+
         void OnPointerPressed(object? s, PointerPressedEventArgs e)
         {
             if (State != GamePanel.GameState.Playing) return;
@@ -1414,6 +1425,8 @@ namespace Game_Engine.Views
             _hasLastMouse = true;
             FeedPlayPointerButtons(pt);
             TryPlayPlanetSculpt(pt);
+            if (pt.Properties.IsRightButtonPressed)
+                e.Handled = true;
             e.Pointer.Capture(this);
             _capturedPointer = e.Pointer;
             Input.PlayViewportCaptureActive = true;

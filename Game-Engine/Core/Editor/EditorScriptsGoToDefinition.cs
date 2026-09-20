@@ -36,6 +36,7 @@ public static class EditorScriptsGoToDefinition
 {
     const string Prelude = @"
                 global using Avalonia.Controls;
+                global using Avalonia.Input.Platform;
                 global using Game_Engine.Views;
             ";
 

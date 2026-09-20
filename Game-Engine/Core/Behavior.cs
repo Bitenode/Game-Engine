@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Events;
 using Collider = Game_Engine.Core.Component.Collider;
@@ -129,6 +130,33 @@ namespace Game_Engine.Core
         internal void __Update() { if (IsActiveAndEnabled) SafeCall(Update, nameof(Update)); }
         internal void __FixedUpdate() { if (IsActiveAndEnabled) SafeCall(FixedUpdate, nameof(FixedUpdate)); }
         internal void __LateUpdate() { if (IsActiveAndEnabled) SafeCall(LateUpdate, nameof(LateUpdate)); }
+
+        [Flags]
+        enum ScriptTick : byte { None = 0, Update = 1, LateUpdate = 2, FixedUpdate = 4 }
+
+        static readonly Dictionary<Type, ScriptTick> s_scriptTicks = new();
+
+        static ScriptTick ScriptTicksFor(Type type)
+        {
+            if (s_scriptTicks.TryGetValue(type, out var flags))
+                return flags;
+            flags = ScriptTick.None;
+            if (DeclaresTick(type, nameof(Update))) flags |= ScriptTick.Update;
+            if (DeclaresTick(type, nameof(LateUpdate))) flags |= ScriptTick.LateUpdate;
+            if (DeclaresTick(type, nameof(FixedUpdate))) flags |= ScriptTick.FixedUpdate;
+            s_scriptTicks[type] = flags;
+            return flags;
+        }
+
+        static bool DeclaresTick(Type type, string name)
+        {
+            var m = type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public);
+            return m != null && m.DeclaringType != typeof(Behavior);
+        }
+
+        internal bool WantsUpdate => (ScriptTicksFor(GetType()) & ScriptTick.Update) != 0;
+        internal bool WantsLateUpdate => (ScriptTicksFor(GetType()) & ScriptTick.LateUpdate) != 0;
+        internal bool WantsFixedUpdate => (ScriptTicksFor(GetType()) & ScriptTick.FixedUpdate) != 0;
 
         internal void __OnDestroy()
         {

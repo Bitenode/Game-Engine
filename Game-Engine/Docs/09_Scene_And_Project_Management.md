@@ -70,7 +70,7 @@ When a project is opened, the following sequence executes:
 1. `project.json` is read and validated
 2. The project root path is resolved
 3. Input bindings are loaded from `ProjectSettings/input.bindings.json`
-4. All scripts in `Assets/` and `Packages/` are compiled via Roslyn
+4. If any project `.cs` is newer than the newest `Builds/EditorScripts/EditorScripts_*.dll`, all scripts in `Assets/` and `Packages/` are compiled via Roslyn (async — UI stays responsive)
 5. Extensions are discovered and their menus are built
 6. Extension menus are appended to the editor menu bar
 7. The last active scene is restored (if available)
@@ -495,7 +495,8 @@ The `Profiler` class tracks per-frame performance metrics:
 | `FrameTime` | Time per frame in milliseconds |
 | `DrawCalls` | GPU draw calls per frame |
 | `VertexCount` | Total vertices rendered |
-| `TriangleCount` | Total triangles rendered |
+| `TriangleCount` | Total triangles rendered (on-screen pass only) |
+| `ShadowPassDepth` | Internal counter while shadow maps are drawn; draw/triangle/batch stats are suppressed so cascaded shadow passes do not multiply HUD counts |
 
 Access in-editor via the **Profiler Panel** (Window > Profiler) or programmatically via `Profiler.CurrentFPS`, `Profiler.FrameTimeMs`, etc.
 
@@ -640,5 +641,5 @@ The `SceneQuery` class provides utilities for finding objects in the scene hiera
 | Method | Description |
 |--------|-------------|
 | `SceneQuery.FindBehaviors<T>()` | Returns all enabled behaviors of type `T` across the scene |
-| `SceneQuery.FindByName(name)` | Returns the first `GameObject` matching the name (depth-first) |
+| `SceneQuery.FindByName(name)` | Returns the first `GameObject` matching the name (depth-first, **case-insensitive** by default; overload accepts explicit `StringComparison`) |
 | `SceneQuery.FindByPath(path)` | Finds a `GameObject` by `/`-separated path (e.g., `"Player/RightHand/Weapon"`) |

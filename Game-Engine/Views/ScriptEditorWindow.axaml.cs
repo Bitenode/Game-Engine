@@ -1029,6 +1029,7 @@ public partial class ScriptEditorWindow : Window
 
             const string Prelude = @"
                 global using Avalonia.Controls;
+                global using Avalonia.Input.Platform;
                 global using Game_Engine.Views;
                 global using SystemDecorations = Avalonia.Controls.WindowDecorations;
             ";
@@ -1135,6 +1136,23 @@ public partial class ScriptEditorWindow : Window
 
         var a = Path.Combine(p.AssetsPath, "Scripts");
         if (Directory.Exists(a)) list.Add(Path.GetFullPath(a));
+
+        // Packs often keep scripts in Assets/<Pack>/Scripts, which the tree otherwise hides.
+        try
+        {
+            if (Directory.Exists(p.AssetsPath))
+            {
+                foreach (var scriptsDir in Directory.EnumerateDirectories(p.AssetsPath, "Scripts", SearchOption.AllDirectories))
+                {
+                    var full = Path.GetFullPath(scriptsDir);
+                    if (list.Any(x => string.Equals(x, full, StringComparison.OrdinalIgnoreCase))) continue;
+                    if (full.IndexOf($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    if (full.IndexOf($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    list.Add(full);
+                }
+            }
+        }
+        catch { }
 
         IEnumerable<string> pkgs;
         try

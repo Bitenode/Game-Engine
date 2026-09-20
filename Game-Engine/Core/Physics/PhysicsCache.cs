@@ -155,6 +155,17 @@ namespace Game_Engine.Core.Physics
         /// <summary>Force a cache rebuild on next access.</summary>
         public static void Invalidate() => _lastFrame = -1;
 
+        /// <summary>
+        /// True for terrain / planet roots and their children. Those meshes use a
+        /// heightfield; including them in the collider BVH made GetWorldAABB walk
+        /// every terrain vertex every physics tick.
+        /// </summary>
+        public static bool IsTerrainAssociated(GameObject? go)
+        {
+            if (go == null) return false;
+            return IsUnderTerrain(go);
+        }
+
         static bool IsUnderTerrain(GameObject go)
         {
             for (var cur = go; cur != null; cur = cur.Parent)

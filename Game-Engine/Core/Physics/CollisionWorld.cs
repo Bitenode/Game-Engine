@@ -71,6 +71,8 @@ namespace Game_Engine.Core.Physics
                 var c = _colliders[i];
                 if (!c.IsActiveAndEnabled) continue;
                 if (c is Component.PlanetCollider) continue;
+                if (c is Component.MeshCollider && PhysicsCache.IsTerrainAssociated(c.gameObject))
+                    continue;
                 _bvhBuild.Add(c);
             }
             _bvh.Build(_bvhBuild);

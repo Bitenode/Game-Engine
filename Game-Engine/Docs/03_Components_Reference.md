@@ -344,7 +344,7 @@ Called from `FixedUpdate`. Performs the full physics simulation step:
 - CCD max iterations: `4`
 - Skin thickness: `radius * 0.2f` (minimum `0.01f`)
 
-**Planet walking:** uses the same **surface mode** hysteresis as `Rigidbody` (`RefreshPlanetSurfaceMode`: enter when radial ≥ crust − 6 m, leave when radial < crust − 10 m or `CameraBelowCrust`). On the outer crust it stands on `PlanetTerrain.SampleStandWorldRadius` (height cubemap + dig deltas). Caves use `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine), not the editor 96-step pick.
+**Planet walking:** uses the same **surface mode** hysteresis as `Rigidbody` (`RefreshPlanetSurfaceMode`: enter when radial ≥ crust − 6 m, leave when radial < crust − 10 m or `CameraBelowCrust`). On the outer crust it stands on `PlanetTerrain.SampleStandWorldRadius` (height cubemap + dig deltas; prefers fresh visible leaf shell on peaks). Caves use `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine), not the editor 96-step pick.
 
 **Requires:** CapsuleCollider (auto-added via `[Require]`)
 
@@ -485,7 +485,7 @@ Planet terrain component for cube-sphere worlds with a **height-cubemap shell**,
 - `RaycastPaintSurface` — play-mode tool pick
 - `Spherecast(...)` — thick density query
 - `SampleCollisionRadius(sphereDir)` — alias for `SampleStandWorldRadius` (height cubemap + dig deltas)
-- `SampleStandWorldRadius(sphereDir)` — fast player stand; no per-tick river carve
+- `SampleStandWorldRadius(sphereDir)` — fast player stand; prefers fresh visible leaf shell radius on peaks; no per-tick river carve
 - `SampleUndugStandWorldRadius(sphereDir)` — base cubemap without dig deltas (dry land pits vs ocean basins)
 - `SampleSurfaceRadius(sphereDir)` — edited height cubemap radius (water, orbit, vegetation). Not cave contact
 - `DigSphere` / `BuildSphere` — surface → height deltas; underground → cave occupancy
@@ -1359,6 +1359,12 @@ Physics-based player movement using Rigidbody dynamics (momentum, sliding, inert
 | `RotateBodyWithLook`| `bool`    | `true`           | Body follows look yaw                |
 | `TurnBodyWhileMoving`| `bool`   | `false`          | Rotate body only while moving        |
 | `JumpBufferSeconds` | `float`   | `0.12`           | Jump input buffer                    |
+| `PreserveCameraLocalPosition` | `bool` | `false` | In first-person with a nested camera, keep the scene-authored local position instead of overwriting from `FirstPersonOffset` each frame |
+| `AvoidCameraGroundClip` | `bool` | `true` | Pull first/third-person camera away from ground obstructions |
+| `AllowMove` / `AllowLook` / `AllowJump` / `AllowSprint` / `AllowBodyFacing` | `bool` | all `true` | Gameplay gates — survival/UI scripts can disable motor input without removing the component |
+| `ExternalSpeedMultiplier` | `float` | `1` | Runtime speed scale (not serialized) |
+
+**Runtime helpers:** `BodyScale()` scales move/jump to capsule height (~1.8 m human baseline). Disables a leftover `CharacterController` on the same object. Sets `Rigidbody.Bounciness = 0` on start.
 
 **Features:**
 - **Swimming** — flat-world swim via `Rigidbody` underwater state; **planet swim** via `SwimOnPlanet()` when `TryGetWaterColumn` hits a basin. Surface float (head/camera dry), **Ctrl** dive, **Space** rise, release Ctrl to hover. Underwater post only after the head is ≥ **0.30 m** under the water table
@@ -1397,7 +1403,7 @@ Play-mode helper that creates or reuses a `RigidbodyPlayer` on `PlanetTerrain` a
 | `CapsuleHeight` / `CapsuleRadius` | `float` | `2` / `0.4` | Player capsule dimensions |
 | `FirstPerson` | `bool` | `true` | Passed to `RigidbodyPlayer` |
 | `AttachPlanetTool` | `bool` | `true` | Adds `PlanetTool` (dig/build along camera ray in play) |
-| `AttachPostProcess` | `bool` | `true` | Adds a global `PostProcessVolume` on the player camera with tuned bloom, ACES grading, SSAO, vignette, and FXAA |
+| `AttachPostProcess` | `bool` | `true` | Adds a global `PostProcessVolume` on the player camera (lighter bloom, ACES grading, SSAO off by default, vignette, FXAA) |
 
 **Behavior:**
 - Resolves the nearest/active `PlanetTerrain` and stands the player on `SampleCollisionRadius` (same radius the motor snaps to). Isosurface / density rays can hit a pit or cave mouth and are not used for spawn

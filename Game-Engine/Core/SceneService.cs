@@ -76,7 +76,17 @@ namespace Game_Engine.Core
             for (int i = 0; i < roots.Count; i++)
                 CollectActiveBehaviors(roots[i], s_behaviorScratch);
             for (int i = 0; i < s_behaviorScratch.Count; i++)
-                Profiler.InvokeAndRecord(s_behaviorScratch[i], phase);
+            {
+                var b = s_behaviorScratch[i];
+                bool wants = phase switch
+                {
+                    Profiler.ScriptPhase.LateUpdate => b.WantsLateUpdate,
+                    Profiler.ScriptPhase.FixedUpdate => b.WantsFixedUpdate,
+                    _ => b.WantsUpdate
+                };
+                if (!wants) continue;
+                Profiler.InvokeAndRecord(b, phase);
+            }
         }
 
         static void CollectActiveBehaviors(GameObject go, List<Behavior> dst)

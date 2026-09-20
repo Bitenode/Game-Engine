@@ -60,6 +60,7 @@ namespace Game_Engine.Core.Component
         // ── Trigger tracking ──
         private readonly HashSet<Collider> _currentTriggers = new();
         private readonly HashSet<Collider> _previousTriggers = new();
+        static readonly List<int> _meshTriScratch = new(128);
 
         // ── Events ──
         public event Action<Collider>? OnTriggerEnter;
@@ -383,6 +384,8 @@ namespace Game_Engine.Core.Component
             {
                 var myAABB = myCollider.GetWorldAABB();
                 var delta = newPos - pos;
+                float radius = GetColliderRadius();
+                float sphereR = MathF.Max(radius, 0.25f);
 
                 // Test against non-mesh colliders
                 for (int i = 0; i < PhysicsCache.NonMeshColliders.Count; i++)
@@ -421,7 +424,17 @@ namespace Game_Engine.Core.Component
                     }
                 }
 
-                // ── MeshCollider triangle collision ──
+                // Nearby triangles only — walking every building/terrain triangle was 80ms+/step.
+                float expand = 1.0f;
+                var queryMin = new SN.Vector3(
+                    MathF.Min(myAABB.Min.X + delta.X, myAABB.Min.X) - expand,
+                    MathF.Min(myAABB.Min.Y + delta.Y, myAABB.Min.Y) - expand,
+                    MathF.Min(myAABB.Min.Z + delta.Z, myAABB.Min.Z) - expand);
+                var queryMax = new SN.Vector3(
+                    MathF.Max(myAABB.Max.X + delta.X, myAABB.Max.X) + expand,
+                    MathF.Max(myAABB.Max.Y + delta.Y, myAABB.Max.Y) + expand,
+                    MathF.Max(myAABB.Max.Z + delta.Z, myAABB.Max.Z) + expand);
+
                 for (int mi = 0; mi < PhysicsCache.MeshColliders.Count; mi++)
                 {
                     var mc = PhysicsCache.MeshColliders[mi];
@@ -429,30 +442,23 @@ namespace Game_Engine.Core.Component
                     if (IsOwnedCollider(mc.gameObject)) continue;
                     if (!PhysicsLayerMask.Includes(CollisionLayerMask, mc.gameObject.Layer)) continue;
 
-                    // First, rough AABB check to skip distant MeshColliders
                     var mcAABB = mc.GetWorldAABB();
-                    float expand = 1.0f; // slight expansion for moving objects
-                    var testMin2 = new SN.Vector3(
-                        MathF.Min(myAABB.Min.X + delta.X, myAABB.Min.X) - expand,
-                        MathF.Min(myAABB.Min.Y + delta.Y, myAABB.Min.Y) - expand,
-                        MathF.Min(myAABB.Min.Z + delta.Z, myAABB.Min.Z) - expand);
-                    var testMax2 = new SN.Vector3(
-                        MathF.Max(myAABB.Max.X + delta.X, myAABB.Max.X) + expand,
-                        MathF.Max(myAABB.Max.Y + delta.Y, myAABB.Max.Y) + expand,
-                        MathF.Max(myAABB.Max.Z + delta.Z, myAABB.Max.Z) + expand);
-
-                    if (!Overlaps(testMin2, testMax2, mcAABB.Min, mcAABB.Max))
+                    if (!Overlaps(queryMin, queryMax, mcAABB.Min, mcAABB.Max))
                         continue;
 
-                    // Detailed triangle test using a downward ray and a movement-direction ray
                     foreach (var (mesh, W) in mc.EnumerateTargetMeshesWorld())
                     {
                         if (mesh?.Vertices == null || mesh.TriIndices == null) continue;
                         var vtx = mesh.Vertices;
                         var tri = mesh.TriIndices;
 
-                        for (int t = 0; t < tri.Length; t += 3)
+                        _meshTriScratch.Clear();
+                        MeshSpatialIndex.For(mesh).QueryWorldAabb(W, queryMin, queryMax, _meshTriScratch);
+
+                        for (int i = 0; i < _meshTriScratch.Count; i++)
                         {
+                            int t = _meshTriScratch[i];
+                            if ((uint)(t + 2) >= (uint)tri.Length) continue;
                             if (tri[t] >= vtx.Length || tri[t + 1] >= vtx.Length || tri[t + 2] >= vtx.Length)
                                 continue;
 
@@ -465,28 +471,17 @@ namespace Game_Engine.Core.Component
                             if (len2 < 1e-12f) continue;
                             triNorm /= MathF.Sqrt(len2);
 
-                            // Sphere-triangle test: check if newPos sphere overlaps this triangle
-                            float halfH = GetColliderHalfHeight();
-                            float radius = GetColliderRadius();
-                            float sphereR = MathF.Max(radius, 0.25f);
-
-                            // Test center point against triangle plane
                             float distToPlane = SN.Vector3.Dot(newPos - a, triNorm);
                             if (MathF.Abs(distToPlane) > sphereR) continue;
 
-                            // Project sphere center onto triangle plane
                             var projected = newPos - triNorm * distToPlane;
-
-                            // Check if projected point is inside triangle (or close enough)
                             if (!PointInTriangleExpanded(projected, a, b, c, sphereR * 0.5f)) continue;
 
-                            // Resolve: push out along triangle normal
                             float penetration = sphereR - distToPlane;
                             if (penetration > 0f && SN.Vector3.Dot(Velocity, triNorm) < 0f)
                             {
                                 newPos += triNorm * penetration;
 
-                                // Reflect velocity
                                 float vDotN = SN.Vector3.Dot(Velocity, triNorm);
                                 Velocity -= (1f + Bounciness) * vDotN * triNorm;
 

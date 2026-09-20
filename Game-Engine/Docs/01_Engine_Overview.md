@@ -179,7 +179,8 @@ Game-Engine/
 │   │   ├── Physics.cs           # Static convenience wrapper (Unity-style)
 │   │   ├── PhysicsCache.cs      # Per-frame physics query caching
 │   │   ├── PhysicsJoint.cs      # Joint constraints (fixed, hinge, spring, slider, ball-socket)
-│   │   └── BVH.cs               # Bounding Volume Hierarchy for spatial queries
+│   │   ├── BVH.cs               # Bounding Volume Hierarchy for spatial queries
+│   │   └── MeshSpatialIndex.cs  # Per-mesh triangle spatial hash for rigidbody narrow phase
 │   ├── Voxel/                   # Voxel mesh extraction for terrain
 │   │   ├── VoxelChunk.cs        # Density/material grid storage
 │   │   ├── TransvoxelMesher.cs  # Regular + transition-cell meshing
@@ -361,7 +362,7 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `AudioBackend` | Windows: NAudio `WaveOut`. Non-Windows player: OpenAL + PCM WAV (`OpenAlAudio`) so Linux/macOS/Android builds are not silent |
 | `Log` | Global logging with severity levels (Info, Warning, Error, Success, Debug); messages appear in the Console panel |
 | `SceneManager` | Runtime scene loading — deferred to next frame, safe tear-down/rebuild, `SceneLoaded` event |
-| `SceneQuery` | Scene search utilities — `FindByName()`, `FindByPath()`, `FindBehaviors<T>()`. Traversal skips disabled GameObjects; `FindBehaviors<T>()` only returns behaviors where `IsActiveAndEnabled` is true |
+| `SceneQuery` | Scene search utilities — `FindByName()` (case-insensitive default), `FindByPath()`, `FindBehaviors<T>()`. Traversal skips disabled GameObjects; `FindBehaviors<T>()` only returns behaviors where `IsActiveAndEnabled` is true |
 | `UIEventSystem` | Pointer input dispatch for runtime UI — raycasts screen-space canvases, delivers hover/click/drag events |
 | `Time` | Frame timing — `DeltaTime`, `ElapsedTime`, fixed timestep |
 | `NetworkManager` | Server/client lifecycle, object registry, RPC system, state broadcast |
@@ -431,7 +432,7 @@ SceneRenderer.RenderGPU()
 | Terrain         | JSON / binary | `Assets/Terrain/*.terrain.json` or `.terrain.bin` | JSON default; binary optional; brush strokes; `TerrainStreamer` tile unload |
 | Input Bindings  | JSON        | `ProjectSettings/input.bindings.json`        | Axes, actions, mouse sensitivity |
 | Scripts         | C# source   | `Assets/**/*.cs`, `Packages/**/*.cs`         | Compiled by Roslyn at runtime |
-| Compiled Scripts| DLL         | `Builds/EditorScripts_<timestamp>.dll`       | Auto-generated, hot-reloaded |
+| Compiled Scripts| DLL         | `Builds/EditorScripts/EditorScripts_<timestamp>.dll` | Auto-generated on open/Play when stale; hot-reloaded |
 | Animations      | Custom      | `*.boneanim`                                 | Bone animation data |
 | Shaders         | Custom      | `*.shader`                                   | Custom GLSL shaders |
 | Shader Graphs   | JSON        | `*.shadergraph`                              | Visual shader node graphs |

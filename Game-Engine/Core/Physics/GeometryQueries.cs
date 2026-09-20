@@ -7,6 +7,20 @@ namespace Game_Engine.Core.Physics;
 /// <summary>Shared primitive tests used by CollisionWorld and body simulation.</summary>
 public static class GeometryQueries
 {
+    public static void TransformAabb(SN.Vector3 localMin, SN.Vector3 localMax, in SN.Matrix4x4 world,
+        out SN.Vector3 worldMin, out SN.Vector3 worldMax)
+    {
+        var center = (localMin + localMax) * 0.5f;
+        var extent = (localMax - localMin) * 0.5f;
+        var wc = SN.Vector3.Transform(center, world);
+        var we = new SN.Vector3(
+            MathF.Abs(world.M11) * extent.X + MathF.Abs(world.M21) * extent.Y + MathF.Abs(world.M31) * extent.Z,
+            MathF.Abs(world.M12) * extent.X + MathF.Abs(world.M22) * extent.Y + MathF.Abs(world.M32) * extent.Z,
+            MathF.Abs(world.M13) * extent.X + MathF.Abs(world.M23) * extent.Y + MathF.Abs(world.M33) * extent.Z);
+        worldMin = wc - we;
+        worldMax = wc + we;
+    }
+
     public static bool RayAABB(SN.Vector3 origin, SN.Vector3 dir, SN.Vector3 min, SN.Vector3 max,
         out float tHit, out SN.Vector3 normal)
     {

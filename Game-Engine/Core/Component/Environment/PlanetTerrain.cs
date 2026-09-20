@@ -831,15 +831,11 @@ public sealed class PlanetTerrain : Behavior
         if (_surfaceCubemap != null && _surfaceCubemap.HasBaseHeights && _config != null)
         {
             float local = MathF.Max(1f, _surfaceCubemap.SampleEditedSurfaceRadius(_config.Radius, sphereDir));
-            // The drawn shell is linear between chunk verts while the cubemap is a
-            // bilerp at a different resolution; between verts they disagree by tens of
-            // cm on hills, which reads as the collider clipping into (or floating
-            // over) the ground. Stand on the mesh you can see when it is current.
-            // Large disagreement means a coarse/stale LOD — keep the cubemap then.
+            // Stand on the visible leaf mesh. Cubemap bilerp is flatter than chunk
+            // verts on peaks, so a 2.5m cap left a drawn mountain with no collider.
             if (_chunkManager != null
                 && _chunkManager.TrySampleFreshShellLocalRadius(sphereDir, out float shellLocal)
-                && shellLocal > 1f
-                && MathF.Abs(shellLocal - local) <= WorldToLocalLength(2.5f))
+                && shellLocal > 1f)
             {
                 local = shellLocal;
             }

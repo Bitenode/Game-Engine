@@ -368,6 +368,9 @@ var colliders = Physics.OverlapSphere(center, radius, layerMask: -1);
 ### PhysicsCache
 Per-frame caching system for physics queries. Avoids redundant collision tests when multiple systems query the same data within a single frame.
 
+### MeshSpatialIndex
+`MeshSpatialIndex` builds a local-space spatial hash of a mesh's triangles (cached per `Mesh` geometry version via `ConditionalWeakTable`). `Rigidbody` mesh resolution queries an expanded world AABB and tests only nearby triangles instead of every triangle in large terrain/building meshes.
+
 ---
 
 ## Collider Gizmos
@@ -437,7 +440,9 @@ The engine supports five joint constraint types defined in `PhysicsJoint`:
 
 ## Bounding Volume Hierarchy (BVH)
 
-The `BVH` class provides spatial acceleration for collision queries. Instead of testing every collider linearly, the BVH organizes colliders into a tree structure for O(log n) query performance.
+The `BVH` class provides spatial acceleration for collision queries. Instead of testing every collider linearly, the BVH organizes colliders into a tree structure for O(log n) query performance. `CollisionWorld.RebuildBroadphaseIfNeeded()` rebuilds it once per frame.
+
+**Mesh narrow phase:** After broad-phase AABB overlap, `Rigidbody` uses `MeshSpatialIndex.QueryWorldAabb` for triangle tests. `Mesh.GetLocalBounds()` caches axis-aligned bounds per geometry version for frustum and query expansion.
 
 ---
 
@@ -466,7 +471,7 @@ The planet pipeline integrates directly with runtime rigidbody and character phy
 1. `Rigidbody` / `CharacterController` find the nearest active `PlanetTerrain` (`FindNearestPlanetCached` — rebind after ~48 m or planet-count change)
 2. `LocalUp` is computed from planet center to body position (radial gravity)
 3. Gravity is applied along `-LocalUp` (fallback is world `-Y` when no planet is active)
-4. **Surface mode** (`RefreshPlanetSurfaceMode`): walk when radial ≥ crust − **6 m**; leave when radial < crust − **10 m** or `CameraBelowCrust`. **`SampleCollisionRadius`** / **`SampleStandWorldRadius`** are the player stand APIs (height cubemap + dig deltas; no per-tick river carve). When `HasBaseHeights`, the baked cubemap is used; during an in-flight graph bake, live graph height + scratch dig deltas apply until `ApplySurfaceBakeResult` swaps in the baked map
+4. **Surface mode** (`RefreshPlanetSurfaceMode`): walk when radial ≥ crust − **6 m**; leave when radial < crust − **10 m** or `CameraBelowCrust`. **`SampleCollisionRadius`** / **`SampleStandWorldRadius`** are the player stand APIs (height cubemap + dig deltas; no per-tick river carve). When a fresh renderable leaf shell is available, stand radius prefers that visible mesh so peaks match collider contact (cubemap bilerp alone can sit below sharp chunk verts). When `HasBaseHeights`, the baked cubemap is used; during an in-flight graph bake, live graph height + scratch dig deltas apply until `ApplySurfaceBakeResult` swaps in the baked map
 5. Interior / cave grounding uses `SpherecastGameplay` / `RaycastDensityGameplay` (32 steps / 4 refine) against the **same density field as meshing**. Editor brushes keep the 96/10 pick. `ResolveDensityPenetration` pushes the body out of solid. `RigidbodyPlayer` uses a **short** downward probe (capsule height + step-up + ground snap), not a full radial ray to the core
 6. On contact, the into-surface velocity component is removed and tangent motion is preserved
 7. **Underwater:** `UnderwaterQuery` uses the **local water table** (`SampleWaterSurface`), not a single global sea radius. Planet **movement** starts when the body is in a basin (`TryGetWaterColumn`; lava is not swim water). The **underwater post pass** requires the camera/head ≥ **0.28–0.30 m** under that table and `IsPlanetSubmerged`. Surface float keeps the camera above the mesh (no crust-stand eye snap). Cave air below the crust stays dry. `Rigidbody` preserves underwater state only while actually submerged. See [Planet System — Planet water](13_Planet_System.md#planet-water).

@@ -46,6 +46,10 @@ namespace Game_Engine.Core
         /// Game View leaves it false. Trees/grass stay visible in both views.
         /// </summary>
         [ThreadStatic] public static bool SkipPlanetVegetationDraws;
+        /// <summary>Scene-view play/orbit: skip the extra atmosphere + cloud planet passes.</summary>
+        [ThreadStatic] public static bool SkipPlanetAtmosphereClouds;
+        /// <summary>Skip drawing every planet leaf into the shadow map (orbit / play Scene view).</summary>
+        [ThreadStatic] public static bool SkipPlanetLeafShadows;
 
         public static bool TryBeginViewRender()
             => Interlocked.CompareExchange(ref s_viewRenderActive, 1, 0) == 0;
@@ -828,6 +832,23 @@ namespace Game_Engine.Core
             ResourceCache cache,
             in SN.Matrix4x4 lightVP)
         {
+            Profiler.ShadowPassDepth++;
+            try
+            {
+            RenderShadowPassCore(gl, depthShader, cache, in lightVP);
+            }
+            finally
+            {
+                Profiler.ShadowPassDepth = Math.Max(0, Profiler.ShadowPassDepth - 1);
+            }
+        }
+
+        static void RenderShadowPassCore(
+            GL gl,
+            ShaderProgram depthShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 lightVP)
+        {
             var planes = s_shadowPlanes ??= new Plane[6];
             ExtractFrustumPlanes(lightVP, planes);
 
@@ -887,7 +908,7 @@ namespace Game_Engine.Core
         {
             var planets = PlanetTerrain.ActivePlanets;
             int planetCount = planets.Count;
-            if (planetCount == 0) return;
+            if (planetCount == 0 || SkipPlanetLeafShadows) return;
 
             depthShader.SetInt("uHasBones", 0);
             gl.Enable(EnableCap.CullFace);
@@ -918,7 +939,7 @@ namespace Game_Engine.Core
                     gpuMesh.Draw();
 
                     var cave = leaves[i].GeneratedCaveMesh;
-                    if (cave != null)
+                    if (cave != null && planet.Config is { CameraBelowCrust: true })
                         cache.GetMesh(cave).Draw();
                 }
             }
@@ -3134,8 +3155,8 @@ namespace Game_Engine.Core
             if (renderableLeaves == null) return;
 
             float camRadial = (camPos - planetCenter).Length();
-            bool cameraInCrustBand = camRadial < radiusWorld * 1.08f;
-            if (cameraInCrustBand)
+            bool belowCrust = planet.Config.CameraBelowCrust || camRadial < radiusWorld * 0.97f;
+            if (belowCrust)
                 gl.Disable(EnableCap.CullFace);
             else
             {
@@ -3150,17 +3171,15 @@ namespace Game_Engine.Core
                 if (mesh == null) continue;
 
                 var world = parentWorld;
-                if (!cameraInCrustBand)
-                {
-                    var chunkSphere = GetMeshSphere(mesh);
-                    var worldCenter = SN.Vector3.Transform(chunkSphere.Center, world);
-                    var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
-                    var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
-                    var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
-                    float leafRadius = chunkSphere.Radius * MathF.Max(sx, MathF.Max(sy, sz));
-                    if (!SphereInFrustum(frustumPlanes, worldCenter, leafRadius))
-                        continue;
-                }
+                mesh.GetLocalBounds(out var bMin, out var bMax);
+                var localCenter = (bMin + bMax) * 0.5f;
+                var worldCenter = SN.Vector3.Transform(localCenter, world);
+                var sx = new SN.Vector3(world.M11, world.M12, world.M13).Length();
+                var sy = new SN.Vector3(world.M21, world.M22, world.M23).Length();
+                var sz = new SN.Vector3(world.M31, world.M32, world.M33).Length();
+                float leafRadius = (bMax - bMin).Length() * 0.5f * MathF.Max(sx, MathF.Max(sy, sz));
+                if (!SphereInFrustum(frustumPlanes, worldCenter, leafRadius + 2f))
+                    continue;
 
                 planetShader.SetMatrix4("uModel", world);
                 SN.Matrix4x4.Invert(world, out var invWorld);
@@ -3170,7 +3189,7 @@ namespace Game_Engine.Core
                 gpuMesh.Draw();
 
                 var cave = leaf.GeneratedCaveMesh;
-                if (cave != null)
+                if (cave != null && planet.Config.CameraBelowCrust)
                     cache.GetMesh(cave).Draw();
             }
 
@@ -3667,6 +3686,7 @@ namespace Game_Engine.Core
             SN.Vector3 planetCenter,
             float timeSec)
         {
+            if (SkipPlanetAtmosphereClouds) return;
             if (!atmo.Enabled || !atmo.CloudsEnabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
                 return;
 
@@ -3708,19 +3728,10 @@ namespace Game_Engine.Core
             }
             else
             {
-                var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
-                if (renderableLeaves == null)
-                    return;
-
-                for (int i = 0; i < renderableLeaves.Count; i++)
-                {
-                    var mesh = renderableLeaves[i].GeneratedMesh;
-                    if (mesh == null) continue;
-                    var world = parentWorld;
-                    cloudShader.SetMatrix4("uModel", world);
-                    var gpuMesh = cache.GetMesh(mesh);
-                    gpuMesh.Draw();
-                }
+                // Terrain leaves as a cloud shell is a second full-planet draw. Need a WaterGO shell.
+                gl.DepthMask(true);
+                gl.Disable(EnableCap.Blend);
+                return;
             }
 
             gl.DepthMask(true);
@@ -3738,6 +3749,7 @@ namespace Game_Engine.Core
             SN.Vector3 camPos,
             SN.Vector3 planetCenter)
         {
+            if (SkipPlanetAtmosphereClouds) return;
             if (!atmo.Enabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
                 return;
 
@@ -3776,19 +3788,9 @@ namespace Game_Engine.Core
             }
             else
             {
-                var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
-                if (renderableLeaves == null)
-                    return;
-
-                for (int i = 0; i < renderableLeaves.Count; i++)
-                {
-                    var mesh = renderableLeaves[i].GeneratedMesh;
-                    if (mesh == null) continue;
-                    var world = parentWorld;
-                    atmoShader.SetMatrix4("uModel", world);
-                    var gpuMesh = cache.GetMesh(mesh);
-                    gpuMesh.Draw();
-                }
+                gl.DepthMask(true);
+                gl.Disable(EnableCap.Blend);
+                return;
             }
 
             gl.DepthMask(true);

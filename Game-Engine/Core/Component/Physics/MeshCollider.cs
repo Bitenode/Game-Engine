@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Game_Engine.Core.Physics;
 using SN = System.Numerics;
 
 
@@ -120,7 +121,21 @@ namespace Game_Engine.Core.Component
             }
         }
 
+        int _aabbFrame = int.MinValue;
+        AABB _cachedAabb;
+
         public override AABB GetWorldAABB()
+        {
+            int frame = Time.frameCount;
+            if (_aabbFrame == frame)
+                return _cachedAabb;
+
+            _cachedAabb = ComputeWorldAABB();
+            _aabbFrame = frame;
+            return _cachedAabb;
+        }
+
+        AABB ComputeWorldAABB()
         {
             // 0) Manual override mesh = single AABB
             if (Mesh != null && Mesh.Vertices != null && Mesh.Vertices.Length > 0)
@@ -181,14 +196,8 @@ namespace Game_Engine.Core.Component
 
         static AABB AABBForMesh(Mesh mesh, SN.Matrix4x4 W)
         {
-            SN.Vector3 min = new SN.Vector3(float.MaxValue);
-            SN.Vector3 max = new SN.Vector3(float.MinValue);
-            var vtx = mesh.Vertices;
-            for (int i = 0; i < vtx.Length; i++)
-            {
-                var p = SN.Vector3.Transform(vtx[i], W);
-                Encapsulate(ref min, ref max, p);
-            }
+            mesh.GetLocalBounds(out var localMin, out var localMax);
+            GeometryQueries.TransformAabb(localMin, localMax, W, out var min, out var max);
             return new AABB(min, max);
         }
 

@@ -89,7 +89,7 @@ Core goals:
 | `RaycastDensity(...)` / `Spherecast(...)` | Height-cubemap march first (`RaycastHeightfield`); density/cave march only when clearly underground |
 | `Raycast(...)` / `RaycastPaintSurface(...)` | Same heightfield-first pick used by Scene View brushes and **PlanetTool** (Game View screen ray) |
 | `DigSphere` / `BuildSphere` | Near surface → height deltas; underground → cave-band occupancy edits |
-| `SampleStandWorldRadius` / fast player stand | Uses baked cubemap when `HasBaseHeights`; otherwise live graph + dig deltas (no per-tick river carve) |
+| `SampleStandWorldRadius` / fast player stand | Height cubemap + dig deltas; when a fresh leaf shell mesh exists, prefers that visible radius so drawn peaks have matching stand contact (no per-tick river carve) |
 
 ### Dig edits and `.planetvox`
 
@@ -464,7 +464,7 @@ Per-body underwater tint comes from the matching `PlanetWaterBody` deep colors w
 | `PlanetNoiseCache.cs` | Shared per-planet noise instances (biome, erosion, cave worm/cavern/detail) |
 | `PlanetChunkManager.cs` | Face quadtree updates, job scheduling, parent-hold apply, mesh cache, `FindRenderableAtDirection`, play merge safe zone, sphere edits, `ApplyCompletedMeshJobs()` |
 | `FaceQuadtree.cs` | Per-face split/merge/prefetch, neighbor lookup, `CommitReadySplits`, transition masks |
-| `QuadNode.cs` | Leaf/`VoxelChunk`/`GeneratedMesh`, `TransitionMask`, interior-aware camera priority |
+| `QuadNode.cs` | Leaf/`VoxelChunk`/`GeneratedMesh`, `TransitionMask`, interior-aware camera priority, `ReleaseHiddenShell` on split commit |
 | `CubeSphereMath.cs` | Cube-face UV <-> sphere direction conversions |
 | `DensityGenerator.cs` | Crust-band `VoxelChunk` fill; `ComputeInteriorBounds` (CaveDepth) |
 | `PlanetSurfaceCubemap.cs` | Height / HeightDelta / splat faces + sample APIs |
@@ -564,6 +564,7 @@ Additional runtime state:
 
 For planet traversal:
 - Controllers such as `RigidbodyPlayer` set `Camera.WorldUp` each frame
+- Atmosphere/cloud rendering requires a `WaterGO` shell mesh when no dedicated atmosphere proxy exists; terrain leaves are **not** drawn as a fallback cloud shell (that was a second full-planet pass)
 - First-person / third-person planet cameras set `UseLookOverride` + `LookEye` so Game View is not stuck at a nested local offset (which sat inside the water sphere)
 - View matrix uses this vector in `CreateLookAt(...)`
 - `Camera.GetViewMatrix()` includes forward/up collinearity safeguards for stability
@@ -583,7 +584,7 @@ For planet traversal:
 
 Recommended setup:
 1. Add `PlanetTerrain` to a root GameObject
-2. Add `PlanetPlayerSpawner` to the planet (or any scene object) **or** manually add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`. Spawn stands on `SampleCollisionRadius` (same radius the motor snaps to) — not an isosurface / density ray that can hit a pit. `EnsureSunLight` **enables** an existing directional light (and turns on shadows) instead of ignoring it or spawning a second sun. With **`AttachPostProcess`** (default **on**), spawn also adds a global `PostProcessVolume` on the player camera with tuned bloom, ACES color grading, SSAO, vignette, and FXAA; fog stays off so `PlanetWeatherController` can drive it when present
+2. Add `PlanetPlayerSpawner` to the planet (or any scene object) **or** manually add a player with `RigidbodyPlayer` + `Rigidbody` + `CapsuleCollider`. Spawn stands on `SampleCollisionRadius` (same radius the motor snaps to) — not an isosurface / density ray that can hit a pit. `EnsureSunLight` **enables** an existing directional light (and turns on shadows) instead of ignoring it or spawning a second sun. With **`AttachPostProcess`** (default **on**), spawn also adds a global `PostProcessVolume` on the player camera with lighter bloom (fewer iterations), ACES color grading, **SSAO off by default**, vignette, and FXAA; set **`AttachPostProcess: false`** in the scene to skip. Fog stays off so `PlanetWeatherController` can drive it when present
 3. Ensure there is a `Camera` for the player/controller
 4. Author and compile a biome graph, then assign/verify `BiomeGraphPath`
 5. On land biomes, enable `CavesEnabled` in the Biome Graph layer properties (ocean/beach default off)
@@ -605,7 +606,10 @@ Recommended setup:
 - `GameView` calls `RefreshLodAroundCamera` on a throttled interval (~**0.40 s**) and when the play camera moves ~**18 m** (tighter caps outside crust; see **Interior LOD** above)
 - Render delta is clamped (~**0.10 s** max); after a long render pause (> **0.25 s**, e.g. unfocus for screenshot), the first LOD tick **applies finished meshes and commits ready splits only** — no split/merge decisions that frame
 - `PlanetChunkManager.Update` runs at most **once per frame**; completed mesh jobs can also be applied from `PlanetTerrain.Update()` without a full LOD pass
-- **Scene View during Play** renders the same runtime world but **does not** call `RefreshLodAroundCamera` (avoids dual-view LOD fights that caused chunk splits and refocus glitches)
+- **Scene View during Play** renders the same runtime world but **does not** call `RefreshLodAroundCamera` (avoids dual-view LOD fights that caused chunk splits and refocus glitches). Its preview is throttled (~**0.45 s**) and skips shadow/atmosphere/cloud/planet-leaf-shadow passes while Game View is playing
+- **LOD split commit:** when a quadtree node splits, the parent releases its hidden shell/water/cave meshes (`QuadNode.ReleaseHiddenShell`) so coarse parent geometry does not z-fight or float over child mountains without collider contact
+- **Crust-band cave mesh:** `GeneratedCaveMesh` is drawn (and shadowed) only when `PlanetConfig.CameraBelowCrust` — surface walking does not pay for the interior cave shell pass
+- **Terrain frustum cull:** planet terrain chunks are frustum-culled on the outer crust band (not treated as “draw everything” when the camera is near the surface)
 - Game View HUD shows FPS, GL ms, planet chunk/triangle counts, and top script costs when script sampling is enabled
 
 **Scene View planet brushes** (Inspector **Planet brushes (Scene View)** when a GameObject with `PlanetTerrain` is selected):

@@ -278,7 +278,7 @@ namespace Game_Engine.Core.Component
 
                     float near = chunkWorldSize * Math.Max(0.01f, LodDistanceNearChunks);
                     float mid = chunkWorldSize * Math.Max(0.01f, LodDistanceMidChunks);
-                    float h = Math.Max(0f, LodHysteresisWorld);
+                    float h = Math.Max(LodHysteresisWorld, chunkWorldSize * 0.35f);
                     int maxL = chunk.LodMeshes.Length - 1;
                     int lod = chunk.CurrentLod;
 

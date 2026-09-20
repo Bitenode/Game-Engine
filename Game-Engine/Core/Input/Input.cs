@@ -81,6 +81,12 @@ namespace Game_Engine.Core.Input
         /// <summary>When true, play/player view hides the cursor and recenters it for FPS look.</summary>
         public static bool PointerLock;
 
+        /// <summary>
+        /// When false, mouse/gamepad look is ignored and world clicks (sculpt) should be skipped.
+        /// Inventory / menus set this so the cursor can click UI.
+        /// </summary>
+        public static bool WorldInputEnabled = true;
+
         static readonly Dictionary<string, AxisBinding> sAxes = new Dictionary<string, AxisBinding>(StringComparer.Ordinal);
         static readonly Dictionary<string, ActionBinding> sActions = new Dictionary<string, ActionBinding>(StringComparer.Ordinal);
 
@@ -194,6 +200,7 @@ namespace Game_Engine.Core.Input
             sHeldMouse.Clear(); sDownMouse.Clear(); sUpMouse.Clear();
             sMouseDX = sMouseDY = 0f;
             PlayViewportCaptureActive = false;
+            WorldInputEnabled = true;
             foreach (var kv in sAxes) kv.Value.Value = 0f;
         }
 
@@ -236,6 +243,32 @@ namespace Game_Engine.Core.Input
             SyncHardwareKey(0x28, KeyCode.DownArrow);
             SyncHardwareKey(0x46, KeyCode.F);
             SyncHardwareKey(0x47, KeyCode.G);
+            SyncHardwareKey(0x45, KeyCode.E);
+            SyncHardwareKey(0x49, KeyCode.I);
+            SyncHardwareKey(0x48, KeyCode.H);
+            SyncHardwareKey(0x4E, KeyCode.N);
+            SyncHardwareKey(0x52, KeyCode.R);
+            SyncHardwareKey(0x54, KeyCode.T);
+            SyncHardwareKey(0x51, KeyCode.Q);
+            SyncHardwareKey(0x58, KeyCode.X);
+            SyncHardwareKey(0x42, KeyCode.B);
+            SyncHardwareKey(0x56, KeyCode.V);
+            SyncHardwareKey(0x09, KeyCode.Tab);
+            SyncHardwareKey(0x11, KeyCode.LeftCtrl);
+            // Function keys (VK_F1..VK_F12). Needed so debug/actions work when Hierarchy
+            // has focus; Avalonia often never sees F10 (menu) / laptop Fn-lock F-keys.
+            SyncHardwareKey(0x70, KeyCode.F1);
+            SyncHardwareKey(0x71, KeyCode.F2);
+            SyncHardwareKey(0x72, KeyCode.F3);
+            SyncHardwareKey(0x73, KeyCode.F4);
+            SyncHardwareKey(0x74, KeyCode.F5);
+            SyncHardwareKey(0x75, KeyCode.F6);
+            SyncHardwareKey(0x76, KeyCode.F7);
+            SyncHardwareKey(0x77, KeyCode.F8);
+            SyncHardwareKey(0x78, KeyCode.F9);
+            SyncHardwareKey(0x79, KeyCode.F10);
+            SyncHardwareKey(0x7A, KeyCode.F11);
+            SyncHardwareKey(0x7B, KeyCode.F12);
             // Top-row 0–9 (VK_0..VK_9)
             SyncHardwareKey(0x30, KeyCode.D0);
             SyncHardwareKey(0x31, KeyCode.D1);
@@ -333,9 +366,12 @@ namespace Game_Engine.Core.Input
         /// </summary>
         public static void PollPlayMouseButtons(bool cursorOverGameView)
         {
-            if (!OperatingSystem.IsWindows() || !cursorOverGameView) return;
-            if ((GetAsyncKeyState(0x01) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Left);
+            if (!OperatingSystem.IsWindows()) return;
+            // Right-click is often stolen by Avalonia context menus, which also
+            // makes IsPointerOver false — always poll RMB while Play is calling us.
             if ((GetAsyncKeyState(0x02) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Right);
+            if (!cursorOverGameView) return;
+            if ((GetAsyncKeyState(0x01) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Left);
             if ((GetAsyncKeyState(0x04) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Middle);
         }
 
@@ -503,8 +539,8 @@ namespace Game_Engine.Core.Input
             if (!sAxes.TryGetValue(name, out a)) return 0f;
 
             // Mouse axes: raw delta plus optional right-stick look
-            if (a.IsMouseX) return sMouseDX * MouseSensitivity + ReadAnalog(a) * GamepadLookSensitivity;
-            if (a.IsMouseY) return sMouseDY * MouseSensitivity + ReadAnalog(a) * GamepadLookSensitivity;
+            if (a.IsMouseX) return WorldInputEnabled ? sMouseDX * MouseSensitivity + ReadAnalog(a) * GamepadLookSensitivity : 0f;
+            if (a.IsMouseY) return WorldInputEnabled ? sMouseDY * MouseSensitivity + ReadAnalog(a) * GamepadLookSensitivity : 0f;
 
             EnsureAxesUpdatedOncePerFrame();
             return a.Value;
@@ -515,8 +551,8 @@ namespace Game_Engine.Core.Input
             AxisBinding a;
             if (!sAxes.TryGetValue(name, out a)) return 0f;
 
-            if (a.IsMouseX) return sMouseDX + ReadAnalog(a);
-            if (a.IsMouseY) return sMouseDY + ReadAnalog(a);
+            if (a.IsMouseX) return WorldInputEnabled ? sMouseDX + ReadAnalog(a) : 0f;
+            if (a.IsMouseY) return WorldInputEnabled ? sMouseDY + ReadAnalog(a) : 0f;
 
             return ComputeAxisTarget(a);
         }

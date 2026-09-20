@@ -130,6 +130,7 @@ namespace Game_Engine.Core
             _drawCalls = 0;
             _triangles = 0;
             _batches = 0;
+            ShadowPassDepth = 0;
             _planetCount = 0;
             _planetChunkCount = 0;
             _planetActiveJobs = 0;
@@ -218,14 +219,18 @@ namespace Game_Engine.Core
 
         // ── Counter API (called by engine systems) ──
 
+        /// <summary>True while a shadow map is being drawn. Those passes re-draw the same
+        /// meshes (once per cascade) and must not inflate the on-screen triangle count.</summary>
+        public static int ShadowPassDepth;
+
         /// <summary>Increment the draw call counter for this frame.</summary>
-        public static void CountDrawCall() { if (Enabled) _drawCalls++; }
+        public static void CountDrawCall() { if (Enabled && ShadowPassDepth == 0) _drawCalls++; }
 
         /// <summary>Add to the triangle counter for this frame.</summary>
-        public static void CountTriangles(int count) { if (Enabled) _triangles += count; }
+        public static void CountTriangles(int count) { if (Enabled && ShadowPassDepth == 0) _triangles += count; }
 
         /// <summary>Increment the batch counter for this frame.</summary>
-        public static void CountBatch() { if (Enabled) _batches++; }
+        public static void CountBatch() { if (Enabled && ShadowPassDepth == 0) _batches++; }
 
         sealed class ScriptAccum
         {

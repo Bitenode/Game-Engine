@@ -474,9 +474,9 @@ namespace Game_Engine.Core.Component
             volume.Priority = 10;
 
             volume.BloomEnabled = true;
-            volume.BloomThreshold = 0.72f;
-            volume.BloomIntensity = 0.62f;
-            volume.BloomIterations = 5;
+            volume.BloomThreshold = 0.78f;
+            volume.BloomIntensity = 0.35f;
+            volume.BloomIterations = 3;
 
             volume.ColorGradingEnabled = true;
             volume.ToneMap = ToneMapping.ACES;
@@ -485,11 +485,8 @@ namespace Game_Engine.Core.Component
             volume.Contrast = 1.06f;
             volume.Saturation = 1.1f;
 
-            volume.SSAOEnabled = true;
-            volume.SSAORadius = 0.55f;
-            volume.SSAOIntensity = 0.82f;
-            volume.SSAOBias = 0.022f;
-            volume.SSAOSamples = 20;
+            volume.SSAOEnabled = false;
+            volume.SSAOSamples = 8;
 
             volume.VignetteEnabled = true;
             volume.VignetteIntensity = 0.24f;

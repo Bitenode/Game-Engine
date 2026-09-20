@@ -157,7 +157,9 @@ Play-mode **PlanetTool** (Standard Assets): LMB dig / RMB build along the **Game
 
 The Game View shows the game as it would appear to the player, rendered through the first enabled Camera component in the scene.
 
-During Play mode, Scene View remains live and renders the same runtime world from the editor camera (throttled preview). **Planet chunk LOD split/merge is owned by Game View during Play** — Scene View does not drive quadtree updates while playing, which keeps chunk stitching stable when switching focus or taking screenshots.
+During Play mode, Scene View remains live and renders the same runtime world from the editor camera (throttled preview, ~**0.45 s** between full renders while Game View is playing). **Planet chunk LOD split/merge is owned by Game View during Play** — Scene View does not drive quadtree updates while playing, which keeps chunk stitching stable when switching focus or taking screenshots.
+
+While Game View is playing, Scene View also skips the heaviest planet-only passes (shadow map, atmosphere shell, cloud shell, planet leaf shadows) so dual-view editing stays responsive. Game View keeps the full pipeline.
 
 ### Play Controls
 | Button    | Function                                           |
@@ -169,17 +171,18 @@ During Play mode, Scene View remains live and renders the same runtime world fro
 ### Play Mode Lifecycle
 
 **When you press Play:**
-1. The current scene graph is serialized to a JSON snapshot (including material texture data)
-2. All Behaviors receive `Awake()` then `Start()`
-3. The game loop begins:
+1. If project scripts are newer than the last `EditorScripts_*.dll`, they are compiled and extensions refreshed first
+2. The current scene graph is serialized to a JSON snapshot (including material texture data)
+3. All Behaviors receive `Awake()` then `Start()`
+4. The game loop begins:
    - `Update()` runs every frame
    - `FixedUpdate()` runs at fixed time intervals (physics)
    - `LateUpdate()` runs after all Update calls
-4. Input is routed to the game (WASD, mouse look, etc.)
-5. Physics simulation runs (CharacterController, collision detection)
-6. Audio sources begin playback (if `PlayOnAwake` is set)
-7. Particle emitters begin emitting
-8. Animators play their default state
+5. Input is routed to the game (WASD, mouse look, etc.)
+6. Physics simulation runs (CharacterController, collision detection)
+7. Audio sources begin playback (if `PlayOnAwake` is set)
+8. Particle emitters begin emitting
+9. Animators play their default state
 
 **When you press Stop:**
 1. All Behaviors receive `OnDisable()` then `OnDestroy()`
@@ -570,7 +573,7 @@ Built-in C# script editor integrated into the editor (default window about **128
 - **Diagnostics strip** — below the editor, live Roslyn diagnostic counts and the first error/warning message when present
 - **Code folding** — fold/unfold supported blocks from gutter fold controls
 - **Minimap** / **Line numbers** / **Wrap** — toolbar or **View** menu; same persisted flags as **Settings** → script editor toggles (`editor_settings.json`)
-- **Compile** — **Build All** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**)
+- **Compile** — **Build All** compiles all `.cs` files from `Assets/` and `Packages/` (same pipeline as **Scripts: Compile and Reload Extensions** in the **command palette**, **Ctrl+Shift+P**). Scripts also auto-compile on **project open** and before **Play** when sources are newer than the last `EditorScripts_*.dll` — you do not need to open the Script Editor first.
 - **Quick open** (**Ctrl+P**) on the main window — jump to a `.cs` file under the project without browsing the Project panel
 - **Hot-reload** — recompiles and loads the new assembly into a collectible `AssemblyLoadContext` without restarting the editor
 - **Error display** — compilation errors appear in the Console panel with file path, line number, and error message (double-click to open here)
@@ -800,7 +803,7 @@ The Profiler panel and Game View HUD display real-time performance metrics:
 | **Frame Time** | Time per frame in milliseconds |
 | **Draw Calls** | Number of GPU draw calls per frame |
 | **Vertices** | Total vertex count rendered |
-| **Triangles** | Total triangle count rendered |
+| **Triangles** | Total triangle count rendered (on-screen pass only — shadow cascades are excluded so CSM does not inflate the count) |
 | **Planet Chunks** | Active planet quadtree leaves with meshes (Game View HUD when playing) |
 | **Script costs** | Per-behavior Update ms when sampling is enabled (Game View HUD + Profiler) |
 

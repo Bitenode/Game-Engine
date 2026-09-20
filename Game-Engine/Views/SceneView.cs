@@ -1800,7 +1800,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         {
             long now = Stopwatch.GetTimestamp();
             double since = (now - _lastPlayPreviewTicks) / (double)Stopwatch.Frequency;
-            if (since < 0.18)
+            if (since < 0.45)
             {
                 _renderInFlight = false;
                 return;
@@ -1820,8 +1820,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _lastPlayPreviewTicks = Stopwatch.GetTimestamp();
         try
         {
-            // Skip only weather particles during Play; trees/grass stay visible in Scene View.
-            SceneRenderer.SkipPlanetVegetationDraws = GameView.IsAnyViewPlaying;
+            // Play: Scene view is a preview. Don't pay a second planet + shadow pass.
+            bool playing = GameView.IsAnyViewPlaying;
+            SceneRenderer.SkipPlanetVegetationDraws = playing;
+            SceneRenderer.SkipPlanetAtmosphereClouds = playing;
             var g = _glCtx.GL;
 
         // Flush any GL errors accumulated by the other view's rendering.
@@ -1884,6 +1886,19 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // Camera position
         SN.Matrix4x4.Invert(view, out var invView);
         var camPos = new SN.Vector3(invView.M41, invView.M42, invView.M43);
+
+        bool farFromPlanetSurface = false;
+        foreach (var p in PlanetTerrain.ActivePlanets)
+        {
+            if (p?.Config == null || !p.IsActiveAndEnabled) continue;
+            float r = MathF.Max(1f, p.Config.EffectiveWorldRadius);
+            if ((camPos - p.GetWorldCenter()).Length() > r * 1.12f)
+            {
+                farFromPlanetSurface = true;
+                break;
+            }
+        }
+        SceneRenderer.SkipPlanetLeafShadows = GameView.IsAnyViewPlaying || farFromPlanetSurface;
 
         // Skybox / Light — cached lookup, refreshed on scene change
         if (_sceneQueryDirty)
@@ -1992,7 +2007,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // --- SHADOW MAP PASS (skippable via ShowShadows toggle) ---
         SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
         GPUFramebuffer? shadowFBO = null;
-        if (ShowShadows && _shadow != null && _depthShader != null)
+        if (ShowShadows && !GameView.IsAnyViewPlaying && _shadow != null && _depthShader != null)
         {
             // Sun direction: direction sunlight travels (from sun toward scene)
             var sunShineDir = fallbackPlanetSunDir;
@@ -2272,6 +2287,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         finally
         {
             SceneRenderer.SkipPlanetVegetationDraws = false;
+            SceneRenderer.SkipPlanetAtmosphereClouds = false;
+            SceneRenderer.SkipPlanetLeafShadows = false;
             SceneRenderer.EndViewRender();
             _renderInFlight = false;
             // Async chunk meshes only apply inside Update/RefreshLod. Keep pumping Scene

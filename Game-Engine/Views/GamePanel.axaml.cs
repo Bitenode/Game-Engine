@@ -1,6 +1,10 @@
+using System;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
+using Game_Engine.Core;
+using Game_Engine.Core.Extensibility;
 
 namespace Game_Engine.Views;
 
@@ -68,8 +72,28 @@ public partial class GamePanel : UserControl
     // - Play: always allowed (starts or resumes)
     // - Pause: only if currently Playing
     // - Stop: only if not already Stopped (and implicitly "unpauses")
-    private void OnPlayClicked(object? s, RoutedEventArgs e)
+    private async void OnPlayClicked(object? s, RoutedEventArgs e)
     {
+        if (State != GameState.Playing && ScriptCompiler.AreEditorScriptsStale())
+        {
+            try
+            {
+                Core.Log.Info("Scripts changed — compiling before Play…");
+                var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
+                ExtensionService.RefreshForCurrentProject();
+                if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime life
+                    && life.MainWindow is MainWindow mw)
+                {
+                    mw.RefreshProjectUI();
+                    mw.RebuildExtensionMenus();
+                }
+                Core.Log.Success($"Project scripts compiled ({files} files, {types} behavior types).");
+            }
+            catch (Exception ex)
+            {
+                Core.Log.Error($"Script compile before Play failed: {ex.Message}");
+            }
+        }
         State = GameState.Playing;
     }
 

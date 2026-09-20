@@ -72,7 +72,38 @@ public sealed class DiagnosticService : IDisposable
                 }
 
                 var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
-                var tree = CSharpSyntaxTree.ParseText(source, parseOpts);
+                var tree = CSharpSyntaxTree.ParseText(source, parseOpts, documentPath ?? "");
+                var trees = new List<SyntaxTree> { tree };
+                trees.Insert(0, CSharpSyntaxTree.ParseText(
+                    """
+                    global using Avalonia.Controls;
+                    global using Avalonia.Input.Platform;
+                    global using Game_Engine.Views;
+                    global using SystemDecorations = Avalonia.Controls.WindowDecorations;
+                    """,
+                    parseOpts, "ScriptPrelude.g.cs"));
+
+                // Include other project scripts so types in sibling files (e.g. SurvivalStack)
+                // resolve. Diagnostics below are still filtered to the open document.
+#if !PLAYER
+                try
+                {
+                    string? currentFull = null;
+                    if (!string.IsNullOrWhiteSpace(documentPath))
+                    {
+                        try { currentFull = Path.GetFullPath(documentPath); } catch { }
+                    }
+                    foreach (var f in ScriptCompiler.CollectProjectCsFiles(ScriptCompiler.GetProjectScriptRoots(), playerBuild: false))
+                    {
+                        string full;
+                        try { full = Path.GetFullPath(f); } catch { continue; }
+                        if (currentFull != null && string.Equals(full, currentFull, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        trees.Add(CSharpSyntaxTree.ParseText(ScriptCompiler.ReadScriptSource(f), parseOpts, f));
+                    }
+                }
+                catch { /* keep single-file diagnostics if project walk fails */ }
+#endif
 
                 var refs = new List<MetadataReference>();
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
@@ -89,9 +120,10 @@ public sealed class DiagnosticService : IDisposable
 
                 var compilation = CSharpCompilation.Create(
                     "DiagCheck",
-                    new[] { tree },
+                    trees,
                     refs,
-                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                        .WithAllowUnsafe(true));
 
                 ct.ThrowIfCancellationRequested();
 
@@ -104,6 +136,7 @@ public sealed class DiagnosticService : IDisposable
                 {
                     if (d.Severity == DiagnosticSeverity.Hidden) continue;
                     if (d.Location == Location.None || !d.Location.IsInSource) continue;
+                    if (d.Location.SourceTree != tree) continue;
 
                     var span = d.Location.GetLineSpan();
 

@@ -1003,7 +1003,7 @@ public partial class MainWindow : Window
                     await ShowError($"Project was created, but standard assets were not copied:\n{stdErr}");
             }
 
-            ApplyProjectOpenedAfterCreateOrOpen();
+            await ApplyProjectOpenedAfterCreateOrOpen();
         }
         catch (Exception ex)
         {
@@ -1027,7 +1027,7 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.Open(files[0]);
-            ApplyProjectOpenedAfterCreateOrOpen();
+            await ApplyProjectOpenedAfterCreateOrOpen();
         }
         catch (Exception ex)
         {
@@ -1035,15 +1035,39 @@ public partial class MainWindow : Window
         }
     }
 
-    internal void ApplyProjectOpenedAfterCreateOrOpen()
+    internal async Task ApplyProjectOpenedAfterCreateOrOpen()
     {
         if (ProjectService.Current is { } opened)
             RecentProjectsStore.AddRecent(opened.ManifestPath);
         RefreshProjectUI();
-        // Extensions already refreshed by ProjectService.ProjectOpened → ExtensionService.RefreshForCurrentProject
+        // Compile before the last scene loads so custom Behaviour types match
+        // the scripts on disk — no Script Editor required.
+        await TryRebuildProjectScriptsAsync();
+        ExtensionService.RefreshForCurrentProject();
+        RebuildExtensionMenus();
         SceneService.SetCurrentScenePath(null);
         SceneService.SetDirty(false);
         TryAutoLoadLastOpenedScene();
+    }
+
+    internal async Task TryRebuildProjectScriptsAsync(bool onlyIfStale = false)
+    {
+        if (ProjectService.Current is null) return;
+        if (onlyIfStale && !ScriptCompiler.AreEditorScriptsStale()) return;
+
+        try
+        {
+            Log.Info("Compiling project scripts…");
+            var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
+            var msg = $"Project scripts compiled ({files} files, {types} behavior types).";
+            ExtensionDiagnostics.RecordCompileReload(true, msg);
+            Log.Success(msg);
+        }
+        catch (Exception ex)
+        {
+            ExtensionDiagnostics.RecordCompileReload(false, ex.Message);
+            Log.Error($"Project script compile failed: {ex.Message}");
+        }
     }
 
     
@@ -1317,7 +1341,7 @@ public partial class MainWindow : Window
         try
         {
             ProjectService.Open(manifestPath);
-            ApplyProjectOpenedAfterCreateOrOpen();
+            await ApplyProjectOpenedAfterCreateOrOpen();
         }
         catch (Exception ex)
         {

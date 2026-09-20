@@ -64,9 +64,14 @@ public static class SceneQuery
 
     public static GameObject? FindByName(string name)
     {
+        return FindByName(name, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static GameObject? FindByName(string name, StringComparison comparison)
+    {
         foreach (var root in SceneService.Root)
             foreach (var go in Traverse(root))
-                if (string.Equals(go.Name, name, StringComparison.Ordinal))
+                if (string.Equals(go.Name, name, comparison))
                     return go;
         return null;
     }

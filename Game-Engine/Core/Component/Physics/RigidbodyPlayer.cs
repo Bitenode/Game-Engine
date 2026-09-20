@@ -44,6 +44,12 @@ namespace Game_Engine.Core.Component
         [Persist] public Vector3 FirstPersonOffset { get; set; } = new Vector3(0, 1.7, 0);
         [Persist] public Vector3 ThirdPersonOffset { get; set; } = new Vector3(0, 1.7, -3.5);
         [Persist] public float CameraFollowLerp { get; set; } = 12f;
+        /// <summary>
+        /// Keep a child camera's authored local position in first-person mode.
+        /// The player still supplies yaw and pitch, but does not overwrite the
+        /// scene's camera height/forward offset every frame.
+        /// </summary>
+        [Persist] public bool PreserveCameraLocalPosition { get; set; } = false;
         [Persist] public float MaxLookPitch { get; set; } = 89f;
         [Persist] public bool AvoidCameraGroundClip { get; set; } = true;
         [Persist] public float CameraCollisionPadding { get; set; } = 0.2f;
@@ -56,6 +62,19 @@ namespace Game_Engine.Core.Component
 
         // ── Jump buffering ──
         [Persist] public float JumpBufferSeconds { get; set; } = 0.12f;
+
+        /// <summary>Runtime speed scale from gameplay  1 = normal. Not serialized.</summary>
+        public float ExternalSpeedMultiplier { get; set; } = 1f;
+        /// <summary>When false, sprint input is ignored.</summary>
+        public bool AllowSprint { get; set; } = true;
+        /// <summary>When false, jump input is ignored.</summary>
+        public bool AllowJump { get; set; } = true;
+        /// <summary>When false, wish movement is cleared.</summary>
+        public bool AllowMove { get; set; } = true;
+        /// <summary>When false, mouse / stick look is ignored.</summary>
+        public bool AllowLook { get; set; } = true;
+        /// <summary>When false, this motor does not write body yaw/pitch.</summary>
+        public bool AllowBodyFacing { get; set; } = true;
 
         // ── Planet density grounding (matches CharacterController) ──
         [Persist] public float StepUpMax { get; set; } = 0.5f;
@@ -94,6 +113,8 @@ namespace Game_Engine.Core.Component
         CapsuleCollider? _capsule;
         Camera? _cam;
         Transform? _camTr;
+        SN.Vector3 _tpCamWorld;
+        bool _tpCamWorldValid;
         PlanetTerrain? _planet;
         SN.Vector3 _planetCenter;
         float _neighborhoodM;
@@ -160,7 +181,12 @@ namespace Game_Engine.Core.Component
             {
                 _rb.FreezeRotation = true;
                 _rb.Drag = 0f;
+                _rb.Bounciness = 0f;
             }
+
+            var leftoverCc = GetComponent<CharacterController>();
+            if (leftoverCc != null && leftoverCc.Enabled)
+                leftoverCc.Enabled = false;
 
             var spawnPos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
             var spawnPlanet = Rigidbody.FindNearestPlanet(spawnPos, out var spawnCenter, out _);
@@ -214,11 +240,14 @@ namespace Game_Engine.Core.Component
             float dt = Math.Max(0.0001f, Time.deltaTime);
 
             // ── Look ──
-            float lookX = GEInput.GetAxis("Mouse X");
-            float lookY = GEInput.GetAxis("Mouse Y");
-            _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
-            float maxPitch = Clamp(MaxLookPitch, 10f, 89f);
-            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
+            if (AllowLook)
+            {
+                float lookX = GEInput.GetAxis("Mouse X");
+                float lookY = GEInput.GetAxis("Mouse Y");
+                _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
+                float maxPitch = Clamp(MaxLookPitch, 10f, 89f);
+                _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -maxPitch, maxPitch);
+            }
 
             // ── Move intent ──
             float axisV = GEInput.GetAxis("Vertical");
@@ -231,14 +260,14 @@ namespace Game_Engine.Core.Component
                 local.X *= inv; local.Y *= inv;
                 m2 = 1f;
             }
-            _wishLocal = local;
+            _wishLocal = AllowMove ? local : SN.Vector2.Zero;
 
-            _sprintHeld = GEInput.GetAction("Sprint");
+            _sprintHeld = AllowSprint && AllowMove && GEInput.GetAction("Sprint");
 
-            _jumpHeld = GEInput.GetAction("Jump");
+            _jumpHeld = AllowJump && GEInput.GetAction("Jump");
             _diveHeld = GEInput.GetAction("Crouch");
 
-            if (GEInput.GetActionDown("Jump"))
+            if (AllowJump && GEInput.GetActionDown("Jump"))
                 _jumpBuf = JumpBufferSeconds;
             else if (_jumpHeld)
                 _jumpBuf = Math.Max(_jumpBuf, 0.04f);
@@ -266,7 +295,7 @@ namespace Game_Engine.Core.Component
                 _surfaceMode = false;
             }
 
-            if (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f) || onPlanet)
+            if (AllowBodyFacing && (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f) || onPlanet))
             {
                 if (onPlanet && IsPlanetSwimming)
                 {
@@ -381,7 +410,11 @@ namespace Game_Engine.Core.Component
             _cam.WorldUp = _cameraUp;
             if (_camTr != null)
             {
-                if (FirstPerson) DriveCameraFirstPerson(_cameraUp, planet);
+                if (FirstPerson)
+                {
+                    _tpCamWorldValid = false;
+                    DriveCameraFirstPerson(_cameraUp, planet);
+                }
                 else DriveCameraThirdPerson(Math.Max(dt, 0.0001f), _cameraUp);
             }
         }
@@ -403,7 +436,7 @@ namespace Game_Engine.Core.Component
 
             var wish = right * _wishLocal.X + fwd * (-_wishLocal.Y);
             wish -= up * SN.Vector3.Dot(wish, up);
-            float speed = MathF.Max(1f, MaxSpeed) * (_sprintHeld ? MathF.Max(1f, SprintMultiplier) : 1f);
+            float speed = MathF.Max(1f, MaxSpeed) * (_sprintHeld ? MathF.Max(1f, SprintMultiplier) : 1f) * MathF.Max(0f, ExternalSpeedMultiplier);
 
             float radius = 0.4f;
             float capsuleH = 1f;
@@ -669,7 +702,7 @@ namespace Game_Engine.Core.Component
                     wish = SN.Vector3.Normalize(wish);
             }
 
-            float swimSpeed = (wantsDive ? SwimMaxSpeed : PlanetSurfaceSwimSpeed) * (_sprintHeld ? SprintMultiplier : 1f);
+            float swimSpeed = (wantsDive ? SwimMaxSpeed : PlanetSurfaceSwimSpeed) * (_sprintHeld ? SprintMultiplier : 1f) * MathF.Max(0f, ExternalSpeedMultiplier);
             if (wish.LengthSquared() > 1e-8f)
             {
                 float accel = SwimForce * dt;
@@ -1111,23 +1144,26 @@ namespace Game_Engine.Core.Component
                 0f,
                 -_wishLocal.X * s + _wishLocal.Y * c);
 
-            float speed = MoveForce * (_sprintHeld ? SprintMultiplier : 1f);
+            float ext = MathF.Max(0f, ExternalSpeedMultiplier);
+            float body = BodyScale();
+            float stepDt = MathF.Min(dt, 0.05f);
+            float speed = MoveForce * body * (_sprintHeld ? SprintMultiplier : 1f) * ext;
             float control = grounded ? 1f : AirControlFactor;
             var horizVel = new SN.Vector3(_rb.Velocity.X, 0, _rb.Velocity.Z);
             float currentSpeed = SN.Vector3.Dot(horizVel, wishWorld);
-            float maxSpd = MaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+            float maxSpd = MaxSpeed * body * (_sprintHeld ? SprintMultiplier : 1f) * ext;
 
             if (wishWorld.LengthSquared() > 1e-6f)
             {
                 float addSpeed = maxSpd - currentSpeed;
                 if (addSpeed > 0f)
                 {
-                    float accel = MathF.Min(speed * control * dt, addSpeed);
-                    _rb.AddForce(wishWorld * accel / MathF.Max(dt, 0.001f));
+                    float accel = MathF.Min(speed * control * stepDt, addSpeed);
+                    _rb.AddForce(wishWorld * accel / MathF.Max(stepDt, 0.001f));
                 }
             }
 
-            float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * dt);
+            float dragFactor = MathF.Max(0f, 1f - (grounded ? GroundDrag : AirDrag) * stepDt);
             var vel = _rb.Velocity;
             _rb.Velocity = new SN.Vector3(vel.X * dragFactor, vel.Y, vel.Z * dragFactor);
 
@@ -1135,7 +1171,7 @@ namespace Game_Engine.Core.Component
             {
                 var vel2 = _rb.Velocity;
                 _rb.Velocity = new SN.Vector3(vel2.X, MathF.Max(vel2.Y, 0f), vel2.Z);
-                _rb.AddImpulse(SN.Vector3.UnitY * JumpImpulse);
+                _rb.AddImpulse(SN.Vector3.UnitY * (JumpImpulse * body));
                 _jumpBuf = 0f;
             }
             else
@@ -1180,8 +1216,8 @@ namespace Game_Engine.Core.Component
             if (jumpHeld)
                 wishDir += SN.Vector3.UnitY * SwimVerticalSpeed * 0.5f;
 
-            float swimSpeed = SwimForce * (_sprintHeld ? SprintMultiplier : 1f);
-            float maxSwimSpd = SwimMaxSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+            float swimSpeed = SwimForce * (_sprintHeld ? SprintMultiplier : 1f) * MathF.Max(0f, ExternalSpeedMultiplier);
+            float maxSwimSpd = SwimMaxSpeed * (_sprintHeld ? SprintMultiplier : 1f) * MathF.Max(0f, ExternalSpeedMultiplier);
 
             var vel = _rb.Velocity;
             if (wishDir.LengthSquared() > 1e-6f)
@@ -1204,6 +1240,17 @@ namespace Game_Engine.Core.Component
             _jumpBuf = 0f;
         }
 
+        /// <summary>
+        ///  capsule is ~6.8m for the starter mesh. Authored MaxSpeed/JumpImpulse
+        /// are 1.8m-human values, so scale them to the collider or jumps feel like hops.
+        /// </summary>
+        float BodyScale()
+        {
+            _capsule ??= GetComponent<CapsuleCollider>();
+            float h = _capsule != null ? _capsule.Height : 1.8f;
+            return Math.Clamp(h / 1.8f, 1f, 5f);
+        }
+
         // ── Camera helpers ──
 
         void DriveCameraFirstPerson(SN.Vector3 localUp, PlanetTerrain? planet)
@@ -1213,24 +1260,30 @@ namespace Game_Engine.Core.Component
             var yawForward = new SN.Vector3(-MathF.Sin(yawRad), 0f, -MathF.Cos(yawRad));
             BuildTangentBasis(localUp, yawForward, out var fwd, out var right);
 
-            var off = new SN.Vector3((float)FirstPersonOffset.X, (float)FirstPersonOffset.Y, (float)FirstPersonOffset.Z);
+            bool nested = _cam.gameObject?.Parent == gameObject;
+            var authored = nested && PreserveCameraLocalPosition
+                ? _camTr!.Position
+                : FirstPersonOffset;
+            var off = new SN.Vector3((float)authored.X, (float)authored.Y, (float)authored.Z);
             float pitchRad = Deg2Rad(_pitchDeg);
             float cp = MathF.Cos(pitchRad), sp = MathF.Sin(pitchRad);
             var lookFwd = fwd * cp + localUp * sp;
             if (lookFwd.LengthSquared() > 1e-8f)
                 lookFwd = SN.Vector3.Normalize(lookFwd);
             var eye = pos + right * off.X + localUp * off.Y + fwd * off.Z;
-            if (AvoidCameraGroundClip)
+            if (AvoidCameraGroundClip && !PreserveCameraLocalPosition)
                 eye = ResolveFirstPersonEye(eye, pos, localUp, fwd, lookFwd, planet);
 
-            bool nested = _cam.gameObject?.Parent == gameObject;
             if (nested)
             {
-                var d = eye - pos;
-                _camTr!.Position = new Vector3(
-                    SN.Vector3.Dot(d, right),
-                    SN.Vector3.Dot(d, localUp),
-                    SN.Vector3.Dot(d, fwd));
+                if (!PreserveCameraLocalPosition)
+                {
+                    var d = eye - pos;
+                    _camTr!.Position = new Vector3(
+                        SN.Vector3.Dot(d, right),
+                        SN.Vector3.Dot(d, localUp),
+                        SN.Vector3.Dot(d, fwd));
+                }
                 var cr = _camTr.Rotation;
                 cr.X = _pitchDeg;
                 cr.Y = 0;
@@ -1275,19 +1328,32 @@ namespace Game_Engine.Core.Component
             if (AvoidCameraGroundClip)
                 desiredPos = ResolveThirdPersonCameraObstruction(lookAt, desiredPos);
 
-            if (CameraFollowLerp <= 0f)
+            if (!_tpCamWorldValid)
             {
-                _camTr!.Position = new Vector3(desiredPos.X, desiredPos.Y, desiredPos.Z);
+                _tpCamWorld = desiredPos;
+                _tpCamWorldValid = true;
             }
+            else if (CameraFollowLerp <= 0f)
+                _tpCamWorld = desiredPos;
             else
             {
-                var cur = new SN.Vector3((float)_camTr!.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
                 var t = 1f - (float)Math.Exp(-CameraFollowLerp * dt);
-                var blended = cur + (desiredPos - cur) * t;
-                _camTr.Position = new Vector3(blended.X, blended.Y, blended.Z);
+                _tpCamWorld += (desiredPos - _tpCamWorld) * t;
             }
 
-            var dir = lookAt - new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
+            bool nested = _cam.gameObject?.Parent == gameObject;
+            if (nested)
+            {
+                var d = _tpCamWorld - target;
+                _camTr!.Position = new Vector3(
+                    SN.Vector3.Dot(d, right),
+                    SN.Vector3.Dot(d, localUp),
+                    SN.Vector3.Dot(d, fwd));
+            }
+            else
+                _camTr!.Position = new Vector3(_tpCamWorld.X, _tpCamWorld.Y, _tpCamWorld.Z);
+
+            var dir = lookAt - _tpCamWorld;
             if (dir.LengthSquared() > 1e-6f)
                 dir = SN.Vector3.Normalize(dir);
             else
@@ -1295,7 +1361,7 @@ namespace Game_Engine.Core.Component
 
             _cam.WorldUp = localUp;
             _cam.UseLookOverride = true;
-            _cam.LookEye = new SN.Vector3((float)_camTr.Position.X, (float)_camTr.Position.Y, (float)_camTr.Position.Z);
+            _cam.LookEye = _tpCamWorld;
             _cam.LookForward = dir;
             _cam.LookUp = localUp;
         }

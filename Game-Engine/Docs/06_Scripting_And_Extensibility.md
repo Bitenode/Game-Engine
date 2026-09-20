@@ -67,6 +67,8 @@ public class Spinner : Behavior
 | `OnDestroy()` | When the component is removed or scene unloads | Once |
 | `PostDeserialize()` | After scene deserialization is complete | Once (on load) |
 
+**Tick dispatch:** The engine inspects each `Behavior` type once and only calls `Update`, `LateUpdate`, or `FixedUpdate` when that type overrides the base virtual (empty overrides are skipped). This keeps planet-heavy scenes from paying for no-op script ticks.
+
 **Lifecycle order during play mode:**
 ```
 Awake() → OnEnable() → Start() → [Update() → FixedUpdate() → LateUpdate()] loop → OnDisable() → OnDestroy()
@@ -146,6 +148,10 @@ float v = Input.GetAxis("Vertical");
 float lookX = Input.GetAxis("Mouse X");
 float lookY = Input.GetAxis("Mouse Y");
 
+// World vs UI input — menus/inventory set Input.WorldInputEnabled = false
+// so look and world clicks stop while the cursor interacts with UI.
+if (!Input.WorldInputEnabled) return;
+
 // Actions (keys, mouse, and gamepad — use these instead of raw KeyCode)
 bool jumpDown = Input.GetActionDown("Jump");     // Space or gamepad A
 bool sprinting = Input.GetAction("Sprint");      // Shift, L3, or LB
@@ -220,6 +226,15 @@ Vector3 gravity = Physics.Gravity; // Default: (0, -9.81, 0)
 
 ## Compiling Scripts
 
+### Automatic compile (no Script Editor required)
+
+Project scripts compile automatically when:
+
+1. **Project open / create / recent** — after `project.json` loads, if any `.cs` under `Assets/` or `Packages/` is newer than the newest `Builds/EditorScripts/EditorScripts_*.dll` (`ScriptCompiler.AreEditorScriptsStale()`)
+2. **Press Play** — if scripts are stale, compile runs before the play snapshot so `Behavior` types match the files on disk
+
+The open path is **async** (UI stays responsive). Manual compile is still available from the Script Editor, command palette (**Scripts: Compile and Reload Extensions**), or **Ctrl+B**.
+
 ### Built-In Script Editor
 1. Double-click a `.cs` file in the Project Panel to open it in the Script Editor
 2. Edit the code (syntax highlighting for C# is provided)
@@ -228,7 +243,7 @@ Vector3 gravity = Physics.Gravity; // Default: (0, -9.81, 0)
 ### Compilation Process
 1. All `.cs` files from `Assets/` and `Packages/` directories are collected
 2. **Roslyn** (`Microsoft.CodeAnalysis.CSharp` v4.14.0) compiles them into a DLL
-3. The output DLL is saved as `Builds/EditorScripts_<timestamp>.dll`
+3. The output DLL is saved as `Builds/EditorScripts/EditorScripts_<timestamp>.dll`
 4. The assembly is loaded into a **collectible `AssemblyLoadContext`** (allows unloading)
 5. New `Behavior` types are discovered and added to the "Add Component" dropdown
 6. New `EditorExtension` types are discovered and their `Contribute()` methods are called

@@ -95,7 +95,7 @@ public partial class WelcomeWindow : Window
                         await host.ShowError($"Project was created, but standard assets were not copied:\n{err}");
                 }
 
-                host.ApplyProjectOpenedAfterCreateOrOpen();
+                await host.ApplyProjectOpenedAfterCreateOrOpen();
             }
             catch (Exception ex)
             {
@@ -127,12 +127,12 @@ public partial class WelcomeWindow : Window
 
         var host = _host;
         Close();
-        Dispatcher.UIThread.Post(() =>
+        Dispatcher.UIThread.Post(async () =>
         {
             try
             {
                 ProjectService.Open(path);
-                host.ApplyProjectOpenedAfterCreateOrOpen();
+                await host.ApplyProjectOpenedAfterCreateOrOpen();
             }
             catch (Exception ex)
             {
@@ -149,12 +149,12 @@ public partial class WelcomeWindow : Window
         var path = row.ManifestPath;
         var host = _host;
         Close();
-        Dispatcher.UIThread.Post(() =>
+        Dispatcher.UIThread.Post(async () =>
         {
             try
             {
                 ProjectService.Open(path);
-                host.ApplyProjectOpenedAfterCreateOrOpen();
+                await host.ApplyProjectOpenedAfterCreateOrOpen();
             }
             catch (Exception ex)
             {

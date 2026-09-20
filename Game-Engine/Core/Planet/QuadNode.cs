@@ -171,6 +171,9 @@ public sealed class QuadNode
         if (_splitCommitted || Children == null || !ChildrenHaveMeshes())
             return false;
         _splitCommitted = true;
+        // Parent shell is no longer renderable. Keep it and it can z-fight / float
+        // over the child mountain with no stand collider.
+        ReleaseHiddenShell();
         return true;
     }
 
@@ -204,7 +207,21 @@ public sealed class QuadNode
         if (_splitCommitted) return;
         EnsurePrefetchChildren();
         if (ChildrenHaveMeshes())
+        {
             _splitCommitted = true;
+            ReleaseHiddenShell();
+        }
+    }
+
+    void ReleaseHiddenShell()
+    {
+        GpuMeshReleaseQueue.Enqueue(GeneratedMesh);
+        GpuMeshReleaseQueue.Enqueue(GeneratedWaterMesh);
+        GpuMeshReleaseQueue.Enqueue(GeneratedCaveMesh);
+        GeneratedMesh = null;
+        GeneratedWaterMesh = null;
+        GeneratedCaveMesh = null;
+        StandRadiusGrid = null;
     }
 
     public void Merge()

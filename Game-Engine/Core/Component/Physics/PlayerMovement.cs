@@ -56,6 +56,14 @@ namespace Game_Engine.Core.Component
         [Persist] public float JumpBufferSeconds { get; set; } = 0.12f;
         float _jumpBuf;   // counts down
 
+        /// <summary>Runtime speed scale from gameplay  1 = normal. Not serialized.</summary>
+        public float ExternalSpeedMultiplier { get; set; } = 1f;
+        public bool AllowSprint { get; set; } = true;
+        public bool AllowJump { get; set; } = true;
+        public bool AllowMove { get; set; } = true;
+        public bool AllowLook { get; set; } = true;
+        public bool AllowBodyFacing { get; set; } = true;
+
         public override void Awake()
         {
             _motor = GetComponent<CharacterController>();
@@ -97,10 +105,13 @@ namespace Game_Engine.Core.Component
             float dt = Math.Max(0.0001f, Time.deltaTime);
 
             // --- Look ---
-            float lookX = GEInput.GetAxis("Mouse X");
-            float lookY = GEInput.GetAxis("Mouse Y");
-            _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
-            _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -89f, 89f);
+            if (AllowLook)
+            {
+                float lookX = GEInput.GetAxis("Mouse X");
+                float lookY = GEInput.GetAxis("Mouse Y");
+                _yawDeg = Normalize180(_yawDeg - lookX * LookSensitivity * dt);
+                _pitchDeg = Clamp(_pitchDeg - lookY * LookSensitivity * dt, -89f, 89f);
+            }
 
             // --- Move intent (camera-local). Preserve analog magnitude; clamp if over 1. ---
             float axisV = GEInput.GetAxis("Vertical");
@@ -113,25 +124,25 @@ namespace Game_Engine.Core.Component
                 local.X *= inv; local.Y *= inv;
                 m2 = 1f;
             }
-            _wishLocal = local;
+            _wishLocal = AllowMove ? local : SN.Vector2.Zero;
 
             // sprint / jump
-            _sprintHeld = GEInput.GetAction("Sprint");
+            _sprintHeld = AllowSprint && AllowMove && GEInput.GetAction("Sprint");
 
             // Primary: rising edge
-            if (GEInput.GetActionDown("Jump"))
+            if (AllowJump && GEInput.GetActionDown("Jump"))
             {
                 _jumpBuf = JumpBufferSeconds;
              //   Debug.WriteLine("[PlayerMovement] Jump queued (ActionDown)");
             }
             // Fallback: while Space held, keep a tiny buffer alive (helps if edge got cleared before Update)
-            else if (GEInput.GetAction("Jump"))
+            else if (AllowJump && GEInput.GetAction("Jump"))
             {
                 _jumpBuf = Math.Max(_jumpBuf, 0.04f);
             }
 
             // --- Camera + body (visual only; no physics here) ---
-            if (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f))
+            if (AllowBodyFacing && (RotateBodyWithLook || (TurnBodyWhileMoving && m2 > 1e-6f)))
             {
                 var rE = Transform.Rotation; rE.Y = _yawDeg; Transform.Rotation = rE;
             }
@@ -151,7 +162,7 @@ namespace Game_Engine.Core.Component
             // Get local up from the motor (planet-aware)
             var localUp = _motor?.LocalUp ?? SN.Vector3.UnitY;
 
-            float speed = MoveSpeed * (_sprintHeld ? SprintMultiplier : 1f);
+            float speed = MoveSpeed * (_sprintHeld ? SprintMultiplier : 1f) * MathF.Max(0f, ExternalSpeedMultiplier);
 
             // Build tangent-plane forward/right from yaw + local up
             float r = Deg2Rad(_yawDeg);

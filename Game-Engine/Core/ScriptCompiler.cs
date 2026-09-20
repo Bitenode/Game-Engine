@@ -42,7 +42,7 @@ public static class ScriptCompiler
         public int FileCount { get; init; }
     }
 
-    /// <summary>
+    
     /// Collect all .cs files under the given root directories (skipping bin/obj/.git),
     /// compile them with Roslyn, and write the resulting DLL to <paramref name="outputDllPath"/>.
     /// </summary>
@@ -83,10 +83,12 @@ public static class ScriptCompiler
         var prelude = playerBuild
             ? """
             global using Avalonia.Controls;
+            global using Avalonia.Input.Platform;
             global using SystemDecorations = Avalonia.Controls.WindowDecorations;
             """
             : """
             global using Avalonia.Controls;
+            global using Avalonia.Input.Platform;
             global using Game_Engine.Views;
             global using SystemDecorations = Avalonia.Controls.WindowDecorations;
             """;
@@ -126,6 +128,53 @@ public static class ScriptCompiler
             DllPath = outputDllPath,
             FileCount = allFiles.Count
         };
+    }
+
+    /// <summary>
+    /// True when project .cs files are newer than the last EditorScripts DLL
+    /// (or no DLL exists yet). Used to compile on project load / Play without
+    /// opening the Script Editor.
+    /// </summary>
+    public static bool AreEditorScriptsStale()
+    {
+        var proj = ProjectService.Current;
+        if (proj == null) return false;
+
+        var files = CollectProjectCsFiles(GetProjectScriptRoots(), playerBuild: false);
+        if (files.Count == 0) return false;
+
+        var newestCs = DateTime.MinValue;
+        foreach (var f in files)
+        {
+            try
+            {
+                var t = File.GetLastWriteTimeUtc(f);
+                if (t > newestCs) newestCs = t;
+            }
+            catch { /* skip unreadable */ }
+        }
+
+        var outRoot = string.IsNullOrWhiteSpace(proj.BuildsPath) ? proj.RootPath : proj.BuildsPath;
+        var dir = Path.Combine(outRoot!, "EditorScripts");
+        if (!Directory.Exists(dir)) return true;
+
+        var newestDll = DateTime.MinValue;
+        try
+        {
+            foreach (var dll in Directory.EnumerateFiles(dir, "EditorScripts_*.dll"))
+            {
+                try
+                {
+                    var t = File.GetLastWriteTimeUtc(dll);
+                    if (t > newestDll) newestDll = t;
+                }
+                catch { /* skip */ }
+            }
+        }
+        catch { return true; }
+
+        if (newestDll == DateTime.MinValue) return true;
+        return newestCs > newestDll + TimeSpan.FromSeconds(1);
     }
 
     /// <summary>
