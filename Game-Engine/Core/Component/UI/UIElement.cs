@@ -13,6 +13,8 @@ namespace Game_Engine.Core.Component.UI
         public float X0, Y0, X1, Y1;
         // UVs
         public float U0, V0, U1, V1;
+        /// <summary>Clockwise quarter-turns of the texture inside the quad. 0 leaves UVs unchanged.</summary>
+        public int UvTurns;
         // Vertex color (premultiplied with element tint and opacity)
         public float R, G, B, A;
         // GPU texture handle (0 = use white/solid). Set by CanvasRenderer from Texture field.

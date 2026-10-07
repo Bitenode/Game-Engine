@@ -1,4 +1,5 @@
 #nullable enable
+using System;
 using System.Linq;
 using SN = System.Numerics;
 
@@ -32,6 +33,13 @@ public class SkinnedMeshRenderer : MeshRenderer
     // Cached references
     private Animator? _animator;
     private bool _animatorSearched;
+
+    // LateUpdate, the draw and the shadow pass all asked for bone matrices. Re-solve
+    // only when the animator pose or the skeleton actually changed.
+    private SN.Matrix4x4[]? _globalScratch;
+    private Animator? _solvedAnimator;
+    private Skeleton? _solvedSkeleton;
+    private int _solvedPoseVersion = int.MinValue;
 
     public override void Start()
     {
@@ -125,13 +133,25 @@ public class SkinnedMeshRenderer : MeshRenderer
 
         int boneCount = Skeleton.BoneCount;
         var bonePoses = _animator?.CurrentBonePose;
+        int poseVersion = _animator?.PoseVersion ?? -1;
+
+        if (BoneMatrices != null && BoneMatrices.Length == boneCount
+            && ReferenceEquals(_solvedAnimator, _animator)
+            && ReferenceEquals(_solvedSkeleton, Skeleton)
+            && _solvedPoseVersion == poseVersion)
+            return;
 
         // Allocate / resize
         if (BoneMatrices == null || BoneMatrices.Length != boneCount)
             BoneMatrices = new SN.Matrix4x4[boneCount];
 
         // Compute global transforms walking the hierarchy
-        var globalTransforms = new SN.Matrix4x4[boneCount];
+        if (_globalScratch == null || _globalScratch.Length != boneCount)
+            _globalScratch = new SN.Matrix4x4[boneCount];
+        var globalTransforms = _globalScratch;
+        _solvedAnimator = _animator;
+        _solvedSkeleton = Skeleton;
+        _solvedPoseVersion = poseVersion;
 
         for (int i = 0; i < boneCount; i++)
         {
@@ -141,8 +161,20 @@ public class SkinnedMeshRenderer : MeshRenderer
             // transform (from the Assimp node). Using Identity would collapse all bones
             // to the origin; using LocalBindTransform preserves the T-pose shape.
             SN.Matrix4x4 local;
-            if (bonePoses != null && i < bonePoses.Length)
-                local = bonePoses[i].ToMatrix();
+            if (bonePoses != null && i < bonePoses.Length && bonePoses[i].IsSet)
+            {
+                // Full joint pose. Translation and rotation are both required:
+                // the FBX stores them on separate pivot nodes and the importer
+                // composes them back into this one local transform.
+                var pose = bonePoses[i];
+                var s = pose.Scale;
+                if (MathF.Abs(s.X) < 1e-4f) s.X = 1f;
+                if (MathF.Abs(s.Y) < 1e-4f) s.Y = 1f;
+                if (MathF.Abs(s.Z) < 1e-4f) s.Z = 1f;
+                local = SN.Matrix4x4.CreateScale(s)
+                      * SN.Matrix4x4.CreateFromQuaternion(pose.Rotation)
+                      * SN.Matrix4x4.CreateTranslation(pose.Position);
+            }
             else
                 local = bone.LocalBindTransform;
 

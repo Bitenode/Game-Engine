@@ -9,7 +9,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 ### Core Engine
 - **Component-Based Architecture** — GameObject/Behavior system with 34+ built-in component types and lifecycle methods (Awake, Start, Update, FixedUpdate, LateUpdate, OnDestroy)
 - **Visual Editor** — Dockable panel layout with Hierarchy, Scene View, Game View, Inspector, Project Browser, Console, Animation, Shader Editor, Blueprint graph editor, Profiler, and Build Settings panels
-- **C# Scripting** — Runtime compilation via Roslyn with hot-reload, `[Persist]` attribute for automatic serialization, and `[Require]` for component dependencies
+- **C# Scripting** — Runtime compilation via Roslyn with hot-reload (`ScriptTypeReload` remaps scene scripts on compile/Play), compile-error dialogs, `[Persist]` attribute for automatic serialization, and `[Require]` for component dependencies
 - **Visual Blueprints** — Node graphs (`.blueprint`) on the **Visual Blueprint** component: events, branching, delays, variables, scene actions, reflection get/set, and `BlueprintMessageEvent` for C# subscribers ([docs](Game-Engine/Docs/14_Visual_Blueprints.md))
 - **Editor Extensions** — Plugin system for custom menus, commands, custom inspectors, and the UIX declarative UI framework (21 widget types)
 - **Undo/Redo** — Full command-pattern undo/redo system across all editor operations
@@ -20,15 +20,15 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Shader Graph** — Visual node-based shader editor with live preview, compiling to GLSL (nodes: Output, TextureSample, Color, Float, Math, Coordinate, Fresnel, Noise)
 - **Custom Shaders** — Hand-written `.shader` files with Cook-Torrance BRDF support, plus built-in shader graph assets (Steel PBR, Crystalline Nebula, Neon Emissive, Gold Mirror, and more)
 - **Water Rendering** — Gerstner wave displacement, Fresnel-based transparency, foam, and underwater post-processing effects
-- **Particle System** — Billboard particles with emission shapes (Sphere, Cone, Box), sub-emitters, and presets (Fire, Smoke, Sparks, Rain, Snow, Dust)
+- **Particle System** — Billboard, streak, and flame particle looks with emission shapes (Sphere, Cone, Box), sub-emitters, and presets (Fire, Smoke, Sparks, Rain, Snow, Dust)
 - **Decal Projection** — Runtime decal rendering on surfaces with lifetime, fade-out, and projection modes (Forward, Up, Down)
 - **Post-Processing** — Bloom, SSAO, Fog, Color Grading, Tone Mapping (Reinhard/ACES), Vignette, FXAA, TAA, SSR, Depth of Field, and underwater effects
 - **Vegetation System** — GPU-instanced grass, rocks, and debris with chunked rendering, distance culling, and terrain-aware placement
 
 ### World Building
 - **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
-- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs), async scene-load baking, chunk LOD streaming, planet water/atmosphere, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
-- **3D Model Import** — FBX, OBJ, DAE (and glTF where Assimp supports it) via AssimpNet with automatic material extraction, skeleton building, and bone animation import; shipped **StarterCharacter** learning asset with Idle/Walk/Run/Wave
+- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs), async scene-load baking, chunk LOD streaming, GPU grass with clear zones, play-mode fauna herds, prop/point-lighting on curved surfaces, smoother player stand on LOD seams, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
+- **3D Model Import** — FBX, OBJ, DAE (and glTF where Assimp supports it) via AssimpNet with automatic material extraction, skeleton building, loose FBX animation clips, and FBX pivot-aware bone animation import; shipped **StarterCharacter** learning asset with Idle/Walk/Run/Wave
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
 - **Runtime UI System** — GPU-rendered in-game UI with Canvas (Overlay/Camera/WorldSpace), RectTransform anchor layout, 8 widget types (Text, Image, Button, Panel, Slider, Toggle, InputField), pointer event system, bitmap font rendering (BMFont/SDF), and responsive scaling
@@ -38,7 +38,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Physics & Collision** — BoxCollider, CapsuleCollider, MeshCollider, BVH spatial acceleration, CharacterController with gravity, slope limiting, step climbing, coyote time, and CCD
 - **Physics Joints** — Fixed, Hinge, Spring, Slider, and Ball-Socket joint constraints
 - **Player Controllers** — PlayerMovement (sweep-and-slide) and RigidbodyPlayer (momentum-based with planet surface walk and planet swimming)
-- **Animation System** — Bone-based skeletal animation with GPU skinning, persisted Animator state machine, Scene View preview from the Animation panel, blend trees, and keyframe editing
+- **Animation System** — Bone-based skeletal animation with GPU skinning, pose-buffer reuse and `PoseVersion` caching, persisted Animator state machine, Scene View preview from the Animation panel, blend trees, and keyframe editing
 - **Inverse Kinematics** — IKConstraint with TwoBone (arms/legs), LookAt (head tracking), and FABRIK (multi-joint chains)
 
 ### Audio & Networking

@@ -66,9 +66,14 @@ namespace Game_Engine.Core.Component
                 -MathF.Cos(yaw) * MathF.Cos(pitch));
         }
 
-        /// <summary>Get world-space position.</summary>
+        /// <summary>Get world-space position. Child lights follow the parent, not the local offset.</summary>
         public System.Numerics.Vector3 GetWorldPosition()
-            => new((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+        {
+            if (gameObject == null)
+                return new((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var world = Game_Engine.Core.SceneGraphUtil.AccumulateWorld(gameObject);
+            return new(world.M41, world.M42, world.M43);
+        }
 
         /// <summary>Get light color as a normalized RGB vector.</summary>
         public System.Numerics.Vector3 GetColorRGB()

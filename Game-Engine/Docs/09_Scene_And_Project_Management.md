@@ -70,7 +70,7 @@ When a project is opened, the following sequence executes:
 1. `project.json` is read and validated
 2. The project root path is resolved
 3. Input bindings are loaded from `ProjectSettings/input.bindings.json`
-4. If any project `.cs` is newer than the newest `Builds/EditorScripts/EditorScripts_*.dll`, all scripts in `Assets/` and `Packages/` are compiled via Roslyn (async — UI stays responsive)
+4. If any project `.cs` is newer than the newest `Builds/EditorScripts/EditorScripts_*.dll`, all scripts in `Assets/` and `Packages/` are compiled via Roslyn (async — UI stays responsive). A failed compile keeps the previous good DLL, still restores the last scene, then shows the compile error dialog
 5. Extensions are discovered and their menus are built
 6. Extension menus are appended to the editor menu bar
 7. The last active scene is restored (if available)

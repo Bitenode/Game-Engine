@@ -31,6 +31,8 @@ public static class MaterialUtil
         if (string.IsNullOrWhiteSpace(mat)) return;
 
         var (albedoAbs, stem) = FindBestMatchingColMap(mat, dirs);
+        if (string.IsNullOrEmpty(albedoAbs) || string.IsNullOrEmpty(stem))
+            (albedoAbs, stem) = FindPackAlbedo(mat, dirs);
         if (string.IsNullOrEmpty(albedoAbs) || string.IsNullOrEmpty(stem)) return;
 
         string projRoot = Path.GetFullPath(projectRootForRelativePaths);
@@ -46,8 +48,33 @@ public static class MaterialUtil
         catch { return; }
 
         string texDir = Path.GetDirectoryName(albedoAbs)!;
-        TryAddOptionalTextureFile(m, texDir, stem, projRoot, new[] { "_Nor.png", "_Nor.PNG", "_Nor2.png", "_Normal.png", "_NORMAL.png" }, "Normal");
+        TryAddOptionalTextureFile(m, texDir, stem, projRoot, new[] { "_Nor.png", "_Nor.PNG", "_Nor2.png", "_Normal.png", "_NORMAL.png", "_NRM.png", "_Nrm.png" }, "Normal");
         TryAddOptionalTextureFile(m, texDir, stem, projRoot, new[] { "_Rgn.png", "_Rgh.png", "_Roughness.png" }, "Roughness");
+        TryAddOptionalTextureFile(m, texDir, stem, projRoot, new[] { "_MET.png", "_Met.png", "_Metallic.png" }, "Metallic");
+        TryAddOptionalTextureFile(m, texDir, stem, projRoot, new[] { "_AO.png", "_Ao.png", "_Occlusion.png" }, "AmbientOcclusion");
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    static (string? path, string? stem) FindPackAlbedo(string matName, List<string> roots)
+    {
+        foreach (string root in roots)
+        {
+            foreach (string ext in new[] { ".png", ".jpg", ".jpeg", ".tga" })
+            {
+                IEnumerable<string> hits;
+                try { hits = Directory.EnumerateFiles(root, matName + ext, SearchOption.AllDirectories); }
+                catch { continue; }
+                foreach (string abs in hits)
+                {
+                    string fn = Path.GetFileNameWithoutExtension(abs);
+                    if (!string.Equals(fn, matName, StringComparison.OrdinalIgnoreCase)) continue;
+                    return (abs, fn);
+                }
+            }
+        }
+        return (null, null);
     }
 
     static bool HasLoadedAlbedoTexture(Material m)

@@ -114,7 +114,8 @@ namespace Game_Engine.Core
                 string cacheKey = Path.GetFullPath(abs);
                 lock (s_runtimeMaterialsLock)
                 {
-                    if (s_runtimeMaterialsByAbsPath.TryGetValue(cacheKey, out var master) && master != null)
+                    if (s_runtimeMaterialsByAbsPath.TryGetValue(cacheKey, out var master) && master != null
+                        && master.Textures.Count > 0)
                         return master;
                 }
 
@@ -292,7 +293,7 @@ namespace Game_Engine.Core
 
                 lock (s_runtimeMaterialsLock)
                 {
-                    if (!s_runtimeMaterialsByAbsPath.ContainsKey(cacheKey))
+                    if (m.Textures.Count > 0)
                         s_runtimeMaterialsByAbsPath[cacheKey] = m;
                 }
 

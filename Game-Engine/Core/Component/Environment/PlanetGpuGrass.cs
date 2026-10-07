@@ -10,41 +10,68 @@ using SN = System.Numerics;
 namespace Game_Engine.Core.Component;
 
 /// <summary>
-/// Planet grass as GPU instances: one shared cross-card mesh, one instance buffer,
-/// one draw per unique texture. Replaces per-patch CPU mesh merges.
+/// Planet grass as GPU instances: one shared cross-card mesh, one draw per
+/// (texture, blades-per-patch) batch. Each patch owns a fixed slot in its batch,
+/// so adding, re-seating or removing a patch rewrites and uploads only that slot.
 /// </summary>
 public static class PlanetGpuGrass
 {
     const int FloatsPerInstance = 8;
     const int MaxBladesPerPatch = 16;
+    /// <summary>Above this many changed slots in a frame, upload one covering range instead.</summary>
+    const int MaxSparseUploads = 32;
 
     readonly record struct Key(PlanetVegetationSystem Owner, int Token);
+    readonly record struct BatchKey(PlanetVegetationSystem Owner, string Texture, int Blades, bool SingleCard);
 
     sealed class Patch
     {
-        public float[] Blades = Array.Empty<float>();
-        public int BladeCount;
-        public string TextureKey = "";
+        public TexBatch Batch = null!;
+        public int Slot;
     }
 
     sealed class TexBatch
     {
-        public string Key = "";
+        public BatchKey Key;
+        public string Texture = "";
+        public int Blades;
+        /// <summary>Draw only the first quad of the cross card (distant grass).</summary>
+        public bool SingleCard;
         public float[] Packed = Array.Empty<float>();
-        public int Count;
-        /// <summary>Per-texture instance VBO; re-uploaded only when the packed data changed.</summary>
+        public readonly List<Key> SlotOwners = new();
         public uint Vbo;
         public int GpuFloats;
-        public bool GpuDirty = true;
+        public bool FullUpload = true;
+        public int DirtyMin = int.MaxValue;
+        public int DirtyMax = -1;
+        public readonly List<int> DirtySlots = new();
+
+        public int Slots => SlotOwners.Count;
+        public int SlotFloats => Blades * FloatsPerInstance;
+
+        public void MarkDirty(int slot)
+        {
+            if (slot < DirtyMin) DirtyMin = slot;
+            if (slot > DirtyMax) DirtyMax = slot;
+            if (DirtySlots.Count <= MaxSparseUploads)
+                DirtySlots.Add(slot);
+        }
+
+        public void ClearDirty()
+        {
+            DirtyMin = int.MaxValue;
+            DirtyMax = -1;
+            DirtySlots.Clear();
+        }
     }
 
     static readonly Dictionary<Key, Patch> s_patches = new();
     static readonly List<TexBatch> s_batches = new();
-    static readonly Dictionary<string, TexBatch> s_batchByKey = new(StringComparer.OrdinalIgnoreCase);
-    static PlanetVegetationSystem? s_batchOwner;
+    static readonly Dictionary<BatchKey, TexBatch> s_batchByKey = new();
+    static readonly float[] s_bladeScratch = new float[MaxBladesPerPatch * FloatsPerInstance];
     static readonly Dictionary<Texture2D, GPUTexture> s_gpuTex = new();
     static Texture2D? s_fallbackTex;
-    static bool s_batchDirty = true;
+    static int s_bladeTotal;
 
     static GL? s_gl;
     static object? s_gpuKey;
@@ -57,16 +84,7 @@ public static class PlanetGpuGrass
     static bool s_gpuReady;
     static bool s_gpuFailed;
 
-    public static int BladeCount
-    {
-        get
-        {
-            int n = 0;
-            foreach (var p in s_patches.Values)
-                n += p.BladeCount;
-            return n;
-        }
-    }
+    public static int BladeCount => s_bladeTotal;
 
     public static bool HasPatch(PlanetVegetationSystem owner, int token)
         => s_patches.ContainsKey(new Key(owner, token));
@@ -74,10 +92,11 @@ public static class PlanetGpuGrass
     public static int PatchCount(PlanetVegetationSystem owner)
     {
         int n = 0;
-        foreach (var k in s_patches.Keys)
+        for (int i = 0; i < s_batches.Count; i++)
         {
-            if (ReferenceEquals(k.Owner, owner))
-                n++;
+            var b = s_batches[i];
+            if (ReferenceEquals(b.Key.Owner, owner))
+                n += b.Slots;
         }
         return n;
     }
@@ -92,7 +111,8 @@ public static class PlanetGpuGrass
         float patchRadiusLocal,
         int bladeCount,
         string? texturePath = null,
-        SN.Vector3? diskNormalLocal = null)
+        SN.Vector3? diskNormalLocal = null,
+        bool singleCard = false)
     {
         if (owner == null)
             return 0;
@@ -110,10 +130,9 @@ public static class PlanetGpuGrass
         float localR = Math.Max(0.04f, patchRadiusLocal);
         float localH = Math.Max(0.06f, localHeight);
         int blades = Math.Clamp(bladeCount, 4, MaxBladesPerPatch);
-        var packed = new float[blades * FloatsPerInstance];
+        var packed = s_bladeScratch;
         // Token-only seed: a re-seat (same token, new height) must not reshuffle blades.
         uint seed = unchecked((uint)token * 0x9E3779B1u);
-        int written = 0;
         for (int i = 0; i < blades; i++)
         {
             // Integer hash → [0,1). `Fract(seed * 0.1031f)` on a ~1e9 seed is a float
@@ -130,7 +149,7 @@ public static class PlanetGpuGrass
             var pos = centerLocal + t * (MathF.Cos(ang) * rad) + b * (MathF.Sin(ang) * rad);
             float yaw = yawDeg * (MathF.PI / 180f) + u3 * MathF.Tau;
             float scale = localH * (0.82f + u2 * 0.45f);
-            int o = written * FloatsPerInstance;
+            int o = i * FloatsPerInstance;
             packed[o] = pos.X;
             packed[o + 1] = pos.Y;
             packed[o + 2] = pos.Z;
@@ -139,41 +158,97 @@ public static class PlanetGpuGrass
             packed[o + 5] = up.Y;
             packed[o + 6] = up.Z;
             packed[o + 7] = yaw;
-            written++;
         }
 
         string texKey = PlanetAssetIO.NormalizeAssetReference(texturePath ?? "");
         if (!string.IsNullOrWhiteSpace(texKey))
             PlanetGrassTextureCache.Request(texKey);
-        s_patches[new Key(owner, token)] = new Patch
+
+        var key = new Key(owner, token);
+        var batch = GetBatch(owner, texKey, blades, singleCard);
+        if (s_patches.TryGetValue(key, out var patch))
         {
-            Blades = packed,
-            BladeCount = written,
-            TextureKey = texKey
-        };
-        s_batchDirty = true;
-        return written;
+            if (ReferenceEquals(patch.Batch, batch))
+            {
+                WriteSlot(batch, patch.Slot, packed);
+                return blades;
+            }
+            ReleaseSlot(patch.Batch, patch.Slot);
+        }
+        else
+        {
+            patch = new Patch();
+            s_patches[key] = patch;
+        }
+
+        int slot = batch.Slots;
+        int need = (slot + 1) * batch.SlotFloats;
+        if (batch.Packed.Length < need)
+            Array.Resize(ref batch.Packed, Math.Max(need, Math.Max(batch.SlotFloats * 64, batch.Packed.Length * 2)));
+        batch.SlotOwners.Add(key);
+        patch.Batch = batch;
+        patch.Slot = slot;
+        WriteSlot(batch, slot, packed);
+        s_bladeTotal += blades;
+        return blades;
     }
 
     public static void RemovePatch(PlanetVegetationSystem owner, int token)
     {
-        if (s_patches.Remove(new Key(owner, token)))
-            s_batchDirty = true;
+        if (s_patches.Remove(new Key(owner, token), out var patch))
+            ReleaseSlot(patch.Batch, patch.Slot);
     }
 
     public static void ClearOwner(PlanetVegetationSystem owner)
     {
         if (owner == null) return;
-        var dead = new List<Key>();
-        foreach (var k in s_patches.Keys)
+        for (int i = 0; i < s_batches.Count; i++)
         {
-            if (ReferenceEquals(k.Owner, owner))
-                dead.Add(k);
+            var b = s_batches[i];
+            if (!ReferenceEquals(b.Key.Owner, owner) || b.Slots == 0) continue;
+            for (int s = 0; s < b.SlotOwners.Count; s++)
+                s_patches.Remove(b.SlotOwners[s]);
+            s_bladeTotal -= b.Slots * b.Blades;
+            b.SlotOwners.Clear();
+            b.ClearDirty();
         }
-        if (dead.Count == 0) return;
-        for (int i = 0; i < dead.Count; i++)
-            s_patches.Remove(dead[i]);
-        s_batchDirty = true;
+    }
+
+    static TexBatch GetBatch(PlanetVegetationSystem owner, string texKey, int blades, bool singleCard)
+    {
+        var bk = new BatchKey(owner, texKey, blades, singleCard);
+        if (s_batchByKey.TryGetValue(bk, out var batch))
+            return batch;
+        batch = new TexBatch { Key = bk, Texture = texKey, Blades = blades, SingleCard = singleCard };
+        s_batchByKey[bk] = batch;
+        s_batches.Add(batch);
+        return batch;
+    }
+
+    static void WriteSlot(TexBatch batch, int slot, float[] src)
+    {
+        Array.Copy(src, 0, batch.Packed, slot * batch.SlotFloats, batch.SlotFloats);
+        batch.MarkDirty(slot);
+    }
+
+    /// <summary>Swap the last slot into the freed one so the batch stays packed.</summary>
+    static void ReleaseSlot(TexBatch batch, int slot)
+    {
+        int last = batch.Slots - 1;
+        if (last < 0 || slot < 0 || slot > last)
+            return;
+        if (slot != last)
+        {
+            int sf = batch.SlotFloats;
+            Array.Copy(batch.Packed, last * sf, batch.Packed, slot * sf, sf);
+            var moved = batch.SlotOwners[last];
+            batch.SlotOwners[slot] = moved;
+            if (s_patches.TryGetValue(moved, out var movedPatch))
+                movedPatch.Slot = slot;
+            batch.MarkDirty(slot);
+        }
+        batch.SlotOwners.RemoveAt(last);
+        s_bladeTotal -= batch.Blades;
     }
 
     public static unsafe void Render(
@@ -195,8 +270,6 @@ public static class PlanetGpuGrass
             return;
         if (!EnsureGpu(gl, cache))
             return;
-
-        RebuildPackedIfNeeded(owner);
         if (s_batches.Count == 0 || s_shader == null)
             return;
 
@@ -240,20 +313,21 @@ public static class PlanetGpuGrass
         s_shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
             ? SN.Vector3.Normalize(WindSystem.Direction)
             : SN.Vector3.UnitX);
+        s_shader.SetFloat("uCardWidth", Math.Clamp(owner.GrassWidthScale, 0.25f, 4f));
         s_shader.SetTexture("uAlbedoTex", 0);
 
         gl.BindVertexArray(s_vao);
         int uploadsLeft = 4;
 
-        for (int b = 0; b < s_batches.Count; b++)
+        for (int bi = 0; bi < s_batches.Count; bi++)
         {
-            var batch = s_batches[b];
-            if (batch.Count <= 0) continue;
-            if (!PlanetGrassTextureCache.TryGet(batch.Key, out var cpuTex))
+            var batch = s_batches[bi];
+            if (batch.Slots <= 0 || !ReferenceEquals(batch.Key.Owner, owner)) continue;
+            if (!PlanetGrassTextureCache.TryGet(batch.Texture, out var cpuTex))
             {
                 // Card not loaded (or evicted): re-request and skip rather than draw
                 // the flat green stand-in — that is the "untextured mesh" look.
-                PlanetGrassTextureCache.Request(batch.Key);
+                PlanetGrassTextureCache.Request(batch.Texture);
                 continue;
             }
             BindGrassTexture(gl, cpuTex, ref uploadsLeft);
@@ -261,36 +335,20 @@ public static class PlanetGpuGrass
             if (batch.Vbo == 0)
             {
                 batch.Vbo = gl.GenBuffer();
-                batch.GpuDirty = true;
+                batch.GpuFloats = 0;
+                batch.FullUpload = true;
             }
             gl.BindBuffer(BufferTargetARB.ArrayBuffer, batch.Vbo);
-            int floats = batch.Count * FloatsPerInstance;
-            if (batch.GpuDirty)
-            {
-                // Re-streaming every batch every frame was several MB per frame
-                // even while standing still; now only changed textures upload.
-                fixed (float* ptr = batch.Packed)
-                {
-                    if (floats <= batch.GpuFloats)
-                        gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
-                    else
-                    {
-                        int cap = Math.Max(floats, batch.GpuFloats * 3 / 2);
-                        gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(cap * sizeof(float)), null, BufferUsageARB.DynamicDraw);
-                        gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
-                        batch.GpuFloats = cap;
-                    }
-                }
-                batch.GpuDirty = false;
-            }
+            UploadBatch(gl, batch);
+
             gl.VertexAttribPointer(2, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)0);
             gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)(4 * sizeof(float)));
             gl.DrawElementsInstanced(
                 PrimitiveType.Triangles,
-                (uint)s_indexCount,
+                batch.SingleCard ? 6u : (uint)s_indexCount,
                 DrawElementsType.UnsignedInt,
                 null,
-                (uint)batch.Count);
+                (uint)(batch.Slots * batch.Blades));
         }
 
         gl.BindVertexArray(0);
@@ -298,6 +356,53 @@ public static class PlanetGpuGrass
         if (prevCull) gl.Enable(EnableCap.CullFace);
         if (prevBlend) gl.Enable(EnableCap.Blend);
         gl.UseProgram(0);
+    }
+
+    /// <summary>
+    /// Upload only what changed since last draw. The old path repacked and re-uploaded
+    /// every blade of every texture whenever one patch moved, every frame while walking.
+    /// </summary>
+    static unsafe void UploadBatch(GL gl, TexBatch batch)
+    {
+        int floats = batch.Slots * batch.SlotFloats;
+        int sf = batch.SlotFloats;
+        fixed (float* ptr = batch.Packed)
+        {
+            if (floats > batch.GpuFloats || batch.FullUpload)
+            {
+                if (floats > batch.GpuFloats)
+                {
+                    int cap = Math.Max(floats, batch.GpuFloats * 3 / 2);
+                    gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(cap * sizeof(float)), null, BufferUsageARB.DynamicDraw);
+                    batch.GpuFloats = cap;
+                }
+                gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
+                batch.FullUpload = false;
+                batch.ClearDirty();
+                return;
+            }
+
+            if (batch.DirtyMax < 0)
+                return;
+            int lastSlot = batch.Slots - 1;
+            if (batch.DirtySlots.Count <= MaxSparseUploads)
+            {
+                for (int i = 0; i < batch.DirtySlots.Count; i++)
+                {
+                    int s = batch.DirtySlots[i];
+                    if (s > lastSlot) continue;
+                    gl.BufferSubData(BufferTargetARB.ArrayBuffer, (nint)(s * sf * sizeof(float)), (nuint)(sf * sizeof(float)), ptr + s * sf);
+                }
+            }
+            else
+            {
+                int lo = Math.Max(0, batch.DirtyMin);
+                int hi = Math.Min(lastSlot, batch.DirtyMax);
+                if (hi >= lo)
+                    gl.BufferSubData(BufferTargetARB.ArrayBuffer, (nint)(lo * sf * sizeof(float)), (nuint)((hi - lo + 1) * sf * sizeof(float)), ptr + lo * sf);
+            }
+            batch.ClearDirty();
+        }
     }
 
     static Texture2D ResolveCpuTexture(string key)
@@ -332,42 +437,6 @@ public static class PlanetGpuGrass
             s_gpuTex[cpuTex] = gpu;
         }
         gpu.Bind(TextureUnit.Texture0);
-    }
-
-    static void RebuildPackedIfNeeded(PlanetVegetationSystem owner)
-    {
-        if (!s_batchDirty && ReferenceEquals(s_batchOwner, owner))
-            return;
-        s_batchDirty = false;
-        s_batchOwner = owner;
-
-        // Batches persist across rebuilds so the packed arrays are reused instead
-        // of re-grown (that Array.Resize churn was steady GC pressure while walking).
-        for (int i = 0; i < s_batches.Count; i++)
-            s_batches[i].Count = 0;
-
-        foreach (var kv in s_patches)
-        {
-            if (!ReferenceEquals(kv.Key.Owner, owner)) continue;
-            var patch = kv.Value;
-            if (patch.BladeCount <= 0) continue;
-            string key = patch.TextureKey ?? "";
-            if (!s_batchByKey.TryGetValue(key, out var batch))
-            {
-                batch = new TexBatch { Key = key };
-                s_batchByKey[key] = batch;
-                s_batches.Add(batch);
-            }
-            int n = patch.BladeCount * FloatsPerInstance;
-            int start = batch.Count * FloatsPerInstance;
-            if (batch.Packed.Length < start + n)
-                Array.Resize(ref batch.Packed, Math.Max(start + n, Math.Max(64, batch.Packed.Length * 2)));
-            Array.Copy(patch.Blades, 0, batch.Packed, start, n);
-            batch.Count += patch.BladeCount;
-        }
-
-        for (int i = 0; i < s_batches.Count; i++)
-            s_batches[i].GpuDirty = true;
     }
 
     static Texture2D CreateSharedCard()
@@ -494,7 +563,8 @@ public static class PlanetGpuGrass
         {
             s_batches[i].Vbo = 0;
             s_batches[i].GpuFloats = 0;
-            s_batches[i].GpuDirty = true;
+            s_batches[i].FullUpload = true;
+            s_batches[i].ClearDirty();
         }
         foreach (var tex in s_gpuTex.Values)
         {

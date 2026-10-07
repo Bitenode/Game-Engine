@@ -69,6 +69,7 @@ namespace Game_Engine.Core.Input
         static readonly HashSet<MouseButton> sUpMouse = new HashSet<MouseButton>();
 
         static float sMouseDX, sMouseDY;   // accumulated within current frame
+        static float sMouseScrollY;
         static int sIgnoreMouseDelta;
         static float sMousePosX, sMousePosY; // absolute mouse position in viewport pixels
         static float sViewportW, sViewportH; // viewport size in the same space as mouse position
@@ -189,6 +190,7 @@ namespace Game_Engine.Core.Input
         {
             sMouseDX = 0f;
             sMouseDY = 0f;
+            sMouseScrollY = 0f;
         }
 
 
@@ -198,9 +200,10 @@ namespace Game_Engine.Core.Input
             sHardwareHeld.Clear();
             sHeldGamepad.Clear(); sDownGamepad.Clear(); sUpGamepad.Clear();
             sHeldMouse.Clear(); sDownMouse.Clear(); sUpMouse.Clear();
-            sMouseDX = sMouseDY = 0f;
+            sMouseDX = sMouseDY = sMouseScrollY = 0f;
             PlayViewportCaptureActive = false;
             WorldInputEnabled = true;
+            PointerLock = false;
             foreach (var kv in sAxes) kv.Value.Value = 0f;
         }
 
@@ -424,6 +427,11 @@ namespace Game_Engine.Core.Input
             sMouseDY += dy;
         }
 
+        public static void FeedMouseScroll(float dy)
+        {
+            sMouseScrollY += dy;
+        }
+
         // ------------ Queries: keys/mouse ------------
         public static bool GetKey(KeyCode key) { return sHeldKeys.Contains(key); }
         public static bool GetKeyDown(KeyCode key) { return sDownKeys.Contains(key); }
@@ -482,6 +490,9 @@ namespace Game_Engine.Core.Input
         {
             get { return new SN.Vector2(sMouseDX, sMouseDY); }
         }
+
+        /// <summary>Vertical wheel this frame. Positive = scroll up.</summary>
+        public static float MouseScrollY => sMouseScrollY;
 
         /// <summary>Current mouse position in viewport/window coordinates.</summary>
         public static SN.Vector2 MousePosition

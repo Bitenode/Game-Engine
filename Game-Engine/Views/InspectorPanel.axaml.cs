@@ -329,76 +329,10 @@ public partial class InspectorPanel : UserControl
     }
 
     static Type? TryResolveLoadedType(string fullName)
-    {
-        Type? best = null;
-
-        // Prefer types from a collectible ALC (built this session via the ScriptEditor)
-        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? t = null;
-            try { t = asm.GetType(fullName, throwOnError: false, ignoreCase: false); } catch { }
-            if (t == null) continue;
-
-            var alc = AssemblyLoadContext.GetLoadContext(asm);
-            if (alc?.IsCollectible == true)               // hot build
-                return t;
-
-            if (best == null) best = t;                   // keep a fallback
-        }
-
-        // Otherwise pick the newest persisted EditorScripts_*.dll
-        DateTime bestTime = DateTime.MinValue;
-        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            try
-            {
-                var t = asm.GetType(fullName, false, false);
-                if (t == null) continue;
-
-                var loc = asm.Location;
-                if (!string.IsNullOrWhiteSpace(loc) &&
-                    Path.GetFileName(loc).StartsWith("EditorScripts_", StringComparison.OrdinalIgnoreCase))
-                {
-                    var ts = File.GetLastWriteTimeUtc(loc);
-                    if (ts > bestTime) { best = t; bestTime = ts; }
-                }
-            }
-            catch { }
-        }
-
-        return best;
-    }
+        => ScriptTypeReload.TryResolveLatestType(fullName);
 
     static bool TryMigrateBehaviorToLatest(GameObject owner, ref Behavior b)
-    {
-        var fromType = b.GetType();
-        var latest = TryResolveLoadedType(fromType.FullName!);
-        if (latest == null || latest == fromType) return false;
-
-        Behavior? nb = null;
-        try { nb = (Behavior)Activator.CreateInstance(latest)!; }
-        catch { return false; }
-
-        // copy simple public props by name/type (best effort)
-        var srcProps = fromType.GetProperties(BindingFlags.Instance | BindingFlags.Public);
-        var dstProps = latest.GetProperties(BindingFlags.Instance | BindingFlags.Public)
-                             .ToDictionary(p => p.Name);
-
-        foreach (var sp in srcProps)
-        {
-            if (!sp.CanRead || sp.GetIndexParameters().Length != 0) continue;
-            if (!dstProps.TryGetValue(sp.Name, out var dp) || dp.SetMethod == null) continue;
-            if (!dp.PropertyType.IsAssignableFrom(sp.PropertyType)) continue;
-
-            try { dp.SetValue(nb, sp.GetValue(b)); } catch { }
-        }
-
-        // swap on the GameObject
-        owner.RemoveBehavior(b);
-        owner.AddBehavior(nb);
-        b = nb;
-        return true;
-    }
+        => ScriptTypeReload.TryMigrate(owner, ref b);
 
     void ShowInfo(string msg)
     {
@@ -457,7 +391,8 @@ public partial class InspectorPanel : UserControl
                 pdb = new MemoryStream(File.ReadAllBytes(pdbPath));
             }
 
-            s_persistedScriptsAlc.LoadFromStream(ms, pdb);  // <- no file lock
+            var loaded = s_persistedScriptsAlc.LoadFromStream(ms, pdb);  // <- no file lock
+            ScriptTypeReload.NoteCompiled(loaded);
             Game_Engine.Core.Log.Info($"Loaded editor script assembly (memory): {full}");
         }
         catch
@@ -472,8 +407,21 @@ public partial class InspectorPanel : UserControl
         s_triedLoadPersisted = true;
 
         foreach (var dir in EditorScriptDllFolders())
+        {
+            string? newest = null;
+            DateTime best = DateTime.MinValue;
             foreach (var dll in Directory.EnumerateFiles(dir, "EditorScripts_*.dll", SearchOption.TopDirectoryOnly))
-                TryLoadEditorDll(dll);
+            {
+                try
+                {
+                    var t = File.GetLastWriteTimeUtc(dll);
+                    if (t >= best) { best = t; newest = dll; }
+                }
+                catch { }
+            }
+            if (newest != null)
+                TryLoadEditorDll(newest);
+        }
     }
 
     // ---------- Undo snapshots (begin/commit) ----------

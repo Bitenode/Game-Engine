@@ -141,7 +141,9 @@ When Assimp metadata doesn't specify texture usage, the importer guesses from fi
 | `_opacity`, `_alpha`, `_trans` | Opacity |
 
 ### Material Saving
-Imported materials are saved as `.material` files next to the model in the project, enabling re-editing through the Inspector.
+Imported materials are saved as `.material` files next to the model in the project, enabling re-editing through the Inspector. If a `.material` file already exists but its texture list is empty, the importer **rewrites it in place** once matching maps are found (a second mesh with the same material name still gets a `_partIndex` suffix).
+
+**Pack albedo fallback:** when no `_Col` / `_Albedo` pattern matches, `MaterialUtil` searches the project for a texture whose filename equals the material name (common in animal asset packs).
 
 ---
 
@@ -177,9 +179,10 @@ The importer handles cross-format bone naming inconsistencies:
 When a model contains animations, each animation clip is extracted:
 
 1. **Clip discovery** — Assimp provides named animation clips with duration and keyframes
-2. **Channel extraction** — each bone's position, rotation, and scale keyframes are extracted
-3. **File saving** — clips are saved as `.boneanim` files alongside the model
-4. **Animator creation** — an `Animator` component is auto-created with states for each clip
+2. **Channel extraction** — the full FBX node tree is sampled (including `$AssimpFbx$` Translation / Rotation / Scaling pivot nodes), then folded into one local pose per skeleton bone
+3. **Loose clips** — additional FBX files beside the rig (`Animations/{Stem}_Idle.fbx`, `{Stem}_Walk.fbx`, etc. or sibling `../Animations/`) are imported onto the same skeleton and merged into the auto-Animator
+4. **File saving** — clips are saved as `.boneanim` files alongside the model
+5. **Animator creation** — an `Animator` component is auto-created with states for each clip (Idle / Walk / Run sorted first; default state prefers locomotion clips)
 
 ### .boneanim Format
 Each animation clip is stored as a separate file containing:
@@ -191,9 +194,11 @@ Each animation clip is stored as a separate file containing:
 When animations are detected during import:
 1. An `Animator` component is added to the root GameObject
 2. Each imported animation becomes an animation state
-3. The first animation is set as the default state
+3. **Idle**, **Walk**, or **Run** (in that order) becomes the default state when present; otherwise the first clip is used
 4. Transitions between states can be configured in the Animation panel
 5. `StateList` entries (name + `.boneanim` path) are written when the scene is saved
+
+**Skinning note:** `BonePose.IsSet` marks bones that were actually keyed in a clip. Unset bones keep their bind pose during playback — required for FBX rigs where translation and rotation live on separate pivot nodes.
 
 ### Shipped learning character — StarterCharacter
 `Standard Assets/Characters/StarterCharacter/` is a CC0 blocky skinned dummy with albedo atlas and four baked clips (**Idle**, **Walk**, **Run**, **Wave**).

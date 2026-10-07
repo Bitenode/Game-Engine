@@ -129,6 +129,7 @@ namespace Game_Engine.Core.Component
                 // Blend between original and IK solution
                 poses[midIdx].Position = SN.Vector3.Lerp(midPos, newMid, Weight);
                 poses[tipIdx].Position = SN.Vector3.Lerp(tipPos, newTip, Weight);
+                animator.MarkPoseChanged();
             }
         }
 

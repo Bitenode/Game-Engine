@@ -46,19 +46,19 @@ public sealed class BoneTrack
         if (Keyframes.Count == 1)
         {
             var k = Keyframes[0];
-            return new BonePose { Position = k.Position, Rotation = k.Rotation, Scale = k.Scale };
+            return new BonePose { Position = k.Position, Rotation = k.Rotation, Scale = k.Scale, IsSet = true };
         }
 
         // Clamp to range
         if (time <= Keyframes[0].Time)
         {
             var k = Keyframes[0];
-            return new BonePose { Position = k.Position, Rotation = k.Rotation, Scale = k.Scale };
+            return new BonePose { Position = k.Position, Rotation = k.Rotation, Scale = k.Scale, IsSet = true };
         }
         if (time >= Keyframes[^1].Time)
         {
             var k = Keyframes[^1];
-            return new BonePose { Position = k.Position, Rotation = k.Rotation, Scale = k.Scale };
+            return new BonePose { Position = k.Position, Rotation = k.Rotation, Scale = k.Scale, IsSet = true };
         }
 
         // Find surrounding keyframes
@@ -78,7 +78,8 @@ public sealed class BoneTrack
         {
             Position = SN.Vector3.Lerp(k0.Position, k1.Position, t),
             Rotation = SN.Quaternion.Slerp(k0.Rotation, k1.Rotation, t),
-            Scale = SN.Vector3.Lerp(k0.Scale, k1.Scale, t)
+            Scale = SN.Vector3.Lerp(k0.Scale, k1.Scale, t),
+            IsSet = true
         };
     }
 }
@@ -116,15 +117,22 @@ public sealed class BoneAnimationClip
     public BonePose[] SampleAllBones(int boneCount, float time)
     {
         var poses = new BonePose[boneCount];
-        for (int i = 0; i < boneCount; i++)
+        SampleAllBonesInto(poses, boneCount, time);
+        return poses;
+    }
+
+    /// <summary>Same as <see cref="SampleAllBones"/> into a caller-owned array, for per-frame playback.</summary>
+    public void SampleAllBonesInto(BonePose[] poses, int boneCount, float time)
+    {
+        int n = Math.Min(boneCount, poses.Length);
+        for (int i = 0; i < n; i++)
             poses[i] = BonePose.Identity;
 
         foreach (var track in Tracks)
         {
-            if (track.BoneIndex >= 0 && track.BoneIndex < boneCount)
+            if (track.BoneIndex >= 0 && track.BoneIndex < n)
                 poses[track.BoneIndex] = track.Sample(time);
         }
-        return poses;
     }
 
     /// <summary>Invalidate the indexed track cache (call after modifying Tracks list).</summary>

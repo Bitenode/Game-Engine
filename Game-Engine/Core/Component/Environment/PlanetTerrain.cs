@@ -23,6 +23,10 @@ public sealed class PlanetTerrain : Behavior
 {
     public static readonly List<PlanetTerrain> ActivePlanets = new();
 
+    /// <summary>Last fauna table compiled from the biome graph. Null until a graph has been applied.</summary>
+    Biome.Graph.FaunaLayerRecipe[]? _compiledFaunaLayers;
+    public Biome.Graph.FaunaLayerRecipe[]? CompiledFaunaLayers => _compiledFaunaLayers;
+
     static bool _registeredPlanetNetRpcs;
 
     /// <summary>Called when <see cref="NetworkManager.Stop"/> tears down networking so RPC registration can run again on the next host.</summary>
@@ -846,6 +850,47 @@ public sealed class PlanetTerrain : Behavior
         if (crustLocal < 1f)
             crustLocal = Radius;
         return crustLocal * worldScale;
+    }
+
+    /// <summary>
+    /// Cubemap height plus digs, without the visible shell. Dig tests use this
+    /// so a natural hill, where the shell sits off the cubemap, is not a pit.
+    /// </summary>
+    public float SampleEditedCubemapWorldRadius(SN.Vector3 sphereDir)
+    {
+        float worldScale = GetWorldRadiusScale();
+        if (sphereDir.LengthSquared() < 1e-12f)
+            sphereDir = SN.Vector3.UnitY;
+        else
+            sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        if (_surfaceCubemap != null && _surfaceCubemap.HasBaseHeights && _config != null)
+        {
+            float local = MathF.Max(1f, _surfaceCubemap.SampleEditedSurfaceRadius(_config.Radius, sphereDir));
+            return local * worldScale;
+        }
+
+        return SampleUndugStandWorldRadius(sphereDir);
+    }
+
+    /// <summary>
+    /// True when the visible chunk here has a water patch (or no mesh yet). Lets bulk
+    /// placement skip the river/lake noise on dry chunks.
+    /// </summary>
+    public bool HasWaterChunkAt(SN.Vector3 sphereDir)
+        => _chunkManager?.HasWaterMeshAt(sphereDir) ?? true;
+
+    /// <summary>
+    /// Biome indices/weights the visible chunk was shaded with at <paramref name="sphereDir"/>
+    /// (indices are <see cref="BiomeDefinition.BiomeIndex"/>). False while that chunk has no mesh.
+    /// </summary>
+    public bool TrySampleSurfaceBiomeBlend(SN.Vector3 sphereDir, out SN.Vector4 indices, out SN.Vector4 weights)
+    {
+        if (_chunkManager != null)
+            return _chunkManager.TrySampleBiomeBlend(sphereDir, out indices, out weights);
+        indices = default;
+        weights = default;
+        return false;
     }
 
     /// <summary>
@@ -2389,6 +2434,10 @@ public sealed class PlanetTerrain : Behavior
                 biome.TreeDensity = Math.Max(0f, layer.TreeDensity);
                 biome.VegetationProfileId = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
                 biome.VegetationPatchiness = Math.Clamp(layer.VegetationPatchiness, 0f, 1f);
+                if (layer.GrassMinScale > 0f)
+                    biome.GrassMinScale = Math.Clamp(layer.GrassMinScale, 0.05f, 8f);
+                if (layer.GrassMaxScale > 0f)
+                    biome.GrassMaxScale = Math.Clamp(layer.GrassMaxScale, biome.GrassMinScale, 8f);
                 biome.WeatherProfileId = string.IsNullOrWhiteSpace(layer.WeatherProfileId) ? "Temperate" : layer.WeatherProfileId;
                 biome.RainChance = Math.Clamp(layer.RainChance, 0f, 1f);
                 biome.SnowChance = Math.Clamp(layer.SnowChance, 0f, 1f);
@@ -2463,8 +2512,8 @@ public sealed class PlanetTerrain : Behavior
         flora?.ApplyRecipes(result.FloraLayers);
         var scatter = GetComponent<PlanetScatterRenderer>();
         scatter?.ApplyRecipes(result.ScatterLayers);
-        var fauna = GetComponent<PlanetFaunaTableBehavior>();
-        fauna?.Bind(result.FaunaLayers);
+        _compiledFaunaLayers = result.FaunaLayers ?? Array.Empty<Biome.Graph.FaunaLayerRecipe>();
+        BindAttachedFauna();
         var life = GetComponent<PlanetLifeStreaming>();
         life?.BindRecipe(result.Recipe);
 
@@ -2475,6 +2524,28 @@ public sealed class PlanetTerrain : Behavior
         if (!SceneService.DeferPlanetVegetationImport)
             SavePlanetAsset();
         SceneService.NotifyChanged();
+    }
+
+    /// <summary>
+    /// Push the compiled fauna table onto the behavior already on this planet.
+    /// Extra copies are removed. A missing behavior is left missing so scene load
+    /// can restore the saved one and have it pull <see cref="CompiledFaunaLayers"/>.
+    /// </summary>
+    void BindAttachedFauna()
+    {
+        if (gameObject == null) return;
+        var behaviors = gameObject.Behaviors;
+        PlanetFaunaTableBehavior? kept = null;
+        var extras = new List<PlanetFaunaTableBehavior>();
+        for (int i = 0; i < behaviors.Count; i++)
+        {
+            if (behaviors[i] is not PlanetFaunaTableBehavior fauna) continue;
+            if (kept == null) kept = fauna;
+            else extras.Add(fauna);
+        }
+        for (int i = 0; i < extras.Count; i++)
+            gameObject.RemoveBehavior(extras[i]);
+        kept?.Bind(_compiledFaunaLayers);
     }
 
     static BiomeDefinition CloneBiomeDefinition(BiomeDefinition src) => new()
@@ -2508,6 +2579,8 @@ public sealed class PlanetTerrain : Behavior
         TreeDensity = src.TreeDensity,
         VegetationProfileId = src.VegetationProfileId,
         VegetationPatchiness = src.VegetationPatchiness,
+        GrassMinScale = src.GrassMinScale,
+        GrassMaxScale = src.GrassMaxScale,
         WeatherProfileId = src.WeatherProfileId,
         GrowthTemperatureMin = src.GrowthTemperatureMin,
         GrowthTemperatureMax = src.GrowthTemperatureMax,

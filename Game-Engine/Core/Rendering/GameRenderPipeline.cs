@@ -70,6 +70,9 @@ public static class GameRenderPipeline
             SceneRenderer.RenderPlanetVegetationAfterTerrain(g, res.Standard, res.Cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
                 shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor);
+            SceneRenderer.RenderForwardSceneOpaques(g, res.Standard, res.Cache, view, proj, camPos,
+                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor);
         }
 
         if (res.Water != null)

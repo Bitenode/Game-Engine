@@ -13,6 +13,9 @@ namespace Game_Engine.Core.Component
     /// <summary>Built-in particle presets.</summary>
     public enum ParticlePreset { Custom, Fire, Smoke, Sparks, Rain, Snow, Dust }
 
+    /// <summary>How each particle quad is drawn. Rain and snow stay streaks. Fire uses a flame.</summary>
+    public enum ParticleLook { Billboard, Streak, Flame }
+
     /// <summary>
     /// GPU-friendly particle emitter component.
     /// Spawns billboard particles with configurable emission, lifetime, physics, and color.
@@ -50,6 +53,8 @@ namespace Game_Engine.Core.Component
         /// <summary>When true, quads stretch along velocity (rain streaks) instead of circular camera billboards.</summary>
         [Persist] public bool StretchAlongVelocity { get; set; } = false;
         [Persist] public float StretchLength { get; set; } = 0.8f;
+        /// <summary>Billboard is a soft circle. Streak is rain. Flame is a teardrop rising from the particle.</summary>
+        [Persist] public ParticleLook Look { get; set; } = ParticleLook.Billboard;
 
         // ── Color (start → end gradient) ──
         [Persist] public SN.Vector4 StartColor { get; set; } = new SN.Vector4(1f, 0.8f, 0.2f, 1f);
@@ -370,10 +375,11 @@ namespace Game_Engine.Core.Component
                     float angle = ConeAngle * MathF.PI / 180f;
                     float theta = (float)_rng.NextDouble() * MathF.Tau;
                     float phi = (float)_rng.NextDouble() * angle;
-                    dir = new SN.Vector3(
+                    var cone = new SN.Vector3(
                         MathF.Sin(phi) * MathF.Cos(theta),
                         MathF.Cos(phi),
                         MathF.Sin(phi) * MathF.Sin(theta));
+                    dir = AimFromUp(cone, SafeNormalize(EmissionDirection, SN.Vector3.UnitY));
                     break;
                 case EmitterShape.Box:
                     var localBox = new SN.Vector3(
@@ -421,15 +427,18 @@ namespace Game_Engine.Core.Component
         {
             StretchAlongVelocity = false;
             StretchLength = 0.8f;
+            Look = ParticleLook.Billboard;
             switch (preset)
             {
                 case ParticlePreset.Fire:
-                    EmissionRate = 40f; Lifetime = 1.5f; StartSpeed = 1.5f; SpeedVariation = 0.3f;
-                    StartSize = 0.4f; EndSize = 0.05f; GravityMultiplier = -0.3f; Drag = 0.1f;
-                    StartColor = new SN.Vector4(1f, 0.6f, 0.1f, 1f);
-                    EndColor = new SN.Vector4(0.8f, 0.1f, 0.0f, 0f);
-                    Shape = EmitterShape.Cone; ConeAngle = 15f; ShapeRadius = 0.2f;
-                    SubEmitterEnabled = true; SubEmitterCount = 2; SubEmitterSpeed = 0.5f; SubEmitterLifetime = 0.3f;
+                    EmissionRate = 40f; Lifetime = 0.85f; StartSpeed = 0.7f; SpeedVariation = 0.25f;
+                    StartSize = 0.55f; EndSize = 0.2f; GravityMultiplier = -0.12f; Drag = 0.2f;
+                    StartColor = new SN.Vector4(1f, 0.55f, 0.08f, 0.95f);
+                    EndColor = new SN.Vector4(0.75f, 0.08f, 0.0f, 0.35f);
+                    Shape = EmitterShape.Cone; ConeAngle = 14f; ShapeRadius = 0.22f;
+                    Look = ParticleLook.Flame;
+                    StretchAlongVelocity = false;
+                    SubEmitterEnabled = false;
                     break;
                 case ParticlePreset.Smoke:
                     EmissionRate = 15f; Lifetime = 4f; StartSpeed = 0.8f; SpeedVariation = 0.2f;
@@ -559,6 +568,17 @@ namespace Game_Engine.Core.Component
                 var down = nearestCenter - worldPos;
                 _cachedGravityDir = SafeNormalize(down, -SN.Vector3.UnitY);
             }
+        }
+
+        /// <summary>Map a cone built around +Y onto <paramref name="up"/>.</summary>
+        static SN.Vector3 AimFromUp(SN.Vector3 local, SN.Vector3 up)
+        {
+            float d = SN.Vector3.Dot(SN.Vector3.UnitY, up);
+            if (d > 0.9999f) return local;
+            if (d < -0.9999f) return new SN.Vector3(local.X, -local.Y, local.Z);
+            var axis = SN.Vector3.Normalize(SN.Vector3.Cross(SN.Vector3.UnitY, up));
+            float ang = MathF.Acos(Math.Clamp(d, -1f, 1f));
+            return SN.Vector3.Transform(local, SN.Quaternion.CreateFromAxisAngle(axis, ang));
         }
 
         private static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)

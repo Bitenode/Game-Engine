@@ -80,7 +80,8 @@ Game-Engine/
 │   │   │   ├── PlanetLifeStreaming.cs # Face/UV cell keys + fauna/vein recipe bind
 │   │   │   ├── PlanetFloraSpawner.cs # Unique imported-mesh cap for trees
 │   │   │   ├── PlanetScatterRenderer.cs # Instanced rock/grass buffer hook
-│   │   │   ├── PlanetFaunaTableBehavior.cs # Compiled fauna tables (AI later)
+│   │   │   ├── PlanetFaunaTableBehavior.cs # Biome-graph fauna spawn + herd locomotion
+│   │   │   ├── VegetationClearZone.cs # Clear grass/trees around props and buildings
 │   │   │   ├── Tree.cs          # Procedural/imported trees with wind
 │   │   │   ├── TreeLOD.cs       # Tree level-of-detail management
 │   │   │   ├── VegetationPainter.cs # GPU-instanced vegetation
@@ -354,7 +355,8 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `ProjectService` | Project lifecycle — create, open, close projects; manages `project.json` manifest, folder structure, asset paths, timestamps |
 | `SelectionService` | Tracks currently selected GameObjects with **multi-select** support (`Selected` list, `Current` primary, `Set/Add/Remove/Toggle/Clear` methods) |
 | `UndoService` | Command-pattern undo/redo with dual stacks; `ICmd` interface with `Do()`/`Undo()`; `PropertyChangeCmd` for property edits |
-| `Input` | Frame-based input: axes/actions, keyboard, mouse, `IInputBackend` pads (XInput + GameInput session + SDL2), rumble, `PointerLock`, remapping UI, `input.bindings.json` |
+| `Input` | Frame-based input: axes/actions, keyboard, mouse (`MouseScrollY`), `IInputBackend` pads (XInput + GameInput session + SDL2), rumble, `PointerLock`, remapping UI, `input.bindings.json` |
+| `ScriptTypeReload` | Maps scene `Behavior` instances to the newest `EditorScripts_*.dll` after compile and on Play |
 | `CameraService` | Tracks active cameras in the scene |
 | `ExtensionService` | Discovers, loads, and hot-reloads editor extensions from compiled assemblies using collectible `AssemblyLoadContext` |
 | `CommandRegistry` | Central command registration and invocation system for menus and shortcuts |

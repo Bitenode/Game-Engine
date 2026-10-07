@@ -543,6 +543,32 @@ public sealed class QuadNode
         return true;
     }
 
+    /// <summary>Biome indices/weights baked into the shell vertex nearest <paramref name="sphereDir"/>.</summary>
+    public bool TrySampleBiomeBlend(SN.Vector3 sphereDir, int gridN, out SN.Vector4 indices, out SN.Vector4 weights)
+    {
+        indices = default;
+        weights = default;
+        var mesh = GeneratedMesh;
+        var idx = mesh?.PlanetBlendIndices;
+        var wt = mesh?.PlanetBlendWeights;
+        if (idx == null || wt == null || gridN < 2 || idx.Length < gridN * gridN || wt.Length < gridN * gridN)
+            return false;
+        if (sphereDir.LengthSquared() < 1e-12f)
+            return false;
+
+        var (face, u, v) = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(sphereDir));
+        if (face != Face)
+            return false;
+        float tu = Math.Clamp((u - U0) / MathF.Max(1e-6f, U1 - U0), 0f, 1f);
+        float tv = Math.Clamp((v - V0) / MathF.Max(1e-6f, V1 - V0), 0f, 1f);
+        int ix = Math.Clamp((int)MathF.Round(tu * (gridN - 1)), 0, gridN - 1);
+        int iy = Math.Clamp((int)MathF.Round(tv * (gridN - 1)), 0, gridN - 1);
+        int i = iy * gridN + ix;
+        indices = idx[i];
+        weights = wt[i];
+        return true;
+    }
+
     public bool TrySampleStandLocalRadius(SN.Vector3 sphereDir, out float localR)
     {
         localR = 0f;

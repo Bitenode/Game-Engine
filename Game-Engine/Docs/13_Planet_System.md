@@ -89,7 +89,9 @@ Core goals:
 | `RaycastDensity(...)` / `Spherecast(...)` | Height-cubemap march first (`RaycastHeightfield`); density/cave march only when clearly underground |
 | `Raycast(...)` / `RaycastPaintSurface(...)` | Same heightfield-first pick used by Scene View brushes and **PlanetTool** (Game View screen ray) |
 | `DigSphere` / `BuildSphere` | Near surface → height deltas; underground → cave-band occupancy edits |
-| `SampleStandWorldRadius` / fast player stand | Height cubemap + dig deltas; when a fresh leaf shell mesh exists, prefers that visible radius so drawn peaks have matching stand contact (no per-tick river carve) |
+| `SampleStandWorldRadius` / fast player stand | Height cubemap + dig deltas; when a leaf shell mesh exists (including stale meshes waiting on rebuild), prefers that visible radius so drawn peaks have matching stand contact and LOD swaps do not lift the body off hills |
+| `HasWaterMeshAt(dir)` | True when the visible chunk under `dir` generated a water patch (unknown = wet) |
+| `TrySampleBiomeBlend(dir)` | Biome indices/weights from the visible chunk shell vertex nearest `dir` |
 
 ### Dig edits and `.planetvox`
 
@@ -221,7 +223,39 @@ Runtime companions (optional on the planet GameObject):
 
 `PlanetVegetationSystem` keeps streaming plants; `UseUniversalLandVegetation` defaults to **false** so per-biome `VegetationProfileId` matters. It honors `VegetationPatchiness`, growth temperature/moisture, and tree slope/altitude reject.
 
-On `ApplyGraphResult`, `PlanetTerrain` binds compiled tables onto companions when they exist: `PlanetFloraSpawner.ApplyRecipes`, `PlanetScatterRenderer.ApplyRecipes`, `PlanetFaunaTableBehavior.Bind`, and `PlanetLifeStreaming.BindRecipe`. Atmosphere / CloudLayer recipes push onto `PlanetAtmosphere` when present.
+On `ApplyGraphResult`, `PlanetTerrain` binds compiled tables onto companions when they exist: `PlanetFloraSpawner.ApplyRecipes`, `PlanetScatterRenderer.ApplyRecipes`, `PlanetFaunaTableBehavior.Bind`, and `PlanetLifeStreaming.BindRecipe`. If the graph defines **FaunaLayer** recipes but no `PlanetFaunaTableBehavior` is attached yet, one is **auto-added** to the planet root. Atmosphere / CloudLayer recipes push onto `PlanetAtmosphere` when present.
+
+### Fauna runtime (`PlanetFaunaTableBehavior`)
+
+When play mode is active and the biome graph compiled fauna layers, `PlanetFaunaTableBehavior` spawns skinned animals around the player:
+
+- **Species resolution** — `SpeciesId` maps to `Assets/Animals/Models/{Species}_Rig.fbx` (with fallbacks under `Assets/Animals/`). Loose clips beside the rig (`Animations/{Species}_Idle.fbx`, `_Walk.fbx`, etc.) are picked up by `ModelImporter` and wired into the auto-created `Animator`.
+- **Placement** — uses the same heightfield vs sea-level and biome dominance tests as vegetation (not world-position altitude blend). Spots are picked in a ring around the player / camera anchor on the stand surface.
+- **Locomotion** — idle / walk / graze states with `StandRadiusGrid`-aligned grounding; feet are planted from mesh bounds so rigs sit on slopes instead of floating at the bone pivot.
+- **Scaling** — species-specific body scale (e.g. deer larger than rabbits) after the importer's unit-sphere normalization.
+- **Duplicate guard** — if graph apply adds a second copy on the same planet, the earliest component wins.
+
+### Vegetation clear zones (`VegetationClearZone`)
+
+Attach to campfires, buildings, or placed props to keep grass and streamed trees out of a configurable radius:
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `Radius` | `3` | World-space clear radius (0.25–100 m) along the ground from this object's origin |
+
+`PlanetVegetationSystem` tracks active zones via `VegetationClearZone.Active` and skips spawning inside each disc. Existing vegetation inside a zone is removed when the zone is enabled or resized (`Version` bump).
+
+### Flora grass scale (Biome Graph)
+
+`FloraLayer` nodes expose **Grass Min Scale** and **Grass Max Scale** (0 = keep biome preset). Compile writes `GrassMinScale` / `GrassMaxScale` onto target biome layers; `PlanetVegetationSystem` and GPU grass use them for clump height variation.
+
+### GPU grass (`PlanetGpuGrass`)
+
+Planet grass is drawn as GPU instances (one cross-card mesh, batched by texture + blades-per-patch):
+
+- **Fixed slots** — each patch owns a slot in its batch; add/remove/re-seat rewrites only that slot (sparse GPU upload when ≤32 slots change, otherwise one range upload)
+- **Single-card LOD** — distant patches can draw only the first quad of the cross card (`singleCard`) to cut overdraw
+- **Clear zones** — patches inside a `VegetationClearZone` are not submitted
 
 Built-in vegetation profiles: `Default`, `Universal`, `Forest`, `Grassland`, `Desert`, `Alpine`, `Tundra`, `Volcanic`, `Ocean` (with `TreeItems` / `BushItems` / `RockItems` stubs).
 
@@ -548,7 +582,7 @@ Additional runtime state:
 - Builds move axes from a tangent basis derived from `LocalUp`
 - Applies acceleration and drag in tangent space on planets
 - Jumps along `LocalUp` (not always world +Y)
-- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` (capsule height + step-up + ground snap). On the outer crust, **surface mode** stands on `SampleStandWorldRadius` (height cubemap + dig deltas). **`ResolveDigWallCapsule`** clears steep dig walls and crater rims by lateral push using **`HeightfieldGap`** (world-point vs stand radius). **`ResolveHeightfieldEyeClearance`** applies the same heightfield tests to the first-person eye. **`InvalidateCollisionCache()`** clears the stand-radius cache after sculpt strokes
+- **Density grounding:** after tangent move, `ResolveDensityPenetration` then a short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` (capsule height + step-up + ground snap). On the outer crust, **surface mode** stands on `SampleStandWorldRadius` (height cubemap + dig deltas). **Stand easing** — when chunk LOD swaps or an unstitched seam moves the shell underfoot, `EaseStandHeight` folds the jump into a decaying radial offset instead of snapping every frame. **Smooth hills** are fitted with a local gradient — only samples that stick up above the fitted slope are pushed, so natural uphill terrain does not trigger dig-wall hops. **Dig depression** uses edited cubemap height vs undug baseline (valley shell below the cubemap is treated as terrain, not a pit). **`ResolveDigWallCapsule`** still clears steep dig walls and crater rims by lateral push using **`HeightfieldGap`**. **`ResolveHeightfieldEyeClearance`** applies the same heightfield tests to the first-person eye. **`InvalidateCollisionCache()`** clears the stand-radius cache after sculpt strokes
 - **Planet swimming:** `TryGetWaterColumn` on the body starts `SwimOnPlanet()` instead of crust walking. Surface float (chest on the table, head/camera dry), WASD tangent, **Space** up, **Ctrl** dive. Releasing Ctrl hovers; look-down + W does not dive. `IsPlanetSwimming` / `IsPlanetSubmerged` / `PlanetSubmergeDepth` expose the mode. `Rigidbody` keeps underwater state only while actually submerged
 - Avoids pole-specific movement mode switching to prevent axis flips/discontinuities
 - Smooths camera up-vector transitions to reduce horizon jitter

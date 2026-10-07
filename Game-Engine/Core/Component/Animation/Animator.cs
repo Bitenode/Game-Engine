@@ -286,7 +286,31 @@ namespace Game_Engine.Core.Component
         }
 
         /// <summary>Current bone poses (sampled each frame for skeletal animation). Null if no bone clip.</summary>
-        public BonePose[]? CurrentBonePose { get; set; }
+        public BonePose[]? CurrentBonePose
+        {
+            get => _currentBonePose;
+            set
+            {
+                if (value == null && _currentBonePose == null) return;
+                _currentBonePose = value;
+                PoseVersion++;
+            }
+        }
+        BonePose[]? _currentBonePose;
+
+        /// <summary>
+        /// Bumped whenever the pose changes. Skinned renderers re-solve bone matrices only
+        /// when this moves. Call <see cref="MarkPoseChanged"/> after editing poses in place.
+        /// </summary>
+        public int PoseVersion { get; private set; }
+
+        public void MarkPoseChanged() => PoseVersion++;
+
+        BonePose[]? _poseBuffer;
+        BonePose[]? _nextPoseBuffer;
+        BoneAnimationClip? _boneCountClip;
+        int _boneCountTracks = -1;
+        int _boneCountCached;
 
         /// <summary>Bone clip on the current state, if any.</summary>
         public BoneAnimationClip? CurrentBoneClip
@@ -471,23 +495,41 @@ namespace Game_Engine.Core.Component
             if (boneClip == null) return;
 
             // Get bone count from the clip tracks (max bone index + 1)
-            int boneCount = 0;
-            foreach (var track in boneClip.Tracks)
-                if (track.BoneIndex >= boneCount) boneCount = track.BoneIndex + 1;
+            int boneCount = TrackBoneCount(boneClip);
             if (boneCount == 0) return;
 
-            // Sample current state
-            var poses = boneClip.SampleAllBones(boneCount, _stateTime);
+            // Reuse the pose arrays. A fresh array per sample (two while blending) was
+            // steady garbage for every animated rig, every frame.
+            if (_poseBuffer == null || _poseBuffer.Length != boneCount)
+                _poseBuffer = new BonePose[boneCount];
+            var poses = _poseBuffer;
+            boneClip.SampleAllBonesInto(poses, boneCount, _stateTime);
 
             // Blend with next state if transitioning
             if (_isBlending && _nextState?.BoneClip != null)
             {
-                var nextPoses = _nextState.BoneClip.SampleAllBones(boneCount, _stateTime * _nextState.Speed);
-                for (int i = 0; i < boneCount && i < nextPoses.Length; i++)
+                if (_nextPoseBuffer == null || _nextPoseBuffer.Length != boneCount)
+                    _nextPoseBuffer = new BonePose[boneCount];
+                var nextPoses = _nextPoseBuffer;
+                _nextState.BoneClip.SampleAllBonesInto(nextPoses, boneCount, _stateTime * _nextState.Speed);
+                for (int i = 0; i < boneCount; i++)
                     poses[i] = BonePose.Lerp(poses[i], nextPoses[i], _blendFactor);
             }
 
             CurrentBonePose = poses;
+        }
+
+        int TrackBoneCount(BoneAnimationClip clip)
+        {
+            if (ReferenceEquals(clip, _boneCountClip) && clip.Tracks.Count == _boneCountTracks)
+                return _boneCountCached;
+            int boneCount = 0;
+            foreach (var track in clip.Tracks)
+                if (track.BoneIndex >= boneCount) boneCount = track.BoneIndex + 1;
+            _boneCountClip = clip;
+            _boneCountTracks = clip.Tracks.Count;
+            _boneCountCached = boneCount;
+            return boneCount;
         }
 
         /// <summary>Fire animation events that were crossed between prevTime and currentTime.</summary>

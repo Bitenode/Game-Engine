@@ -166,8 +166,8 @@ namespace Game_Engine.Views
         SN.Vector3 _lastPlanetLodCamPos = new(float.NaN);
 
         // Shadow throttling: render shadow map less frequently and reuse cached map.
-        const double SHADOW_UPDATE_INTERVAL_SEC = 0.10; // 10 Hz
-        const float SHADOW_UPDATE_MOVE_THRESHOLD = 1.5f;
+        const double SHADOW_UPDATE_INTERVAL_SEC = 0.35;
+        const float SHADOW_UPDATE_MOVE_THRESHOLD = 6f;
         double _shadowAccumSec;
         SN.Vector3 _lastShadowCamPos = new(float.NaN);
         bool _hasShadowMap;
@@ -255,6 +255,7 @@ namespace Game_Engine.Views
             AddHandler(Avalonia.Input.InputElement.PointerPressedEvent, OnPointerPressed, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(Avalonia.Input.InputElement.PointerReleasedEvent, OnPointerReleased, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(Avalonia.Input.InputElement.PointerMovedEvent, OnPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            AddHandler(Avalonia.Input.InputElement.PointerWheelChangedEvent, OnPointerWheel, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(Control.ContextRequestedEvent, OnPlayContextRequested, RoutingStrategies.Tunnel);
 
             RebuildSceneCaches();
@@ -690,17 +691,17 @@ namespace Game_Engine.Views
                 float sceneRadius = 50f;
 
                 _shadowAccumSec += Math.Max(0.0, dt);
-                bool updateShadow = _shadowAccumSec >= SHADOW_UPDATE_INTERVAL_SEC || !_hasShadowMap;
+                // A slow frame is already longer than the old 0.1s budget, so the
+                // shadow pass was running every frame and redrawing the whole planet.
+                bool movedFar = false;
                 if (!float.IsNaN(_lastShadowCamPos.X))
                 {
                     var d = camPos - _lastShadowCamPos;
-                    if (d.LengthSquared() >= SHADOW_UPDATE_MOVE_THRESHOLD * SHADOW_UPDATE_MOVE_THRESHOLD)
-                        updateShadow = true;
+                    movedFar = d.LengthSquared() >= SHADOW_UPDATE_MOVE_THRESHOLD * SHADOW_UPDATE_MOVE_THRESHOLD;
                 }
-                else
-                {
-                    updateShadow = true;
-                }
+                bool updateShadow = !_hasShadowMap
+                    || (movedFar && _shadowAccumSec >= SHADOW_UPDATE_INTERVAL_SEC)
+                    || _shadowAccumSec >= 0.55;
 
                 if (updateShadow)
                 {
@@ -1349,14 +1350,15 @@ namespace Game_Engine.Views
 
         bool IsCursorOverGameView() => IsPointerOver && Bounds.Width > 0 && Bounds.Height > 0;
 
-        void RecenterPlayPointer()
+        float PlayUiScale() => (float)(TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0);
+
+        void FeedPlayUiPointer(float dipX, float dipY)
         {
-            if (Bounds.Width <= 0 || Bounds.Height <= 0) return;
-            var mid = new Point(Bounds.Width * 0.5, Bounds.Height * 0.5);
-            var screen = this.PointToScreen(mid);
-            Input.WarpCursorScreen((int)screen.X, (int)screen.Y);
-            _lastMouse = new SN.Vector2((float)mid.X, (float)mid.Y);
-            _hasLastMouse = true;
+            float s = PlayUiScale();
+            Input.FeedMousePosition(dipX * s, dipY * s);
+            Input.FeedViewportSize(
+                Math.Max(1f, (float)Bounds.Width * s),
+                Math.Max(1f, (float)Bounds.Height * s));
         }
 
         void FeedPlayPointerButtons(PointerPoint pt)
@@ -1419,8 +1421,7 @@ namespace Game_Engine.Views
             Focus();
             var pt = e.GetCurrentPoint(this);
             var pos = e.GetPosition(this);
-            Input.FeedMousePosition((float)pos.X, (float)pos.Y);
-            Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
+            FeedPlayUiPointer((float)pos.X, (float)pos.Y);
             _lastMouse = new SN.Vector2((float)pos.X, (float)pos.Y);
             _hasLastMouse = true;
             FeedPlayPointerButtons(pt);
@@ -1430,11 +1431,6 @@ namespace Game_Engine.Views
             e.Pointer.Capture(this);
             _capturedPointer = e.Pointer;
             Input.PlayViewportCaptureActive = true;
-            if (Input.PointerLock)
-            {
-                Cursor = new Cursor(StandardCursorType.None);
-                RecenterPlayPointer();
-            }
         }
 
         void OnPointerReleased(object? s, PointerReleasedEventArgs e)
@@ -1461,13 +1457,17 @@ namespace Game_Engine.Views
                 Input.FeedMouseDelta(cur.X - _lastMouse.X, cur.Y - _lastMouse.Y);
             _lastMouse = cur;
             _hasLastMouse = true;
-            Input.FeedMousePosition(cur.X, cur.Y);
+            FeedPlayUiPointer(cur.X, cur.Y);
 
             var pt = e.GetCurrentPoint(this);
             FeedPlayPointerButtons(pt);
             TryPlayPlanetSculpt(pt);
-            if (Input.PointerLock)
-                RecenterPlayPointer();
+        }
+
+        void OnPointerWheel(object? s, PointerWheelEventArgs e)
+        {
+            if (State != GamePanel.GameState.Playing) return;
+            Input.FeedMouseScroll((float)e.Delta.Y);
         }
         #endregion
 
@@ -1496,6 +1496,15 @@ namespace Game_Engine.Views
             {
                 case GamePanel.GameState.Playing:
                     SceneService.PlayMode = true;
+                    ScriptTypeReload.EnsureLatestLoaded();
+                    if (!_awakened || ScriptTypeReload.NeedsFreshPlay)
+                    {
+                        ScriptTypeReload.RematerializeScene();
+                        ScriptTypeReload.NeedsFreshPlay = false;
+                        DiscardPlaySnapshot();
+                        _awakened = false;
+                        _started = false;
+                    }
                     EnsurePlaySnapshot();
                     PlanetPlayerSpawner.EnsurePlayModeControllers();
                     EnsureAwakeStart();
@@ -1544,6 +1553,7 @@ namespace Game_Engine.Views
                     }
 
                     SceneRenderer.ResetBiomeTexDebug();
+                    ScriptTypeReload.NeedsFreshPlay = true;
                     _awakened = _started = false; _collidersWarm = false; _needsWarm = true;
                     if (_capturedPointer != null) { try { _capturedPointer.Capture(null); } catch { } _capturedPointer = null; }
                     _mouseLook = false; _hasLastMouse = false;
@@ -1553,6 +1563,15 @@ namespace Game_Engine.Views
             }
             _renderInFlight = false; // Reset gate so first frame renders immediately
             RequestNextFrameRendering();
+        }
+
+        void DiscardPlaySnapshot()
+        {
+            if (_playSnapshotPath == null) return;
+            try { System.IO.File.Delete(_playSnapshotPath); } catch { }
+            _playSnapshotPath = null;
+            _scenePathBeforePlay = null;
+            _snapshotMaterialTextures = null;
         }
 
         void EnsurePlaySnapshot()
@@ -1772,15 +1791,14 @@ namespace Game_Engine.Views
                 Input.PollPlayMouseButtons(pollMouse);
             }
 
-            // Feed viewport size in DIP space (matches MousePosition coordinate space)
-            Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
+            // UI overlay is drawn in framebuffer pixels. Mouse / hit-tests must use that space.
+            float uiScale = PlayUiScale();
+            float uiW = Math.Max(1f, (float)Bounds.Width * uiScale);
+            float uiH = Math.Max(1f, (float)Bounds.Height * uiScale);
+            Input.FeedViewportSize(uiW, uiH);
 
             // Process UI events before game scripts so scripts can query UI state.
-            {
-                int vpW = Math.Max(1, (int)Bounds.Width);
-                int vpH = Math.Max(1, (int)Bounds.Height);
-                Core.Rendering.UI.UIEventSystem.ProcessEvents(vpW, vpH);
-            }
+            Core.Rendering.UI.UIEventSystem.ProcessEvents(uiW, uiH);
 
             if (NetworkManager.IsActive)
                 NetworkManager.Update();

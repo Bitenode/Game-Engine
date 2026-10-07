@@ -986,6 +986,8 @@ public partial class ScriptEditorWindow : Window
             ExtensionDiagnostics.RecordCompileReload(true, msg);
 
             ExtensionService.RefreshForCurrentProject();
+            ScriptTypeReload.NeedsFreshPlay = true;
+            ScriptTypeReload.MigrateScene(forceNewInstance: !SceneService.PlayMode);
 
             Dispatcher.UIThread.Post(() =>
             {
@@ -1012,7 +1014,24 @@ public partial class ScriptEditorWindow : Window
     public static Task<(int files, int typesLoaded)> CompileAllProjectScriptsAsync()
         => RunCompileProjectScriptsAsync(null);
 
-    private static Task<(int files, int typesLoaded)> RunCompileProjectScriptsAsync(Action<string>? statusSink)
+    /// <summary>
+    /// Compile project scripts without throwing. Empty Assets/Packages is success (nothing to compile).
+    /// Returns <c>ok: false</c> and the compiler error text when the build fails.
+    /// </summary>
+    public static async Task<(bool ok, int files, int typesLoaded, string? error)> TryCompileAllProjectScriptsAsync()
+    {
+        try
+        {
+            var (files, types) = await RunCompileProjectScriptsAsync(null, allowEmpty: true);
+            return (true, files, types, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, 0, 0, ex.Message);
+        }
+    }
+
+    private static Task<(int files, int typesLoaded)> RunCompileProjectScriptsAsync(Action<string>? statusSink, bool allowEmpty = false)
     {
         return Task.Run(() =>
         {
@@ -1020,7 +1039,10 @@ public partial class ScriptEditorWindow : Window
             var allFiles = ScriptCompiler.CollectProjectCsFiles(roots, playerBuild: false);
 
             if (allFiles.Count == 0)
+            {
+                if (allowEmpty) return (0, 0);
                 throw new InvalidOperationException("No .cs files found under your Assets/Packages folders.");
+            }
 
             var parseOpts = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
             var trees = allFiles
@@ -1066,8 +1088,8 @@ public partial class ScriptEditorWindow : Window
                 catch { }
             }
 
-            try { s_scriptsAlc?.Unload(); } catch { }
-            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            var previousAlc = s_scriptsAlc;
+            ScriptTypeReload.RetireLoadContext(previousAlc);
 
             var proj = ProjectService.Current;
             var outRoot = proj?.BuildsPath;
@@ -1099,6 +1121,7 @@ public partial class ScriptEditorWindow : Window
             var alc = new AssemblyLoadContext(asmName, isCollectible: true);
             var asm = alc.LoadFromStream(ms);
             s_scriptsAlc = alc;
+            ScriptTypeReload.NoteCompiled(asm);
 
             var behaviorType = typeof(Game_Engine.Core.Behavior);
             int loaded = 0;

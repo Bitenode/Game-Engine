@@ -70,6 +70,8 @@ public struct BonePose
     public SN.Vector3 Position;
     public SN.Quaternion Rotation;
     public SN.Vector3 Scale;
+    /// <summary>True when a clip actually keyed this bone. Unset poses must keep the bind pose.</summary>
+    public bool IsSet;
 
     public static BonePose Identity => new()
     {
@@ -88,11 +90,14 @@ public struct BonePose
     /// <summary>Blend between two poses.</summary>
     public static BonePose Lerp(in BonePose a, in BonePose b, float t)
     {
+        if (!a.IsSet) return b;
+        if (!b.IsSet) return a;
         return new BonePose
         {
             Position = SN.Vector3.Lerp(a.Position, b.Position, t),
             Rotation = SN.Quaternion.Slerp(a.Rotation, b.Rotation, t),
-            Scale = SN.Vector3.Lerp(a.Scale, b.Scale, t)
+            Scale = SN.Vector3.Lerp(a.Scale, b.Scale, t),
+            IsSet = true
         };
     }
 }

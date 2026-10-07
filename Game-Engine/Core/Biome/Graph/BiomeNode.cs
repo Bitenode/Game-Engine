@@ -613,6 +613,9 @@ public sealed class BiomeFloraLayerNode : BiomeNode
     public float BushDensity { get; set; } = 0.25f;
     public float TreeDensity { get; set; } = 0.6f;
     public float Patchiness { get; set; } = 0.45f;
+    /// <summary>Grass clump scale range for the target biome. 0 keeps the biome preset.</summary>
+    public float GrassMinScale { get; set; }
+    public float GrassMaxScale { get; set; }
     public float MinSlope { get; set; }
     public float MaxSlope { get; set; } = 35f;
     public float MinAltitude { get; set; }

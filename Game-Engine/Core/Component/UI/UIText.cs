@@ -122,7 +122,7 @@ namespace Game_Engine.Core.Component.UI
             float scale = FontSize / Math.Max(1f, font.LineHeight);
 
             // Build lines (with optional word wrap)
-            var lines = LayoutLines(font, Text, rect.Width, scale);
+            var lines = LayoutLines(font, Text, rect.Width, scale, WordWrap);
             if (lines.Count == 0) return UIDrawData.Empty;
 
             float lineH = font.LineHeight * scale * LineSpacing;
@@ -192,14 +192,14 @@ namespace Game_Engine.Core.Component.UI
             return new UIDrawData { QuadCount = qi, Quads = _quadBuffer };
         }
 
-        private static List<string> LayoutLines(BitmapFont font, string text, float maxWidth, float scale)
+        private static List<string> LayoutLines(BitmapFont font, string text, float maxWidth, float scale, bool wordWrap)
         {
             var result = new List<string>(8);
 
             var hardLines = text.Split('\n');
             foreach (var hardLine in hardLines)
             {
-                if (maxWidth <= 0 || !true) // word wrap controlled by the element
+                if (maxWidth <= 0 || !wordWrap)
                 {
                     result.Add(hardLine);
                     continue;

@@ -20,7 +20,7 @@ Each frame, both SceneView and GameView execute these passes in order:
  7. Opaque Pass             (Frustum-culled — standard/terrain/skinned shaders)
  8. Water Pass              (Gerstner wave displacement, Fresnel, foam)
  9. Transparent Pass        (Back-to-front sorted, alpha blending)
-10. Particle Pass           (Billboard quads, instanced rendering — **Scene View only**; see Game View note below)
+10. Particle Pass           (Billboard / streak / flame quads, instanced rendering — **Scene View only**; see Game View note below)
 11. Gizmo Pass              (Editor overlays, collider wireframes — Scene View only)
 12. Volumetric Fog Pass     (Ray-marched scattering with shadow sampling — when enabled)
 13. Post-Processing Pass    (Bloom, Fog, Color Grading, FXAA, Vignette, Underwater)
@@ -589,5 +589,8 @@ Planet atmosphere rendering is now an isolated path and does not depend on `Skyb
 - **Atmosphere/cloud proxy:** when no dedicated atmosphere shell mesh exists, the renderer does **not** fall back to drawing all terrain leaves as a cloud shell (removed — that duplicated a full planet draw)
 - **Planet water pass:** `PlanetWaterFrag` — atmosphere-driven reflection, per-body tint arrays (slot **6** = lava), shore biome blend, mask discard. **Always prefers** `QuadNode.GeneratedWaterMesh` patches (same LOD grid as terrain, shoreline on the visible edge). The uniform `PlanetWater` orbit shell is a **far-orbit silhouette only** (no chunk patches, camera farther than ~1.6× radius, not inside crust) — it is not a fallback that floods grassland. Rendered **after** planet atmosphere and clouds so haze does not cover the surface. Double-sided, alpha blend, `DepthFunc.Lequal`, **depth write off**, reduced wave amplitude when near the crust. Standalone `PlayerView` compiles the same planet terrain / atmosphere / cloud / water shaders and calls `RefreshLodAroundCamera` plus these passes (the old player only drew heightmap terrain + planar water).
 - **Cloud pass:** `PlanetCloudsFrag` is rendered as a dedicated planet pass
+- **Prop lighting fill:** when the camera is inside a planet atmosphere shell, Standard and deferred shaders set `uHasPlanetFill` / `uPlanetCenter` so placed props get the same radial sky-fill Lambert term as terrain (fixes props and campfires reading nearly black beside the ground)
+- **Planet point lights:** terrain pass binds up to four nearest enabled point lights (`BindNearestPointLights`) for campfires and local lamps on the crust
+- **Forward scene opaques:** after planet terrain (and optional dedicated vegetation pass), `SceneRenderer.RenderForwardSceneOpaques` redraws opaque scene meshes (cubes, pickups, props) so they are not buried by the planet pass depth
 
 `Skybox` still controls only the world background sky pass. Changing `Skybox` values should not change planet terrain/water/cloud shading.

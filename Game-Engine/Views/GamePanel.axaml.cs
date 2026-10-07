@@ -5,6 +5,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Game_Engine.Core;
 using Game_Engine.Core.Extensibility;
+using Game_Engine;
 
 namespace Game_Engine.Views;
 
@@ -72,14 +73,25 @@ public partial class GamePanel : UserControl
     // - Play: always allowed (starts or resumes)
     // - Pause: only if currently Playing
     // - Stop: only if not already Stopped (and implicitly "unpauses")
+    public void RequestPlay() => OnPlayClicked(null, new RoutedEventArgs());
+
     private async void OnPlayClicked(object? s, RoutedEventArgs e)
     {
-        if (State != GameState.Playing && ScriptCompiler.AreEditorScriptsStale())
+        bool fromStop = State == GameState.Stopped;
+        if (fromStop || ScriptCompiler.AreEditorScriptsStale())
         {
-            try
+            Core.Log.Info(fromStop
+                ? "Compiling project scripts for Play…"
+                : "Scripts changed — compiling before Play…");
+            var (ok, files, types, error) = await ScriptEditorWindow.TryCompileAllProjectScriptsAsync();
+            if (!ok)
             {
-                Core.Log.Info("Scripts changed — compiling before Play…");
-                var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
+                Core.Log.Error($"Script compile before Play failed: {error}");
+                await ShowCompileFailedDialog(error);
+                return;
+            }
+            if (files > 0)
+            {
                 ExtensionService.RefreshForCurrentProject();
                 if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime life
                     && life.MainWindow is MainWindow mw)
@@ -88,13 +100,25 @@ public partial class GamePanel : UserControl
                     mw.RebuildExtensionMenus();
                 }
                 Core.Log.Success($"Project scripts compiled ({files} files, {types} behavior types).");
-            }
-            catch (Exception ex)
-            {
-                Core.Log.Error($"Script compile before Play failed: {ex.Message}");
+                ScriptTypeReload.NeedsFreshPlay = true;
             }
         }
+        if (fromStop)
+            ScriptTypeReload.NeedsFreshPlay = true;
+        ScriptTypeReload.EnsureLatestLoaded();
         State = GameState.Playing;
+    }
+
+    static async Task ShowCompileFailedDialog(string? error)
+    {
+        var text = string.IsNullOrWhiteSpace(error)
+            ? "Script compile failed."
+            : error;
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime life
+            && life.MainWindow is MainWindow mw)
+        {
+            await mw.ShowCompileError(text);
+        }
     }
 
     private void OnPauseClicked(object? s, RoutedEventArgs e)

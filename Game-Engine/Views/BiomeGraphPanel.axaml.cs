@@ -1469,6 +1469,8 @@ public partial class BiomeGraphPanel : UserControl
                 AddPropFloat("Bush Density", n.BushDensity, v => n.BushDensity = v);
                 AddPropFloat("Tree Density", n.TreeDensity, v => n.TreeDensity = v);
                 AddPropFloat("Patchiness", n.Patchiness, v => n.Patchiness = Math.Clamp(v, 0f, 1f));
+                AddPropFloat("Grass Min Scale", n.GrassMinScale, v => n.GrassMinScale = Math.Max(0f, v));
+                AddPropFloat("Grass Max Scale", n.GrassMaxScale, v => n.GrassMaxScale = Math.Max(0f, v));
                 AddPropFloat("Min Slope", n.MinSlope, v => n.MinSlope = v);
                 AddPropFloat("Max Slope", n.MaxSlope, v => n.MaxSlope = v);
                 AddPropFloat("Min Alt", n.MinAltitude, v => n.MinAltitude = v);

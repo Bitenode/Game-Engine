@@ -171,18 +171,19 @@ While Game View is playing, Scene View also skips the heaviest planet-only passe
 ### Play Mode Lifecycle
 
 **When you press Play:**
-1. If project scripts are newer than the last `EditorScripts_*.dll`, they are compiled and extensions refreshed first
-2. The current scene graph is serialized to a JSON snapshot (including material texture data)
-3. All Behaviors receive `Awake()` then `Start()`
-4. The game loop begins:
+1. If entering Play from **Stop** or project scripts are newer than the last `EditorScripts_*.dll`, they are compiled first. Compile errors show a dialog and **cancel Play**
+2. After a successful compile (or Stop → Play), `ScriptTypeReload.RematerializeScene()` rebuilds script instances from the newest DLL without reloading the scene file
+3. The current scene graph is serialized to a JSON snapshot (including material texture data)
+4. All Behaviors receive `Awake()` then `Start()`
+5. The game loop begins:
    - `Update()` runs every frame
    - `FixedUpdate()` runs at fixed time intervals (physics)
    - `LateUpdate()` runs after all Update calls
-5. Input is routed to the game (WASD, mouse look, etc.)
-6. Physics simulation runs (CharacterController, collision detection)
-7. Audio sources begin playback (if `PlayOnAwake` is set)
-8. Particle emitters begin emitting
-9. Animators play their default state
+6. Input is routed to the game (WASD, mouse look, mouse wheel via `Input.MouseScrollY`, etc.). Game View feeds mouse position in **framebuffer pixels** (DIP × render scale) so UI hit-tests align on HiDPI displays
+7. Physics simulation runs (CharacterController, collision detection)
+8. Audio sources begin playback (if `PlayOnAwake` is set)
+9. Particle emitters begin emitting
+10. Animators play their default state
 
 **When you press Stop:**
 1. All Behaviors receive `OnDisable()` then `OnDestroy()`
@@ -776,6 +777,7 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 - **Per-biome vegetation tuning** — `VegetationDensity`, `TreeDensity`, `Patchiness`, and `SeasonalGrowthMultiplier` are exposed directly under profile controls
 - **Multi-item grass/tree authoring** — each profile supports multiple weighted grass and tree entries with per-item model path, density multiplier, and scale range
 - **Water graph nodes** — `WaterBody` (Ocean / Lake / Pond), `WaterPath`, legacy `River`, `Shore`, `WaterMerge`; wire into **Output.Water** (up to 8 bodies and 8 paths). Compile rebuilds terrain carving, dry-only shore sand, orbit shell, and per-chunk water meshes on all scene planets.
+- **Flora layer** — **Grass Min Scale** / **Grass Max Scale** on `FloraLayer` nodes override per-biome grass clump height (0 = preset default).
 - **Geology nodes** — `Continent`, `Crater`, `Volcano`, `Cliff`, `DomainWarp`. Continents carve ocean basins with a narrow coastal shelf; **Cliff** adds ocean-side drops on that band; **Volcano** adds inland stratovolcanoes with caldera **lava lakes** (not swim water). Volcano centers are filtered inland so cones do not sit on the continent rim.
 - **Climate nodes** — `Climate`, `RainShadow`, `Season`, `LatitudeBand`. Compile writes `AltitudeLapseRate`, `WaterMoistureBoost`, `RainShadowStrength` / width, `SnowLineAltitude`, and optional `UseSelectClassifier`.
 - **Life / scatter nodes** — `FloraLayer`, `ScatterLayer`, `FaunaLayer`, `UnderwaterLife`, `ResourceVein` compile into `PlanetRecipe` tables. Runtime companions (`PlanetFloraSpawner`, `PlanetScatterRenderer`, `PlanetFaunaTableBehavior`, `PlanetLifeStreaming`) receive those tables on compile.
@@ -862,7 +864,7 @@ Axes use acceleration-based smoothing:
 ### Persistence
 Bindings are saved per-project to `ProjectSettings/input.bindings.json` (axes, actions, mouse sensitivity, deadzone, look scale, gamepad sources). Customize in the remapping UI or via `Input.SetAxis()` / `Input.SetAction()`. **Reset to Defaults** restores the built-in keyboard + gamepad map.
 
-Pads use `IInputBackend`: Windows tries **XInput**, then **SDL2**, and initializes **GameInput.dll** when present (`Input.SetGamepadVibration`, `ActiveGamepadIndex`). Set `Input.PointerLock = true` in play/player for FPS mouse capture (cursor hidden + recenter).
+Pads use `IInputBackend`: Windows tries **XInput**, then **SDL2**, and initializes **GameInput.dll** when present (`Input.SetGamepadVibration`, `ActiveGamepadIndex`). Mouse wheel in play mode is exposed as `Input.MouseScrollY`. Game View / PlayerView scale pointer coordinates by the window render scale so in-game UI hit-tests match on HiDPI monitors.
 
 ---
 

@@ -1150,9 +1150,48 @@ public sealed class PlanetChunkManager
             return false;
         sphereDir = SN.Vector3.Normalize(sphereDir);
         var node = FindRenderableAtDirectionExact(sphereDir);
-        if (node == null || node.NeedsMeshRebuild || node.IsGenerating || node.GeneratedMesh == null)
+        // Use the mesh on screen, including a stale one waiting on rebuild.
+        // Falling back to the flatter cubemap for those frames lifted the body
+        // off the hill and dropped it again when the shell returned.
+        if (node?.GeneratedMesh == null)
             return false;
         return node.TrySampleShellLocalRadius(sphereDir, Config.ChunkSize + 1, out localR);
+    }
+
+    /// <summary>
+    /// False only when the visible chunk under <paramref name="sphereDir"/> generated no
+    /// water patch. Unknown (no mesh yet) counts as wet so callers run the full test.
+    /// </summary>
+    public bool HasWaterMeshAt(SN.Vector3 sphereDir)
+    {
+        if (sphereDir.LengthSquared() < 1e-12f)
+            return true;
+        var node = FindRenderableAtDirectionExact(SN.Vector3.Normalize(sphereDir));
+        if (node?.GeneratedMesh == null)
+            return true;
+        return node.GeneratedWaterMesh != null;
+    }
+
+    /// <summary>
+    /// Biome blend of the visible chunk under <paramref name="sphereDir"/>. False only while
+    /// that chunk has no mesh yet; a mesh without blend data reports an unknown biome (-1).
+    /// </summary>
+    public bool TrySampleBiomeBlend(SN.Vector3 sphereDir, out SN.Vector4 indices, out SN.Vector4 weights)
+    {
+        indices = default;
+        weights = default;
+        if (sphereDir.LengthSquared() < 1e-12f)
+            return false;
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+        var node = FindRenderableAtDirectionExact(sphereDir);
+        if (node?.GeneratedMesh == null)
+            return false;
+        if (!node.TrySampleBiomeBlend(sphereDir, Config.ChunkSize + 1, out indices, out weights))
+        {
+            indices = new SN.Vector4(-1f);
+            weights = new SN.Vector4(1f, 0f, 0f, 0f);
+        }
+        return true;
     }
 
     public QuadNode? FindRenderableAtDirection(SN.Vector3 sphereDir)

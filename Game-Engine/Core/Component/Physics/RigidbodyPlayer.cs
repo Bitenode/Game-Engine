@@ -154,6 +154,13 @@ namespace Game_Engine.Core.Component
         float _restCrustR;
         bool _restSteep;
 
+        // Radial offset that eases the body onto ground that jumped under it
+        // (chunk LOD swap or an unstitched seam) instead of snapping in one step.
+        float _standEase;
+        bool _easeValid;
+        SN.Vector3 _easeUp;
+        float _easeCrustR;
+
         /// <summary>Clear stand-radius cache after digs so the next sample hits the live cubemap.</summary>
         public void InvalidateCollisionCache()
         {
@@ -597,6 +604,11 @@ namespace Game_Engine.Core.Component
                 _jumpBuf = Math.Max(0f, _jumpBuf - dt);
             }
 
+            if (_surfaceMode && !_airborne && onContact)
+                EaseStandHeight(planet, ref pos, up, crustR, dt);
+            else
+                ResetStandEase();
+
             var tan = wish.LengthSquared() > 1e-8f ? wish * speed : SN.Vector3.Zero;
             if (_rb != null)
             {
@@ -606,6 +618,44 @@ namespace Game_Engine.Core.Component
 
             Transform.Position = new Vector3(pos.X, pos.Y, pos.Z);
             _cachedStandCrustR = crustR;
+        }
+
+        /// <summary>
+        /// The stand is the visible chunk mesh. When that mesh is swapped for a finer or
+        /// coarser one, or the body crosses a seam the stitch missed, the crust under the
+        /// feet jumps between fixed steps. Snapping to it every step is the mini hop.
+        /// Fold the jump into an offset that decays over a few frames instead.
+        /// </summary>
+        void EaseStandHeight(PlanetTerrain planet, ref SN.Vector3 pos, SN.Vector3 up, float crustR, float dt)
+        {
+            if (_easeValid)
+            {
+                // Same foothold, current mesh: any change is the mesh, not the walk.
+                float swap = planet.SampleStandWorldRadius(_easeUp) - _easeCrustR;
+                float walk = crustR - (_easeCrustR + swap);
+                float moved = (up - _easeUp).Length() * MathF.Max(crustR, 1f);
+                float plausible = MathF.Max(0.12f, moved * 2.5f);
+                float seam = MathF.Abs(walk) > plausible ? walk - MathF.CopySign(plausible, walk) : 0f;
+                float jump = swap + seam;
+                if (MathF.Abs(jump) > 0.015f)
+                    _standEase = Math.Clamp(_standEase - jump, -2f, 2f);
+            }
+            _easeUp = up;
+            _easeCrustR = crustR;
+            _easeValid = true;
+
+            if (_standEase == 0f)
+                return;
+            _standEase *= MathF.Exp(-MathF.Max(0f, dt) / 0.1f);
+            if (MathF.Abs(_standEase) < 0.003f)
+                _standEase = 0f;
+            pos += up * _standEase;
+        }
+
+        void ResetStandEase()
+        {
+            _standEase = 0f;
+            _easeValid = false;
         }
 
         static bool TryQueryPlanetWater(
@@ -880,8 +930,12 @@ namespace Game_Engine.Core.Component
             float standR,
             float capsuleRadius)
         {
+            // Shell radius sits below the cubemap in valleys. That is the hill,
+            // not a dug floor — treating it as a pit ran the wall shove every step.
+            const float dug = 0.75f;
             float undug = planet.SampleUndugStandWorldRadius(up);
-            if (undug - standR > 0.45f)
+            float edited = planet.SampleEditedCubemapWorldRadius(up);
+            if (undug - edited > dug)
                 return true;
 
             var seed = MathF.Abs(up.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
@@ -893,11 +947,9 @@ namespace Game_Engine.Core.Component
                 float a = i * (MathF.PI * 0.5f);
                 var tangent = t0 * MathF.Cos(a) + t1 * MathF.Sin(a);
                 var dir = SN.Vector3.Normalize(up + tangent * ang);
-                float nStand = planet.SampleStandWorldRadius(dir);
                 float nUndug = planet.SampleUndugStandWorldRadius(dir);
-                if (nUndug - nStand > 0.45f)
-                    return true;
-                if (standR - nStand > MathF.Max(0.4f, Rigidbody.PlanetWalkStepUp))
+                float nEdited = planet.SampleEditedCubemapWorldRadius(dir);
+                if (nUndug - nEdited > dug)
                     return true;
             }
             return false;
@@ -977,6 +1029,15 @@ namespace Game_Engine.Core.Component
                 float crustR = planet.SampleStandWorldRadius(up);
                 pos = center + up * (crustR + capsuleH);
 
+                if (!depressionChecked)
+                {
+                    inDepression = DetectDigDepression(planet, up, crustR, capsuleRadius);
+                    depressionChecked = true;
+                }
+                // Open hillside: stay on the stand. The lateral shove was the hop.
+                if (!inDepression)
+                    break;
+
                 var seed = MathF.Abs(up.Y) < 0.95f ? SN.Vector3.UnitY : SN.Vector3.UnitX;
                 var t0 = SN.Vector3.Normalize(SN.Vector3.Cross(seed, up));
                 var t1 = SN.Vector3.Cross(up, t0);
@@ -984,28 +1045,44 @@ namespace Game_Engine.Core.Component
                 var push = SN.Vector3.Zero;
                 float pushMag = 0f;
 
-                // Cheap feet rise pass first — flat crust exits after one ring.
+                // A smooth hill rises into the uphill neighbor. That is the ground,
+                // not a dig wall — pushing it made the body hop instead of staying planted.
+                // Only shove when a sample sticks up above the fitted slope.
+                float ang = rBody / MathF.Max(crustR, 1f);
+                float dist = ang * MathF.Max(crustR, 1f);
+                Span<float> rises = stackalloc float[ring];
+                float g0 = 0f, g1 = 0f;
                 for (int i = 0; i < ring; i++)
                 {
                     float a = i * (MathF.PI * 2f / ring);
-                    var tangent = t0 * MathF.Cos(a) + t1 * MathF.Sin(a);
-                    float ang = rBody / MathF.Max(crustR, 1f);
+                    float c = MathF.Cos(a), s = MathF.Sin(a);
+                    var tangent = t0 * c + t1 * s;
                     var sampleDir = SN.Vector3.Normalize(up + tangent * ang);
-                    float nR = planet.SampleStandWorldRadius(sampleDir);
-                    float rise = nR - crustR;
-                    if (rise <= maxStep)
+                    float rise = planet.SampleStandWorldRadius(sampleDir) - crustR;
+                    rises[i] = rise;
+                    if (dist > 1e-4f)
+                    {
+                        g0 += (rise / dist) * c;
+                        g1 += (rise / dist) * s;
+                    }
+                }
+                float gradScale = ring * 0.5f;
+                g0 /= gradScale;
+                g1 /= gradScale;
+                for (int i = 0; i < ring; i++)
+                {
+                    float a = i * (MathF.PI * 2f / ring);
+                    float expected = (g0 * MathF.Cos(a) + g1 * MathF.Sin(a)) * dist;
+                    float excess = rises[i] - expected;
+                    if (excess <= maxStep)
                         continue;
-                    float excess = rise - maxStep;
-                    push -= tangent * excess;
-                    pushMag = MathF.Max(pushMag, excess);
+                    float over = excess - maxStep;
+                    var tangent = t0 * MathF.Cos(a) + t1 * MathF.Sin(a);
+                    push -= tangent * over;
+                    pushMag = MathF.Max(pushMag, over);
                 }
 
-                if (!depressionChecked)
-                {
-                    inDepression = DetectDigDepression(planet, up, crustR, capsuleRadius);
-                    depressionChecked = true;
-                }
-                bool needVolume = pushMag > 1e-4f || inDepression;
+                bool needVolume = inDepression;
 
                 if (needVolume)
                 {
@@ -1037,7 +1114,10 @@ namespace Game_Engine.Core.Component
 
                 steep = true;
                 push = SN.Vector3.Normalize(push);
-                pos += push * MathF.Min(MathF.Max(0.22f, pushMag * 0.6f), rBody * 2.8f);
+                float step = MathF.Min(pushMag, rBody);
+                if (step < 0.02f)
+                    break;
+                pos += push * step;
             }
 
             RefreshRadialUp(pos, center, ref up);
@@ -1094,6 +1174,7 @@ namespace Game_Engine.Core.Component
                         }
                         _planetInWater = true;
                         _planetDiving = wantsDive;
+                        ResetStandEase();
                         _cachedStandCrustR = crustR;
                         _cachedStandWaterR = waterSurfaceR;
                         SwimOnPlanet(dt, planet, _planetCenter, waterUp, bodyDist, waterSurfaceR, crustR, waterSample, _planetDiving);

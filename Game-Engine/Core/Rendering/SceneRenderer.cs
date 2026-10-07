@@ -294,13 +294,21 @@ namespace Game_Engine.Core
                     shader.Use();
                     shader.SetMatrix4("uView", view);
                     shader.SetMatrix4("uProj", proj);
-                    shader.SetInt("uAlignVelocity", pe.StretchAlongVelocity ? 1 : 0);
+                    int particleLook = pe.Look == ParticleLook.Flame ? 2
+                        : pe.Look == ParticleLook.Streak || pe.StretchAlongVelocity ? 1
+                        : 0;
+                    shader.SetInt("uParticleLook", particleLook);
+                    shader.SetInt("uAlignVelocity", particleLook == 1 ? 1 : 0);
                     shader.SetFloat("uStretchLength", Math.Max(0.08f, pe.StretchLength));
-                    var fall = pe.GetRenderFallDirection();
+                    var fall = particleLook == 2 && pe.EmissionDirection.LengthSquared() > 1e-6f
+                        ? pe.EmissionDirection
+                        : pe.GetRenderFallDirection();
                     shader.SetVector3("uFallDir", fall);
 
                     gl.Enable(EnableCap.Blend);
-                    gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                    gl.BlendFunc(
+                        BlendingFactor.SrcAlpha,
+                        particleLook == 2 ? BlendingFactor.One : BlendingFactor.OneMinusSrcAlpha);
                     gl.DepthMask(false);
                     bool weatherPrecip = go.Name?.StartsWith("BiomeWeatherPrecipitation", StringComparison.Ordinal) == true;
                     if (weatherPrecip || overlayPass)
@@ -1280,6 +1288,7 @@ namespace Game_Engine.Core
                 shader.SetFloat("uCloudiness", 0f);
                 shader.SetFloat("uSunIntensity", 1f);
                 shader.SetFloat("uAmbient", ctx.Ambient);
+                SetPlanetPropFill(shader, ctx.CamPos);
             }
             // Bone skinning matrices
             if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
@@ -2072,6 +2081,7 @@ namespace Game_Engine.Core
 
             // Ambient
             deferredShader.SetFloat("uAmbient", ambient);
+            SetPlanetPropFill(deferredShader, camPos);
 
             var dirScratch = new List<Light>(8);
             var localScratch = new List<Light>(128);
@@ -2602,6 +2612,61 @@ namespace Game_Engine.Core
 
         // ══════════════════════════════════════════════════════════
 
+        static void BindNearestPointLights(ShaderProgram shader, SN.Vector3 camPos)
+        {
+            const int Max = 4;
+            var slot = new Light?[Max];
+            var dist = new float[Max];
+            for (int i = 0; i < Max; i++)
+                dist[i] = float.MaxValue;
+
+            var lights = Light.AllLights;
+            for (int i = 0; i < lights.Count; i++)
+            {
+                var light = lights[i];
+                if (light is not { Enabled: true, gameObject: not null }) continue;
+                if (light.Type != LightType.Point || light.Intensity <= 0.01f || light.Range <= 0.05f)
+                    continue;
+                float d2 = SN.Vector3.DistanceSquared(light.GetWorldPosition(), camPos);
+                float reach = light.Range + 6f;
+                if (d2 > reach * reach) continue;
+                for (int s = 0; s < Max; s++)
+                {
+                    if (d2 >= dist[s]) continue;
+                    for (int k = Max - 1; k > s; k--)
+                    {
+                        slot[k] = slot[k - 1];
+                        dist[k] = dist[k - 1];
+                    }
+                    slot[s] = light;
+                    dist[s] = d2;
+                    break;
+                }
+            }
+
+            int count = 0;
+            for (int i = 0; i < Max; i++)
+            {
+                var light = slot[i];
+                if (light == null)
+                {
+                    shader.SetVector3($"uPointPos[{i}]", SN.Vector3.Zero);
+                    shader.SetVector3($"uPointColor[{i}]", SN.Vector3.Zero);
+                    shader.SetFloat($"uPointRange[{i}]", 0f);
+                    continue;
+                }
+                count = i + 1;
+                var p = light.GetWorldPosition();
+                shader.SetVector3($"uPointPos[{i}]", p);
+                shader.SetVector3($"uPointColor[{i}]", new SN.Vector3(
+                    light.Color.R / 255f * light.Intensity,
+                    light.Color.G / 255f * light.Intensity,
+                    light.Color.B / 255f * light.Intensity));
+                shader.SetFloat($"uPointRange[{i}]", light.Range);
+            }
+            shader.SetInt("uPointCount", count);
+        }
+
         private static void SetLightUniforms(
             ShaderProgram shader,
             SN.Vector3 lightDir, float diffuseK, float ambient,
@@ -2803,6 +2868,37 @@ namespace Game_Engine.Core
                 CloudSilverLining = cloudSilverLining;
                 CloudStepCount = cloudStepCount;
             }
+        }
+
+        /// <summary>
+        /// Props on a planet were lit with the flat PBR sun while terrain uses a radial
+        /// Lambert term, so placed meshes went nearly black. When the camera is inside
+        /// an atmosphere shell, shaders add a sky fill along the surface normal.
+        /// </summary>
+        static void SetPlanetPropFill(ShaderProgram shader, SN.Vector3 camPosWorld)
+        {
+            foreach (var planet in PlanetTerrain.ActivePlanets)
+            {
+                if (planet?.Config == null || planet.gameObject == null || !planet.IsActiveAndEnabled)
+                    continue;
+                var atmo = planet.Atmosphere;
+                if (atmo == null || !atmo.Enabled)
+                    continue;
+
+                var p = planet.gameObject.Transform.Position;
+                var center = new SN.Vector3((float)p.X, (float)p.Y, (float)p.Z);
+                float groundR = atmo.GroundRadiusOverride > 0.01f ? atmo.GroundRadiusOverride : planet.Config.Radius;
+                float worldR = planet.Config.EffectiveWorldRadius;
+                float atmoR = Math.Max(groundR, worldR) + Math.Max(1f, atmo.AtmosphereHeight);
+                if ((camPosWorld - center).LengthSquared() > atmoR * atmoR)
+                    continue;
+
+                shader.SetInt("uHasPlanetFill", 1);
+                shader.SetVector3("uPlanetCenter", center);
+                return;
+            }
+
+            shader.SetInt("uHasPlanetFill", 0);
         }
 
         /// <summary>
@@ -3080,6 +3176,98 @@ namespace Game_Engine.Core
         [ThreadStatic] private static List<DrawItem>? s_planetVegOpaque;
         [ThreadStatic] private static List<DrawItem>? s_planetVegTransparent;
 
+        /// <summary>
+        /// Forward-draw opaque scene meshes after planet terrain so cubes/pickups
+        /// are not buried by the planet pass (deferred color is overwritten, then
+        /// planet rasterizes without those objects in its depth).
+        /// </summary>
+        public static void RenderForwardSceneOpaques(
+            GL gl,
+            ShaderProgram standardShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float diffuseK,
+            float ambient,
+            bool lightIsPoint,
+            SN.Vector3 lightPosW,
+            float lightRange,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            bool isES = true,
+            SN.Vector3 lightColor = default)
+        {
+            var viewProj = view * proj;
+            var planes = s_planes ??= new Plane[6];
+            ExtractFrustumPlanes(viewProj, planes);
+
+            var opaqueItems = s_opaqueItems ??= new List<DrawItem>(256);
+            var transparentItems = s_transparentItems ??= new List<DrawItem>(64);
+            opaqueItems.Clear();
+            transparentItems.Clear();
+
+            bool skipPlanetVegInSceneGraph = PlanetVegetationSystem.AnyUseDedicatedRenderPass;
+            var prevSkip = SkipPlanetVegetationDraws;
+            SkipPlanetVegetationDraws = skipPlanetVegInSceneGraph || prevSkip;
+            foreach (var root in SceneService.Root)
+                GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
+            SkipPlanetVegetationDraws = prevSkip;
+
+            gl.Enable(EnableCap.DepthTest);
+            gl.DepthFunc(DepthFunction.Lequal);
+            gl.DepthMask(true);
+            gl.Disable(EnableCap.Blend);
+
+            standardShader.Use();
+            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
+            standardShader.SetMatrix4("uView", view);
+            standardShader.SetMatrix4("uProj", proj);
+            standardShader.SetVector3("uCamPos", camPos);
+
+            if (shadowFBO?.DepthTexture != null)
+            {
+                standardShader.SetInt("uHasShadow", 1);
+                standardShader.SetMatrix4("uShadowVP", shadowVP);
+                standardShader.SetFloat("uShadowBias", 0.008f);
+                standardShader.SetVector3("uSunDir", sunShineDir);
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                standardShader.SetTexture("uShadowMap", 7);
+                standardShader.SetInt("uCascadeCount", 1);
+                standardShader.SetMatrix4("uShadowVPC[0]", shadowVP);
+                standardShader.SetFloat("uCascadeSplits[0]", 1000f);
+            }
+            else
+            {
+                standardShader.SetInt("uHasShadow", 0);
+            }
+
+            var renderCtx = new RenderContext
+            {
+                View = view,
+                Proj = proj,
+                CamPos = camPos,
+                LightDir = lightDir,
+                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                DiffuseK = diffuseK,
+                Ambient = ambient,
+                ShadowVP = shadowVP,
+                StandardShader = standardShader,
+                Cache = cache,
+                IsES = isES
+            };
+
+            foreach (var item in opaqueItems)
+            {
+                if (item.Terrain != null) continue;
+                DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
+            }
+
+            gl.DepthFunc(DepthFunction.Less);
+        }
+
         public static void RenderPlanetTerrain(
             GL gl,
             ShaderProgram planetShader,
@@ -3098,6 +3286,10 @@ namespace Game_Engine.Core
             if (planet.Config == null || planet.gameObject == null || !planet.IsActiveAndEnabled)
                 return;
 
+            gl.Enable(EnableCap.DepthTest);
+            gl.DepthFunc(DepthFunction.Lequal);
+            gl.DepthMask(true);
+
             var vp = view * proj;
             ExtractFrustumPlanes(vp, out var frustumPlanes);
 
@@ -3108,6 +3300,7 @@ namespace Game_Engine.Core
             planetShader.SetVector3("uCamPos", camPos);
             planetShader.SetFloat("uAmbient", atmo.Ambient);
             planetShader.SetFloat("uDiffuseK", diffuseK);
+            BindNearestPointLights(planetShader, camPos);
             planetShader.SetVector3("uPlanetCenter", planetCenter);
             float radiusWorld = MathF.Max(1f, planet.Config.EffectiveWorldRadius);
             if (radiusWorld < 2f)

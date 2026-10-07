@@ -288,13 +288,28 @@ namespace Game_Engine.Core.Rendering.UI
                     });
                 }
 
-                // Emit 4 vertices + 6 indices for a quad
+                // Emit 4 vertices + 6 indices for a quad.
+                // UvTurns rotates the texture clockwise inside the same rectangle.
                 uint baseIdx = (uint)_vertices.Count;
+                int turns = quad.UvTurns % 4;
+                if (turns < 0) turns += 4;
+                float u0 = quad.U0, v0 = quad.V0, u1 = quad.U1, v1 = quad.V1;
+                float cu0 = u0, cv0 = v0, cu1 = u1, cv1 = v0, cu2 = u1, cv2 = v1, cu3 = u0, cv3 = v1;
+                float PickU(int corner)
+                {
+                    int s = (corner + turns) % 4;
+                    return s == 0 ? cu0 : s == 1 ? cu1 : s == 2 ? cu2 : cu3;
+                }
+                float PickV(int corner)
+                {
+                    int s = (corner + turns) % 4;
+                    return s == 0 ? cv0 : s == 1 ? cv1 : s == 2 ? cv2 : cv3;
+                }
 
-                _vertices.Add(new UIVertex { PosX = quad.X0, PosY = quad.Y0, UvX = quad.U0, UvY = quad.V0, R = quad.R, G = quad.G, B = quad.B, A = quad.A });
-                _vertices.Add(new UIVertex { PosX = quad.X1, PosY = quad.Y0, UvX = quad.U1, UvY = quad.V0, R = quad.R, G = quad.G, B = quad.B, A = quad.A });
-                _vertices.Add(new UIVertex { PosX = quad.X1, PosY = quad.Y1, UvX = quad.U1, UvY = quad.V1, R = quad.R, G = quad.G, B = quad.B, A = quad.A });
-                _vertices.Add(new UIVertex { PosX = quad.X0, PosY = quad.Y1, UvX = quad.U0, UvY = quad.V1, R = quad.R, G = quad.G, B = quad.B, A = quad.A });
+                _vertices.Add(new UIVertex { PosX = quad.X0, PosY = quad.Y0, UvX = PickU(0), UvY = PickV(0), R = quad.R, G = quad.G, B = quad.B, A = quad.A });
+                _vertices.Add(new UIVertex { PosX = quad.X1, PosY = quad.Y0, UvX = PickU(1), UvY = PickV(1), R = quad.R, G = quad.G, B = quad.B, A = quad.A });
+                _vertices.Add(new UIVertex { PosX = quad.X1, PosY = quad.Y1, UvX = PickU(2), UvY = PickV(2), R = quad.R, G = quad.G, B = quad.B, A = quad.A });
+                _vertices.Add(new UIVertex { PosX = quad.X0, PosY = quad.Y1, UvX = PickU(3), UvY = PickV(3), R = quad.R, G = quad.G, B = quad.B, A = quad.A });
 
                 _indices.Add(baseIdx + 0);
                 _indices.Add(baseIdx + 1);

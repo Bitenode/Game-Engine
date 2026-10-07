@@ -172,26 +172,39 @@ public sealed class Mesh
     public static Mesh CreateCube(float size = 1f)
     {
         float h = size * 0.5f;
-        var v = new[]
-        {
-            new SN.Vector3(-h,-h,-h), new SN.Vector3( h,-h,-h),
-            new SN.Vector3( h, h,-h), new SN.Vector3(-h, h,-h),
-            new SN.Vector3(-h,-h, h), new SN.Vector3( h,-h, h),
-            new SN.Vector3( h, h,  h), new SN.Vector3(-h, h,  h),
-        };
+        var verts = new List<SN.Vector3>(24);
+        var norms = new List<SN.Vector3>(24);
+        var uvs = new List<SN.Vector2>(24);
+        var tris = new List<int>(36);
 
-        // 12 triangles, CCW
-        int[] t =
+        void Face(SN.Vector3 n, SN.Vector3 a, SN.Vector3 b, SN.Vector3 c, SN.Vector3 d)
         {
-            0,1,2, 0,2,3,     // back
-            4,6,5, 4,7,6,     // front
-            0,3,7, 0,7,4,     // left
-            1,5,6, 1,6,2,     // right
-            3,2,6, 3,6,7,     // top
-            0,4,5, 0,5,1      // bottom
-        };
+            int i = verts.Count;
+            verts.Add(a); verts.Add(b); verts.Add(c); verts.Add(d);
+            norms.Add(n); norms.Add(n); norms.Add(n); norms.Add(n);
+            uvs.Add(new SN.Vector2(0, 0));
+            uvs.Add(new SN.Vector2(1, 0));
+            uvs.Add(new SN.Vector2(1, 1));
+            uvs.Add(new SN.Vector2(0, 1));
+            tris.Add(i); tris.Add(i + 1); tris.Add(i + 2);
+            tris.Add(i); tris.Add(i + 2); tris.Add(i + 3);
+        }
 
-        return new Mesh(v, BuildEdgesFromTriangles(t), t) { Kind = MeshKind.Generic };
+        // CCW from outside so back-face culling keeps the cube visible.
+        Face(new SN.Vector3(0, 0, 1), new SN.Vector3(-h, -h, h), new SN.Vector3(h, -h, h), new SN.Vector3(h, h, h), new SN.Vector3(-h, h, h));
+        Face(new SN.Vector3(0, 0, -1), new SN.Vector3(h, -h, -h), new SN.Vector3(-h, -h, -h), new SN.Vector3(-h, h, -h), new SN.Vector3(h, h, -h));
+        Face(new SN.Vector3(1, 0, 0), new SN.Vector3(h, -h, h), new SN.Vector3(h, -h, -h), new SN.Vector3(h, h, -h), new SN.Vector3(h, h, h));
+        Face(new SN.Vector3(-1, 0, 0), new SN.Vector3(-h, -h, -h), new SN.Vector3(-h, -h, h), new SN.Vector3(-h, h, h), new SN.Vector3(-h, h, -h));
+        Face(new SN.Vector3(0, 1, 0), new SN.Vector3(-h, h, h), new SN.Vector3(h, h, h), new SN.Vector3(h, h, -h), new SN.Vector3(-h, h, -h));
+        Face(new SN.Vector3(0, -1, 0), new SN.Vector3(-h, -h, -h), new SN.Vector3(h, -h, -h), new SN.Vector3(h, -h, h), new SN.Vector3(-h, -h, h));
+
+        var t = tris.ToArray();
+        return new Mesh(verts.ToArray(), BuildEdgesFromTriangles(t), t)
+        {
+            Kind = MeshKind.Generic,
+            Normals = norms.ToArray(),
+            UVs = uvs.ToArray()
+        };
     }
 
     /// Quad on XZ plane (Y=0), centered, sizeX × sizeZ.

@@ -102,6 +102,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         AddHandler(Avalonia.Input.InputElement.PointerPressedEvent, OnPointerPressed, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         AddHandler(Avalonia.Input.InputElement.PointerReleasedEvent, OnPointerReleased, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         AddHandler(Avalonia.Input.InputElement.PointerMovedEvent, OnPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        AddHandler(Avalonia.Input.InputElement.PointerWheelChangedEvent, OnPointerWheel, Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
         RebuildSceneCaches();
         _fpsTick.Restart();
@@ -462,14 +463,15 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));
     }
 
-    void RecenterPointer()
+    float PlayUiScale() => (float)(TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0);
+
+    void FeedPlayUiPointer(float dipX, float dipY)
     {
-        if (Bounds.Width <= 0 || Bounds.Height <= 0) return;
-        var mid = new Point(Bounds.Width * 0.5, Bounds.Height * 0.5);
-        var screen = this.PointToScreen(mid);
-        Input.WarpCursorScreen((int)screen.X, (int)screen.Y);
-        _lastMouse = new SN.Vector2((float)mid.X, (float)mid.Y);
-        _hasLastMouse = true;
+        float s = PlayUiScale();
+        Input.FeedMousePosition(dipX * s, dipY * s);
+        Input.FeedViewportSize(
+            Math.Max(1f, (float)Bounds.Width * s),
+            Math.Max(1f, (float)Bounds.Height * s));
     }
 
     void OnPointerPressed(object? s, PointerPressedEventArgs e)
@@ -478,8 +480,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Focus();
         var pt = e.GetCurrentPoint(this);
         var pos = e.GetPosition(this);
-        Input.FeedMousePosition((float)pos.X, (float)pos.Y);
-        Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
+        FeedPlayUiPointer((float)pos.X, (float)pos.Y);
         _lastMouse = new SN.Vector2((float)pos.X, (float)pos.Y);
         _hasLastMouse = true;
         if (pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonDown(Core.Input.MouseButton.Left);
@@ -488,11 +489,6 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         e.Pointer.Capture(this);
         _capturedPointer = e.Pointer;
         Input.PlayViewportCaptureActive = true;
-        if (Input.PointerLock)
-        {
-            Cursor = new Cursor(StandardCursorType.None);
-            RecenterPointer();
-        }
     }
 
     void OnPointerReleased(object? s, PointerReleasedEventArgs e)
@@ -502,12 +498,11 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (!pt.Properties.IsLeftButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Left);
         if (!pt.Properties.IsMiddleButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Middle);
         if (!pt.Properties.IsRightButtonPressed) Input.FeedMouseButtonUp(Core.Input.MouseButton.Right);
-        if (ReferenceEquals(_capturedPointer, e.Pointer) && !Input.PointerLock)
+        if (ReferenceEquals(_capturedPointer, e.Pointer))
         {
             try { e.Pointer.Capture(null); } catch { }
             _capturedPointer = null;
             Input.PlayViewportCaptureActive = false;
-            Cursor = Cursor.Default;
         }
     }
 
@@ -520,9 +515,13 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             Input.FeedMouseDelta(cur.X - _lastMouse.X, cur.Y - _lastMouse.Y);
         _lastMouse = cur;
         _hasLastMouse = true;
-        Input.FeedMousePosition(cur.X, cur.Y);
-        if (Input.PointerLock)
-            RecenterPointer();
+        FeedPlayUiPointer(cur.X, cur.Y);
+    }
+
+    void OnPointerWheel(object? s, PointerWheelEventArgs e)
+    {
+        if (!_playing) return;
+        Input.FeedMouseScroll((float)e.Delta.Y);
     }
     #endregion
 
@@ -565,12 +564,11 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Input.NewFrame((float)dt);
         Input.PollHardwareHeldKeys();
         Input.PollPlayMouseButtons(_capturedPointer != null || IsPointerOver);
-        Input.FeedViewportSize((float)Bounds.Width, (float)Bounds.Height);
-        {
-            int vpW = Math.Max(1, (int)Bounds.Width);
-            int vpH = Math.Max(1, (int)Bounds.Height);
-            UIEventSystem.ProcessEvents(vpW, vpH);
-        }
+        float uiScale = PlayUiScale();
+        float uiW = Math.Max(1f, (float)Bounds.Width * uiScale);
+        float uiH = Math.Max(1f, (float)Bounds.Height * uiScale);
+        Input.FeedViewportSize(uiW, uiH);
+        UIEventSystem.ProcessEvents(uiW, uiH);
         if (NetworkManager.IsActive)
             NetworkManager.Update();
         AudioManager.UpdateListenerTransform();

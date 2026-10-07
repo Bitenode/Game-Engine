@@ -222,14 +222,18 @@ namespace Game_Engine.Core.Importers
                 }
             }
 
-            // Import bone animations (if any) and auto-wire Animator
-            if (skeleton != null && scene.HasAnimations)
+            // Import bone animations baked into this file, then loose clips that
+            // live beside it (Assets/Animals/Animations/Deer_Idle.fbx and so on).
+            if (skeleton != null)
             {
-                var animPaths = ImportAnimations(scene, skeleton, relModel, scaleFactor);
+                var animPaths = new List<string>();
+                if (scene.HasAnimations)
+                    animPaths.AddRange(ImportAnimations(scene, skeleton, relModel, scaleFactor));
+                animPaths.AddRange(ImportLooseAnimations(absModel, skeleton, relModel, scaleFactor, animPaths));
 
-                // Auto-create Animator with states for each imported animation clip
                 if (animPaths.Count > 0)
                 {
+                    animPaths.Sort((a, b) => ClipSortKey(a).CompareTo(ClipSortKey(b)));
                     var animator = new Animator { PlayOnAwake = true, Speed = 1f };
                     string defaultStateName = null;
 
@@ -238,7 +242,6 @@ namespace Game_Engine.Core.Importers
                         var clipPath = animPaths[i];
                         var clipName = Path.GetFileNameWithoutExtension(clipPath);
 
-                        // Sanitize the clip name for use as a state name
                         if (string.IsNullOrWhiteSpace(clipName))
                             clipName = $"State_{i}";
 
@@ -252,9 +255,12 @@ namespace Game_Engine.Core.Importers
                             EditorY = 0f
                         });
 
-                        if (i == 0)
+                        if (defaultStateName == null && IsLocomotionClip(clipName))
                             defaultStateName = clipName;
                     }
+
+                    if (defaultStateName == null)
+                        defaultStateName = Path.GetFileNameWithoutExtension(animPaths[0]);
 
                     animator.DefaultStateName = defaultStateName ?? "";
                     root.AddBehavior(animator);
@@ -1216,9 +1222,9 @@ namespace Game_Engine.Core.Importers
                 var absPath = ResolveProjectRelative(relPath);
                 if (absPath == null) return null;
 
-                // If a file with the same name already exists, append partIndex to avoid collisions
-                // (e.g., two meshes both named "Unity_Body_Mesh" in the same FBX)
-                if (File.Exists(absPath))
+                // A second mesh with the same name gets a suffix. An existing file that
+                // never received textures is rewritten in place once maps are found.
+                if (File.Exists(absPath) && !MaterialFileTexturesEmpty(absPath))
                 {
                     relPath = Path.Combine(matDir, $"{safeName}_{partIndex}.material");
                     absPath = ResolveProjectRelative(relPath);
@@ -1273,6 +1279,21 @@ namespace Game_Engine.Core.Importers
                 Log.Warning($"[ModelImporter] Failed to save material: {ex.Message}");
                 return null;
             }
+        }
+
+        static bool MaterialFileTexturesEmpty(string absPath)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(absPath));
+                if (!doc.RootElement.TryGetProperty("textures", out var tx)) return true;
+                if (tx.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    return !tx.EnumerateObject().Any();
+                if (tx.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    return tx.GetArrayLength() == 0;
+            }
+            catch { }
+            return true;
         }
 
         static string SanitizeFileName(string name)
@@ -1346,9 +1367,124 @@ namespace Game_Engine.Core.Importers
 
         // ── Animation import ───────────────────────────────────────────────────
 
+        static int ClipSortKey(string path)
+        {
+            var name = Path.GetFileNameWithoutExtension(path) ?? "";
+            if (name.Equals("Idle", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (name.Equals("Walk", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (name.Equals("Run", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (name.Equals("Die", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Death", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Eat", StringComparison.OrdinalIgnoreCase))
+                return 20;
+            return 10;
+        }
+
+        static bool IsLocomotionClip(string name)
+            => name.Equals("Idle", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Walk", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Run", StringComparison.OrdinalIgnoreCase);
+
+        static readonly string[] s_looseAnimSuffixes =
+        {
+            "Idle", "Walk", "Run", "Die", "Eat", "Attack", "Death", "Jump", "Swim", "Sleep"
+        };
+
+        /// <summary>
+        /// Clips shipped as their own FBX (not baked into the rig). Same
+        /// <see cref="ImportAnimations"/> path, mapped onto the rig skeleton
+        /// and scaled with the rig so the bones stay in the mesh's space.
+        /// </summary>
+        static List<string> ImportLooseAnimations(string absModel, Skeleton skeleton, string relModel, float vertexScale, List<string> already)
+        {
+            var saved = new List<string>();
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in already)
+            {
+                var n = Path.GetFileNameWithoutExtension(path);
+                if (!string.IsNullOrEmpty(n)) taken.Add(n);
+            }
+
+            foreach (var file in FindLooseAnimationFiles(absModel))
+            {
+                var state = StateNameFromFile(file);
+                if (!taken.Add(state)) continue;
+                try
+                {
+                    using var ctx = new AssimpContext();
+                    var pp = PostProcessSteps.Triangulate
+                           | PostProcessSteps.JoinIdenticalVertices
+                           | PostProcessSteps.LimitBoneWeights;
+                    var scene = ctx.ImportFile(file, pp);
+                    if (scene == null || !scene.HasAnimations) continue;
+                    var paths = ImportAnimations(scene, skeleton, relModel, vertexScale, state);
+                    saved.AddRange(paths);
+                    if (paths.Count > 0)
+                        Log.Info($"[ModelImporter] Loose clip '{state}' from {Path.GetFileName(file)}");
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"[ModelImporter] Animation '{Path.GetFileName(file)}' failed: {ex.Message}");
+                }
+            }
+            return saved;
+        }
+
+        static IEnumerable<string> FindLooseAnimationFiles(string absModel)
+        {
+            var modelDir = Path.GetDirectoryName(absModel);
+            if (string.IsNullOrEmpty(modelDir)) yield break;
+            string stem = AnimationStem(absModel);
+            if (stem.Length == 0) yield break;
+
+            var dirs = new[]
+            {
+                Path.Combine(modelDir, "Animations"),
+                Path.GetFullPath(Path.Combine(modelDir, "..", "Animations"))
+            };
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var dir in dirs)
+            {
+                if (!Directory.Exists(dir)) continue;
+                IEnumerable<string> files;
+                try { files = Directory.EnumerateFiles(dir, "*.fbx"); }
+                catch { continue; }
+                foreach (var file in files)
+                {
+                    var name = Path.GetFileNameWithoutExtension(file);
+                    if (!name.StartsWith(stem + "_", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (seen.Add(Path.GetFullPath(file)))
+                        yield return file;
+                }
+            }
+        }
+
+        static string AnimationStem(string absModel)
+        {
+            var stem = Path.GetFileNameWithoutExtension(absModel);
+            foreach (var suffix in new[] { "_Rig", "_Mesh", "_Model", "_Skin" })
+            {
+                if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    return stem.Substring(0, stem.Length - suffix.Length);
+            }
+            return stem;
+        }
+
+        static string StateNameFromFile(string path)
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            foreach (var suffix in s_looseAnimSuffixes)
+            {
+                if (name.EndsWith("_" + suffix, StringComparison.OrdinalIgnoreCase)
+                    || name.Equals(suffix, StringComparison.OrdinalIgnoreCase))
+                    return suffix;
+            }
+            return name;
+        }
+
         /// <summary>Import all animations from the Assimp scene and save as .boneanim files.
         /// Returns a list of project-relative paths to saved .boneanim files.</summary>
-        static List<string> ImportAnimations(Scene sc, Skeleton skeleton, string relModelPath, float vertexScale = 1f)
+        static List<string> ImportAnimations(Scene sc, Skeleton skeleton, string relModelPath, float vertexScale = 1f, string? clipNameOverride = null)
         {
             var savedPaths = new List<string>();
             if (!sc.HasAnimations) return savedPaths;
@@ -1361,47 +1497,97 @@ namespace Game_Engine.Core.Importers
                 float ticksPerSec = (float)(anim.TicksPerSecond > 0 ? anim.TicksPerSecond : 24.0);
                 float duration = (float)(anim.DurationInTicks / ticksPerSec);
 
+                string clipName;
+                if (!string.IsNullOrWhiteSpace(clipNameOverride))
+                    clipName = sc.AnimationCount == 1 ? clipNameOverride : $"{clipNameOverride}_{ai}";
+                else if (!string.IsNullOrEmpty(anim.Name))
+                    clipName = anim.Name;
+                else
+                    clipName = $"Anim_{ai}";
+
                 var clip = new BoneAnimationClip
                 {
-                    Name = !string.IsNullOrEmpty(anim.Name) ? anim.Name : $"Anim_{ai}",
+                    Name = clipName,
                     Duration = duration,
                     Loop = true
                 };
 
+                // FBX joints are split into $AssimpFbx$ Translation / Rotation / Scaling
+                // nodes. Those are not extra copies of the bone — the rotation that
+                // holds the mesh together lives on the Rotation node, and the offset
+                // lives on the Translation node. Sample the whole node tree and fold
+                // the chain into one local pose per skeleton bone, same as bind pose.
+                var channels = new Dictionary<string, NodeAnimationChannel>(StringComparer.OrdinalIgnoreCase);
                 foreach (var channel in anim.NodeAnimationChannels)
                 {
-                    // Use flexible bone name matching to handle prefixed names (e.g. mixamorig:Hips)
-                    int boneIdx = FindBoneFlexible(skeleton, channel.NodeName);
-                    if (boneIdx < 0) continue;
+                    if (!channels.ContainsKey(channel.NodeName))
+                        channels[channel.NodeName] = channel;
+                }
 
-                    var track = new BoneTrack
-                    {
-                        BoneName = skeleton.Bones[boneIdx].Name, // Use the actual bone name from skeleton
-                        BoneIndex = boneIdx
-                    };
-
-                    // Collect all unique times from pos/rot/scale keyframes
-                    var times = new SortedSet<float>();
+                var times = new SortedSet<float>();
+                foreach (var channel in channels.Values)
+                {
                     foreach (var k in channel.PositionKeys) times.Add((float)(k.Time / ticksPerSec));
                     foreach (var k in channel.RotationKeys) times.Add((float)(k.Time / ticksPerSec));
                     foreach (var k in channel.ScalingKeys) times.Add((float)(k.Time / ticksPerSec));
+                }
+                if (times.Count == 0) continue;
 
-                    foreach (var t in times)
+                var tracks = new BoneTrack?[skeleton.BoneCount];
+                float lastTime = times.Max;
+                foreach (var t in times)
+                {
+                    float tTicks = t * ticksPerSec;
+                    var globals = new Dictionary<string, SN.Matrix4x4>(StringComparer.OrdinalIgnoreCase);
+                    EvalAnimatedGlobals(sc.RootNode, SN.Matrix4x4.Identity, channels, tTicks, globals);
+
+                    for (int bi = 0; bi < skeleton.BoneCount; bi++)
                     {
-                        float tTicks = t * ticksPerSec;
-                        var pos = SamplePosition(channel, tTicks);
-                        var rot = SampleRotation(channel, tTicks);
-                        var scl = SampleScale(channel, tTicks);
+                        var bone = skeleton.Bones[bi];
+                        if (!globals.TryGetValue(bone.Name, out var mine)) continue;
 
-                        // Match LocalBindTransform translation scaling above.
+                        SN.Matrix4x4 local;
+                        int parent = bone.ParentIndex;
+                        if (parent >= 0
+                            && globals.TryGetValue(skeleton.Bones[parent].Name, out var parentGlobal)
+                            && SN.Matrix4x4.Invert(parentGlobal, out var invParent))
+                            local = mine * invParent;
+                        else if (parent < 0)
+                            local = mine;
+                        else
+                            continue;
+
+                        if (!SN.Matrix4x4.Decompose(local, out var scl, out var rot, out var pos))
+                            continue;
+
                         if (Math.Abs(vertexScale - 1f) > 0.0001f)
                             pos *= vertexScale;
 
+                        var track = tracks[bi];
+                        if (track == null)
+                        {
+                            track = new BoneTrack { BoneName = bone.Name, BoneIndex = bi };
+                            tracks[bi] = track;
+                        }
+                        else if (track.Keyframes.Count > 0)
+                        {
+                            var prev = track.Keyframes[track.Keyframes.Count - 1];
+                            if (SN.Quaternion.Dot(prev.Rotation, rot) < 0f)
+                                rot = new SN.Quaternion(-rot.X, -rot.Y, -rot.Z, -rot.W);
+                            bool held = (prev.Position - pos).LengthSquared() < 1e-8f
+                                     && (prev.Scale - scl).LengthSquared() < 1e-8f
+                                     && MathF.Abs(SN.Quaternion.Dot(prev.Rotation, rot)) > 0.99999f;
+                            if (held && t < lastTime - 1e-5f) continue;
+                        }
+
                         track.Keyframes.Add(new BoneKeyframe(t, pos, rot, scl));
                     }
+                }
 
-                    if (track.Keyframes.Count > 0)
-                        clip.Tracks.Add(track);
+                for (int bi = 0; bi < tracks.Length; bi++)
+                {
+                    if (tracks[bi] != null && tracks[bi]!.Keyframes.Count > 0)
+                        clip.Tracks.Add(tracks[bi]!);
                 }
 
                 if (clip.Tracks.Count > 0)
@@ -1421,6 +1607,37 @@ namespace Game_Engine.Core.Importers
             }
 
             return savedPaths;
+        }
+
+        /// <summary>
+        /// World-from-root for every node, with animation channels replacing the node
+        /// transform. Pivot nodes stay in the chain so a joint's rotation and translation
+        /// both reach the skeleton bone.
+        /// </summary>
+        static void EvalAnimatedGlobals(
+            Node node,
+            SN.Matrix4x4 parentGlobal,
+            Dictionary<string, NodeAnimationChannel> channels,
+            float ticks,
+            Dictionary<string, SN.Matrix4x4> globals)
+        {
+            SN.Matrix4x4 local;
+            if (channels.TryGetValue(node.Name, out var channel))
+            {
+                var pos = SamplePosition(channel, ticks);
+                var rot = SampleRotation(channel, ticks);
+                var scl = SampleScale(channel, ticks);
+                local = SN.Matrix4x4.CreateScale(scl)
+                      * SN.Matrix4x4.CreateFromQuaternion(rot)
+                      * SN.Matrix4x4.CreateTranslation(pos);
+            }
+            else
+                local = AiToSN(node.Transform);
+
+            var global = local * parentGlobal;
+            globals[node.Name] = global;
+            foreach (var child in node.Children)
+                EvalAnimatedGlobals(child, global, channels, ticks, globals);
         }
 
         static SN.Vector3 SamplePosition(NodeAnimationChannel ch, float ticks)

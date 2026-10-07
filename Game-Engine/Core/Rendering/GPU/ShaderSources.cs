@@ -179,6 +179,8 @@ uniform float uLightRange;
 uniform bool  uLightIsPoint;
 uniform float uDiffuseK;
 uniform float uAmbient;
+uniform int   uHasPlanetFill;
+uniform vec3  uPlanetCenter;
 uniform float uShadowBias;
 uniform vec3  uSunDir;          // direction FROM sun (for slope bias)
 uniform int   uIsVegetation;
@@ -425,6 +427,18 @@ void main()
         // Shadow attenuates both ambient (sky occlusion) and diffuse
         float ambShadow = mix(0.35, 1.0, shadow);
         shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
+        // Planet terrain is Lambert. Props were left on a dim PBR-style response plus a
+        // crushed AO bake, so campfires and workbenches read nearly black on the ground.
+        if (uHasPlanetFill == 1)
+        {
+            vec3 radial = normalize(vWorldPos - uPlanetCenter);
+            float sky = clamp(dot(N, radial), 0.0, 1.0);
+            float aoLift = mix(0.62, 1.0, clamp(aoFactor, 0.0, 1.0));
+            float hemi = uAmbient * aoLift * (0.90 + 0.55 * sky);
+            float sun = uDiffuseK * diffuse * mix(0.55, 1.0, shadow);
+            shade = clamp(hemi + sun, 0.0, 1.35);
+            aoLit = 1.0;
+        }
     }
 
     vec3 color = litAlbedo * shade + vec3(specular * shadow);
@@ -665,6 +679,8 @@ uniform float uProbeBlend;
 
 // Ambient
 uniform float uAmbient;
+uniform int   uHasPlanetFill;
+uniform vec3  uPlanetCenter;
 
 // SSAO (optional)
 uniform sampler2D uSSAOTex;
@@ -917,9 +933,23 @@ void main()
         Lo += prefiltered * Fenv * uProbeBlend * (1.0 - roughness) * 0.5;
     }
 
-    // Ambient
-    float ambShadow = mix(0.35, 1.0, shadow);
-    vec3 ambient = vec3(uAmbient) * albedo * ao * ambShadow;
+    // Ambient. On a planet, match the terrain Lambert term: the cook-torrance
+    // albedo/PI sun leaves props black beside the ground, and pack AO bakes
+    // zero out the sky fill on wood and stone.
+    vec3 ambient;
+    if (uHasPlanetFill == 1)
+    {
+        vec3 radial = normalize(worldPos - uPlanetCenter);
+        float sky = clamp(dot(N, radial), 0.0, 1.0);
+        float aoLift = mix(0.62, 1.0, clamp(ao, 0.0, 1.0));
+        Lo *= PI;
+        ambient = albedo * uAmbient * aoLift * (0.90 + 0.55 * sky);
+    }
+    else
+    {
+        float ambShadow = mix(0.35, 1.0, shadow);
+        ambient = vec3(uAmbient) * albedo * ao * ambShadow;
+    }
 
     vec3 color = ambient + Lo + emissive;
 
@@ -1810,6 +1840,7 @@ layout(location = 0) in vec2 aPosition;    // billboard quad corner (-0.5..0.5)
 uniform vec4 uParticlePos[128];   // xyz = world position, w = size / streak width
 uniform vec4 uParticleCol[128];   // rgba color
 uniform int uAlignVelocity;
+uniform int uParticleLook;     // 0 soft circle, 1 rain streak, 2 flame
 uniform float uStretchLength;
 uniform vec3 uFallDir;
 
@@ -1833,7 +1864,27 @@ void main()
     vec3 camRight = vec3(uView[0][0], uView[1][0], uView[2][0]);
     vec3 camUp    = vec3(uView[0][1], uView[1][1], uView[2][1]);
     vec3 corner;
-    if (uAlignVelocity != 0)
+    if (uParticleLook == 2)
+    {
+        // Base sits on the particle. The tip rises along the flame axis.
+        vec3 axis = uFallDir;
+        float axisLen = length(axis);
+        if (axisLen > 1e-5)
+            axis /= axisLen;
+        else
+            axis = vec3(0.0, 1.0, 0.0);
+        vec3 viewFwd = vec3(uView[0][2], uView[1][2], uView[2][2]);
+        vec3 side = cross(axis, viewFwd);
+        if (dot(side, side) < 1e-6)
+            side = camRight;
+        else
+            side = normalize(side);
+        float y01 = aPosition.y + 0.5;
+        float taper = mix(1.0, 0.14, y01 * y01);
+        float height = max(size * 1.15, 0.28);
+        corner = worldPos + side * (aPosition.x * size * 1.45 * taper) + axis * (y01 * height);
+    }
+    else if (uAlignVelocity != 0)
     {
         vec3 fall = uFallDir;
         float fallLen = length(fall);
@@ -1861,12 +1912,35 @@ void main()
 #version 330 core
 in vec4 vColor;
 in vec2 vUV;
+flat in int vInstanceID;
 uniform int uAlignVelocity;
+uniform int uParticleLook;
 
 out vec4 FragColor;
 
 void main()
 {
+    if (uParticleLook == 2)
+    {
+        float x = abs(vUV.x - 0.5) * 2.0;
+        float y = vUV.y;
+        float wobble = 0.84 + 0.16 * fract(sin(float(vInstanceID) * 12.9898 + y * 47.0) * 43758.5453);
+        float halfW = mix(0.96, 0.16, y) * wobble;
+        float radial = x / max(halfW, 0.05);
+        float body = 1.0 - smoothstep(0.45, 1.0, radial);
+        float tip = 1.0 - smoothstep(0.58, 1.0, y);
+        float base = smoothstep(0.0, 0.06, y);
+        float core = exp(-radial * radial * 1.7) * (1.0 - y * 0.8);
+        vec3 hot = vec3(1.0, 0.97, 0.78);
+        vec3 edge = vec3(0.72, 0.12, 0.01);
+        vec3 col = mix(edge, vColor.rgb, clamp(body, 0.0, 1.0));
+        col = mix(col, hot, clamp(core, 0.0, 1.0));
+        float alpha = body * tip * base * vColor.a;
+        if (alpha < 0.01) discard;
+        FragColor = vec4(col, alpha);
+        return;
+    }
+
     float alpha;
     if (uAlignVelocity != 0)
     {
@@ -2731,6 +2805,10 @@ uniform vec3 uLightDir;
 uniform vec3 uCamPos;
 uniform float uAmbient;
 uniform float uDiffuseK;
+uniform int uPointCount;
+uniform vec3 uPointPos[4];
+uniform vec3 uPointColor[4];
+uniform float uPointRange[4];
 uniform int uAtmoEnabled;
 uniform vec3 uAtmoSunDir;
 uniform float uAtmoSunIntensity;
@@ -2790,18 +2868,21 @@ vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 ba, float t)
 {
     // Tile in meters: tiling 12 on a radius-1000 planet => ~83m repeats, not UV*worldPos sparkle.
     float meters = max(uPlanetRadius, 1.0) / max(t, 0.25);
-    vec3 local = worldPos - uPlanetCenter;
-    vec3 p = local / meters;
-    vec3 cyz = texture(tex, p.yz).rgb;
-    vec3 cxz = texture(tex, p.xz).rgb;
-    vec3 cxy = texture(tex, p.xy).rgb;
-
+    vec3 p = (worldPos - uPlanetCenter) / meters;
     // ba = surface-normal axes on cliffs, radial axes on flats (see main()).
-    // Position-based weights smear albedo down steep slopes; normal axes pick the
-    // correct projection plane so cliff faces stay sharp instead of streaking.
     vec3 w = pow(max(abs(ba), vec3(0.001)), vec3(5.0));
+    // Valley floors and hills use one cube face. Three taps only on cliffs,
+    // where the projections actually differ.
+    if (w.y > w.x * 8.0 && w.y > w.z * 8.0)
+        return texture(tex, p.xz).rgb;
+    if (w.x > w.y * 8.0 && w.x > w.z * 8.0)
+        return texture(tex, p.yz).rgb;
+    if (w.z > w.x * 8.0 && w.z > w.y * 8.0)
+        return texture(tex, p.xy).rgb;
     w /= (w.x + w.y + w.z + 0.001);
-    return cyz * w.x + cxz * w.y + cxy * w.z;
+    return texture(tex, p.yz).rgb * w.x
+         + texture(tex, p.xz).rgb * w.y
+         + texture(tex, p.xy).rgb * w.z;
 }
 
 vec3 sampleBiome(int idx, vec3 wp, vec3 ba, float t)
@@ -2911,15 +2992,11 @@ float shadowFactor(vec4 sc)
     float bias = 0.004 + (1.0 - max(dot(normalize(vWorldNormal), normalize(-uLightDir)), 0.0)) * 0.02;
     vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
     float visibility = 0.0;
-    for (int y = -1; y <= 1; y++)
-    {
-        for (int x = -1; x <= 1; x++)
-        {
-            float closestDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texel).r;
-            visibility += (projCoords.z - bias > closestDepth) ? 0.55 : 1.0;
-        }
-    }
-    return visibility / 9.0;
+    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2(-0.6, -0.6) * texel).r) ? 0.55 : 1.0;
+    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2( 0.6, -0.6) * texel).r) ? 0.55 : 1.0;
+    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2(-0.6,  0.6) * texel).r) ? 0.55 : 1.0;
+    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2( 0.6,  0.6) * texel).r) ? 0.55 : 1.0;
+    return visibility * 0.25;
 }
 
 vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadial, float digBlend)
@@ -2932,7 +3009,11 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadi
     float lum = dot(texCol, vec3(0.299, 0.587, 0.114));
     vec3 topCol = (lum > 0.98) ? baseCol : texCol;
 
-    // Dig walls / floors + cliffs: dedicated under map when bound, else reuse top albedo.
+    // Open ground is the top albedo. The second texture is only for cliffs and digs.
+    float topW = slopeBlend * (1.0 - digBlend);
+    if (topW > 0.92)
+        return topCol;
+
     {
         float ut = max(uBiomeUnderTiling[idx], 0.25);
         vec3 underTex = (uBiomeHasUnder[idx] > 0.5)
@@ -2946,8 +3027,6 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadi
     underCol = mix(underCol, max(underCol, vec3(0.12)), clamp(nDotRadial, 0.0, 1.0));
     vec3 cliffCol = mix(underCol, topCol * 0.62, 0.22);
 
-    // Flat dig floors still need under rock — digBlend overrides slope (top grass).
-    float topW = slopeBlend * (1.0 - digBlend);
     return mix(cliffCol, topCol, topW);
 }
 
@@ -3108,6 +3187,20 @@ void main()
     float ao = mix(1.0, 0.35, clamp(-nDotRadial, 0.0, 1.0));
     float ambient = uAmbient * mix(1.0, 0.7, interior);
     vec3 lit = finalColor * (ambient + diffuse * shadow) * ao;
+    for (int i = 0; i < 4; i++)
+    {
+        if (i >= uPointCount) break;
+        vec3 toL = uPointPos[i] - vWorldPos;
+        float dist = length(toL);
+        float range = max(uPointRange[i], 0.001);
+        if (dist >= range) continue;
+        vec3 Lp = toL / max(dist, 0.0001);
+        float nd = max(dot(N, Lp), 0.0);
+        float wrap = nd * 0.9 + 0.1;
+        float t = dist / range;
+        float atten = (1.0 - t * t) / (1.0 + t * t);
+        lit += finalColor * uPointColor[i] * wrap * atten;
+    }
     lit += vec3(spec + fres) * shadow * ao;
     lit += skyRefCol * skyRef * shadow * ao;
     lit += evalAtmosphere(vWorldPos, V, radialDir);
@@ -3624,6 +3717,7 @@ uniform float uWindStrength;
 uniform vec3 uWindDir;
 uniform float uRain;
 uniform float uStorm;
+uniform float uCardWidth;
 
 out vec2 vUV;
 out vec3 vWorldPos;
@@ -3642,10 +3736,11 @@ void main()
     vec3 zAxis = -side * sy + fwd * cy;
 
     float h = max(0.05, aInstPosScale.w);
+    float w = h * max(0.25, uCardWidth);
     vec3 local = aInstPosScale.xyz
-        + xAxis * (aPosition.x * h)
+        + xAxis * (aPosition.x * w)
         + up * (aPosition.y * h)
-        + zAxis * (aPosition.z * h);
+        + zAxis * (aPosition.z * w);
 
     float tip = clamp(aPosition.y, 0.0, 1.0);
     vec4 world = uPlanetWorld * vec4(local, 1.0);

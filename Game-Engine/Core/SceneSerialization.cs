@@ -375,16 +375,21 @@ namespace Game_Engine.Core
         {
             if (string.IsNullOrWhiteSpace(aqn)) return null;
 
-            // Fast path: exact match (same assembly)
-            var t = Type.GetType(aqn, false);
-            if (t != null) return t;
-
-            // Slow path: extract the full type name (before the first comma) and search all assemblies
             var comma = aqn.IndexOf(',');
             var fullName = comma > 0 ? aqn.Substring(0, comma).Trim() : aqn;
 
+            var latest = ScriptTypeReload.TryResolveLatestType(fullName);
+            if (latest != null) return latest;
+
+            var t = Type.GetType(aqn, false);
+            if (t != null) return t;
+
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
+                var asmName = asm.GetName().Name;
+                if (asmName != null &&
+                    asmName.StartsWith("EditorScripts_", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 try
                 {
                     t = asm.GetType(fullName, false);

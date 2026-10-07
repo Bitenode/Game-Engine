@@ -17,7 +17,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, VegetationClearZone, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Gameplay** | PlanetPlayerSpawner, PlanetTool | `Core/Component/Gameplay/` (PlanetTool ships in Standard Assets) |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
@@ -101,7 +101,7 @@ Illuminates the scene. Supports directional, point, and spot light types.
 
 **Methods:**
 - `GetWorldDirection()` — computes world-space direction from Transform rotation
-- `GetWorldPosition()` — returns world-space position
+- `GetWorldPosition()` — returns world-space position (accumulates parent transforms — child lights on moving objects follow correctly)
 - `GetColorRGB()` — returns normalized RGB multiplied by intensity
 
 **Directional lights** use the Transform's forward direction and cast shadows via a 4096x4096 shadow map with PCF soft shadows.
@@ -726,7 +726,8 @@ Billboard particle system with emission shapes, sub-emitters, and preset configu
 **Key features:**
 - **Billboard particles** — always face the camera
 - **Instanced rendering** — efficient GPU drawing via uniform arrays
-- **Emission shapes** — `Sphere`, `Cone`, `Box` with configurable dimensions
+- **Emission shapes** — `Sphere`, `Cone`, `Box` with configurable dimensions. **Cone** emissions align to `EmissionDirection` (not fixed world +Y)
+- **Particle look** — `Look` enum: `Billboard` (soft circle), `Streak` (rain/snow), `Flame` (teardrop rising from the particle base). Fire preset uses `Flame`
 - **Sub-emitters** — spawn additional particles on collision, death, or other events
 - **Soft circular particles** — alpha falloff from center to edge for smooth appearance
 - **Planet-aware precipitation support**:
@@ -741,7 +742,7 @@ Billboard particle system with emission shapes, sub-emitters, and preset configu
 ### Presets
 | Preset   | Description                                |
 |----------|--------------------------------------------|
-| `Fire`   | Warm orange/yellow upward particles         |
+| `Fire`   | Flame-shaped upward particles (`ParticleLook.Flame`) |
 | `Smoke`  | Gray billowing particles with slow rise     |
 | `Sparks` | Bright fast-moving particles with gravity   |
 | `Rain`   | Downward-falling elongated particles        |
@@ -837,7 +838,8 @@ Skeletal animation state machine with bone-based animation support and GPU skinn
 **Features:**
 - **Animation states** — each state references a property clip (`.anim`) and/or a bone clip (`.boneanim`)
 - **State transitions** — switch between animation states (parameter, exit time, or duration-based)
-- **Bone matrix computation** — computes per-bone transformation matrices each frame
+- **Bone matrix computation** — computes per-bone transformation matrices each frame; reuses pose buffers (`SampleAllBonesInto`) instead of allocating each frame
+- **`PoseVersion`** — bumped when the pose changes; `SkinnedMeshRenderer` skips bone-matrix rebuild when unchanged (LateUpdate, draw, and shadow pass share one solve)
 - **GPU skinning integration** — passes bone matrices to `SkinnedMeshRenderer` for vertex deformation
 - **Flexible bone matching** — handles bone name prefixes (e.g., "mixamorig:") for cross-format compatibility
 - **Scene persistence** — `StateList`, `TransitionList`, and `DefaultStateName` are saved in `.scene` files and restored when Play mode stops
@@ -1767,6 +1769,7 @@ Renders a sprite or texture inside a `RectTransform`. Supports simple stretch, 9
 | `ImageType` | `ImageType` | `Simple` | Rendering mode |
 | `FillAmount` | `float` | `1` | Fill (0–1) for `Filled` mode |
 | `PreserveAspect` | `bool` | `false` | Maintain original aspect ratio |
+| `SpriteRotation` | `int` | `0` | Clockwise rotation in degrees (snapped to 0°, 90°, 180°, 270°) |
 
 **Image Types:**
 | Type | Description |
@@ -2149,4 +2152,5 @@ Optional Environment companions on the planet root. Graph compile binds flora/sc
 | `PlanetLifeStreaming` | Shared 18×18 face/UV cell keys with vegetation. `BindRecipe` holds fauna / underwater-life / vein tables for later consumers |
 | `PlanetFloraSpawner` | Caps unique imported tree mesh paths (`MaxUniqueMeshes`, default 24) so the FBX template cache does not thrash |
 | `PlanetScatterRenderer` | GPU-instanced rock/grass buffer hook (`MaxInstances` 8192). Companion storage — does not replace CPU grass merge yet |
-| `PlanetFaunaTableBehavior` | Compiled herd/species tables. AI locomotion must use `StandRadiusGrid`, never density marches |
+| `PlanetFaunaTableBehavior` | Play-mode fauna spawner: imports `{Species}_Rig.fbx`, binds Idle/Walk clips, places herds on the stand surface by biome layer density. Locomotion uses `StandRadiusGrid`, never density marches |
+| `VegetationClearZone` | Clears GPU grass and streamed trees in a world-space circle around the object (campfires, buildings). `Radius` 0.25–100 m; bumps `Version` when resized |

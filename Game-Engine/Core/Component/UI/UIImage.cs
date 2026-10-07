@@ -38,6 +38,9 @@ namespace Game_Engine.Core.Component.UI
         /// <summary>Preserve the original aspect ratio of the image.</summary>
         [Persist] public bool PreserveAspect { get; set; } = false;
 
+        /// <summary>Clockwise rotation of the sprite in degrees. Snapped to 0, 90, 180, or 270.</summary>
+        [Persist] public int SpriteRotation { get; set; }
+
         // ── Texture caching ──
         private Texture2D? _cachedTexture;
         private string _cachedPath = "";
@@ -122,11 +125,16 @@ namespace Game_Engine.Core.Component.UI
                 u1 = u0 + (u1 - u0) * fill;
             }
 
+            int turns = SpriteRotation % 360;
+            if (turns < 0) turns += 360;
+            turns /= 90;
+
             if (_quadBuffer.Length < 1) _quadBuffer = new UIQuad[1];
             _quadBuffer[0] = new UIQuad
             {
                 X0 = x0, Y0 = y0, X1 = x1, Y1 = y1,
                 U0 = u0, V0 = v0, U1 = u1, V1 = v1,
+                UvTurns = turns,
                 R = r, G = g, B = b, A = a,
                 Texture = tex,
                 TextureHandle = 0,

@@ -455,7 +455,7 @@ An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-ba
 - **Natural push interactions** — momentum transfer between objects
 - **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing
 - **Cave-aware grounding** — short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` after penetration resolve (32 steps / 4 refine). Outer crust uses **surface mode** + `SampleStandWorldRadius` (height cubemap + dig deltas)
-- **Heightfield dig walls** — `ResolveDigWallCapsule` probes world points around the capsule (feet/waist/head) via `HeightfieldGap` and shoves laterally until neighbor columns no longer pierce the body. `InvalidateCollisionCache()` clears the stand-radius cache (call after digs; `PlanetTool` does this automatically)
+- **Heightfield dig walls** — `ResolveDigWallCapsule` probes world points around the capsule (feet/waist/head) via `HeightfieldGap` and shoves laterally until neighbor columns no longer pierce the body. Smooth uphill slopes use a **fitted gradient** so natural hills are not mistaken for dig walls (only excess above the local slope plane is corrected). **Stand easing** smooths chunk LOD / seam jumps on the visible shell mesh. `InvalidateCollisionCache()` clears the stand-radius cache (call after digs; `PlanetTool` does this automatically)
 - **First-person eye clearance** — `ResolveHeightfieldEyeClearance` keeps the near plane above dig rims and crater walls using the same heightfield gap tests (not volumetric `ResolveDensityPenetration`, which only pushes radially)
 
 Pair with **`PlanetPlayerSpawner`** for quick play-mode setup (retries spawn up to **12 s** while waiting for renderable leaves), or add manually with `Rigidbody` + `CapsuleCollider`.

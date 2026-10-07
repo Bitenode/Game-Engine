@@ -163,6 +163,9 @@ bool crouch = Input.GetAction("Crouch");         // Ctrl or B
 bool wHeld = Input.GetKey(KeyCode.W);
 bool aDown = Input.GetGamepadButtonDown(GamepadButton.A);
 int pads = Input.ConnectedGamepadCount;
+
+// Mouse wheel (positive = scroll up). Game View and PlayerView feed this each frame.
+float scroll = Input.MouseScrollY;
 ```
 
 #### Time
@@ -231,9 +234,11 @@ Vector3 gravity = Physics.Gravity; // Default: (0, -9.81, 0)
 Project scripts compile automatically when:
 
 1. **Project open / create / recent** — after `project.json` loads, if any `.cs` under `Assets/` or `Packages/` is newer than the newest `Builds/EditorScripts/EditorScripts_*.dll` (`ScriptCompiler.AreEditorScriptsStale()`)
-2. **Press Play** — if scripts are stale, compile runs before the play snapshot so `Behavior` types match the files on disk
+2. **Press Play** — when entering Play from **Stop**, or whenever scripts are stale, compile runs before the play snapshot so `Behavior` types match the files on disk
 
 The open path is **async** (UI stays responsive). Manual compile is still available from the Script Editor, command palette (**Scripts: Compile and Reload Extensions**), or **Ctrl+B**.
+
+**Compile failures:** If Roslyn reports errors, the editor shows a **Script compile failed** dialog with the full compiler output. **Play is cancelled** until you fix and recompile. On **project open**, a failed compile does **not** skip scene load — the last good `EditorScripts_*.dll` stays active and the last scene still opens, then the error dialog appears.
 
 ### Built-In Script Editor
 1. Double-click a `.cs` file in the Project Panel to open it in the Script Editor
@@ -247,7 +252,21 @@ The open path is **async** (UI stays responsive). Manual compile is still availa
 4. The assembly is loaded into a **collectible `AssemblyLoadContext`** (allows unloading)
 5. New `Behavior` types are discovered and added to the "Add Component" dropdown
 6. New `EditorExtension` types are discovered and their `Contribute()` methods are called
-7. The previous assembly's `AssemblyLoadContext` is released for garbage collection (hot-reload)
+7. The previous assembly's `AssemblyLoadContext` is **retired** (kept alive until scene instances are remapped) via `ScriptTypeReload.RetireLoadContext`
+8. `ScriptTypeReload.NoteCompiled` tracks the newest assembly; scene deserialization and the Inspector resolve types through `ScriptTypeReload.TryResolveLatestType`
+
+### Script type reload (`ScriptTypeReload`)
+
+After compile, scene objects may still hold instances from an older `EditorScripts_*` assembly. **`ScriptTypeReload`** keeps Play mode on the newest DLL:
+
+| API / flag | Role |
+|------------|------|
+| `EnsureLatestLoaded()` | Loads the newest on-disk `EditorScripts_*.dll` (Play and scene load call this) |
+| `MigrateScene()` | Remaps existing `Behavior` instances to the latest type (copies public properties and `[Persist]` fields) |
+| `RematerializeScene()` | Forces fresh instances from the latest types without reloading the scene file (used when entering Play after compile) |
+| `NeedsFreshPlay` | Set after compile or Stop; next Play discards the play snapshot and rebuilds script instances |
+
+**Play workflow:** Stop → compile (if needed) → Play calls `RematerializeScene()` so `Start()` / HUD scripts run from the new assembly. Inspector type resolution and `SceneSerialization` also prefer the latest EditorScripts type over stale AppDomain copies.
 
 ### Error Handling
 Compilation errors appear in the **Console Panel** with:
@@ -570,11 +589,10 @@ The engine supports a fast iteration workflow:
 5. **Iterate** — make changes and recompile as often as needed
 
 **Behind the scenes:**
-- The old assembly is loaded in a **collectible `AssemblyLoadContext`**
-- When a new assembly is compiled, the old context is released
-- The .NET garbage collector eventually unloads the old assembly
-- Component instances on existing GameObjects are updated to use the new types
-- Extension menus are rebuilt to reflect any changes
+- Each compile loads into a **collectible `AssemblyLoadContext`**
+- The previous context is **retired**, not unloaded immediately — Game View may still hold old instances until remapped
+- On compile (while editing) or on the next **Play** from Stop, `ScriptTypeReload` migrates or rematerializes `Behavior` instances onto the newest types
+- After rematerialization, retired contexts are unloaded and extension menus are rebuilt
 
 **Limitations:**
 - Scene data persisted with old type definitions may need re-serialization if property names change

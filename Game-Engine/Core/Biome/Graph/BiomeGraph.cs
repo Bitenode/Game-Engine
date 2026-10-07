@@ -126,6 +126,9 @@ public sealed class BiomeLayerInfo
     public float TreeDensity { get; set; } = 0f;
     public string VegetationProfileId { get; set; } = "Default";
     public float VegetationPatchiness { get; set; } = 0.45f;
+    /// <summary>Set by a flora layer. 0 keeps the biome preset.</summary>
+    public float GrassMinScale { get; set; }
+    public float GrassMaxScale { get; set; }
     public string WeatherProfileId { get; set; } = "Temperate";
     public float RainChance { get; set; } = 0.15f;
     public float SnowChance { get; set; } = 0.04f;
@@ -828,6 +831,10 @@ public sealed class BiomeGraph
                 layers[i].VegetationDensity = flora.GrassDensity;
             if (flora.TreeDensity > 0f)
                 layers[i].TreeDensity = flora.TreeDensity;
+            if (flora.GrassMinScale > 0f)
+                layers[i].GrassMinScale = flora.GrassMinScale;
+            if (flora.GrassMaxScale > 0f)
+                layers[i].GrassMaxScale = flora.GrassMaxScale;
             layers[i].VegetationPatchiness = flora.Patchiness;
             layers[i].GrowthTemperatureMin = flora.GrowthTemperatureMin;
             layers[i].GrowthTemperatureMax = flora.GrowthTemperatureMax;
@@ -1576,6 +1583,8 @@ public sealed class BiomeGraph
                 obj["profileId"] = n.ProfileId; obj["targetBiome"] = n.TargetBiome;
                 obj["grassDensity"] = n.GrassDensity; obj["bushDensity"] = n.BushDensity; obj["treeDensity"] = n.TreeDensity;
                 obj["patchiness"] = n.Patchiness;
+                if (n.GrassMinScale > 0f) obj["grassMinScale"] = n.GrassMinScale;
+                if (n.GrassMaxScale > 0f) obj["grassMaxScale"] = n.GrassMaxScale;
                 obj["minSlope"] = n.MinSlope; obj["maxSlope"] = n.MaxSlope;
                 obj["minAltitude"] = n.MinAltitude; obj["maxAltitude"] = n.MaxAltitude;
                 obj["growthTempMin"] = n.GrowthTemperatureMin; obj["growthTempMax"] = n.GrowthTemperatureMax;
@@ -1798,6 +1807,8 @@ public sealed class BiomeGraph
                 n.BushDensity = item["bushDensity"]?.GetValue<float>() ?? n.BushDensity;
                 n.TreeDensity = item["treeDensity"]?.GetValue<float>() ?? n.TreeDensity;
                 n.Patchiness = item["patchiness"]?.GetValue<float>() ?? n.Patchiness;
+                n.GrassMinScale = item["grassMinScale"]?.GetValue<float>() ?? n.GrassMinScale;
+                n.GrassMaxScale = item["grassMaxScale"]?.GetValue<float>() ?? n.GrassMaxScale;
                 n.MinSlope = item["minSlope"]?.GetValue<float>() ?? n.MinSlope;
                 n.MaxSlope = item["maxSlope"]?.GetValue<float>() ?? n.MaxSlope;
                 n.MinAltitude = item["minAltitude"]?.GetValue<float>() ?? n.MinAltitude;

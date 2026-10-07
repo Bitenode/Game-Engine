@@ -337,7 +337,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        panels[0].State = GamePanel.GameState.Playing;
+        panels[0].RequestPlay();
     }
 
     private IEnumerable<GamePanel> EnumerateGamePanels()
@@ -701,21 +701,20 @@ public partial class MainWindow : Window
 
     private async Task CompileScriptsFromPaletteAsync()
     {
-        try
+        var (ok, files, types, error) = await ScriptEditorWindow.TryCompileAllProjectScriptsAsync();
+        if (!ok)
         {
-            var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
-            ExtensionService.RefreshForCurrentProject();
-            RefreshProjectUI();
-            RebuildExtensionMenus();
-            var msg = $"Scripts compiled ({files} files, {types} behavior types). Extensions reloaded.";
-            ExtensionDiagnostics.RecordCompileReload(true, msg);
-            Log.Success(msg);
+            ExtensionDiagnostics.RecordCompileReload(false, error ?? "compile failed");
+            Log.Error($"Script compile failed: {error}");
+            await ShowCompileError(error ?? "Script compile failed.");
+            return;
         }
-        catch (Exception ex)
-        {
-            ExtensionDiagnostics.RecordCompileReload(false, ex.Message);
-            Log.Error($"Script compile failed: {ex.Message}");
-        }
+        ExtensionService.RefreshForCurrentProject();
+        RefreshProjectUI();
+        RebuildExtensionMenus();
+        var msg = $"Scripts compiled ({files} files, {types} behavior types). Extensions reloaded.";
+        ExtensionDiagnostics.RecordCompileReload(true, msg);
+        Log.Success(msg);
     }
 
 
@@ -1040,37 +1039,41 @@ public partial class MainWindow : Window
         if (ProjectService.Current is { } opened)
             RecentProjectsStore.AddRecent(opened.ManifestPath);
         RefreshProjectUI();
-        // Compile before the last scene loads so custom Behaviour types match
-        // the scripts on disk — no Script Editor required.
-        await TryRebuildProjectScriptsAsync();
+        // Compile first so a successful build matches scene Behaviour types.
+        // A failed compile must not skip or clear the Scene view — load the
+        // last scene with the previous good scripts, then show the errors.
+        var (compiled, compileError) = await TryRebuildProjectScriptsAsync();
         ExtensionService.RefreshForCurrentProject();
         RebuildExtensionMenus();
         SceneService.SetCurrentScenePath(null);
         SceneService.SetDirty(false);
         TryAutoLoadLastOpenedScene();
+        if (!compiled)
+            await ShowCompileError(compileError ?? "Script compile failed.");
     }
 
-    internal async Task TryRebuildProjectScriptsAsync(bool onlyIfStale = false)
+    internal async Task<(bool ok, string? error)> TryRebuildProjectScriptsAsync(bool onlyIfStale = false)
     {
-        if (ProjectService.Current is null) return;
-        if (onlyIfStale && !ScriptCompiler.AreEditorScriptsStale()) return;
+        if (ProjectService.Current is null) return (true, null);
+        if (onlyIfStale && !ScriptCompiler.AreEditorScriptsStale()) return (true, null);
 
-        try
+        Log.Info("Compiling project scripts…");
+        var (ok, files, types, error) = await ScriptEditorWindow.TryCompileAllProjectScriptsAsync();
+        if (!ok)
         {
-            Log.Info("Compiling project scripts…");
-            var (files, types) = await ScriptEditorWindow.CompileAllProjectScriptsAsync();
+            ExtensionDiagnostics.RecordCompileReload(false, error ?? "compile failed");
+            Log.Error($"Project script compile failed: {error}");
+            return (false, error);
+        }
+        if (files > 0)
+        {
             var msg = $"Project scripts compiled ({files} files, {types} behavior types).";
             ExtensionDiagnostics.RecordCompileReload(true, msg);
             Log.Success(msg);
         }
-        catch (Exception ex)
-        {
-            ExtensionDiagnostics.RecordCompileReload(false, ex.Message);
-            Log.Error($"Project script compile failed: {ex.Message}");
-        }
+        return (true, null);
     }
 
-    
     private async void OnMenuSaveScene_Click(object? sender, RoutedEventArgs e)
     {
         await SaveSceneAsync(forceSaveAsDialog: true);
@@ -1378,6 +1381,60 @@ public partial class MainWindow : Window
                 TextWrapping = TextWrapping.Wrap
             }
         };
+        await dlg.ShowDialog(this);
+    }
+
+    internal async Task ShowCompileError(string message)
+    {
+        var text = new TextBox
+        {
+            Text = string.IsNullOrWhiteSpace(message) ? "Script compile failed." : message,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent
+        };
+
+        var ok = new Button
+        {
+            Content = "OK",
+            MinWidth = 88,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Margin = new Thickness(16, 8, 16, 16)
+        };
+
+        var hint = new TextBlock
+        {
+            Text = "Start was cancelled. Fix the errors and compile again.",
+            Margin = new Thickness(16, 16, 16, 8),
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.85
+        };
+
+        var root = new DockPanel();
+        DockPanel.SetDock(ok, Dock.Bottom);
+        DockPanel.SetDock(hint, Dock.Top);
+        root.Children.Add(ok);
+        root.Children.Add(hint);
+        root.Children.Add(new ScrollViewer
+        {
+            Content = text,
+            Margin = new Thickness(16, 0, 16, 0)
+        });
+
+        var dlg = new Window
+        {
+            Width = 720,
+            Height = 440,
+            MinWidth = 480,
+            MinHeight = 260,
+            Title = "Script compile failed",
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = true,
+            Content = root
+        };
+        ok.Click += (_, __) => dlg.Close();
         await dlg.ShowDialog(this);
     }
 }

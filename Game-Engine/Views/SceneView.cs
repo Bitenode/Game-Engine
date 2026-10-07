@@ -2113,6 +2113,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     lightIsPoint, lightPosW, lightRange,
                     shadowFBO, shadowVP, sunSD,
                     lightColor: lightColorNorm);
+                SceneRenderer.RenderForwardSceneOpaques(g, _standardShader!, _cache,
+                    view, proj, camPos,
+                    SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                    lightIsPoint, lightPosW, lightRange,
+                    shadowFBO, shadowVP, sunSD,
+                    lightColor: lightColorNorm);
             }
 
             // --- WATER ---
