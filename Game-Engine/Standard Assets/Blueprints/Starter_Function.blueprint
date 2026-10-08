@@ -1,0 +1,116 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st06begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st06call",
+        "kind": "CallFunction",
+        "title": "Call Double",
+        "x": 280,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": { "x": "21" },
+        "dynamicPins": [],
+        "functionName": "Double"
+      },
+      {
+        "id": "st06set",
+        "kind": "SetVar",
+        "title": "Set Doubled",
+        "x": 560,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": { "value": "0" },
+        "dynamicPins": [],
+        "variableName": "Doubled"
+      },
+      {
+        "id": "st06print",
+        "kind": "LogMessage",
+        "title": "Print",
+        "x": 820,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": {
+          "message": "Called Double(21) — Doubled typed variable should be 42."
+        },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st06begin", "toNodeId": "st06call", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st06call", "toNodeId": "st06set", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st06call", "toNodeId": "st06set", "fromPin": "result", "toPin": "value", "kind": "data" },
+      { "fromNodeId": "st06set", "toNodeId": "st06print", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [
+    { "name": "Doubled", "type": "float", "defaultLiteral": "0", "instanceEditable": true }
+  ],
+  "functions": [
+    {
+      "name": "Double",
+      "inputs": [
+        { "id": "x", "displayName": "X", "type": "float", "direction": "input", "defaultLiteral": "0" }
+      ],
+      "outputs": [
+        { "id": "result", "displayName": "Result", "type": "float", "direction": "output", "defaultLiteral": "" }
+      ],
+      "graph": {
+        "nodes": [
+          {
+            "id": "fn06entry",
+            "kind": "FunctionEntry",
+            "title": "Entry",
+            "x": 40,
+            "y": 120,
+            "properties": {},
+            "pinLiterals": {},
+            "dynamicPins": [
+              { "id": "x", "displayName": "X", "type": "float", "direction": "output", "defaultLiteral": "" }
+            ],
+            "functionName": "Double"
+          },
+          {
+            "id": "fn06mul",
+            "kind": "MultiplyFloat",
+            "title": "× 2",
+            "x": 280,
+            "y": 120,
+            "properties": {},
+            "pinLiterals": { "b": "2" },
+            "dynamicPins": []
+          },
+          {
+            "id": "fn06ret",
+            "kind": "FunctionReturn",
+            "title": "Return",
+            "x": 520,
+            "y": 120,
+            "properties": {},
+            "pinLiterals": {},
+            "dynamicPins": [
+              { "id": "result", "displayName": "Result", "type": "float", "direction": "input", "defaultLiteral": "0" }
+            ],
+            "functionName": "Double"
+          }
+        ],
+        "wires": [
+          { "fromNodeId": "fn06entry", "toNodeId": "fn06ret", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+          { "fromNodeId": "fn06entry", "toNodeId": "fn06mul", "fromPin": "x", "toPin": "a", "kind": "data" },
+          { "fromNodeId": "fn06mul", "toNodeId": "fn06ret", "fromPin": "result", "toPin": "result", "kind": "data" }
+        ]
+      }
+    }
+  ]
+}

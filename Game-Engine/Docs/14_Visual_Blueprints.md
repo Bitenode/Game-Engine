@@ -1,6 +1,6 @@
 # Game Engine — Visual Blueprints
 
-Visual blueprints are **node graphs** (saved as `.blueprint` JSON) that run on a GameObject via the **Visual Blueprint** (`VisualBlueprintBehavior`) component. They complement C# `Behavior` scripts: you can wire **events**, **flow** (branch, delay), **actions** (transform, activate objects, variables), **reflection** (read/write public members), and **EventBus** messages without recompiling.
+Visual blueprints are **node graphs** (saved as `.blueprint` JSON) that run on a GameObject via the **Visual Blueprint** (`VisualBlueprintBehavior`) component. They complement C# `Behavior` scripts with an **Event Graph**: white **exec** wires for control flow, colored **data** pins for typed values, pure nodes, typed variables, functions, and engine events.
 
 **Full editor workflow:** [Editor Guide — Blueprint panel](02_Editor_Guide.md#blueprint-panel).  
 **C# integration:** [Scripting — Visual Blueprints](06_Scripting_And_Extensibility.md#visual-blueprints).
@@ -11,86 +11,117 @@ Visual blueprints are **node graphs** (saved as `.blueprint` JSON) that run on a
 
 1. Add component **Scripting → Visual Blueprint** to a GameObject.
 2. Open **Window → New Blueprint Tab** (or command palette: **Window: New Blueprint Tab**).
-3. Add nodes (**Add node** / **Insert** menu), connect **exec** wires: drag from the **right** exec pin to the **left** exec pin of the next node.
-4. Save the graph under `Assets/Blueprints/*.blueprint` (the editor can create this folder).
-5. Assign **Blueprint Asset Path** on the component (project-relative, e.g. `Assets/Blueprints/MyGraph.blueprint`).
-6. Enter **Play** — **Begin Play** runs once; **Tick** runs every frame unless **Run Tick Graph** is disabled on the component.
+3. Add nodes (**Add node**, **Insert** menu, or **right‑click** the canvas to search). Connect **exec** wires (white) from right → left; connect **data** wires (colored) the same way.
+4. Optionally declare **Variables** and **Functions** under **My Blueprint**.
+5. Save under `Assets/Blueprints/*.blueprint`.
+6. Assign **Blueprint Asset Path** on the component.
+7. Enter **Play** — **Begin Play** runs once; **Tick** runs every frame unless **Run Tick Graph** is disabled. Use **Graph → Validate** before play.
+
+### Shipped starter graphs (Standard Assets)
+
+When **Include standard assets in new projects** is checked at project creation, the editor copies starter graphs into **`Assets/Standard Assets/Blueprints/`**:
+
+| Asset | Path (after install) |
+|-------|----------------------|
+| Starter graphs (10) | `Assets/Standard Assets/Blueprints/Starter_*.blueprint` |
+| v1 compatibility sample | `Assets/Standard Assets/Blueprints/Legacy_V1_Branch.blueprint` |
+| Demo scene | `Assets/Standard Assets/Scenes/Blueprint Demos.scene` |
+| Folder README | `Assets/Standard Assets/Blueprints/README.txt` |
+
+Open **Blueprint Demos.scene**, press **Play**, and watch the console — ten empty GameObjects each run one starter graph (Begin Play, typed branch, delay/sequence, for loop, input, function, transform, custom event, random branch, legacy v1). Assign any starter to your own objects via **Blueprint Asset Path**, e.g. `Assets/Standard Assets/Blueprints/Starter_BeginPlay.blueprint`.
+
+Save project-specific graphs under **`Assets/Blueprints/`** (created automatically when you save from the Blueprint panel).
 
 ---
 
-## Asset format
+## Asset format (version 2)
 
 | Item | Detail |
 |------|--------|
-| **File** | JSON document: `{ "version": 1, "graph": { "nodes": [...], "wires": [...] } }` |
-| **Default folder** | `Assets/Blueprints/` (created on demand) |
-| **Pins** | Exec: `ExecIn` / `ExecOut`, or **Then** / **Else** for dual-output branches |
+| **File** | JSON: `{ "version": 2, "graph": {…}, "variables": […], "functions": […] }` |
+| **Default folder** | `Assets/Blueprints/` |
+| **Exec pins** | `ExecIn` / `ExecOut`, or named outs (`Then`, `Else`, `Then0`, `loopBody`, …) |
+| **Data pins** | Typed literals on the node (`pinLiterals`) or wires (`kind: "data"`) |
+| **Variables** | Typed decls: bool, int, float, string, vector, object |
+| **Functions** | Named nested graphs with input/output pins |
 
-After editing the file on disk, use **Reload from disk** on the component or reopen the blueprint tab as needed.
+**Version 1** files still load. Legacy string `Properties` (e.g. `conditionKey`) are migrated to pin literals at load; the string `Variables` map on the component remains for old graphs.
+
+After editing on disk, use **Reload from disk** on the component or reopen the blueprint tab.
+
+---
+
+## Pins and evaluation
+
+| Kind | Role |
+|------|------|
+| **Exec** (white) | Control flow. Impure nodes run when exec reaches them. |
+| **Data** (colored) | Values. Unwired inputs use the pin **literal**. Wired inputs pull from the source. |
+| **Pure** nodes | No exec pins. Evaluated when something reads an output (with cycle detection). |
+| **Impure** nodes | Have exec; outputs are cached after the node runs in that chain. |
+
+**Type colors:** exec white · bool red · int cyan · float green · string magenta · vector yellow · object blue. **Int → float** wires are allowed.
 
 ---
 
 ## Runtime model
 
-- **Variables:** Case-insensitive `Dictionary<string,string>` on the runner. Use **Set Variable**, **Copy Variable**, math/text helpers, **ReflectGet** (writes into a `varKey`), etc. Editable in the Inspector (multiline `key=value`).
-- **Events:** **Begin Play** and **Tick** entry nodes; each starts its own exec chain. **Tick** is skipped when **Run Tick Graph** is false.
-- **Delay:** Schedules the next node on the same `VisualBlueprintBehavior` using `Time.time`.
-- **Branches:** **Branch** (truthy variable), **BranchEquals** (string compare), **BranchCompare** (numeric ops), **RandomBranch** (probability) — all use **Then** / **Else** pins; wire each pin you use.
-- **Destroy:** **Destroy Object** tears down behaviors (`OnDestroy`) and removes the object from the scene hierarchy; **Self** can invalidate the runner mid-frame — use with care.
+- **Typed variables:** `GetVar` (pure) / `SetVar` (impure) against the document variable list. Instance overrides: `TypedVariableOverrides` on the component.
+- **Legacy string map:** `Variables` on the component still drives older Set Variable / Branch(conditionKey) nodes.
+- **Events:** Begin Play, Tick (`deltaSeconds` float out), Custom Event, Input Key / Action, Trigger Enter / Stay / Exit (`other` object out).
+- **Delay:** Latent — schedules the next node via game time.
+- **For Loop:** Runs **Loop Body** from First…Last (cap 10 000), then **Completed**. **Index** is an impure output.
+- **Sequence:** Fires Then0, Then1, … in order (dynamic Then pins supported).
+- **Do Once / Gate:** Secondary exec pins Reset / Open / Close.
+- **Functions:** **Call Function** pushes args, runs the function graph from **Function Entry**, returns via **Return Node**.
+- **Destroy:** Tears down behaviors and removes the object — **Self** can invalidate the runner mid-frame.
 
 ---
 
 ## Node reference (built-in)
 
-| Kind | Category | Summary |
-|------|----------|---------|
-| **BeginPlay** | Event | Runs once at start. |
-| **Tick** | Event | Every frame (optional). |
-| **Comment** | Comment | Not executed. |
-| **Sequence** | Flow | Pass-through. |
-| **Branch** | Flow | Then/Else from boolean-ish `Variables[conditionKey]`. |
-| **BranchEquals** | Flow | Then if string equals `equalsValue` (trimmed, ignore case). |
-| **BranchCompare** | Flow | Then if `conditionKey` compares to `compareValue`; `compareOp`: Lt, Lte, Eq, Gte, Gt (or `<`, `<=`, …). |
-| **RandomBranch** | Flow | Then with probability `chance` (0–1). |
-| **Delay** | Flow | Wait `seconds` (game time), then continue. |
-| **SetVariable** | Action | Set string variable. |
-| **CopyVariable** | Action | Copy `fromKey` → `toKey`. |
-| **AppendVariable** | Action | Append `text` to `varKey`. |
-| **IncrementVariable** | Action | Add `delta` to numeric text. |
-| **MultiplyVariable** | Action | Multiply numeric text by `factor`. |
-| **ClearVariable** | Action | Remove `varKey`. |
-| **StoreGameTime** | Action | `Time.time` → `varKey`. |
-| **StoreObjectName** | Action | This object name → `varKey`. |
-| **LogMessage** | Action | Print `message` to log. |
-| **FireBlueprintEvent** | Action | `EventBus.Publish(new BlueprintMessageEvent { … })`. |
-| **SetObjectActive** | Action | Enable/disable **this** GameObject. |
-| **SetOtherObjectActive** | Action | Resolve by `targetPath` / `targetName`, set **Enabled**. |
-| **SetObjectPosition** / **SetOtherObjectPosition** | Action | `x,y,z` and `relative`. |
-| **SetObjectRotation** / **SetOtherObjectRotation** | Action | Euler degrees; `relative`. |
-| **DestroyObject** | Action | `scope` Self or Other; `targetPath` / `targetName` for Other. |
-| **ReflectGet** | Action | Read public field/property path into `varKey` (instance or static). |
-| **ReflectSet** | Action | Write from `value` or `Variables[valueVarKey]`. |
+### Events
+| Kind | Summary |
+|------|---------|
+| **BeginPlay** | Once at start. |
+| **Tick** | Every frame; **Delta Seconds** out. |
+| **CustomEvent** | Entry by name (`eventName` literal / title). |
+| **InputKey** | `GetKeyDown` for **Key** literal (e.g. `Space`). |
+| **InputAction** | `GetActionDown` for **Action** name. |
+| **TriggerEnter / Stay / Exit** | Collider overlap; **Other** object out. |
 
-Legacy kinds **Event**, **Call**, **Math** are still supported for old graphs.
+### Flow
+| Kind | Summary |
+|------|---------|
+| **Branch** | Bool **Condition** → Then / Else. |
+| **BranchEquals / BranchCompare / RandomBranch** | String / numeric / chance branches. |
+| **Sequence** | Ordered Then pins. |
+| **Delay** | Wait **Seconds**. |
+| **ForLoop** | First / Last / Index / Loop Body / Completed. |
+| **DoOnce** | Pass once; **Reset** clears. |
+| **Gate** | **Enter** passes when open; **Open** / **Close**. |
+
+### Pure (Math / Scene)
+Add / Subtract / Multiply / Divide Float · comparisons · Add / Scale Vector · Make / Break Vector · Append String · Get Self · Get Location · Get Rotation · **ReflectGet**.
+
+### Actions
+Print String · Fire Event · Call Custom Event · Call Function · Set Active / Location / Rotation · Destroy · **SetVar** · **ReflectSet** · legacy string-map helpers (Set/Copy/Append/Increment Variable, …).
+
+Legacy kinds **Event**, **Call**, **Math** still load as pass-through / print.
 
 ---
 
 ## Reflect nodes (Get / Set Property)
 
-Use these to reach **public** fields and properties without dedicated nodes.
+- **Instance:** scope Self/Other; **componentType**; **memberPath** (e.g. `Position.X`).
+- **Static:** **typeName** in a Game_Engine assembly; **memberPath** from a static member.
+- **Get** is pure (string **result** pin). **Set** takes a **value** data pin (or legacy `value` / `valueVarKey` properties).
 
-- **Instance mode:** `scope` **Self** or **Other**; **componentType** = `GameObject`, `Transform`, or a **behavior** type name; **memberPath** = dotted path (e.g. `Position.X`, `Enabled`).
-- **Static mode:** **typeName** = full or short type name in a **Game_Engine** assembly (e.g. `Game_Engine.Core.Time`); **memberPath** starts at a static member (e.g. `time`, `deltaTime`).
-- **Inspector UX:** **mode** and **scope** use dropdowns; **typeName**, **componentType**, and **memberPath** use **searchable autocomplete** lists (you can still type custom paths).
-- **Limits:** No indexers; expand depth is capped; `private set`, init-only fields, and types like `GameObject` in the middle of a path are excluded from browsing where needed to avoid cycles. **Set** requires a public setter or writable field.
-
-**Vector3** literals for set: `x;y;z` or `x,y,z` (invariant numbers).
+**Vector3** literals: `x;y;z` or `x,y,z` (invariant).
 
 ---
 
 ## EventBus: `BlueprintMessageEvent`
-
-Subscribe from C#:
 
 ```csharp
 using Game_Engine.Core.Events;
@@ -104,15 +135,17 @@ EventBus.Subscribe<BlueprintMessageEvent>(e =>
 });
 ```
 
-The **Fire Event** node sets `Name`, optional `Data`, and `Sender` to the GameObject running the blueprint.
+**Fire Event** sets `Name`, optional `Data`, and `Sender` to the running GameObject.
 
 ---
 
-## Tips
+## Editor tips
 
-- Use **Log Steps** on the component while authoring; disable in production if noisy.
-- **Summary** text in the blueprint panel shows a linear outline per event (branch side branches are approximate).
-- Prefer dedicated nodes for hot paths; use **Reflect** for glue and prototyping.
+- **My Blueprint** — add typed variables; context menu **Add Get** / **Add Set**. Add functions with **+ Function** (tabs switch graphs).
+- **Validate** — type mismatches, exec→pure, pure cycles, unknown variables.
+- **Undo / Redo** — Ctrl+Z / Ctrl+Y (full document snapshots).
+- **Log Steps** on the component while authoring.
+- Prefer dedicated / pure nodes for hot paths; Reflect for glue.
 
 ---
 
@@ -120,9 +153,11 @@ The **Fire Event** node sets `Name`, optional `Data`, and `Sender` to the GameOb
 
 | Area | Path |
 |------|------|
-| Models / catalog | `Core/Blueprint/BlueprintNodeCatalog.cs`, `BlueprintGraphModel.cs` |
+| Types / values | `Core/Blueprint/BlueprintTypes.cs` |
+| Models | `Core/Blueprint/BlueprintGraphModel.cs` |
+| Catalog | `Core/Blueprint/BlueprintNodeCatalog.cs` |
 | Persistence | `Core/Blueprint/BlueprintPersistence.cs` |
+| Validation | `Core/Blueprint/BlueprintValidation.cs` |
 | Runtime | `Core/Blueprint/BlueprintFlowRuntime.cs`, `VisualBlueprintBehavior.cs` |
 | Reflection | `Core/Blueprint/BlueprintReflection.cs`, `BlueprintReflectionBrowse.cs` |
 | Editor UI | `Views/BlueprintGraphPanel.axaml(.cs)` |
-

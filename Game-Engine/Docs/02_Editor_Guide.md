@@ -715,16 +715,20 @@ The Timeline Sequencer panel provides a visual editor for creating and editing c
 
 ## Blueprint panel
 
-The **Blueprint** panel edits **visual behavior graphs** saved as `.blueprint` JSON (typically under `Assets/Blueprints/`). Open it via **Window → New Blueprint Tab** or the command palette entry **Window: New Blueprint Tab**.
+The **Blueprint** panel edits **Visual behavior graphs** saved as `.blueprint` JSON (typically under `Assets/Blueprints/`). Open it via **Window → New Blueprint Tab** or the command palette entry **Window: New Blueprint Tab**.
 
 ### Workflow
-- **File** — New / Open / Save / Save As; works on `.blueprint` documents relative to the current project.
-- **Nodes** — List of graph nodes; shows a short **behavior preview** summary (linear outline per event).
-- **Add node** — Combo box of node kinds + **Add node** button; **Insert** menu has the same palette.
-- **Canvas** — Pan (middle drag), zoom (Ctrl + wheel). **Exec flow:** drag from an **out** pin on the right to an **in** pin on the left. Branch nodes expose **Then** and **Else** pins (top/bottom).
-- **Inspector column** — Selected node **Title**, **Kind**, description, wire counts, and **Parameters**. For **Get/Set Property (Reflect)** nodes, **mode** and **scope** use **dropdowns**; **type name**, **component type**, and **member path** use **searchable autocomplete** lists (you can still type values manually).
+- **File** — New / Open / Save / Save As; saves version-2 documents (graph + typed variables + functions).
+- **Edit** — Undo / Redo (Ctrl+Z / Ctrl+Y), clear, duplicate, delete.
+- **Graph → Validate** — Reports type mismatches, pure cycles, and unknown variables.
+- **My Blueprint** — Typed **Variables** (Add Get / Add Set from the list) and **Functions** (+ Function; tabs switch between Event Graph and each function).
+- **Add node** — Combo + **Add node**, **Insert** menu, or **right‑click** the canvas for a searchable palette.
+- **Canvas** — Pan (middle drag), zoom (Ctrl + wheel). **Exec** wires (white) and **data** wires (typed colors) both drag from right-side outputs to left-side inputs. Branch / Sequence / For Loop expose named exec outs.
+- **Inspector column** — Title, kind, pin literals for unwired data inputs, and Reflect autocomplete for Get/Set Property nodes.
 
-Graphs are assigned to GameObjects with the **Visual Blueprint** component (**Scripting → Visual Blueprint**) via **Blueprint Asset Path**. See [14 — Visual Blueprints](14_Visual_Blueprints.md) for the full node reference, reflect rules, and EventBus details.
+Graphs are assigned to GameObjects with the **Visual Blueprint** component (**Scripting → Visual Blueprint**) via **Blueprint Asset Path**. See [14 — Visual Blueprints](14_Visual_Blueprints.md) for pins, variables, functions, events, and EventBus details.
+
+**Shipped starters:** `Standard Assets/Blueprints/` (copied to `Assets/Standard Assets/Blueprints/` when standard assets are included). Open **`Standard Assets/Scenes/Blueprint Demos.scene`** for a play-mode walkthrough of all ten starter graphs. See `Standard Assets/Blueprints/README.txt` for the file list.
 
 ---
 

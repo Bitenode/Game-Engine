@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "graph": {
+    "nodes": [
+      {
+        "id": "lv1begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 140,
+        "properties": {}
+      },
+      {
+        "id": "lv1branch",
+        "kind": "Branch",
+        "title": "Branch (v1)",
+        "x": 280,
+        "y": 140,
+        "properties": { "conditionKey": "ready" }
+      },
+      {
+        "id": "lv1then",
+        "kind": "LogMessage",
+        "title": "Then",
+        "x": 540,
+        "y": 60,
+        "properties": { "message": "Legacy v1 Branch: Then path (set Variables.ready=true on the component to flip)." }
+      },
+      {
+        "id": "lv1else",
+        "kind": "LogMessage",
+        "title": "Else",
+        "x": 540,
+        "y": 220,
+        "properties": { "message": "Legacy v1 Branch: Else path (default — string map key ready missing/false)." }
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "lv1begin", "toNodeId": "lv1branch", "fromPin": "ExecOut", "toPin": "ExecIn" },
+      { "fromNodeId": "lv1branch", "toNodeId": "lv1then", "fromPin": "Then", "toPin": "ExecIn" },
+      { "fromNodeId": "lv1branch", "toNodeId": "lv1else", "fromPin": "Else", "toPin": "ExecIn" }
+    ]
+  }
+}

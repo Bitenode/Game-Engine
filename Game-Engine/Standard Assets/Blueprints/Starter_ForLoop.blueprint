@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st04begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st04loop",
+        "kind": "ForLoop",
+        "title": "For 0..3",
+        "x": 280,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "first": "0", "last": "3" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st04set",
+        "kind": "SetVar",
+        "title": "Set LastIndex",
+        "x": 560,
+        "y": 80,
+        "properties": {},
+        "pinLiterals": { "value": "0" },
+        "dynamicPins": [],
+        "variableName": "LastIndex"
+      },
+      {
+        "id": "st04done",
+        "kind": "LogMessage",
+        "title": "Completed",
+        "x": 560,
+        "y": 240,
+        "properties": {},
+        "pinLiterals": {
+          "message": "For loop completed. LastIndex should be 3 (see typed variable LastIndex)."
+        },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st04begin", "toNodeId": "st04loop", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st04loop", "toNodeId": "st04set", "fromPin": "loopBody", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st04loop", "toNodeId": "st04set", "fromPin": "index", "toPin": "value", "kind": "data" },
+      { "fromNodeId": "st04loop", "toNodeId": "st04done", "fromPin": "completed", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [
+    { "name": "LastIndex", "type": "int", "defaultLiteral": "-1", "instanceEditable": true }
+  ],
+  "functions": []
+}

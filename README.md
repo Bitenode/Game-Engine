@@ -10,7 +10,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Component-Based Architecture** — GameObject/Behavior system with 34+ built-in component types and lifecycle methods (Awake, Start, Update, FixedUpdate, LateUpdate, OnDestroy)
 - **Visual Editor** — Dockable panel layout with Hierarchy, Scene View, Game View, Inspector, Project Browser, Console, Animation, Shader Editor, Blueprint graph editor, Profiler, and Build Settings panels
 - **C# Scripting** — Runtime compilation via Roslyn with hot-reload (`ScriptTypeReload` remaps scene scripts on compile/Play), compile-error dialogs, `[Persist]` attribute for automatic serialization, and `[Require]` for component dependencies
-- **Visual Blueprints** — Node graphs (`.blueprint`) on the **Visual Blueprint** component: events, branching, delays, variables, scene actions, reflection get/set, and `BlueprintMessageEvent` for C# subscribers ([docs](Game-Engine/Docs/14_Visual_Blueprints.md))
+- **Visual Blueprints** — node graphs (`.blueprint`) on the **Visual Blueprint** component: typed data pins, pure nodes, variables/functions, events, delays/loops, reflection, and `BlueprintMessageEvent`; ten starter graphs + demo scene ship in Standard Assets ([docs](Game-Engine/Docs/14_Visual_Blueprints.md))
 - **Editor Extensions** — Plugin system for custom menus, commands, custom inspectors, and the UIX declarative UI framework (21 widget types)
 - **Undo/Redo** — Full command-pattern undo/redo system across all editor operations
 - **Play Mode** — Scene snapshot and restore, ensuring runtime changes don't persist after stopping
@@ -118,7 +118,7 @@ Documentation for the engine and editor is in `Game-Engine/Docs/`:
 | [11 — UIX Framework](Game-Engine/Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
 | [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, project configuration, dependencies, Engine.Player, publishing, ANGLE/OpenGL setup |
 | [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | Height cubemap crust, biome graph, volcanoes/lava, coastal cliffs, async scene load, play/editor chunk LOD, post-process spawn |
-| [14 — Visual Blueprints](Game-Engine/Docs/14_Visual_Blueprints.md) | Visual behavior graphs (`.blueprint`), Visual Blueprint component, nodes, reflection, EventBus integration |
+| [14 — Visual Blueprints](Game-Engine/Docs/14_Visual_Blueprints.md) | `.blueprint` graphs (typed pins, variables, functions), Visual Blueprint component, EventBus |
 
 ---
 

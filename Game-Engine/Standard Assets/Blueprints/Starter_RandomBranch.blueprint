@@ -1,0 +1,54 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st09begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st09rand",
+        "kind": "RandomBranch",
+        "title": "50% Chance",
+        "x": 280,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": { "chance": "0.5" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st09then",
+        "kind": "LogMessage",
+        "title": "Then",
+        "x": 540,
+        "y": 60,
+        "properties": {},
+        "pinLiterals": { "message": "Random Branch: Then (50% chance)." },
+        "dynamicPins": []
+      },
+      {
+        "id": "st09else",
+        "kind": "LogMessage",
+        "title": "Else",
+        "x": 540,
+        "y": 220,
+        "properties": {},
+        "pinLiterals": { "message": "Random Branch: Else (50% chance)." },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st09begin", "toNodeId": "st09rand", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st09rand", "toNodeId": "st09then", "fromPin": "Then", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st09rand", "toNodeId": "st09else", "fromPin": "Else", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [],
+  "functions": []
+}

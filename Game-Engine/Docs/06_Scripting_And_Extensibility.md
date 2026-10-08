@@ -2,10 +2,10 @@
 
 ## Visual Blueprints
 
-**Visual Blueprints** are JSON **`.blueprint`** graphs edited in **Window → New Blueprint Tab**. Add the **Visual Blueprint** component (**Scripting** category) to a GameObject and set **Blueprint Asset Path** (e.g. `Assets/Blueprints/MyGraph.blueprint`). Graphs run **Begin Play** once and optionally **Tick** every frame; they support variables, branching, delays, scene actions, **reflection** (get/set public members on components or static engine types), and **EventBus** messages (`BlueprintMessageEvent`).
+**Visual Blueprints** are JSON **`.blueprint`** graphs ( exec + typed data pins) edited in **Window → New Blueprint Tab**. Add the **Visual Blueprint** component (**Scripting** category) to a GameObject and set **Blueprint Asset Path** (e.g. `Assets/Blueprints/MyGraph.blueprint`, or a shipped starter such as `Assets/Standard Assets/Blueprints/Starter_BeginPlay.blueprint`). Graphs run **Begin Play** once and optionally **Tick** every frame; they support typed variables, functions, branching, delays, loops, input / trigger events, scene actions, **reflection**, and **EventBus** messages (`BlueprintMessageEvent`). Version-1 string-map graphs still load. Ten starter graphs and a demo scene ship under **`Standard Assets/Blueprints/`** and **`Standard Assets/Scenes/Blueprint Demos.scene`** — see [14 — Visual Blueprints](14_Visual_Blueprints.md#shipped-starter-graphs-standard-assets).
 
-- **Authoring:** node canvas, exec wiring (right pin → left pin), Insert / Add node palette.  
-- **Docs:** [14 — Visual Blueprints](14_Visual_Blueprints.md) (node list, reflect rules, tips).  
+- **Authoring:** typed pins, My Blueprint variables/functions, Validate, Insert / right-click search palette.  
+- **Docs:** [14 — Visual Blueprints](14_Visual_Blueprints.md) (pins, nodes, reflect, tips).  
 - **Editor panel:** [Editor Guide — Blueprint panel](02_Editor_Guide.md#blueprint-panel).
 
 C# scripts can subscribe to `BlueprintMessageEvent` and continue to own heavy logic; blueprints are ideal for level scripting and designer-facing tweaking without recompilation.

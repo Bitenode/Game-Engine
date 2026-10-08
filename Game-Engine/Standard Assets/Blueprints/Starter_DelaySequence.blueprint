@@ -1,0 +1,65 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st03begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st03delay",
+        "kind": "Delay",
+        "title": "Delay 1s",
+        "x": 260,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": { "seconds": "1" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st03seq",
+        "kind": "Sequence",
+        "title": "Sequence",
+        "x": 500,
+        "y": 140,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st03a",
+        "kind": "LogMessage",
+        "title": "Then 0",
+        "x": 760,
+        "y": 60,
+        "properties": {},
+        "pinLiterals": { "message": "Delay finished — Sequence Then 0." },
+        "dynamicPins": []
+      },
+      {
+        "id": "st03b",
+        "kind": "LogMessage",
+        "title": "Then 1",
+        "x": 760,
+        "y": 220,
+        "properties": {},
+        "pinLiterals": { "message": "Sequence Then 1 runs after Then 0." },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st03begin", "toNodeId": "st03delay", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st03delay", "toNodeId": "st03seq", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st03seq", "toNodeId": "st03a", "fromPin": "Then0", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st03seq", "toNodeId": "st03b", "fromPin": "Then1", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [],
+  "functions": []
+}

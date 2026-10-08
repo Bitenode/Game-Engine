@@ -1,0 +1,254 @@
+{
+  "version": 2,
+  "root": [
+    {
+      "name": "Directional Light",
+      "transform": {
+        "localPosition": [0, 3, 0],
+        "localRotationEuler": [50, -30, 0],
+        "localScale": [1, 1, 1]
+      },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Component.Light, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "Type": 0,
+            "Intensity": 1,
+            "Range": 100,
+            "InnerAngle": 25,
+            "OuterAngle": 35,
+            "Color": "#FFFFFFFF",
+            "CastShadows": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "Main Camera",
+      "transform": {
+        "localPosition": [0, 2, -12],
+        "localRotationEuler": [10, 0, 0],
+        "localScale": [1, 1, 1]
+      },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Component.Camera, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "Projection": 0,
+            "FieldOfView": 60,
+            "OrthoSize": 12,
+            "Near": 0.1,
+            "Far": 1000,
+            "ViewportX": 0,
+            "ViewportY": 0,
+            "ViewportW": 1,
+            "ViewportH": 1,
+            "Clear": 0,
+            "Background": "#FF0A0A14",
+            "IsMain": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — BeginPlay",
+      "transform": { "localPosition": [-4, 0, 0], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_BeginPlay.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — TypedBranch",
+      "transform": { "localPosition": [-2, 0, 0], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_TypedBranch.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — DelaySequence",
+      "transform": { "localPosition": [0, 0, 0], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_DelaySequence.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — ForLoop",
+      "transform": { "localPosition": [2, 0, 0], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_ForLoop.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — Input",
+      "transform": { "localPosition": [4, 0, 0], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_Input.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — Function",
+      "transform": { "localPosition": [-4, 0, 2], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_Function.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — Transform",
+      "transform": { "localPosition": [-2, 0, 2], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_Transform.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — CustomEvent",
+      "transform": { "localPosition": [0, 0, 2], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_CustomEvent.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — RandomBranch",
+      "transform": { "localPosition": [2, 0, 2], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Starter_RandomBranch.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    },
+    {
+      "name": "BP Demo — Legacy V1",
+      "transform": { "localPosition": [4, 0, 2], "localRotationEuler": [0, 0, 0], "localScale": [1, 1, 1] },
+      "behaviors": [
+        {
+          "type": "Game_Engine.Core.Blueprint.VisualBlueprintBehavior, Game_Engine, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+          "properties": {
+            "BlueprintAssetPath": "Assets/Standard Assets/Blueprints/Legacy_V1_Branch.blueprint",
+            "LogSteps": true,
+            "RunTickGraph": true,
+            "Enabled": true,
+            "LogLifecycle": false
+          }
+        }
+      ],
+      "children": [],
+      "prefabId": null,
+      "prefabPath": null
+    }
+  ]
+}

@@ -34,14 +34,34 @@ namespace Game_Engine.Core.Blueprint
         static string FormatStep(BlueprintNode n)
         {
             var d = BlueprintNodeCatalog.Resolve(n.Kind);
-            if (n.Kind == "LogMessage" && n.Properties.TryGetValue("message", out var m)) return $"Print(\"{m}\")";
-            if (n.Kind == "SetObjectActive" && n.Properties.TryGetValue("active", out var a)) return $"SetActive(self, {a})";
-            if (n.Kind == "Delay" && n.Properties.TryGetValue("seconds", out var sec)) return $"Delay({sec}s)";
+            if (n.Kind == "GetVar") return $"Get[{n.VariableName ?? "?"}]";
+            if (n.Kind == "SetVar") return $"Set[{n.VariableName ?? "?"}]";
+            if (n.Kind == "LogMessage")
+            {
+                var m = n.GetPinLiteral("message", n.Properties.TryGetValue("message", out var pm) ? pm : "");
+                return $"Print(\"{m}\")";
+            }
+            if (n.Kind == "SetObjectActive")
+            {
+                var a = n.GetPinLiteral("active", n.Properties.TryGetValue("active", out var pa) ? pa : "?");
+                return $"SetActive(self, {a})";
+            }
+            if (n.Kind == "Delay")
+            {
+                var sec = n.GetPinLiteral("seconds", n.Properties.TryGetValue("seconds", out var ps) ? ps : "?");
+                return $"Delay({sec}s)";
+            }
             if (n.Kind == "SetVariable" && n.Properties.TryGetValue("varKey", out var vk)
                 && n.Properties.TryGetValue("varValue", out var vv)) return $"Var[{vk}]={vv}";
             if (n.Kind == "IncrementVariable" && n.Properties.TryGetValue("varKey", out var ik)
                 && n.Properties.TryGetValue("delta", out var del)) return $"Var[{ik}]+={del}";
-            if (n.Kind == "Branch" && n.Properties.TryGetValue("conditionKey", out var ck)) return $"Branch({ck})→…";
+            if (n.Kind == "Branch")
+            {
+                if (n.Properties.TryGetValue("conditionKey", out var ck)) return $"Branch({ck})→…";
+                return "Branch→…";
+            }
+            if (n.Kind == "ForLoop") return "ForLoop→…";
+            if (n.Kind == "AddFloat" || n.Kind == "LessFloat") return n.Kind;
             if (n.Kind == "BranchEquals" && n.Properties.TryGetValue("conditionKey", out var bek)
                 && n.Properties.TryGetValue("equalsValue", out var bev)) return $"StrEq({bek},{bev})→…";
             if (n.Kind == "BranchCompare" && n.Properties.TryGetValue("conditionKey", out var nck)

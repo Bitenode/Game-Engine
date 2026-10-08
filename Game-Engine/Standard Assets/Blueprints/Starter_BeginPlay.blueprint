@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st01begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 80,
+        "y": 120,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st01print",
+        "kind": "LogMessage",
+        "title": "Print Hello",
+        "x": 320,
+        "y": 120,
+        "properties": {},
+        "pinLiterals": {
+          "message": "Visual Blueprint: Begin Play is running."
+        },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      {
+        "fromNodeId": "st01begin",
+        "toNodeId": "st01print",
+        "fromPin": "ExecOut",
+        "toPin": "ExecIn",
+        "kind": "exec"
+      }
+    ]
+  },
+  "variables": [],
+  "functions": []
+}

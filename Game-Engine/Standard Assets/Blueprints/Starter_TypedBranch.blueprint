@@ -1,0 +1,81 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st02begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st02get",
+        "kind": "GetVar",
+        "title": "Get Health",
+        "x": 40,
+        "y": 280,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": [],
+        "variableName": "Health"
+      },
+      {
+        "id": "st02less",
+        "kind": "LessFloat",
+        "title": "Health < 10",
+        "x": 260,
+        "y": 280,
+        "properties": {},
+        "pinLiterals": { "b": "10" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st02branch",
+        "kind": "Branch",
+        "title": "Branch",
+        "x": 500,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "condition": "true" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st02then",
+        "kind": "LogMessage",
+        "title": "Then — Low",
+        "x": 760,
+        "y": 80,
+        "properties": {},
+        "pinLiterals": {
+          "message": "Health is low (< 10). Raise Health default on the asset or TypedVariableOverrides to hit Else."
+        },
+        "dynamicPins": []
+      },
+      {
+        "id": "st02else",
+        "kind": "LogMessage",
+        "title": "Else — OK",
+        "x": 760,
+        "y": 240,
+        "properties": {},
+        "pinLiterals": { "message": "Health is OK (>= 10)." },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st02begin", "toNodeId": "st02branch", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st02get", "toNodeId": "st02less", "fromPin": "value", "toPin": "a", "kind": "data" },
+      { "fromNodeId": "st02less", "toNodeId": "st02branch", "fromPin": "result", "toPin": "condition", "kind": "data" },
+      { "fromNodeId": "st02branch", "toNodeId": "st02then", "fromPin": "Then", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st02branch", "toNodeId": "st02else", "fromPin": "Else", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [
+    { "name": "Health", "type": "float", "defaultLiteral": "5", "instanceEditable": true }
+  ],
+  "functions": []
+}

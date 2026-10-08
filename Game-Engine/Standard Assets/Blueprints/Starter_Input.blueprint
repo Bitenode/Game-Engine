@@ -1,0 +1,64 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st05jump",
+        "kind": "InputAction",
+        "title": "Jump Action",
+        "x": 40,
+        "y": 80,
+        "properties": {},
+        "pinLiterals": { "actionName": "Jump" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st05jumpLog",
+        "kind": "LogMessage",
+        "title": "Jump Pressed",
+        "x": 320,
+        "y": 80,
+        "properties": {},
+        "pinLiterals": { "message": "Input Action Jump pressed (requires Jump in input.bindings.json)." },
+        "dynamicPins": []
+      },
+      {
+        "id": "st05key",
+        "kind": "InputKey",
+        "title": "E Key",
+        "x": 40,
+        "y": 240,
+        "properties": {},
+        "pinLiterals": { "keyCode": "E" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st05once",
+        "kind": "DoOnce",
+        "title": "Do Once",
+        "x": 280,
+        "y": 240,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st05keyLog",
+        "kind": "LogMessage",
+        "title": "E Once",
+        "x": 520,
+        "y": 240,
+        "properties": {},
+        "pinLiterals": { "message": "E key pressed (Do Once — only logs the first time)." },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st05jump", "toNodeId": "st05jumpLog", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st05key", "toNodeId": "st05once", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st05once", "toNodeId": "st05keyLog", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [],
+  "functions": []
+}

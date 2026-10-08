@@ -1,0 +1,88 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st07begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st07self",
+        "kind": "GetSelf",
+        "title": "Get Self",
+        "x": 40,
+        "y": 300,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st07loc",
+        "kind": "GetLocation",
+        "title": "Get Location",
+        "x": 240,
+        "y": 300,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st07off",
+        "kind": "MakeVector",
+        "title": "Offset +1 Y",
+        "x": 440,
+        "y": 380,
+        "properties": {},
+        "pinLiterals": { "x": "0", "y": "1", "z": "0" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st07add",
+        "kind": "AddVector",
+        "title": "Add Offset",
+        "x": 640,
+        "y": 300,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st07set",
+        "kind": "SetObjectPosition",
+        "title": "Set Location",
+        "x": 860,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "relative": "false" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st07log",
+        "kind": "LogMessage",
+        "title": "Print",
+        "x": 1100,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "message": "Moved this object up by 1 unit on Begin Play." },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st07begin", "toNodeId": "st07set", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st07self", "toNodeId": "st07loc", "fromPin": "self", "toPin": "target", "kind": "data" },
+      { "fromNodeId": "st07self", "toNodeId": "st07set", "fromPin": "self", "toPin": "target", "kind": "data" },
+      { "fromNodeId": "st07loc", "toNodeId": "st07add", "fromPin": "location", "toPin": "a", "kind": "data" },
+      { "fromNodeId": "st07off", "toNodeId": "st07add", "fromPin": "result", "toPin": "b", "kind": "data" },
+      { "fromNodeId": "st07add", "toNodeId": "st07set", "fromPin": "result", "toPin": "value", "kind": "data" },
+      { "fromNodeId": "st07set", "toNodeId": "st07log", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [],
+  "functions": []
+}

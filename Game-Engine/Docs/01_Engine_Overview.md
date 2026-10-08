@@ -438,7 +438,7 @@ SceneRenderer.RenderGPU()
 | Animations      | Custom      | `*.boneanim`                                 | Bone animation data |
 | Shaders         | Custom      | `*.shader`                                   | Custom GLSL shaders |
 | Shader Graphs   | JSON        | `*.shadergraph`                              | Visual shader node graphs |
-| Blueprints      | JSON        | `Assets/Blueprints/*.blueprint`              | Visual behavior graphs (Visual Blueprint component) |
+| Blueprints      | JSON        | `Assets/Blueprints/*.blueprint`              | Visual behavior graphs (Visual Blueprint component); shipped starters in `Assets/Standard Assets/Blueprints/` |
 
 Properties marked with `[Persist]` on Behaviors are automatically serialized/deserialized by `SceneSerialization`. Supported types include `string`, `int`, `float`, `bool`, `Vector3`, `Color`, enums, `List<T>`, and `float[]`.
 

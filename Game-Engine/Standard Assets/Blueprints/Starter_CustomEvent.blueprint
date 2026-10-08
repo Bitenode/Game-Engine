@@ -1,0 +1,75 @@
+{
+  "version": 2,
+  "graph": {
+    "nodes": [
+      {
+        "id": "st08begin",
+        "kind": "BeginPlay",
+        "title": "Begin Play",
+        "x": 40,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": {},
+        "dynamicPins": []
+      },
+      {
+        "id": "st08open",
+        "kind": "Gate",
+        "title": "Gate",
+        "x": 260,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "startClosed": "false" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st08call",
+        "kind": "CallCustomEvent",
+        "title": "Call Pulse",
+        "x": 520,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "eventName": "Pulse" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st08fire",
+        "kind": "FireBlueprintEvent",
+        "title": "Fire EventBus",
+        "x": 780,
+        "y": 160,
+        "properties": {},
+        "pinLiterals": { "eventName": "BlueprintPulse", "payload": "hello" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st08evt",
+        "kind": "CustomEvent",
+        "title": "Pulse",
+        "x": 520,
+        "y": 320,
+        "properties": {},
+        "pinLiterals": { "eventName": "Pulse" },
+        "dynamicPins": []
+      },
+      {
+        "id": "st08log",
+        "kind": "LogMessage",
+        "title": "Pulse Handler",
+        "x": 780,
+        "y": 320,
+        "properties": {},
+        "pinLiterals": { "message": "Custom Event Pulse ran (Call Custom Event from Begin Play)." },
+        "dynamicPins": []
+      }
+    ],
+    "wires": [
+      { "fromNodeId": "st08begin", "toNodeId": "st08open", "fromPin": "ExecOut", "toPin": "enter", "kind": "exec" },
+      { "fromNodeId": "st08open", "toNodeId": "st08call", "fromPin": "exit", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st08call", "toNodeId": "st08fire", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" },
+      { "fromNodeId": "st08evt", "toNodeId": "st08log", "fromPin": "ExecOut", "toPin": "ExecIn", "kind": "exec" }
+    ]
+  },
+  "variables": [],
+  "functions": []
+}
