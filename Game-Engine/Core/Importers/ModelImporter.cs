@@ -88,71 +88,35 @@ namespace Game_Engine.Core.Importers
             var boneNameSet = CollectBoneNames(scene);
             bool hasSkin = boneNameSet.Count > 0;
             if (hasSkin)
-            {
                 skeleton = BuildSkeleton(scene, boneNameSet);
-
-                // Vertices are uniformly scaled by s = scaleFactor. Keep bind-pose / inverse-bind in the same space
-                // by scaling translation columns (legacy approach — stable for import + material generation).
-                // Full-matrix offset fixes need a single convention test rig; this path must not break ImportModel.
-                if (skeleton != null && Math.Abs(scaleFactor - 1f) > 0.0001f)
-                {
-                    for (int bi = 0; bi < skeleton.BoneCount; bi++)
-                    {
-                        var bone = skeleton.Bones[bi];
-
-                        var om = bone.OffsetMatrix;
-                        om.M41 *= scaleFactor;
-                        om.M42 *= scaleFactor;
-                        om.M43 *= scaleFactor;
-                        bone.OffsetMatrix = om;
-
-                        var lb = bone.LocalBindTransform;
-                        lb.M41 *= scaleFactor;
-                        lb.M42 *= scaleFactor;
-                        lb.M43 *= scaleFactor;
-                        bone.LocalBindTransform = lb;
-                    }
-                    Log.Info($"[ModelImporter] Adjusted bone matrix translations for vertex scale {scaleFactor:F6}");
-                }
-            }
 
             // Convert nodes recursively with a running part index.
             // For skinned models, mesh components are collected into a flat list
             // and added as direct children of root — this avoids bone hierarchy
             // transforms being baked into uModel, which would double-position
             // skinned vertices (once by the GO hierarchy, once by bone matrices).
+            // Skinned vertices stay in file space here; NormalizeSkinnedBind fits them.
             int partIndex = 0;
             List<PendingSkinnedMesh>? pendingMeshes = hasSkin ? new List<PendingSkinnedMesh>() : null;
-            var root = ConvertNode(scene, scene.RootNode, materials, scaleFactor, relModel, ref partIndex, skeleton, pendingMeshes, (SN.Matrix4x4?)SN.Matrix4x4.Identity);
+            float convertScale = hasSkin ? 1f : scaleFactor;
+            var root = ConvertNode(scene, scene.RootNode, materials, convertScale, relModel, ref partIndex, skeleton, pendingMeshes, (SN.Matrix4x4?)SN.Matrix4x4.Identity);
 
             root.Name = Path.GetFileNameWithoutExtension(absModel);
 
             // Add collected skinned meshes as direct children of root with identity transform
             if (pendingMeshes != null)
             {
+                if (skeleton != null && pendingMeshes.Count > 0)
+                    scaleFactor = NormalizeSkinnedBind(skeleton, pendingMeshes);
+
                 foreach (var pm in pendingMeshes)
                 {
                     var mesh = pm.Mesh;
 
-                    // For meshes without bone data: transform vertices from node-local
-                    // space to model space and assign them to the nearest parent bone.
+                    // Meshes without bone data were baked into model space above.
+                    // Pin them to the nearest bone so they follow the skeleton.
                     if (!mesh.HasBones && skeleton != null)
                     {
-                        // Transform vertices to model space
-                        if (pm.NodeGlobalTransform != SN.Matrix4x4.Identity)
-                        {
-                            for (int vi = 0; vi < mesh.Vertices.Length; vi++)
-                                mesh.Vertices[vi] = SN.Vector3.Transform(mesh.Vertices[vi], pm.NodeGlobalTransform);
-                            if (mesh.Normals != null)
-                            {
-                                var normalMat = pm.NodeGlobalTransform;
-                                // Use inverse-transpose for normals
-                                if (SN.Matrix4x4.Invert(normalMat, out var inv))
-                                    normalMat = SN.Matrix4x4.Transpose(inv);
-                                for (int ni = 0; ni < mesh.Normals.Length; ni++)
-                                    mesh.Normals[ni] = SN.Vector3.TransformNormal(mesh.Normals[ni], normalMat);
-                            }
-                        }
 
                         // Find nearest bone from the Assimp parent node chain
                         int boneIdx = FindNearestBone(pm.AiNode, skeleton);
@@ -222,8 +186,8 @@ namespace Game_Engine.Core.Importers
                 }
             }
 
-            // Import bone animations baked into this file, then loose clips that
-            // live beside it (Assets/Animals/Animations/Deer_Idle.fbx and so on).
+            // Import bone animations baked into this file, then loose clips
+            // that live beside it (a sibling Animations folder, named Stem_Idle.fbx and so on).
             if (skeleton != null)
             {
                 var animPaths = new List<string>();
@@ -717,7 +681,54 @@ namespace Game_Engine.Core.Importers
                 catch { }
             }
 
-            return null;
+            // Exporters append a suffix (name_unity.tga) while the FBX still points at name.tga.
+            return FindTextureByStem(Path.GetFileNameWithoutExtension(fileName), modelDir, projectAssetsRoot);
+        }
+
+        /// <summary>File whose name is <paramref name="stem"/> plus a separator and extra text, shallowest path first.</summary>
+        static string? FindTextureByStem(string stem, string modelDir, string? projectAssetsRoot)
+        {
+            if (string.IsNullOrEmpty(stem) || stem.Length < 3) return null;
+            var roots = new List<string>();
+            if (Directory.Exists(modelDir)) roots.Add(modelDir);
+            try
+            {
+                string parent = Path.GetFullPath(Path.Combine(modelDir, ".."));
+                if (Directory.Exists(parent)) roots.Add(parent);
+            }
+            catch { }
+            if (!string.IsNullOrEmpty(projectAssetsRoot) && Directory.Exists(projectAssetsRoot))
+                roots.Add(projectAssetsRoot);
+
+            string? best = null;
+            int bestDepth = int.MaxValue;
+            foreach (var root in roots)
+            {
+                IEnumerable<string> files;
+                try { files = Directory.EnumerateFiles(root, stem + "*", SearchOption.AllDirectories); }
+                catch { continue; }
+                foreach (var file in files)
+                {
+                    var n = Path.GetFileNameWithoutExtension(file);
+                    if (!TextureStemMatches(n, stem)) continue;
+                    int depth = file.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length;
+                    if (best == null || depth < bestDepth)
+                    {
+                        best = file;
+                        bestDepth = depth;
+                    }
+                }
+                if (best != null) break;
+            }
+            return best == null ? null : Path.GetFullPath(best);
+        }
+
+        static bool TextureStemMatches(string candidate, string stem)
+        {
+            if (!candidate.StartsWith(stem, StringComparison.OrdinalIgnoreCase)) return false;
+            if (candidate.Length == stem.Length) return true;
+            char c = candidate[stem.Length];
+            return c == '_' || c == '-' || c == '.';
         }
 
         static string GuessImageExtension(string? formatHint)
@@ -867,6 +878,171 @@ namespace Game_Engine.Core.Importers
                 go.AddChild(ConvertNode(sc, child, materials, scaleFactor, relModelPathForNode, ref partIndex, skeleton, pendingMeshes, (SN.Matrix4x4?)nodeGlobal));
 
             return go;
+        }
+
+        /// <summary>
+        /// Bake every skinned mesh into its bind-pose model position, then fit the
+        /// whole character to about a 1 unit horizontal radius. FBX mesh-node scale
+        /// often lives only in the inverse-bind, so a rig whose bones are scale 1
+        /// still draws tens of times too big and separate eye or teeth meshes land
+        /// off the body. After this, bind pose is identity skinning and loose clips
+        /// use the same translation scale.
+        /// </summary>
+        static float NormalizeSkinnedBind(Skeleton skeleton, List<PendingSkinnedMesh> meshes)
+        {
+            int boneCount = skeleton.BoneCount;
+            var world = new SN.Matrix4x4[boneCount];
+            ComputeBindWorlds(skeleton, world);
+
+            var palette = new SN.Matrix4x4[boneCount];
+            for (int i = 0; i < boneCount; i++)
+                palette[i] = skeleton.Bones[i].OffsetMatrix * world[i];
+
+            foreach (var pm in meshes)
+            {
+                var mesh = pm.Mesh;
+                if (mesh.Vertices == null || mesh.Vertices.Length == 0) continue;
+                if (mesh.HasBones && mesh.BoneIndices != null && mesh.BoneWeights != null)
+                    BakeSkinnedBind(mesh, palette);
+                else if (pm.NodeGlobalTransform != SN.Matrix4x4.Identity)
+                    BakeNodeTransform(mesh, pm.NodeGlobalTransform);
+            }
+
+            float radius = 0f;
+            foreach (var pm in meshes)
+            {
+                var verts = pm.Mesh.Vertices;
+                if (verts == null) continue;
+                for (int i = 0; i < verts.Length; i++)
+                {
+                    float rr = MathF.Sqrt(verts[i].X * verts[i].X + verts[i].Z * verts[i].Z);
+                    if (rr > radius) radius = rr;
+                }
+            }
+
+            float s = radius > 1e-5f ? 1f / radius : 1f;
+            if (Math.Abs(s - 1f) > 1e-5f)
+            {
+                foreach (var pm in meshes)
+                {
+                    var verts = pm.Mesh.Vertices;
+                    if (verts == null) continue;
+                    for (int i = 0; i < verts.Length; i++)
+                        verts[i] *= s;
+                }
+            }
+
+            for (int i = 0; i < boneCount; i++)
+            {
+                var w = world[i];
+                w.M41 *= s;
+                w.M42 *= s;
+                w.M43 *= s;
+                world[i] = w;
+            }
+
+            for (int i = 0; i < boneCount; i++)
+            {
+                var bone = skeleton.Bones[i];
+                SN.Matrix4x4 local;
+                if (bone.ParentIndex >= 0
+                    && bone.ParentIndex < boneCount
+                    && SN.Matrix4x4.Invert(world[bone.ParentIndex], out var invParent))
+                    local = world[i] * invParent;
+                else
+                    local = world[i];
+                bone.LocalBindTransform = local;
+                if (SN.Matrix4x4.Invert(world[i], out var invWorld))
+                    bone.OffsetMatrix = invWorld;
+            }
+
+            Log.Info($"[ModelImporter] Skinned bind fit scale {s:F6} (radius {radius:F3})");
+            return s;
+        }
+
+        /// <summary>Bind-pose world matrix per bone. Parent is resolved first. Same multiply as the skinning shader.</summary>
+        static void ComputeBindWorlds(Skeleton skeleton, SN.Matrix4x4[] world)
+        {
+            var done = new bool[skeleton.BoneCount];
+            void Walk(int i)
+            {
+                if (done[i]) return;
+                var bone = skeleton.Bones[i];
+                if (bone.ParentIndex >= 0 && bone.ParentIndex < skeleton.BoneCount)
+                {
+                    Walk(bone.ParentIndex);
+                    world[i] = bone.LocalBindTransform * world[bone.ParentIndex];
+                }
+                else
+                    world[i] = bone.LocalBindTransform;
+                done[i] = true;
+            }
+            for (int i = 0; i < skeleton.BoneCount; i++)
+                Walk(i);
+        }
+
+        /// <summary>Replace skinned vertices with their bind-pose model positions so every material slot shares one space.</summary>
+        static void BakeSkinnedBind(Mesh mesh, SN.Matrix4x4[] palette)
+        {
+            var verts = mesh.Vertices;
+            var indices = mesh.BoneIndices!;
+            var weights = mesh.BoneWeights!;
+            var normals = mesh.Normals;
+            int vc = verts.Length;
+            for (int vi = 0; vi < vc; vi++)
+            {
+                int b = vi * 4;
+                var w = weights[vi];
+                var pos = SN.Vector3.Zero;
+                float wsum = 0f;
+                AccumulateSkin(verts[vi], indices, b, 0, w.X, palette, ref pos, ref wsum);
+                AccumulateSkin(verts[vi], indices, b, 1, w.Y, palette, ref pos, ref wsum);
+                AccumulateSkin(verts[vi], indices, b, 2, w.Z, palette, ref pos, ref wsum);
+                AccumulateSkin(verts[vi], indices, b, 3, w.W, palette, ref pos, ref wsum);
+                if (wsum > 1e-6f)
+                    verts[vi] = pos;
+
+                if (normals == null || vi >= normals.Length) continue;
+                int bestSlot = 0;
+                float bestW = w.X;
+                if (w.Y > bestW) { bestW = w.Y; bestSlot = 1; }
+                if (w.Z > bestW) { bestW = w.Z; bestSlot = 2; }
+                if (w.W > bestW) { bestW = w.W; bestSlot = 3; }
+                int bone = indices[b + bestSlot];
+                if (bone < 0 || bone >= palette.Length) continue;
+                var n = SN.Vector3.TransformNormal(normals[vi], palette[bone]);
+                float len = n.Length();
+                if (len > 1e-8f)
+                    normals[vi] = n / len;
+            }
+        }
+
+        static void AccumulateSkin(SN.Vector3 v, int[] indices, int baseI, int slot, float weight, SN.Matrix4x4[] palette, ref SN.Vector3 pos, ref float wsum)
+        {
+            if (weight <= 0f) return;
+            int bone = indices[baseI + slot];
+            if (bone < 0 || bone >= palette.Length) return;
+            pos += SN.Vector3.Transform(v, palette[bone]) * weight;
+            wsum += weight;
+        }
+
+        /// <summary>Move a rigid mesh from node-local space into model space.</summary>
+        static void BakeNodeTransform(Mesh mesh, SN.Matrix4x4 nodeGlobal)
+        {
+            var verts = mesh.Vertices;
+            for (int vi = 0; vi < verts.Length; vi++)
+                verts[vi] = SN.Vector3.Transform(verts[vi], nodeGlobal);
+            if (mesh.Normals == null) return;
+            var normalMat = nodeGlobal;
+            if (SN.Matrix4x4.Invert(normalMat, out var inv))
+                normalMat = SN.Matrix4x4.Transpose(inv);
+            for (int ni = 0; ni < mesh.Normals.Length; ni++)
+            {
+                var n = SN.Vector3.TransformNormal(mesh.Normals[ni], normalMat);
+                float len = n.Length();
+                if (len > 1e-8f)
+                    mesh.Normals[ni] = n / len;
+            }
         }
 
         /// <summary>Walk up the Assimp node chain from a mesh node to find the nearest bone.</summary>
@@ -1391,6 +1567,70 @@ namespace Game_Engine.Core.Importers
         };
 
         /// <summary>
+        /// Rig file name with animation suffixes removed, so <c>Name_Rig</c> and
+        /// <c>name_rig_exp</c> both match clips that start with that stem.
+        /// </summary>
+        static string AnimationStem(string absModel)
+        {
+            var stem = Path.GetFileNameWithoutExtension(absModel);
+            string[] suffixes = { "_rig_exp", "_rig", "_mesh", "_model", "_skin", "_exp" };
+            bool trimmed = true;
+            while (trimmed)
+            {
+                trimmed = false;
+                foreach (var suffix in suffixes)
+                {
+                    if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) && stem.Length > suffix.Length)
+                    {
+                        stem = stem.Substring(0, stem.Length - suffix.Length);
+                        trimmed = true;
+                        break;
+                    }
+                }
+            }
+            return stem;
+        }
+
+        /// <summary>
+        /// Map a loose clip file name onto Idle, Walk, or Run.
+        /// Accepts <c>Name_Idle</c>, <c>Name_IdleA</c>, <c>name_idle_anim</c>, and swim/fly names.
+        /// </summary>
+        /// <summary>True when <paramref name="word"/> is its own token, so "butterfly" does not count as "fly".</summary>
+        static bool HasWord(string lower, string word)
+        {
+            int i = 0;
+            while ((i = lower.IndexOf(word, i, StringComparison.Ordinal)) >= 0)
+            {
+                bool left = i == 0 || !char.IsLetter(lower[i - 1]);
+                int end = i + word.Length;
+                bool right = end >= lower.Length || !char.IsLetter(lower[end]);
+                if (left && right) return true;
+                i = end;
+            }
+            return false;
+        }
+
+        static string StateNameFromFile(string path)
+        {
+            var name = Path.GetFileNameWithoutExtension(path) ?? "";
+            var lower = name.ToLowerInvariant();
+            if (HasWord(lower, "fastswim") || HasWord(lower, "fastglide"))
+                return "Run";
+            if (HasWord(lower, "idle"))
+                return "Idle";
+            if (HasWord(lower, "walk") || HasWord(lower, "swim") || HasWord(lower, "glide"))
+                return "Walk";
+            if (HasWord(lower, "run") || HasWord(lower, "fly"))
+                return "Run";
+            foreach (var suffix in s_looseAnimSuffixes)
+            {
+                if (name.EndsWith("_" + suffix, StringComparison.OrdinalIgnoreCase)
+                    || name.Equals(suffix, StringComparison.OrdinalIgnoreCase))
+                    return suffix;
+            }
+            return name;
+        }
+        /// <summary>
         /// Clips shipped as their own FBX (not baked into the rig). Same
         /// <see cref="ImportAnimations"/> path, mapped onto the rig skeleton
         /// and scaled with the rig so the bones stay in the mesh's space.
@@ -1430,6 +1670,10 @@ namespace Game_Engine.Core.Importers
             return saved;
         }
 
+        /// <summary>
+        /// Loose animation FBX files next to the model or in the sibling Animations folder,
+        /// whose names start with <see cref="AnimationStem"/>.
+        /// </summary>
         static IEnumerable<string> FindLooseAnimationFiles(string absModel)
         {
             var modelDir = Path.GetDirectoryName(absModel);
@@ -1457,29 +1701,6 @@ namespace Game_Engine.Core.Importers
                         yield return file;
                 }
             }
-        }
-
-        static string AnimationStem(string absModel)
-        {
-            var stem = Path.GetFileNameWithoutExtension(absModel);
-            foreach (var suffix in new[] { "_Rig", "_Mesh", "_Model", "_Skin" })
-            {
-                if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
-                    return stem.Substring(0, stem.Length - suffix.Length);
-            }
-            return stem;
-        }
-
-        static string StateNameFromFile(string path)
-        {
-            var name = Path.GetFileNameWithoutExtension(path);
-            foreach (var suffix in s_looseAnimSuffixes)
-            {
-                if (name.EndsWith("_" + suffix, StringComparison.OrdinalIgnoreCase)
-                    || name.Equals(suffix, StringComparison.OrdinalIgnoreCase))
-                    return suffix;
-            }
-            return name;
         }
 
         /// <summary>Import all animations from the Assimp scene and save as .boneanim files.
@@ -1544,14 +1765,24 @@ namespace Game_Engine.Core.Importers
                     for (int bi = 0; bi < skeleton.BoneCount; bi++)
                     {
                         var bone = skeleton.Bones[bi];
-                        if (!globals.TryGetValue(bone.Name, out var mine)) continue;
+                        if (!TryGetAnimatedGlobal(globals, bone.Name, out var mine)) continue;
+
+                        // Same fit as NormalizeSkinnedBind: scale world translations, then
+                        // rebuild the local. Scaling the local translation after decompose
+                        // leaves rotated joints in a different space than the mesh.
+                        if (Math.Abs(vertexScale - 1f) > 0.0001f)
+                            ScaleWorldTranslation(ref mine, vertexScale);
 
                         SN.Matrix4x4 local;
                         int parent = bone.ParentIndex;
-                        if (parent >= 0
-                            && globals.TryGetValue(skeleton.Bones[parent].Name, out var parentGlobal)
-                            && SN.Matrix4x4.Invert(parentGlobal, out var invParent))
+                        if (parent >= 0 && TryGetAnimatedGlobal(globals, skeleton.Bones[parent].Name, out var parentGlobal))
+                        {
+                            if (Math.Abs(vertexScale - 1f) > 0.0001f)
+                                ScaleWorldTranslation(ref parentGlobal, vertexScale);
+                            if (!SN.Matrix4x4.Invert(parentGlobal, out var invParent))
+                                continue;
                             local = mine * invParent;
+                        }
                         else if (parent < 0)
                             local = mine;
                         else
@@ -1559,9 +1790,6 @@ namespace Game_Engine.Core.Importers
 
                         if (!SN.Matrix4x4.Decompose(local, out var scl, out var rot, out var pos))
                             continue;
-
-                        if (Math.Abs(vertexScale - 1f) > 0.0001f)
-                            pos *= vertexScale;
 
                         var track = tracks[bi];
                         if (track == null)
@@ -1607,6 +1835,44 @@ namespace Game_Engine.Core.Importers
             }
 
             return savedPaths;
+        }
+
+        /// <summary>Scale the translation of a world matrix. Rotation and scale stay so the bind and the clip share one space.</summary>
+        static void ScaleWorldTranslation(ref SN.Matrix4x4 m, float s)
+        {
+            m.M41 *= s;
+            m.M42 *= s;
+            m.M43 *= s;
+        }
+
+        /// <summary>
+        /// Bone lookup that also accepts a namespace prefix (<c>Armature|Name</c> or <c>mixamorig:Name</c>).
+        /// </summary>
+        static bool TryGetAnimatedGlobal(Dictionary<string, SN.Matrix4x4> globals, string boneName, out SN.Matrix4x4 global)
+        {
+            if (globals.TryGetValue(boneName, out global)) return true;
+            foreach (var kv in globals)
+            {
+                if (BoneNamesMatch(kv.Key, boneName))
+                {
+                    global = kv.Value;
+                    return true;
+                }
+            }
+            global = default;
+            return false;
+        }
+
+        static bool BoneNamesMatch(string a, string b)
+        {
+            if (a.Equals(b, StringComparison.OrdinalIgnoreCase)) return true;
+            return StripBonePrefix(a).Equals(StripBonePrefix(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        static string StripBonePrefix(string name)
+        {
+            int cut = Math.Max(name.LastIndexOf(':'), name.LastIndexOf('|'));
+            return cut >= 0 && cut < name.Length - 1 ? name.Substring(cut + 1) : name;
         }
 
         /// <summary>

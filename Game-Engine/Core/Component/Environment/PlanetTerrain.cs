@@ -2362,7 +2362,21 @@ public sealed class PlanetTerrain : Behavior
         }
 
         if (result.Seasons is { Length: > 0 })
+        {
             _config.SnowLineAltitude = Math.Clamp(result.Seasons[0].SnowLineAltitude, 0.05f, 1f);
+            _config.SeasonPhase = result.Seasons[0].SeasonPhase;
+        }
+
+        // Output-port scales (compile-time float hints). Disconnected ports leave 1.
+        _config.LifeScale = result.HasLifePort
+            ? Math.Clamp(result.LifeHint, 0f, 2f)
+            : 1f;
+        _config.ScatterScale = result.HasScatterPort
+            ? Math.Clamp(result.ScatterHint, 0f, 2f)
+            : 1f;
+        _config.AtmosphereScale = result.HasAtmospherePort
+            ? Math.Clamp(result.AtmosphereHint, 0f, 2f)
+            : 1f;
 
         ApplyGraphAtmosphere(result);
 
@@ -2430,8 +2444,10 @@ public sealed class PlanetTerrain : Behavior
                     biome.WaterDeepColorB = layer.WaterDeepB;
                 }
 
-                biome.VegetationDensity = Math.Max(0f, layer.VegetationDensity);
-                biome.TreeDensity = Math.Max(0f, layer.TreeDensity);
+                float lifeScale = Math.Clamp(_config.LifeScale, 0f, 2f);
+                biome.VegetationDensity = Math.Max(0f, layer.VegetationDensity * lifeScale);
+                biome.TreeDensity = Math.Max(0f, layer.TreeDensity * lifeScale);
+                biome.BushDensity = Math.Max(0f, layer.BushDensity * lifeScale);
                 biome.VegetationProfileId = string.IsNullOrWhiteSpace(layer.VegetationProfileId) ? "Default" : layer.VegetationProfileId;
                 biome.VegetationPatchiness = Math.Clamp(layer.VegetationPatchiness, 0f, 1f);
                 if (layer.GrassMinScale > 0f)
@@ -2507,12 +2523,14 @@ public sealed class PlanetTerrain : Behavior
         RebuildWater();
         _chunkManager.RequestFullShellRebuild(16);
 
-        // Bind compiled life/scatter/fauna tables onto companion components when present.
+        // Bind compiled life/scatter/fauna tables onto companion components.
+        // Create companions when the graph authored those tables so vegetation can read them.
+        EnsureLifeCompanions(result);
         var flora = GetComponent<PlanetFloraSpawner>();
         flora?.ApplyRecipes(result.FloraLayers);
         var scatter = GetComponent<PlanetScatterRenderer>();
-        scatter?.ApplyRecipes(result.ScatterLayers);
-        _compiledFaunaLayers = result.FaunaLayers ?? Array.Empty<Biome.Graph.FaunaLayerRecipe>();
+        scatter?.ApplyRecipes(ScaleScatterRecipes(result.ScatterLayers, _config.ScatterScale));
+        _compiledFaunaLayers = ScaleFaunaLayers(result.FaunaLayers, _config.LifeScale);
         BindAttachedFauna();
         var life = GetComponent<PlanetLifeStreaming>();
         life?.BindRecipe(result.Recipe);
@@ -2524,6 +2542,76 @@ public sealed class PlanetTerrain : Behavior
         if (!SceneService.DeferPlanetVegetationImport)
             SavePlanetAsset();
         SceneService.NotifyChanged();
+    }
+
+    void EnsureLifeCompanions(Biome.Graph.BiomeGraphResult result)
+    {
+        if (gameObject == null) return;
+        bool needFlora = result.FloraLayers is { Length: > 0 };
+        bool needScatter = result.ScatterLayers is { Length: > 0 };
+        bool needLife = result.UnderwaterLife is { Length: > 0 }
+            || result.ResourceVeins is { Length: > 0 }
+            || result.FaunaLayers is { Length: > 0 };
+        if (needFlora && GetComponent<PlanetFloraSpawner>() == null)
+            gameObject.AddBehavior(new PlanetFloraSpawner());
+        if (needScatter && GetComponent<PlanetScatterRenderer>() == null)
+            gameObject.AddBehavior(new PlanetScatterRenderer());
+        if (needLife && GetComponent<PlanetLifeStreaming>() == null)
+            gameObject.AddBehavior(new PlanetLifeStreaming());
+    }
+
+    static Biome.Graph.FaunaLayerRecipe[] ScaleFaunaLayers(Biome.Graph.FaunaLayerRecipe[]? src, float lifeScale)
+    {
+        if (src == null || src.Length == 0)
+            return Array.Empty<Biome.Graph.FaunaLayerRecipe>();
+        float s = Math.Clamp(lifeScale, 0f, 2f);
+        if (Math.Abs(s - 1f) < 1e-4f)
+            return src;
+        var copy = new Biome.Graph.FaunaLayerRecipe[src.Length];
+        for (int i = 0; i < src.Length; i++)
+        {
+            var a = src[i];
+            copy[i] = new Biome.Graph.FaunaLayerRecipe
+            {
+                NodeId = a.NodeId,
+                SpeciesId = a.SpeciesId,
+                TargetBiome = a.TargetBiome,
+                HerdSpacing = a.HerdSpacing,
+                Density = Math.Max(0f, a.Density * s),
+                Scale = a.Scale > 0f ? a.Scale : 1f,
+                Diurnal = a.Diurnal,
+                BiomeMask = a.BiomeMask,
+            };
+        }
+        return copy;
+    }
+
+    static Biome.Graph.ScatterLayerRecipe[] ScaleScatterRecipes(Biome.Graph.ScatterLayerRecipe[]? src, float scatterScale)
+    {
+        if (src == null || src.Length == 0)
+            return Array.Empty<Biome.Graph.ScatterLayerRecipe>();
+        float s = Math.Clamp(scatterScale, 0f, 2f);
+        if (Math.Abs(s - 1f) < 1e-4f)
+            return src;
+        var copy = new Biome.Graph.ScatterLayerRecipe[src.Length];
+        for (int i = 0; i < src.Length; i++)
+        {
+            var a = src[i];
+            copy[i] = new Biome.Graph.ScatterLayerRecipe
+            {
+                NodeId = a.NodeId,
+                ProfileId = a.ProfileId,
+                TargetBiome = a.TargetBiome,
+                RockDensity = Math.Max(0f, a.RockDensity * s),
+                DebrisDensity = Math.Max(0f, a.DebrisDensity * s),
+                MinSlope = a.MinSlope,
+                MaxSlope = a.MaxSlope,
+                MinAltitude = a.MinAltitude,
+                MaxAltitude = a.MaxAltitude,
+                ScatterType = a.ScatterType,
+            };
+        }
+        return copy;
     }
 
     /// <summary>
@@ -2577,6 +2665,7 @@ public sealed class PlanetTerrain : Behavior
         CavesEnabled = src.CavesEnabled,
         VegetationDensity = src.VegetationDensity,
         TreeDensity = src.TreeDensity,
+        BushDensity = src.BushDensity,
         VegetationProfileId = src.VegetationProfileId,
         VegetationPatchiness = src.VegetationPatchiness,
         GrassMinScale = src.GrassMinScale,
@@ -2708,7 +2797,38 @@ public sealed class PlanetTerrain : Behavior
             atmo.CloudDensity = Math.Clamp(c.Density, 0.05f, 3f);
             if (c.BaseHeight > 1f) atmo.CloudBaseHeight = c.BaseHeight;
             if (c.TopHeight > c.BaseHeight) atmo.CloudTopHeight = c.TopHeight;
+            ApplyCloudType(atmo, c.CloudType);
         }
+
+        float atmoScale = Math.Clamp(_config?.AtmosphereScale ?? 1f, 0f, 2f);
+        if (Math.Abs(atmoScale - 1f) > 1e-4f)
+        {
+            atmo.RayleighStrength = Math.Clamp(atmo.RayleighStrength * atmoScale, 0.05f, 4f);
+            atmo.MieStrength = Math.Clamp(atmo.MieStrength * atmoScale, 0f, 4f);
+            atmo.CloudCoverage = Math.Clamp(atmo.CloudCoverage * atmoScale, 0f, 1f);
+        }
+    }
+
+    /// <summary>
+    /// Map CloudType string onto existing atmosphere knobs. Unknown strings stay Cumulus defaults.
+    /// </summary>
+    static void ApplyCloudType(PlanetAtmosphere atmo, string? cloudType)
+    {
+        string t = (cloudType ?? "Cumulus").Trim();
+        if (t.Equals("Stratus", StringComparison.OrdinalIgnoreCase))
+        {
+            atmo.CloudDetail = 1.2f;
+            atmo.CloudSoftness = 0.48f;
+            atmo.CloudSpeed = 0.015f;
+        }
+        else if (t.Equals("Cirrus", StringComparison.OrdinalIgnoreCase))
+        {
+            atmo.CloudDetail = 3.2f;
+            atmo.CloudSoftness = 0.22f;
+            atmo.CloudSpeed = 0.045f;
+            atmo.CloudDensity = Math.Clamp(atmo.CloudDensity * 0.55f, 0.05f, 3f);
+        }
+        // Cumulus / default: leave detail/softness/speed as currently set (preset or inspector).
     }
 
     void ApplyWetlandFloraBoost(Biome.Graph.BiomeGraphResult result)

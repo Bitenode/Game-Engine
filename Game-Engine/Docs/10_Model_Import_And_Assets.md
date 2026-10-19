@@ -48,7 +48,7 @@ ModelImporter
     ├─► Assign MeshFilter + MeshRenderer + MeshCollider per mesh
     ├─► Create SkinnedMeshRenderer for skeletal meshes
     ├─► Create Animator with imported animation states
-    ├─► Normalize scale (fit to ~1 unit radius)
+    ├─► Normalize scale (static meshes: ~1 unit radius; skinned: bind-pose bake + fit)
     ├─► Resolve and save material files
     └─► Convert texture paths to project-relative
     │
@@ -122,9 +122,10 @@ For each material in the model file, the importer extracts and converts properti
 The importer tries multiple paths to find texture files:
 
 1. **Relative to model** — path as stored in the model file
-2. **Filename search** — search the project for a file with the same name
-3. **Assets folder** — search in the project's `Assets/` directory
-4. **Embedded textures** — extract from the model file and save to disk as separate images
+2. **Filename search** — search the model folder (and parent) for an exact filename match
+3. **Stem fallback** — if the FBX points at `name.tga` but disk has `name_col_unity.tga`, match files that start with the same stem plus `_`, `-`, or `.`
+4. **Assets folder** — search in the project's `Assets/` directory
+5. **Embedded textures** — extract from the model file and save to disk as separate images
 
 ### Filename Pattern Guessing
 When Assimp metadata doesn't specify texture usage, the importer guesses from filename patterns:
@@ -162,7 +163,8 @@ When a model contains bones, the importer builds a skeleton:
 |--------|--------|
 | **Max bones per vertex** | 4 (limited by GPU skinning layout) |
 | **Weight normalization** | Weights are normalized so they sum to 1.0 |
-| **Translation scaling** | Bone offset matrix translations are scaled when mesh vertices are normalized |
+| **Bind-pose bake** | Skinned vertices are transformed through the bind-pose palette so body, eyes, and other sub-meshes share one model space before fit |
+| **Rigid sub-meshes** | Meshes without bone weights are baked with their node global transform, then pinned to the nearest bone |
 | **Vertex layout** | Skinned: 64 bytes (Position3 + Normal3 + UV2 + BoneIdx4 + BoneWeight4) |
 
 ### Flexible Bone Name Matching
@@ -180,9 +182,10 @@ When a model contains animations, each animation clip is extracted:
 
 1. **Clip discovery** — Assimp provides named animation clips with duration and keyframes
 2. **Channel extraction** — the full FBX node tree is sampled (including `$AssimpFbx$` Translation / Rotation / Scaling pivot nodes), then folded into one local pose per skeleton bone
-3. **Loose clips** — additional FBX files beside the rig (`Animations/{Stem}_Idle.fbx`, `{Stem}_Walk.fbx`, etc. or sibling `../Animations/`) are imported onto the same skeleton and merged into the auto-Animator
-4. **File saving** — clips are saved as `.boneanim` files alongside the model
-5. **Animator creation** — an `Animator` component is auto-created with states for each clip (Idle / Walk / Run sorted first; default state prefers locomotion clips)
+3. **Loose clips** — additional FBX files beside the rig (`Animations/{Stem}_Idle.fbx`, `{Stem}_Walk.fbx`, `{Stem}_idle_anim.fbx`, etc. or sibling `../Animations/`) are imported onto the same skeleton and merged into the auto-Animator. Clip names are mapped to **Idle**, **Walk**, or **Run** using whole-word tokens (so names like `butterfly` are not treated as `fly`).
+4. **Clip / bind alignment** — loose clips use the same fit scale as the rig: animation world translations are scaled before local pose is rebuilt, matching `NormalizeSkinnedBind`.
+5. **File saving** — clips are saved as `.boneanim` files alongside the model
+6. **Animator creation** — an `Animator` component is auto-created with states for each clip (Idle / Walk / Run sorted first; default state prefers locomotion clips)
 
 ### .boneanim Format
 Each animation clip is stored as a separate file containing:
@@ -216,15 +219,29 @@ After import, preview clips in the **Animation** panel (Scene View) or press **P
 
 ## Scale Normalization
 
-Models are automatically scaled to fit a reasonable size in the scene:
+### Static meshes (no skeleton)
 
-1. The importer computes the bounding box of all vertices across all meshes
-2. The largest dimension (width, height, or depth) is determined
-3. A scale factor is computed to normalize the largest dimension to ~1 unit
-4. All vertices are multiplied by this scale factor
-5. Bone offset matrix translations are also scaled to match
+1. The importer finds the largest horizontal (XZ) extent across all meshes.
+2. Vertices are scaled by `1 / maxRadius` so the model fits roughly inside a ~1 unit radius.
+3. Materials and colliders use the scaled vertex data.
 
-This ensures that models from different sources (which may use different unit systems — meters, centimeters, inches) appear at a consistent size in the scene.
+### Skinned meshes (skeleton present)
+
+Static normalization is **not** applied during vertex conversion. Instead:
+
+1. Meshes stay in file space while the skeleton bind pose is built from the Assimp node tree.
+2. **`NormalizeSkinnedBind`** runs once per import:
+   - Skinned vertices are baked through `OffsetMatrix × bindWorld` (bind-pose model positions).
+   - Rigid sub-meshes (no weights) are baked with their mesh-node transform.
+   - The combined bounds are scaled to ~1 unit horizontal radius.
+   - Bind-pose `LocalBindTransform` and `OffsetMatrix` are rebuilt in that fitted space.
+3. Loose animation clips reuse the same fit factor on **world translations** before local keys are written.
+
+**Why:** Many FBX rigs store huge mesh-node scale only in the inverse bind matrix. Scaling vertices early without rebaking bind data leaves characters tens of times too large at `Transform.Scale = (1,1,1)`. Planet **fauna size** is controlled separately on each **FaunaLayer** node in the biome graph (`Scale`, default `1`), not by hard-coded species tables in the engine.
+
+### Runtime scale
+
+After import, use the GameObject **Transform > Scale** or gameplay systems (e.g. biome graph fauna **Scale**) for art direction. Re-import or delete cached `_Animations` / `.material` sidecars if you change the rig and need a fresh bind bake.
 
 ---
 

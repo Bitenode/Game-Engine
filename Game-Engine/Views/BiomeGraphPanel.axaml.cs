@@ -1494,6 +1494,7 @@ public partial class BiomeGraphPanel : UserControl
                 AddPropText("Target Biome", n.TargetBiome, v => n.TargetBiome = v);
                 AddPropFloat("Herd Spacing", n.HerdSpacing, v => n.HerdSpacing = v);
                 AddPropFloat("Density", n.Density, v => n.Density = v);
+                AddPropFloat("Scale", n.Scale, v => n.Scale = Math.Max(0.01f, v));
                 AddPropCheckbox("Diurnal", n.Diurnal, v => n.Diurnal = v);
                 AddPropText("Biome Mask", n.BiomeMask, v => n.BiomeMask = v);
                 break;

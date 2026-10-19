@@ -73,6 +73,14 @@ public sealed class PlanetConfig
     public float ShoreClimateBias { get; set; } = 0.35f;
     /// <summary>Normalized altitude above which climate snow appears (from Season node).</summary>
     public float SnowLineAltitude { get; set; } = 0.72f;
+    /// <summary>Phase offset for the season sine wave (from Season node, 0–1).</summary>
+    public float SeasonPhase { get; set; }
+    /// <summary>Global Life output-port scale (fauna + flora densities). 1 = unchanged.</summary>
+    [JsonIgnore] public float LifeScale { get; set; } = 1f;
+    /// <summary>Global Scatter output-port scale (rock/debris density). 1 = unchanged.</summary>
+    [JsonIgnore] public float ScatterScale { get; set; } = 1f;
+    /// <summary>Global Atmosphere output-port scale (Rayleigh/Mie + cloud coverage). 1 = unchanged.</summary>
+    [JsonIgnore] public float AtmosphereScale { get; set; } = 1f;
     public float AltitudeWeight { get; set; } = 0.3f;
     public bool UseSelectClassifier { get; set; }
     public float AltitudeSeaLevel { get; set; }

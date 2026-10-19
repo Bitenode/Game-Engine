@@ -92,6 +92,8 @@ public sealed class BiomeDefinition
 
     public float VegetationDensity { get; set; } = 0f;
     public float TreeDensity { get; set; } = 0f;
+    /// <summary>Bush density from flora graph layers (0 = no bushes).</summary>
+    public float BushDensity { get; set; } = 0f;
     public string VegetationProfileId { get; set; } = "Default";
     public float GrassMinScale { get; set; } = 0.8f;
     public float GrassMaxScale { get; set; } = 1.2f;

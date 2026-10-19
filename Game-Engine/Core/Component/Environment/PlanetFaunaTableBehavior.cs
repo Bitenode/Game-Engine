@@ -6,6 +6,7 @@ using System.Linq;
 using Game_Engine.Core.Biome;
 using Game_Engine.Core.Biome.Graph;
 using Game_Engine.Core.Importers;
+using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
 namespace Game_Engine.Core.Component;
@@ -191,18 +192,27 @@ public sealed class PlanetFaunaTableBehavior : Behavior
 
         string last = "";
         bool wantNote = !_loggedIdle && _herd.Count == 0;
+        bool aquatic = IsAquaticSpecies(species);
         for (int attempt = 0; attempt < 16; attempt++)
         {
             float ang = (Hash01(species, _herd.Count * 17 + attempt * 13) * 2f - 1f) * MathF.PI;
-            float dist = attempt == 0 ? 8f : Math.Clamp(4f + Hash01(species, 90 + attempt) * 28f, 4f, 36f);
+            float reach = aquatic ? 80f : 36f;
+            float dist = attempt == 0 ? (aquatic ? 18f : 8f) : Math.Clamp(4f + Hash01(species, 90 + attempt) * reach, 4f, reach);
             var tangent = Tangent(camDir, ang);
             dir = SN.Vector3.Normalize(camDir + tangent * (dist / stand));
-            if (!TryReadSurface(terrain, dir, wantNote, out var biome, out _, out last))
+            if (!TryReadSurface(terrain, dir, wantNote, aquatic, out var biome, out _, out last))
                 continue;
             biomeName = biome?.Name ?? "land";
             if (biome != null && !AllowsBiome(layer, biome))
                 continue;
-            if (biome == null && !string.Equals(species, "Deer", StringComparison.OrdinalIgnoreCase))
+            if (biome == null)
+                continue;
+            // Biome name "Ocean" still covers dry shore. Swimmers need real water.
+            if (aquatic)
+            {
+                if (!IsSubmerged(terrain, dir, 1.2f)) continue;
+            }
+            else if (IsSubmerged(terrain, dir, 0.35f))
                 continue;
             float ground = terrain.SampleStandWorldRadius(dir);
             if (ground < 1f) continue;
@@ -210,7 +220,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             if (TooClose(species, pos, Math.Min(spacing, 12f))) continue;
             return true;
         }
-        LogIdle($"no land spot for {species} ({last})");
+        LogIdle($"no {(aquatic ? "water" : "land")} spot for {species} ({last})");
         return false;
     }
 
@@ -218,7 +228,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     /// Same land test the vegetation spawner uses: heightfield vs sea, biome from
     /// normalized altitude. The world-position blend crushed near-shore land into Ocean.
     /// </summary>
-    static bool TryReadSurface(PlanetTerrain terrain, SN.Vector3 dir, bool wantNote, out BiomeDefinition? biome, out float worldR, out string note)
+    static bool TryReadSurface(PlanetTerrain terrain, SN.Vector3 dir, bool wantNote, bool allowUnderwater, out BiomeDefinition? biome, out float worldR, out string note)
     {
         biome = null;
         note = "";
@@ -230,7 +240,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         }
         float localR = terrain.WorldToLocalLength(worldR);
         float sea = terrain.Config.SeaLevel;
-        if (localR < sea + 0.15f)
+        if (!allowUnderwater && localR < sea + 0.15f)
         {
             if (wantNote) note = $"below sea {localR:F1} < {sea:F1}";
             return false;
@@ -271,7 +281,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         EnsureRoot();
         _root!.AddChild(host);
         host.AddChild(model);
-        float scale = BodyScale(species);
+        float scale = layer.Scale > 0f ? layer.Scale : 1f;
         model.Transform.Scale = new Vector3(scale, scale, scale);
         model.Transform.Position = new Vector3(0, 0, 0);
         PlantFeet(model);
@@ -306,6 +316,11 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     void StepAnimal(PlanetTerrain terrain, HerdAnimal animal, float dt)
     {
         float radius = Math.Max(1f, terrain.SampleStandWorldRadius(animal.Dir));
+        if (IsAquaticSpecies(animal.Species) && !IsSubmerged(terrain, animal.Dir, 0.6f))
+        {
+            animal.Go.RemoveFromParent();
+            return;
+        }
         animal.IdleLeft -= dt;
         bool walking = animal.IdleLeft <= 0f;
         if (animal.IdleLeft < -4.5f)
@@ -317,12 +332,10 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             var tangent = Tangent(animal.Dir, animal.Heading);
             float step = 2.6f * dt / radius;
             var next = SN.Vector3.Normalize(animal.Dir + tangent * step);
-            // Flat land was classified as ocean, so every step added a big turn and they spun.
-            // Only leave a step that is actually under the sea. Same stand radius the player uses.
-            float nextR = terrain.SampleStandWorldRadius(next);
-            float sea = terrain.Config != null ? terrain.Config.SeaLevel : 0f;
-            bool underwater = terrain.WorldToLocalLength(nextR) < sea - 0.05f;
-            if (underwater)
+            // Land herds turn back at the shoreline. Swimmers turn back onto land.
+            bool nextWet = IsSubmerged(terrain, next, IsAquaticSpecies(animal.Species) ? 0.8f : 0.35f);
+            bool blocked = IsAquaticSpecies(animal.Species) ? !nextWet : nextWet;
+            if (blocked)
                 animal.Heading += dt * 1.2f;
             else
             {
@@ -396,9 +409,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     {
         string name = biome.Name ?? "";
         if (name.Length == 0) return false;
-        // Test pass: deer show on every land biome. The graph mask comes back later.
-        if (string.Equals(layer.SpeciesId, "Deer", StringComparison.OrdinalIgnoreCase))
-            return !IsWaterBiome(biome);
         bool listed = false;
         if (NameHit(name, layer.TargetBiome)) listed = true;
         if (!listed && !string.IsNullOrWhiteSpace(layer.BiomeMask))
@@ -422,6 +432,25 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         for (int i = 0; i < parts.Length; i++)
             if (NameHit(biomeName, parts[i])) return true;
         return false;
+    }
+
+    /// <summary>Fish and other swimmers. They stay under the water surface, not on dry shore.</summary>
+    static bool IsAquaticSpecies(string species)
+    {
+        var s = species.ToLowerInvariant();
+        return s.Contains("shark") || s.Contains("octopus") || s.Contains("perch")
+            || s.Contains("pike") || s.Contains("salmon") || s.Contains("crab")
+            || s.Contains("croc");
+    }
+
+    /// <summary>True when the crust at <paramref name="dir"/> is at least <paramref name="minDepth"/> under the water surface.</summary>
+    static bool IsSubmerged(PlanetTerrain terrain, SN.Vector3 dir, float minDepth)
+    {
+        if (terrain.Config == null || !terrain.EnableWater) return false;
+        float crust = terrain.WorldToLocalLength(terrain.SampleStandWorldRadius(dir));
+        var water = terrain.SampleWaterSurface(dir);
+        if (water.Mask < 0.18f || water.Kind == PlanetWaterKind.Lava) return false;
+        return water.Radius - crust >= minDepth;
     }
 
     static bool IsWaterBiome(BiomeDefinition biome)
@@ -576,6 +605,18 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         });
     }
 
+    /// <summary>Letters and digits only, so a species id still matches a texture name that has underscores.</summary>
+    static string CompactName(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (var c in s)
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
+    }
+
     static string? FindSpeciesMap(string dir, string species, params string[] tokens)
     {
         if (!Directory.Exists(dir)) return null;
@@ -583,7 +624,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         foreach (var file in Directory.EnumerateFiles(dir))
         {
             var name = Path.GetFileNameWithoutExtension(file);
-            if (!name.Contains(species, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!CompactName(name).Contains(CompactName(species), StringComparison.Ordinal)) continue;
             bool hit = false;
             for (int i = 0; i < tokens.Length; i++)
             {
@@ -594,24 +635,10 @@ public sealed class PlanetFaunaTableBehavior : Behavior
                 }
             }
             if (!hit) continue;
-            if (best == null || name.Contains("col6", StringComparison.OrdinalIgnoreCase))
+            if (best == null)
                 best = file;
         }
         return best;
-    }
-
-    static float BodyScale(string species)
-    {
-        var s = species.ToLowerInvariant();
-        if (s.Contains("rabbit") || s.Contains("rat") || s.Contains("frog") || s.Contains("chicken")
-            || s.Contains("snail") || s.Contains("butterfly") || s.Contains("scorpion"))
-            return 1.15f;
-        if (s.Contains("deer"))
-            return 5f;
-        if (s.Contains("bear") || s.Contains("cattle") || s.Contains("croc") || s.Contains("shark")
-            || s.Contains("boar") || s.Contains("wolf"))
-            return 2.6f;
-        return 2.1f;
     }
 
     /// <summary>
@@ -640,7 +667,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
 
     /// <summary>
     /// Drop the model so its lowest vertex sits on the host origin. The rig pivot
-    /// is in the body, which left the deer floating or sunk depending on the slope.
+    /// is in the body, which left models floating or sunk depending on the slope.
     /// </summary>
     static void PlantFeet(GameObject model)
     {

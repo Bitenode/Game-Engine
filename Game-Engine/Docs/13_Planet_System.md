@@ -214,7 +214,15 @@ The palette also includes authoring nodes that compile into `BiomeGraphResult` /
 | Atmosphere | `Atmosphere`, `WeatherProfile`, `CloudLayer` | `AtmosphereNodes`, `WeatherProfiles`, `CloudLayers` |
 | Water extras | `IceSheet`, `Wetland` | `IceSheets`, `Wetlands` — applied at runtime (polar ice preference / crust raise; wetland moisture + flora boost + shallow flood bias) |
 
-`BiomeLayer` remains the ground material. Flora/Scatter attach via `Output.Life` / `Output.Scatter` (or stand alone in the graph). `FloraLayer` can push profile id, densities, patchiness, and growth/treeline ranges onto matching layers by `TargetBiome`.
+`BiomeLayer` remains the ground material. Flora/Scatter attach via **Output.Life** / **Output.Scatter** / **Output.Atmosphere** (float hooks on the Output node, typically wired from constants or math nodes). When connected, compile stores multipliers on `PlanetConfig`:
+
+| Output hook | Runtime field | Effect |
+|-------------|---------------|--------|
+| **Life** | `LifeScale` | Scales flora layer densities (vegetation/trees/bushes) and fauna **density** (not per-species **Scale**) |
+| **Scatter** | `ScatterScale` | Scales scatter-layer rock/debris densities |
+| **Atmosphere** | `AtmosphereScale` | Scales atmosphere rayleigh/mie/cloud coverage on `PlanetAtmosphere` |
+
+`FloraLayer` can push profile id, densities, **Bush Density**, patchiness, grass min/max scale, and growth/treeline ranges onto matching layers by `TargetBiome`. **Season** nodes write `SeasonPhase` (weather sine offset) and snow/growth fields. **Weather profile** ids on biome layers select compiled weather tables. **Cloud layer** nodes push cloud detail/softness/speed onto matching atmosphere layers. **Wetland** nodes apply a shallow flood dip via crust editing.
 
 Runtime companions (optional on the planet GameObject):
 - `PlanetLifeStreaming` — face/UV cell keys + fauna/underwater/vein recipe bind
@@ -229,11 +237,19 @@ On `ApplyGraphResult`, `PlanetTerrain` binds compiled tables onto companions whe
 
 When play mode is active and the biome graph compiled fauna layers, `PlanetFaunaTableBehavior` spawns skinned animals around the player:
 
-- **Species resolution** — `SpeciesId` maps to `Assets/Animals/Models/{Species}_Rig.fbx` (with fallbacks under `Assets/Animals/`). Loose clips beside the rig (`Animations/{Species}_Idle.fbx`, `_Walk.fbx`, etc.) are picked up by `ModelImporter` and wired into the auto-created `Animator`.
-- **Placement** — uses the same heightfield vs sea-level and biome dominance tests as vegetation (not world-position altitude blend). Spots are picked in a ring around the player / camera anchor on the stand surface.
-- **Locomotion** — idle / walk / graze states with `StandRadiusGrid`-aligned grounding; feet are planted from mesh bounds so rigs sit on slopes instead of floating at the bone pivot.
-- **Scaling** — species-specific body scale (e.g. deer larger than rabbits) after the importer's unit-sphere normalization.
+- **Species resolution** — `SpeciesId` maps to `Assets/Animals/Models/{Species}_Rig.fbx` (with filename fallbacks under `Assets/Animals/Models/`). `ModelImporter` loads loose clips (`Animations/{stem}_*.fbx`) and builds **Idle** / **Walk** / **Run** states on an `Animator`. Optional maps under `Assets/Animals/Textures/` are applied when the imported `.material` has no albedo (species name matching ignores underscores).
+- **Placement** — land species use dry crust above sea level and biome mask / dominance. Aquatic species (sharks, fish, crabs, etc.) require **submerged** water (crust below the water surface by a minimum depth), not merely a biome named Ocean. Spots are picked in a ring around the player / camera anchor on the stand surface.
+- **Locomotion** — idle / walk / graze; feet are planted from mesh bounds so rigs sit on slopes instead of floating at the bone pivot.
+- **Scaling** — each **FaunaLayer** exposes **Scale** (default `1`). Only this uniform multiplier is applied at spawn (`Transform.Scale` on the imported model). The engine does not ship per-species size tables; tune sizes in the biome graph after import normalization (~1 unit wide rigs).
+- **Performance** — empty rig pivot nodes with no renderers are pruned after import to cut hierarchy walk cost per animal.
 - **Duplicate guard** — if graph apply adds a second copy on the same planet, the earliest component wins.
+
+### Underwater vegetation (profiles + `UnderwaterLife`)
+
+- Vegetation profiles whose id is **Ocean** (or paths containing `/coral` / `coral_`) are excluded from the land tree carpet.
+- **`UnderwaterLife`** recipes drive kelp (bush items) and coral (tree items) through `PlanetVegetationSystem` with `requireDryLand: false`.
+- Imported reef meshes use **`scaleToTreeHeight: false`** so they are not inflated to tree height; placement respects depth and slope limits near the camera.
+- **`PlanetVegetationSystem`** also spawns bushes, scatter rocks, underwater props, and cave ore markers from compiled flora/scatter/underwater/vein recipes.
 
 ### Vegetation clear zones (`VegetationClearZone`)
 

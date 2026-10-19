@@ -124,6 +124,8 @@ public sealed class BiomeLayerInfo
     public float WaterDeepB { get; set; } = 0.22f;
     public float VegetationDensity { get; set; } = 0f;
     public float TreeDensity { get; set; } = 0f;
+    /// <summary>Bush density from flora layer (0 = leave biome default / no bushes).</summary>
+    public float BushDensity { get; set; } = 0f;
     public string VegetationProfileId { get; set; } = "Default";
     public float VegetationPatchiness { get; set; } = 0.45f;
     /// <summary>Set by a flora layer. 0 keeps the biome preset.</summary>
@@ -732,7 +734,7 @@ public sealed class BiomeGraph
                     fauna.Add(new FaunaLayerRecipe
                     {
                         NodeId = n.Id, SpeciesId = n.SpeciesId, TargetBiome = n.TargetBiome,
-                        HerdSpacing = n.HerdSpacing, Density = n.Density,
+                        HerdSpacing = n.HerdSpacing, Density = n.Density, Scale = n.Scale > 0f ? n.Scale : 1f,
                         Diurnal = n.Diurnal, BiomeMask = n.BiomeMask
                     });
                     break;
@@ -814,6 +816,36 @@ public sealed class BiomeGraph
         result.CloudLayers = clouds.ToArray();
         result.IceSheets = ice.ToArray();
         result.Wetlands = wetlands.ToArray();
+
+        ApplyWeatherProfilesToLayers(result.Layers, weather);
+    }
+
+    /// <summary>
+    /// Copy Weather Profile node rain/snow/storm/wind/cloud/fog onto every biome layer
+    /// whose <see cref="BiomeLayerInfo.WeatherProfileId"/> matches the profile id.
+    /// </summary>
+    static void ApplyWeatherProfilesToLayers(BiomeLayerInfo[] layers, List<WeatherProfileRecipe> weather)
+    {
+        if (layers.Length == 0 || weather.Count == 0) return;
+        for (int i = 0; i < layers.Length; i++)
+        {
+            var layer = layers[i];
+            string id = layer.WeatherProfileId ?? "";
+            if (id.Length == 0) continue;
+            for (int w = 0; w < weather.Count; w++)
+            {
+                var p = weather[w];
+                if (!string.Equals(p.ProfileId, id, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                layer.RainChance = Math.Clamp(p.RainChance, 0f, 1f);
+                layer.SnowChance = Math.Clamp(p.SnowChance, 0f, 1f);
+                layer.StormChance = Math.Clamp(p.StormChance, 0f, 1f);
+                layer.WindBias = Math.Max(0f, p.WindBias);
+                layer.CloudCoverageBias = Math.Max(0f, p.CloudCoverageBias);
+                layer.FogDensityBias = Math.Max(0f, p.FogDensityBias);
+                break;
+            }
+        }
     }
 
     static void ApplyFloraToMatchingLayers(BiomeLayerInfo[] layers, BiomeFloraLayerNode flora)
@@ -831,6 +863,8 @@ public sealed class BiomeGraph
                 layers[i].VegetationDensity = flora.GrassDensity;
             if (flora.TreeDensity > 0f)
                 layers[i].TreeDensity = flora.TreeDensity;
+            if (flora.BushDensity > 0f)
+                layers[i].BushDensity = flora.BushDensity;
             if (flora.GrassMinScale > 0f)
                 layers[i].GrassMinScale = flora.GrassMinScale;
             if (flora.GrassMaxScale > 0f)
@@ -1597,7 +1631,7 @@ public sealed class BiomeGraph
                 obj["scatterType"] = n.ScatterType; break;
             case BiomeFaunaLayerNode n:
                 obj["speciesId"] = n.SpeciesId; obj["targetBiome"] = n.TargetBiome;
-                obj["herdSpacing"] = n.HerdSpacing; obj["density"] = n.Density;
+                obj["herdSpacing"] = n.HerdSpacing; obj["density"] = n.Density; obj["scale"] = n.Scale;
                 obj["diurnal"] = n.Diurnal; obj["biomeMask"] = n.BiomeMask; break;
             case BiomeUnderwaterLifeNode n:
                 obj["profileId"] = n.ProfileId;
@@ -1832,6 +1866,7 @@ public sealed class BiomeGraph
                 n.TargetBiome = item["targetBiome"]?.GetValue<string>() ?? "";
                 n.HerdSpacing = item["herdSpacing"]?.GetValue<float>() ?? n.HerdSpacing;
                 n.Density = item["density"]?.GetValue<float>() ?? n.Density;
+                n.Scale = item["scale"]?.GetValue<float>() ?? 1f;
                 n.Diurnal = item["diurnal"]?.GetValue<bool>() ?? n.Diurnal;
                 n.BiomeMask = item["biomeMask"]?.GetValue<string>() ?? ""; break;
             case BiomeUnderwaterLifeNode n:

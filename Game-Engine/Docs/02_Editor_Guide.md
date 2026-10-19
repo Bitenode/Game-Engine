@@ -785,6 +785,10 @@ The Biome Graph panel provides a node-based biome authoring workflow for `Planet
 - **Geology nodes** — `Continent`, `Crater`, `Volcano`, `Cliff`, `DomainWarp`. Continents carve ocean basins with a narrow coastal shelf; **Cliff** adds ocean-side drops on that band; **Volcano** adds inland stratovolcanoes with caldera **lava lakes** (not swim water). Volcano centers are filtered inland so cones do not sit on the continent rim.
 - **Climate nodes** — `Climate`, `RainShadow`, `Season`, `LatitudeBand`. Compile writes `AltitudeLapseRate`, `WaterMoistureBoost`, `RainShadowStrength` / width, `SnowLineAltitude`, and optional `UseSelectClassifier`.
 - **Life / scatter nodes** — `FloraLayer`, `ScatterLayer`, `FaunaLayer`, `UnderwaterLife`, `ResourceVein` compile into `PlanetRecipe` tables. Runtime companions (`PlanetFloraSpawner`, `PlanetScatterRenderer`, `PlanetFaunaTableBehavior`, `PlanetLifeStreaming`) receive those tables on compile.
+- **Output port scalars** — wire **Life**, **Scatter**, or **Atmosphere** on the Output node to multiply vegetation/fauna density, scatter density, or atmosphere strength at compile time.
+- **FaunaLayer** — **Scale** (uniform rig multiplier, default `1`) per species layer; **Biome Mask** comma list; density and herd spacing. Recompile and restart play to respawn with new scales.
+- **FloraLayer extras** — **Bush Density**, **Grass Min/Max Scale**, and vegetation profile lists per target biome.
+- **Season** — **Phase** offsets the planet weather season curve (`SeasonPhase` on the terrain config).
 - **Atmosphere extras** — `Atmosphere` / `CloudLayer` apply onto `PlanetAtmosphere` when present; `IceSheet` / `Wetland` drive polar ice and wetland moisture/flood behavior.
 - **Biome Layer climate box** — optional Min/Max temperature, moisture, and altitude so custom biome names keep distinct Whittaker regions.
 - Compile also bakes a `PlanetClimateAtlas` (256² per cube face) and a `RecipeHash` that keys the chunk mesh cache.

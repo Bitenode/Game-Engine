@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Game_Engine.Core;
 using Game_Engine.Core.Biome;
+using Game_Engine.Core.Biome.Graph;
 using Game_Engine.Core.Planet;
 using SN = System.Numerics;
 
@@ -223,6 +224,9 @@ public sealed class PlanetVegetationSystem : Behavior
     readonly Dictionary<int, GameObject> _carpetTrees = new();
     readonly Dictionary<int, SN.Vector3> _carpetTreeDirs = new();
     readonly List<string> _localTreeModels = new();
+    readonly List<string> _coralModels = new();
+    readonly Dictionary<int, GameObject> _coralPatches = new();
+    float _coralTick;
     readonly List<string> _readyTreeScratch = new();
     readonly List<int> _carpetStale = new();
     readonly record struct CarpetSeat(float R, float Yaw, float PatchR, int Blades);
@@ -297,11 +301,22 @@ public sealed class PlanetVegetationSystem : Behavior
     float[] _grassDensityByBiome = Array.Empty<float>();
     BiomeDefinition[]? _grassDensitySource;
 
+    enum VegKind
+    {
+        Grass,
+        Tree,
+        Bush,
+        Rock,
+        Underwater,
+        Vein
+    }
+
     sealed class Entry
     {
         public GameObject GameObject = null!;
         public BiomeDefinition Biome = null!;
         public bool IsGrass;
+        public VegKind Kind = VegKind.Tree;
         public float BaseScale = 1f;
         public float Vitality = 1f;
         public SN.Vector3 SurfaceDir;
@@ -430,6 +445,7 @@ public sealed class PlanetVegetationSystem : Behavior
         // is what made walking grass trickle in.
         TickLocalGpuGrassCarpet(cameraPos, dt);
         TickLocalTrees(cameraPos, dt);
+        TickUnderwaterCoral(cameraPos, dt);
 
         _updateAccum += dt;
         float minInterval = Math.Max(0.10f, UpdateIntervalSeconds);
@@ -2307,8 +2323,51 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             if (profile == null || string.Equals(profile.Id, "Universal", StringComparison.OrdinalIgnoreCase))
                 continue;
+            // Underwater profile meshes stay out of the land tree carpet.
+            if (string.Equals(profile.Id, "Ocean", StringComparison.OrdinalIgnoreCase))
+            {
+                RememberCoralModels(profile);
+                continue;
+            }
             AddProfile(profile);
         }
+    }
+
+    void RememberCoralModels(VegetationProfile profile)
+    {
+        var items = profile.TreeItems;
+        if (items == null) return;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var it = items[i];
+            if (it == null || string.IsNullOrWhiteSpace(it.ModelPath)) continue;
+            if (!IsCoralAsset(it.ModelPath) && !IsSupportedModelPath(it.ModelPath)) continue;
+            string path = PlanetAssetIO.NormalizeAssetReference(it.ModelPath);
+            bool have = false;
+            for (int c = 0; c < _coralModels.Count; c++)
+            {
+                if (string.Equals(_coralModels[c], path, StringComparison.OrdinalIgnoreCase))
+                {
+                    have = true;
+                    break;
+                }
+            }
+            if (!have)
+            {
+                _coralModels.Add(path);
+                string? abs = ResolveTreeModelAbsPath(path);
+                if (!string.IsNullOrWhiteSpace(abs))
+                    RequestTreeTemplateLoad(abs);
+            }
+        }
+    }
+
+    static bool IsCoralAsset(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string n = path.Replace('\\', '/');
+        return n.Contains("/coral", StringComparison.OrdinalIgnoreCase)
+            || n.Contains("coral_", StringComparison.OrdinalIgnoreCase);
     }
 
     bool WaitForProfileTreeFbxs()
@@ -2385,6 +2444,8 @@ public sealed class PlanetVegetationSystem : Behavior
             return;
         if (!seen.Add(abs))
             return;
+        if (IsCoralAsset(stored))
+            return;
         _localTreeModels.Add(PlanetAssetIO.NormalizeAssetReference(stored));
         RequestTreeTemplateLoad(abs);
     }
@@ -2427,6 +2488,93 @@ public sealed class PlanetVegetationSystem : Behavior
 
         _carpetTrees[token] = go;
         _carpetTreeDirs[token] = dir;
+        return true;
+    }
+
+    /// <summary>Underwater profile meshes. Plant a few on the seabed near the camera.</summary>
+    void TickUnderwaterCoral(SN.Vector3 cameraPos, float dt)
+    {
+        if (_terrain?.Config == null || !_terrain.EnableWater) return;
+        if (_coralModels.Count == 0)
+            EnsureLocalTreeModels();
+        if (_coralModels.Count == 0) return;
+
+        _coralTick += dt;
+        if (_coralTick < 0.4f) return;
+        _coralTick = 0f;
+
+        var camLocal = _terrain.WorldToLocal(cameraPos);
+        if (camLocal.LengthSquared() < 1e-6f) return;
+        var camDir = SN.Vector3.Normalize(camLocal);
+        float radius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+
+        float keep = 90f;
+        float maxDirDeltaSq = (keep / radius) * (keep / radius);
+        var drop = new List<int>();
+        foreach (var kv in _coralPatches)
+        {
+            var dir = RadialDirFromLocalPosition(new SN.Vector3(
+                (float)kv.Value.Transform.Position.X,
+                (float)kv.Value.Transform.Position.Y,
+                (float)kv.Value.Transform.Position.Z));
+            if ((camDir - dir).LengthSquared() > maxDirDeltaSq)
+                drop.Add(kv.Key);
+        }
+        for (int i = 0; i < drop.Count; i++)
+        {
+            if (_coralPatches.TryGetValue(drop[i], out var old))
+                old?.RemoveFromParent();
+            _coralPatches.Remove(drop[i]);
+        }
+
+        const int cap = 28;
+        if (_coralPatches.Count >= cap) return;
+
+        CarpetTangentBasis(camDir, out var t, out var b);
+        float probe = 14f;
+        int added = 0;
+        for (int ring = 1; ring <= 6 && added < 2 && _coralPatches.Count < cap; ring++)
+        {
+            int perim = ring * 6;
+            for (int k = 0; k < perim && added < 2; k++)
+            {
+                float ang = (k + ring * 0.37f) / perim * MathF.Tau;
+                float dist = ring * probe;
+                var dir = SafeNormalize(camDir * radius + t * (MathF.Cos(ang) * dist) + b * (MathF.Sin(ang) * dist), camDir);
+                int token = CarpetCellToken(9, dir, 48, out _, out _, out _);
+                if (_coralPatches.ContainsKey(token)) continue;
+                if (IsCheapDryLandForCarpet(dir)) continue;
+                // Cliff faces next to the sea still sample as shallow water.
+                // Corals need a real basin, not the shoreline.
+                if (!PassesSlopeAltitude(dir, 0f, 18f, 0f, 1f)) continue;
+                if (!TryGetWaterDepth(dir, out float depth) || depth < 8f || depth > 40f) continue;
+                if (!TrySpawnCoral(token, dir)) continue;
+                added++;
+            }
+        }
+    }
+
+    bool TrySpawnCoral(int token, SN.Vector3 dir)
+    {
+        if (_terrain?.gameObject == null || _coralModels.Count == 0) return false;
+        dir = SafeNormalize(dir, SN.Vector3.UnitY);
+        string model = _coralModels[(token < 0 ? -token : token) % _coralModels.Count];
+        float scale = 1f;
+        var planetW = GetPlanetWorldMatrix();
+        var radialW = LocalDirectionToWorld(planetW, dir);
+        var surfN = SamplePlanetSurfaceNormal(_terrain, planetW, dir);
+        var surface = VegetationWorldPoint(_terrain, planetW, dir, 0.02f);
+        var placeUp = ResolvePlanetTreeWorldUp(radialW, surfN);
+        float yaw = CarpetCellYaw(token);
+        var go = new GameObject($"Coral_{token:X8}");
+        AttachSpawnedInstance(go);
+        SetLocalCrustPosition(go, dir, 0.02f);
+        if (!TrySpawnImportedVegetationMesh(go, model, isGrass: false, scale, surface, radialW, placeUp, yaw, scaleToTreeHeight: false))
+        {
+            go.RemoveFromParent();
+            return false;
+        }
+        _coralPatches[token] = go;
         return true;
     }
 
@@ -2573,16 +2721,21 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             int existingTrees = 0;
             int existingGrass = 0;
+            int existingExtra = 0;
             for (int i = 0; i < entries.Count; i++)
             {
-                if (entries[i].IsGrass) existingGrass++;
+                var e = entries[i];
+                if (e.IsGrass || e.Kind == VegKind.Grass) existingGrass++;
+                else if (e.Kind is VegKind.Bush or VegKind.Rock or VegKind.Underwater or VegKind.Vein)
+                    existingExtra++;
                 else existingTrees++;
             }
             int treeDone = PlayPerfLimited ? Math.Min(4, MaxTreesPerLeaf) : MaxTreesPerLeaf;
             int grassDone = BatchGrassPerLeaf
                 ? Math.Max(8, MaxGrassClumpsPerLeaf)
                 : MaxGrassClumpsPerLeaf;
-            if (existingTrees >= treeDone && existingGrass >= grassDone)
+            int extraDone = Math.Max(2, MaxTreesPerLeaf);
+            if (existingTrees >= treeDone && existingGrass >= grassDone && existingExtra >= extraDone)
                 return;
         }
 
@@ -2600,15 +2753,37 @@ public sealed class PlanetVegetationSystem : Behavior
         var sample = SampleLeafBiome(leaf, seedOffset: 0);
         var biome = sample ?? _terrain.OceanBiome;
         var leafDir = CubeSphereMath.FaceUVToDirection(leaf.Face, (leaf.U0 + leaf.U1) * 0.5f, (leaf.V0 + leaf.V1) * 0.5f);
-        if (!ShouldSpawnVegetationAt(leafDir) && !LeafHasAnyDryLand(leaf))
+        bool hasDryLand = ShouldSpawnVegetationAt(leafDir) || LeafHasAnyDryLand(leaf);
+        if (!hasDryLand)
+        {
+            // Underwater / vein recipes can still place without dry crust.
+            var wetProfile = ResolveVegetationProfile(biome);
+            int dummyBush = 0, dummyRock = 0, uw = 0, vein = 0;
+            int wetTotal = ActiveVegetationInstances;
+            int wetBudget = ResolveSpawnTickCap(false) - LastSpawnedThisUpdate;
+            if (wetBudget > 0)
+            {
+                SpawnRecipeExtras(
+                    leaf, entries, biome, wetProfile,
+                    ref dummyBush, ref dummyRock, ref uw, ref vein,
+                    ref wetTotal, ref wetBudget, hardCap, fullPopulate: false);
+            }
             return;
+        }
 
         biome = ResolveLandVegetationBiome(biome, leafDir);
         var profile = ResolveVegetationProfile(biome);
 
         if (!PassesGrowthAndPatchiness(biome, leafDir, isTree: false) &&
             !PassesGrowthAndPatchiness(biome, leafDir, isTree: true))
+        {
+            int dummyBush = 0, dummyRock = 0, uw = 0, vein = 0;
+            SpawnRecipeExtras(
+                leaf, entries, biome, profile,
+                ref dummyBush, ref dummyRock, ref uw, ref vein,
+                ref currentTotal, ref spawnBudget, hardCap, fullPopulate: false);
             return;
+        }
 
         float treeDensityMul = GetAverageDensityMultiplier(profile?.TreeItems);
         float grassDensityMul = GetAverageDensityMultiplier(profile?.GrassItems);
@@ -2646,9 +2821,18 @@ public sealed class PlanetVegetationSystem : Behavior
 
         int treeCount = 0;
         int grassCount = 0;
+        int bushCount = 0;
+        int rockCount = 0;
+        int underwaterCount = 0;
+        int veinCount = 0;
         for (int ei = 0; ei < entries.Count; ei++)
         {
-            if (entries[ei].IsGrass) grassCount++;
+            var e = entries[ei];
+            if (e.IsGrass || e.Kind == VegKind.Grass) grassCount++;
+            else if (e.Kind == VegKind.Bush) bushCount++;
+            else if (e.Kind == VegKind.Rock) rockCount++;
+            else if (e.Kind == VegKind.Underwater) underwaterCount++;
+            else if (e.Kind == VegKind.Vein) veinCount++;
             else treeCount++;
         }
         int globalGrassCount = CountActiveGrassInstances();
@@ -2709,6 +2893,7 @@ public sealed class PlanetVegetationSystem : Behavior
                         Biome = biome,
                         BiomeName = biome.Name,
                         IsGrass = true,
+                        Kind = VegKind.Grass,
                         BaseScale = 1f,
                         SurfaceDir = patchDir,
                         YawDeg = 0f,
@@ -2762,6 +2947,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 Biome = biome,
                 BiomeName = biome.Name,
                 IsGrass = true,
+                Kind = VegKind.Grass,
                 BaseScale = (float)go.Transform.Scale.X,
                 SurfaceDir = dir,
                 YawDeg = SpawnYawFromLeaf(leaf, grassCount + 97),
@@ -2805,6 +2991,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 Biome = biome,
                 BiomeName = biome.Name,
                 IsGrass = false,
+                Kind = VegKind.Tree,
                 BaseScale = (float)go.Transform.Scale.X,
                 SurfaceDir = dir,
                 YawDeg = SpawnYawFromLeaf(leaf, treeCount + 17),
@@ -2817,6 +3004,453 @@ public sealed class PlanetVegetationSystem : Behavior
             spawnBudget--;
             LastSpawnedThisUpdate++;
         }
+
+        // Bushes / scatter rocks / underwater plants / ore markers (empty item lists = no spawn).
+        SpawnRecipeExtras(
+            leaf, entries, biome, profile,
+            ref bushCount, ref rockCount, ref underwaterCount, ref veinCount,
+            ref currentTotal, ref spawnBudget, hardCap, fullPopulate);
+    }
+
+    /// <summary>
+    /// Place bushes (flora BushDensity + BushItems), scatter rocks, underwater kelp/coral,
+    /// and vein rock markers. Empty profile item lists mean no spawn (no meadow-grass fallback).
+    /// </summary>
+    void SpawnRecipeExtras(
+        QuadNode leaf,
+        List<Entry> entries,
+        BiomeDefinition biome,
+        VegetationProfile? landProfile,
+        ref int bushCount,
+        ref int rockCount,
+        ref int underwaterCount,
+        ref int veinCount,
+        ref int currentTotal,
+        ref int spawnBudget,
+        int hardCap,
+        bool fullPopulate)
+    {
+        if (_terrain?.Config == null || spawnBudget <= 0 || currentTotal >= hardCap)
+            return;
+
+        int extraCap = fullPopulate
+            ? Math.Max(2, MaxTreesPerLeaf)
+            : Math.Max(1, Math.Min(MaxTreesPerLeaf, PlayPerfLimited ? 2 : MaxTreesPerLeaf));
+
+        // ── Bushes ──
+        var bushItems = GetUsableMeshItems(landProfile?.BushItems);
+        float bushDensity = Math.Max(0f, biome.BushDensity);
+        int targetBush = bushItems.Count > 0
+            ? Math.Clamp((int)MathF.Round(bushDensity * GetAverageDensityMultiplier(landProfile?.BushItems) * extraCap), 0, extraCap)
+            : 0;
+        while (bushCount < targetBush && spawnBudget > 0 && currentTotal < hardCap)
+        {
+            int salt = bushCount + 401;
+            var item = ChooseFromItems(bushItems, HashLeaf(leaf, 211 + salt));
+            if (item == null) break;
+            var go = SpawnMeshItemObject(leaf, biome, item, salt, VegKind.Bush, requireDryLand: true, requireGrowthTreeFilters: true);
+            if (_deferSpawnForTemplate) break;
+            if (go == null) { bushCount++; spawnBudget--; continue; }
+            AddExtraEntry(entries, go, biome, VegKind.Bush, leaf, salt);
+            bushCount++;
+            currentTotal++;
+            spawnBudget--;
+            LastSpawnedThisUpdate++;
+        }
+
+        // ── Scatter rocks ──
+        var scatter = GetComponent<PlanetScatterRenderer>();
+        var scatterRecipes = scatter?.Recipes;
+        if (scatterRecipes is { Length: > 0 } && spawnBudget > 0)
+        {
+            for (int ri = 0; ri < scatterRecipes.Length && spawnBudget > 0 && currentTotal < hardCap; ri++)
+            {
+                var recipe = scatterRecipes[ri];
+                if (recipe == null) continue;
+                if (!string.IsNullOrWhiteSpace(recipe.TargetBiome)
+                    && !string.Equals(biome.Name, recipe.TargetBiome, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var scatterProfile = ResolveProfileById(recipe.ProfileId) ?? landProfile;
+                var rockItems = GetUsableMeshItems(scatterProfile?.RockItems);
+                if (rockItems.Count == 0) continue;
+
+                bool debris = string.Equals(recipe.ScatterType, "Debris", StringComparison.OrdinalIgnoreCase);
+                float dens = Math.Max(0f, debris ? recipe.DebrisDensity : recipe.RockDensity);
+                int targetRock = Math.Clamp((int)MathF.Round(dens * extraCap), 0, extraCap);
+                while (rockCount < targetRock && spawnBudget > 0 && currentTotal < hardCap)
+                {
+                    int salt = rockCount + 701 + ri * 17;
+                    float u = Random01(HashLeaf(leaf, 11 + salt));
+                    float v = Random01(HashLeaf(leaf, 31 + salt));
+                    var dir = CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
+                    if (!ShouldSpawnVegetationAt(dir)) { rockCount++; spawnBudget--; continue; }
+                    if (!PassesSlopeAltitude(dir, recipe.MinSlope, recipe.MaxSlope, recipe.MinAltitude, recipe.MaxAltitude))
+                    { rockCount++; spawnBudget--; continue; }
+
+                    var item = ChooseFromItems(rockItems, HashLeaf(leaf, 311 + salt));
+                    if (item == null) break;
+                    var go = SpawnMeshItemObject(leaf, biome, item, salt, VegKind.Rock, requireDryLand: true, requireGrowthTreeFilters: false, forcedDir: dir);
+                    if (_deferSpawnForTemplate) break;
+                    if (go == null) { rockCount++; spawnBudget--; continue; }
+                    AddExtraEntry(entries, go, biome, VegKind.Rock, leaf, salt);
+                    rockCount++;
+                    currentTotal++;
+                    spawnBudget--;
+                    LastSpawnedThisUpdate++;
+                }
+            }
+        }
+
+        // ── Underwater kelp (bush items) / coral (tree items) ──
+        var life = GetComponent<PlanetLifeStreaming>();
+        var underwater = life?.UnderwaterLife;
+        float lifeScale = Math.Clamp(_terrain.Config.LifeScale, 0f, 2f);
+        if (underwater is { Length: > 0 } && spawnBudget > 0)
+        {
+            bool waterPlanet = _terrain.EnableWater;
+            for (int ui = 0; ui < underwater.Length && spawnBudget > 0 && currentTotal < hardCap; ui++)
+            {
+                var layer = underwater[ui];
+                if (layer == null) continue;
+                if (layer.RequireWaterPlanet && !waterPlanet) continue;
+
+                var uwProfile = ResolveProfileById(layer.ProfileId);
+                if (uwProfile == null) continue;
+
+                // Kelp from BushItems
+                var kelpItems = GetUsableMeshItems(uwProfile.BushItems);
+                int kelpTarget = kelpItems.Count > 0
+                    ? Math.Clamp((int)MathF.Round(Math.Max(0f, layer.KelpDensity) * lifeScale * extraCap), 0, extraCap)
+                    : 0;
+                // Coral from TreeItems
+                var coralItems = GetUsableMeshItems(uwProfile.TreeItems);
+                int coralTarget = coralItems.Count > 0
+                    ? Math.Clamp((int)MathF.Round(Math.Max(0f, layer.CoralDensity) * lifeScale * extraCap), 0, extraCap)
+                    : 0;
+                int uwTarget = kelpTarget + coralTarget;
+                int placedForLayer = 0;
+                while (placedForLayer < uwTarget && underwaterCount < extraCap * 2
+                       && spawnBudget > 0 && currentTotal < hardCap)
+                {
+                    int salt = underwaterCount + 1003 + ui * 23;
+                    bool placeKelp = placedForLayer < kelpTarget;
+                    var items = placeKelp ? kelpItems : coralItems;
+                    if (items.Count == 0) { placedForLayer++; continue; }
+
+                    float u = Random01(HashLeaf(leaf, 11 + salt));
+                    float v = Random01(HashLeaf(leaf, 31 + salt));
+                    var dir = CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
+                    // Dry shore and the island crust are not a reef. Same test grass uses.
+                    float minDepth = Math.Max(8f, layer.MinDepth);
+                    float maxDepth = 40f;
+                    if (ShouldSpawnVegetationAt(dir)
+                        || !PassesSlopeAltitude(dir, 0f, 18f, 0f, 1f)
+                        || !TryGetWaterDepth(dir, out float depth)
+                        || depth < minDepth || depth > maxDepth)
+                    {
+                        underwaterCount++;
+                        spawnBudget--;
+                        placedForLayer++;
+                        continue;
+                    }
+
+                    var item = ChooseFromItems(items, HashLeaf(leaf, 411 + salt));
+                    if (item == null) break;
+                    var go = SpawnMeshItemObject(leaf, biome, item, salt, VegKind.Underwater, requireDryLand: false, requireGrowthTreeFilters: false, forcedDir: dir);
+                    if (_deferSpawnForTemplate) break;
+                    if (go == null)
+                    {
+                        underwaterCount++;
+                        spawnBudget--;
+                        placedForLayer++;
+                        continue;
+                    }
+                    AddExtraEntry(entries, go, biome, VegKind.Underwater, leaf, salt);
+                    underwaterCount++;
+                    placedForLayer++;
+                    currentTotal++;
+                    spawnBudget--;
+                    LastSpawnedThisUpdate++;
+                }
+            }
+        }
+
+        // ── Resource veins (rock markers; name carries ResourceId) ──
+        var veins = life?.ResourceVeins;
+        if (veins is { Length: > 0 } && spawnBudget > 0)
+        {
+            var veinProfile = ResolveProfileById("Default") ?? landProfile;
+            var veinRocks = GetUsableMeshItems(veinProfile?.RockItems);
+            if (veinRocks.Count == 0)
+                return;
+
+            for (int vi = 0; vi < veins.Length && spawnBudget > 0 && currentTotal < hardCap; vi++)
+            {
+                var vein = veins[vi];
+                if (vein == null || vein.Density <= 0.001f) continue;
+                int veinTarget = Math.Clamp((int)MathF.Round(vein.Density * extraCap), 0, Math.Max(1, extraCap));
+                int placed = 0;
+                while (placed < veinTarget && veinCount < extraCap && spawnBudget > 0 && currentTotal < hardCap)
+                {
+                    int salt = veinCount + 1301 + vi * 29;
+                    float u = Random01(HashLeaf(leaf, 11 + salt));
+                    float v = Random01(HashLeaf(leaf, 31 + salt));
+                    var dir = CubeSphereMath.FaceUVToDirection(leaf.Face, u, v);
+                    if (!ShouldSpawnVegetationAt(dir))
+                    {
+                        veinCount++;
+                        spawnBudget--;
+                        placed++;
+                        continue;
+                    }
+
+                    float freq = Math.Max(0.001f, vein.Frequency);
+                    float n = PlanetLifeStreaming.PatchNoise01(dir * freq, vein.Seed);
+                    if (n > Math.Clamp(vein.Density, 0f, 1f))
+                    {
+                        veinCount++;
+                        spawnBudget--;
+                        placed++;
+                        continue;
+                    }
+
+                    // CaveOnlyBias: when high, require a second noise band that mimics cave-prone crust.
+                    if (vein.CaveOnlyBias > 0.5f)
+                    {
+                        float caveN = PlanetLifeStreaming.PatchNoise01(dir, vein.Seed + 909);
+                        if (caveN > (1f - Math.Clamp(vein.CaveOnlyBias, 0f, 1f) * 0.65f))
+                        {
+                            veinCount++;
+                            spawnBudget--;
+                            placed++;
+                            continue;
+                        }
+                    }
+
+                    var item = ChooseFromItems(veinRocks, HashLeaf(leaf, 511 + salt));
+                    if (item == null) break;
+                    var go = SpawnMeshItemObject(leaf, biome, item, salt, VegKind.Vein, requireDryLand: true, requireGrowthTreeFilters: false, forcedDir: dir);
+                    if (_deferSpawnForTemplate) break;
+                    if (go == null)
+                    {
+                        veinCount++;
+                        spawnBudget--;
+                        placed++;
+                        continue;
+                    }
+                    string resourceId = string.IsNullOrWhiteSpace(vein.ResourceId) ? "Ore" : vein.ResourceId.Trim();
+                    go.Name = $"BiomeVein_{resourceId}_{leaf.Face}";
+                    AddExtraEntry(entries, go, biome, VegKind.Vein, leaf, salt);
+                    veinCount++;
+                    placed++;
+                    currentTotal++;
+                    spawnBudget--;
+                    LastSpawnedThisUpdate++;
+                }
+            }
+        }
+    }
+
+    void AddExtraEntry(List<Entry> entries, GameObject go, BiomeDefinition biome, VegKind kind, QuadNode leaf, int salt)
+    {
+        var dir = RadialDirFromLocalPosition(new SN.Vector3(
+            (float)go.Transform.Position.X,
+            (float)go.Transform.Position.Y,
+            (float)go.Transform.Position.Z));
+        entries.Add(new Entry
+        {
+            GameObject = go,
+            Biome = biome,
+            BiomeName = biome.Name,
+            IsGrass = false,
+            Kind = kind,
+            BaseScale = (float)go.Transform.Scale.X,
+            SurfaceDir = dir,
+            YawDeg = SpawnYawFromLeaf(leaf, salt),
+            ModelPath = PlanetAssetIO.NormalizeAssetReference(ResolveVegetationModelPathForAsset(go, false)),
+            TexturePath = "",
+            PrefabPath = PlanetAssetIO.NormalizeAssetReference(go.PrefabPath ?? "")
+        });
+    }
+
+    /// <summary>
+    /// Spawn a prefab/model item with no procedural-tree fallback.
+    /// Returns null when the item has no usable mesh (empty lists stay empty).
+    /// </summary>
+    GameObject? SpawnMeshItemObject(
+        QuadNode leaf,
+        BiomeDefinition biome,
+        VegetationProfileItem item,
+        int seedOffset,
+        VegKind kind,
+        bool requireDryLand,
+        bool requireGrowthTreeFilters,
+        SN.Vector3? forcedDir = null)
+    {
+        _deferSpawnForTemplate = false;
+        var dir = forcedDir ?? CubeSphereMath.FaceUVToDirection(
+            leaf.Face,
+            Random01(HashLeaf(leaf, 11 + seedOffset)),
+            Random01(HashLeaf(leaf, 31 + seedOffset)));
+        dir = SafeNormalize(dir, SN.Vector3.UnitY);
+
+        if (requireDryLand && !ShouldSpawnVegetationAt(dir))
+            return null;
+        if (requireGrowthTreeFilters && !PassesGrowthAndPatchiness(biome, dir, isTree: true))
+            return null;
+
+        bool hasPrefab = !string.IsNullOrWhiteSpace(item.PrefabPath) && IsPrefabPath(item.PrefabPath);
+        bool hasModel = IsSupportedModelPath(item.ModelPath);
+        if (!hasPrefab && !string.IsNullOrWhiteSpace(item.ModelPath) && IsPrefabPath(item.ModelPath))
+        {
+            hasPrefab = true;
+        }
+        if (!hasPrefab && !hasModel)
+            return null;
+
+        var planetW = GetPlanetWorldMatrix();
+        float pad = kind == VegKind.Underwater ? 0.02f : GetTreeRadialOutwardPadding(0.8f);
+        var radialW = LocalDirectionToWorld(planetW, dir);
+        var surfN = SamplePlanetSurfaceNormal(_terrain!, planetW, dir);
+        var surface = VegetationWorldPoint(_terrain!, planetW, dir, pad);
+        var placeUp = ResolvePlanetTreeWorldUp(radialW, surfN);
+
+        string namePrefix = kind switch
+        {
+            VegKind.Bush => "BiomeBush",
+            VegKind.Rock => "BiomeRock",
+            VegKind.Underwater => "BiomeUw",
+            VegKind.Vein => "BiomeVein",
+            _ => "BiomeExtra"
+        };
+        var go = new GameObject($"{namePrefix}_{leaf.Face}");
+        AttachSpawnedInstance(go);
+        SetLocalCrustPosition(go, dir, pad);
+        float yawDeg = Random01(HashLeaf(leaf, 53 + seedOffset)) * 360f;
+
+        float minScale;
+        float maxScale;
+        if (kind == VegKind.Underwater)
+        {
+            // Keep underwater meshes off the tree-height fit so they stay under the surface.
+            minScale = 0.08f;
+            maxScale = 0.16f;
+        }
+        else
+        {
+            minScale = biome.TreeMinScale * Math.Max(0.05f, item.MinScale);
+            maxScale = biome.TreeMaxScale * Math.Max(0.05f, item.MaxScale);
+        }
+        if (maxScale < minScale) (maxScale, minScale) = (minScale, maxScale);
+        float scale = minScale + (maxScale - minScale) * Random01(HashLeaf(leaf, 97 + seedOffset));
+
+        string prefabPath = hasPrefab
+            ? (!string.IsNullOrWhiteSpace(item.PrefabPath) ? item.PrefabPath : item.ModelPath)
+            : "";
+        if (!string.IsNullOrWhiteSpace(prefabPath))
+        {
+            var prefab = Prefab.Load(prefabPath);
+            if (prefab != null && prefab.Instantiate(_terrain!.gameObject!) is GameObject inst)
+            {
+                AttachSpawnedInstance(inst);
+                SetLocalCrustPosition(inst, dir, pad);
+                inst.Transform.Scale = new Vector3(scale, scale, scale);
+                SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
+                SinkTreeRootsToSurface(inst, surface, radialW, placeUp, scale);
+                go.RemoveFromParent();
+                return inst;
+            }
+        }
+
+        if (hasModel && TrySpawnImportedVegetationMesh(go, item.ModelPath, isGrass: false, scale, surface, radialW, placeUp, yawDeg, scaleToTreeHeight: kind != VegKind.Underwater))
+            return go;
+        if (_deferSpawnForTemplate)
+        {
+            go.RemoveFromParent();
+            return null;
+        }
+
+        go.RemoveFromParent();
+        return null;
+    }
+
+    bool TryGetWaterDepth(SN.Vector3 dir, out float depth)
+    {
+        depth = 0f;
+        if (_terrain?.Config == null || !_terrain.EnableWater)
+            return false;
+        dir = SafeNormalize(dir, SN.Vector3.UnitY);
+        float crust = _terrain.WorldToLocalLength(_terrain.SampleHeightfieldRadius(dir));
+        if (crust < 1e-3f)
+            crust = _terrain.SampleVegetationAnchorLocal(dir).Length();
+        var water = _terrain.SampleWaterSurface(dir);
+        if (water.Mask < 0.18f || water.Kind == PlanetWaterKind.Lava)
+            return false;
+        depth = water.Radius - crust;
+        return depth > 0.05f;
+    }
+
+    bool PassesSlopeAltitude(SN.Vector3 dir, float minSlope, float maxSlope, float minAlt, float maxAlt)
+    {
+        if (_terrain == null) return true;
+        var planetW = GetPlanetWorldMatrix();
+        var radialW = LocalDirectionToWorld(planetW, dir);
+        var surfN = SamplePlanetSurfaceNormal(_terrain, planetW, dir);
+        float align = Math.Clamp(SN.Vector3.Dot(SafeNormalize(surfN, radialW), SafeNormalize(radialW, SN.Vector3.UnitY)), -1f, 1f);
+        float slopeDeg = MathF.Acos(align) * (180f / MathF.PI);
+        float maxS = maxSlope > 0f ? maxSlope : 55f;
+        if (slopeDeg < minSlope || slopeDeg > maxS)
+            return false;
+
+        float sea = _terrain.Config?.SeaLevel ?? 0.35f;
+        float surf = _terrain.WorldToLocalLength(_terrain.SampleHeightfieldRadius(SafeNormalize(dir, SN.Vector3.UnitY)));
+        float amp = 50f;
+        float alt01 = Math.Clamp((surf - sea) / amp, 0f, 1f);
+        float maxA = maxAlt > 0f ? maxAlt : 1f;
+        return alt01 >= minAlt && alt01 <= maxA;
+    }
+
+    VegetationProfile? ResolveProfileById(string? id)
+    {
+        if (_vegProfiles.Count == 0)
+            _vegProfiles = VegetationProfileLibrary.LoadAll();
+        if (string.IsNullOrWhiteSpace(id))
+            return _vegProfiles.TryGetValue("Default", out var d) ? d : null;
+        if (_vegProfiles.TryGetValue(id.Trim(), out var p))
+            return p;
+        return _vegProfiles.TryGetValue("Default", out var def) ? def : null;
+    }
+
+    static List<VegetationProfileItem> GetUsableMeshItems(List<VegetationProfileItem>? raw)
+    {
+        var list = new List<VegetationProfileItem>(8);
+        if (raw == null) return list;
+        for (int i = 0; i < raw.Count; i++)
+        {
+            var it = raw[i];
+            if (it == null || it.Weight <= 0f) continue;
+            if (IsUsableTreeModelItem(it))
+                list.Add(it);
+        }
+        return list;
+    }
+
+    static VegetationProfileItem? ChooseFromItems(List<VegetationProfileItem> items, int seed)
+    {
+        if (items.Count == 0) return null;
+        float total = 0f;
+        for (int i = 0; i < items.Count; i++)
+            total += Math.Max(0f, items[i].Weight) * Math.Clamp(items[i].DensityMultiplier, 0f, 3f);
+        if (total <= 1e-5f) return items[0];
+        float r = Random01(seed) * total;
+        float acc = 0f;
+        for (int i = 0; i < items.Count; i++)
+        {
+            acc += Math.Max(0f, items[i].Weight) * Math.Clamp(items[i].DensityMultiplier, 0f, 3f);
+            if (r <= acc) return items[i];
+        }
+        return items[^1];
     }
 
     void UpdateLeafVitality(string key)
@@ -3230,30 +3864,37 @@ public sealed class PlanetVegetationSystem : Behavior
         SN.Vector3 surface,
         SN.Vector3 radialW,
         SN.Vector3 placeUp,
-        float yawDeg)
+        float yawDeg,
+        bool scaleToTreeHeight = true)
     {
         if (!TrySetupImportedTree(go, modelPath, out float meshExtent))
             return false;
 
         float importedScale = Math.Max(0.01f, baseScale);
-        float grassWorldH = Math.Clamp(Math.Max(GrassBaseHeight, 4.5f), 4.5f, 7.2f);
-        float desiredHeight = isGrass
-            ? Math.Max(1.8f, GrassBaseHeight * 2.4f)
-            : Math.Max(16f, Math.Max(TreeBaseHeight * 2.2f, grassWorldH * 2.5f));
-        if (meshExtent > 1e-4f)
+        if (!scaleToTreeHeight)
         {
-            // Wide limits so TreeBaseHeight decides the size. The old 28x fit / 18x scale
-            // caps held unit-sized pine imports near 18-36 m whatever height was asked for.
-            float fit = desiredHeight / meshExtent;
-            importedScale *= Math.Clamp(fit, 0.12f, 200f);
-            float projected = meshExtent * importedScale;
-            if (projected < desiredHeight * 0.5f)
-                importedScale = (desiredHeight * 0.92f) / meshExtent;
+            // Caller asked for the authored scale, not the tree-height fit.
+            importedScale = meshExtent > 1e-4f ? 3.2f / meshExtent : 1f;
         }
+        else
+        {
+            float grassWorldH = Math.Clamp(Math.Max(GrassBaseHeight, 4.5f), 4.5f, 7.2f);
+            float desiredHeight = isGrass
+                ? Math.Max(1.8f, GrassBaseHeight * 2.4f)
+                : Math.Max(16f, Math.Max(TreeBaseHeight * 2.2f, grassWorldH * 2.5f));
+            if (meshExtent > 1e-4f)
+            {
+                float fit = desiredHeight / meshExtent;
+                importedScale *= Math.Clamp(fit, 0.12f, 200f);
+                float projected = meshExtent * importedScale;
+                if (projected < desiredHeight * 0.5f)
+                    importedScale = (desiredHeight * 0.92f) / meshExtent;
+            }
 
-        importedScale = isGrass
-            ? Math.Clamp(importedScale, 0.75f, 6f)
-            : Math.Clamp(importedScale, 0.35f, 240f);
+            importedScale = isGrass
+                ? Math.Clamp(importedScale, 0.75f, 6f)
+                : Math.Clamp(importedScale, 0.35f, 240f);
+        }
         go.Transform.Scale = new Vector3(importedScale, importedScale, importedScale);
         if (!isGrass)
             ApplyImportedTreeRenderSettingsRecursive(go);
@@ -4804,6 +5445,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 BiomeIndex = sampled.BiomeIndex,
                 VegetationDensity = veg,
                 TreeDensity = trees,
+                BushDensity = Math.Max(sampled.BushDensity, 0f),
                 VegetationProfileId = UniversalVegetationProfileId,
                 GrassMinScale = sampled.GrassMinScale,
                 GrassMaxScale = sampled.GrassMaxScale,

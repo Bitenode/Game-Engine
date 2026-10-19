@@ -76,7 +76,41 @@ public static class PlanetSurfaceUtility
 
         height = ApplyGraphGeology(config, sphereDir, height);
         height = ApplyIceSheetRaise(config, sphereDir, height, biomeMap);
+        height = ApplyWetlandFloodDip(config, sphereDir, height, biomeMap);
         return height;
+    }
+
+    /// <summary>
+    /// Lower crust slightly on wetland-targeted biomes so water fill sits in a hollow.
+    /// </summary>
+    public static float ApplyWetlandFloodDip(PlanetConfig config, SN.Vector3 sphereDir, float height, BiomeMap? biomeMap)
+    {
+        if (config.Wetlands is not { Length: > 0 } || biomeMap == null)
+            return height;
+
+        var blends = biomeMap.GetBiomes(sphereDir, biomeMap.NormalizeAltitude(height));
+        if (blends == null || blends.Length == 0)
+            return height;
+
+        float dip = 0f;
+        for (int w = 0; w < config.Wetlands.Length; w++)
+        {
+            var wet = config.Wetlands[w];
+            float flood = Math.Clamp(wet.FloodDepth, 0f, 8f);
+            if (flood <= 0.01f) continue;
+            string target = wet.TargetBiome ?? "";
+            for (int b = 0; b < blends.Length && b < 4; b++)
+            {
+                var biome = blends[b].Biome;
+                string name = biome.Name ?? "";
+                bool match = string.Equals(name, "Wetlands", StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(target)
+                        && string.Equals(name, target, StringComparison.OrdinalIgnoreCase));
+                if (!match) continue;
+                dip = MathF.Max(dip, flood * blends[b].Weight);
+            }
+        }
+        return height - dip;
     }
 
     /// <summary>

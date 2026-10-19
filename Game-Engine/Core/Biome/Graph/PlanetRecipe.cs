@@ -234,6 +234,8 @@ public sealed class FaunaLayerRecipe
     public string TargetBiome { get; set; } = "";
     public float HerdSpacing { get; set; } = 18f;
     public float Density { get; set; } = 0.15f;
+    /// <summary>Uniform rig scale from the biome graph. 1 leaves the imported model untouched.</summary>
+    public float Scale { get; set; } = 1f;
     public bool Diurnal { get; set; } = true;
     public string BiomeMask { get; set; } = "";
 }

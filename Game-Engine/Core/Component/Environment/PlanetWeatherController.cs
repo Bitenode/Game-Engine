@@ -222,7 +222,8 @@ public sealed class PlanetWeatherController : Behavior
 
         _seasonT += Math.Max(0.05f, UpdateIntervalSeconds) / Math.Max(60f, cfg.SeasonLengthMinutes * 60f);
         if (_seasonT > 1f) _seasonT -= 1f;
-        float seasonal = 0.5f + 0.5f * MathF.Sin(_seasonT * MathF.Tau);
+        float seasonPhase = cfg.SeasonPhase;
+        float seasonal = 0.5f + 0.5f * MathF.Sin((_seasonT + seasonPhase) * MathF.Tau);
 
         float climateWet = Math.Clamp((avgRain + avgSnow * 0.5f + avgStorm) * cfg.GlobalWeatherIntensity, 0f, 1f);
         float coldness = Math.Clamp(1f - avgTempCenter, 0f, 1f);
