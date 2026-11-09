@@ -17,7 +17,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, VegetationClearZone, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, PlanetVeinDeposit, VegetationClearZone, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Gameplay** | PlanetPlayerSpawner, PlanetTool | `Core/Component/Gameplay/` (PlanetTool ships in Standard Assets) |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
@@ -1187,7 +1187,8 @@ Navigation mesh agent component with A* pathfinding on baked navigation meshes.
 
 **Read-only runtime state:**
 - `Status` — `Idle`, `Moving`, `Reached`, or `PathNotFound`
-- `HasPath` / `RemainingDistance` / `Velocity` / `CurrentSpeed`
+- `HasPath` / `PathPending` / `RemainingDistance` / `Velocity` / `CurrentSpeed`
+- `PathPending` is true only while `SetDestination` is inside `NavMesh.FindPath`. The search is synchronous, so the flag is clear again before the call returns
 - `Path` — current waypoint list (for debug drawing)
 
 **Events:**
@@ -1551,6 +1552,7 @@ Audio reverb zone that applies reverb effects to audio sources when the AudioLis
 - **Distance-based blending** — reverb fades smoothly between inner and outer radius
 - **Overlapping zones** — closest zone takes priority
 - **Custom parameters** — when Preset is `None`, manual reverb parameters are used
+- **Playback** — Windows playback mixes a short feedback delay. Wet amount is the zone weight times the preset decay. No zone, or a listener outside every zone, stays dry. Stereo pan (`-1` left, `+1` right) is applied on the same path.
 
 ---
 
@@ -2143,7 +2145,7 @@ Profile-backed data source:
 
 ---
 
-## PlanetLifeStreaming / PlanetFloraSpawner / PlanetScatterRenderer / PlanetFaunaTableBehavior
+## PlanetLifeStreaming / PlanetFloraSpawner / PlanetScatterRenderer / PlanetFaunaTableBehavior / PlanetVeinDeposit
 
 Optional Environment companions on the planet root. Graph compile binds flora/scatter/fauna tables when the components exist.
 
@@ -2151,6 +2153,7 @@ Optional Environment companions on the planet root. Graph compile binds flora/sc
 |------|------|
 | `PlanetLifeStreaming` | Shared 18×18 face/UV cell keys with vegetation. `BindRecipe` holds fauna / underwater-life / vein tables for later consumers |
 | `PlanetFloraSpawner` | Caps unique imported tree mesh paths (`MaxUniqueMeshes`, default 24) so the FBX template cache does not thrash |
-| `PlanetScatterRenderer` | GPU-instanced rock/grass buffer hook (`MaxInstances` 8192). Companion storage — does not replace CPU grass merge yet |
-| `PlanetFaunaTableBehavior` | Play-mode fauna spawner: imports `{Species}_Rig.fbx`, binds Idle/Walk clips, places herds on the stand surface by biome layer density. Locomotion uses `StandRadiusGrid`, never density marches |
+| `PlanetScatterRenderer` | Stores scatter recipes and the rock meshes vegetation already placed (`MaxInstances` 8192). Rocks stay scene meshes. `RemoveNearest` drops an instance when that mesh despawns |
+| `PlanetFaunaTableBehavior` | Play-mode fauna spawner: imports `{Species}_Rig.fbx`, binds Idle/Walk clips, places herds on the stand surface by biome layer density. One animal of each species per streaming cell; animals outside the camera cell ring are removed. `UnderwaterLife.FishDensity` scales aquatic spawns. Locomotion uses `StandRadiusGrid`, never density marches |
+| `PlanetVeinDeposit` | Marker on a spawned vein. `ResourceId`, `Amount` (default 4), and `TryHarvest`. An empty marker is removed. Harvest does not dig the crust |
 | `VegetationClearZone` | Clears GPU grass and streamed trees in a world-space circle around the object (campfires, buildings). `Radius` 0.25–100 m; bumps `Version` when resized |

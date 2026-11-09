@@ -620,7 +620,8 @@ namespace Game_Engine.Core
         private static readonly string[] s_layerNames = { "uLayer0", "uLayer1", "uLayer2", "uLayer3", "uLayer4", "uLayer5", "uLayer6", "uLayer7" };
         private static readonly string[] s_tilingNames = { "uTiling0", "uTiling1", "uTiling2", "uTiling3", "uTiling4", "uTiling5", "uTiling6", "uTiling7" };
         /// <summary>Normal map samplers for terrain layers 0–4 (texture units 12–16; layers 5–7 use geometry normal only).</summary>
-        private static readonly string[] s_terrainNormalLayerNames = { "uNormalLayer0", "uNormalLayer1", "uNormalLayer2", "uNormalLayer3", "uNormalLayer4" };
+        private static readonly string[] s_terrainNormalLayerNames = { "uNormalLayer0", "uNormalLayer1", "uNormalLayer2", "uNormalLayer3", "uNormalLayer4", "uNormalLayer5", "uNormalLayer6", "uNormalLayer7" };
+        private static readonly string[] s_terrainHeightLayerNames = { "uHeightLayer0", "uHeightLayer1", "uHeightLayer2", "uHeightLayer3", "uHeightLayer4", "uHeightLayer5", "uHeightLayer6", "uHeightLayer7" };
 
         public static void RenderGPU(
             GL gl,
@@ -1782,7 +1783,7 @@ namespace Game_Engine.Core
             for (int i = 0; i < layerCount; i++)
             {
                 var layer = terrain.Layers[i];
-                int texUnit = 4 + i;
+                int texUnit = 3 + i;
 
                 Texture2D? layerTex = null;
                 if (!string.IsNullOrEmpty(layer.TexturePath))
@@ -1799,24 +1800,43 @@ namespace Game_Engine.Core
                 shader.SetFloat("uMetal" + i, layer.Metallic);
             }
 
-            // Normal maps for layers 0–4 only (TerrainFrag uses 16 fragment samplers on GLES/ANGLE: splat×2 + layers×8 + normals×5 + shadow).
-            for (int i = 0; i < 5; i++)
+            // Units 0–1 splat, 2 shadow, 3–10 albedo, 11–15 normals 0–4.
+            // That is 16 samplers. Normals 5–7 then height maps use later units only when the shader was built with them.
+            int maxUnits = gl.GetInteger(GLEnum.MaxTextureImageUnits);
+            var budget = ShaderSources.TerrainBudget(maxUnits);
+            if (maxUnits < 16) maxUnits = 16;
+
+            for (int i = 0; i < 8; i++)
             {
+                int nUnit = 11 + i;
+                bool unitOk = i < budget.NormalLayers && nUnit < maxUnits;
                 int hasLayer = i < layerCount ? 1 : 0;
                 string? npath = hasLayer != 0 ? terrain.Layers[i].NormalMapPath : null;
-                bool wantN = !string.IsNullOrEmpty(npath);
-                Texture2D? ntex = wantN ? TryLoadLayerTexture(npath!) : null;
-                int nUnit = 12 + i;
-                if (ntex != null)
-                    cache.GetTexture(ntex).Bind(TextureUnit.Texture0 + nUnit);
-                else
-                    cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + nUnit);
-
-                shader.SetTexture(s_terrainNormalLayerNames[i], nUnit);
+                Texture2D? ntex = unitOk && !string.IsNullOrEmpty(npath) ? TryLoadLayerTexture(npath!) : null;
+                if (unitOk)
+                {
+                    if (ntex != null)
+                        cache.GetTexture(ntex).Bind(TextureUnit.Texture0 + nUnit);
+                    else
+                        cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + nUnit);
+                    shader.SetTexture(s_terrainNormalLayerNames[i], nUnit);
+                }
                 shader.SetInt("uHasNormal" + i, (ntex != null) ? 1 : 0);
+
+                int hUnit = 11 + budget.NormalLayers + i;
+                bool heightOk = i < budget.HeightLayers && hUnit < maxUnits;
+                string? hpath = hasLayer != 0 ? terrain.Layers[i].HeightMapPath : null;
+                Texture2D? htex = heightOk && !string.IsNullOrEmpty(hpath) ? TryLoadLayerTexture(hpath!) : null;
+                if (heightOk)
+                {
+                    if (htex != null)
+                        cache.GetTexture(htex).Bind(TextureUnit.Texture0 + hUnit);
+                    else
+                        cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + hUnit);
+                    shader.SetTexture(s_terrainHeightLayerNames[i], hUnit);
+                }
+                shader.SetInt("uHasHeight" + i, (htex != null) ? 1 : 0);
             }
-            for (int i = 5; i < 8; i++)
-                shader.SetInt("uHasNormal" + i, 0);
         }
 
         /// <summary>

@@ -61,7 +61,7 @@ namespace Game_Engine.Core.Importers
                     || ext.Equals(".glb", StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidDataException(
-                        "No meshes in file, or import failed. Assimp 4.1 in this engine does not load glTF/GLB correctly (it is mis-detected as OBJ). Import FBX, OBJ, or DAE instead — for Starter Character use StarterCharacter.dae.");
+                        "No meshes in file, or import failed. glTF/GLB import uses AssimpNet 5. If this file still fails, use FBX, OBJ, or DAE — for Starter Character use StarterCharacter.dae.");
                 }
                 throw new InvalidDataException("No meshes in file, or import failed.");
             }

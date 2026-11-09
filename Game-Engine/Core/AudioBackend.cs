@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 #if WINDOWS
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 #endif
 
 namespace Game_Engine.Core
@@ -167,14 +168,21 @@ namespace Game_Engine.Core
                 var reader = new AudioFileReader(absPath);
                 reader.Volume = Math.Clamp(volume, 0f, 1f);
 
-                // Wrap for looping
+                // Wrap for looping, then stereo pan and a short zone reverb.
                 var loopStream = new LoopingReader(reader, loop);
+                ISampleProvider samples = loopStream.ToSampleProvider();
+                if (samples.WaveFormat.Channels == 1)
+                    samples = new MonoToStereoSampleProvider(samples);
+                else if (samples.WaveFormat.Channels != 2)
+                    samples = new MultiplexingSampleProvider(new[] { samples }, 2);
+                var panner = new StereoPanProvider(samples);
+                var reverb = new ZoneReverbProvider(panner);
 
                 var output = new WaveOut();
-                output.Init(loopStream);
+                output.Init(reverb);
                 output.Play();
 
-                var handle = new AudioHandle(output, reader, loopStream);
+                var handle = new AudioHandle(output, reader, loopStream, panner);
                 lock (s_activeHandles) s_activeHandles.Add(new WeakReference<AudioHandle>(handle));
                 Log.Info($"[AudioBackend] Now playing: {Path.GetFileName(absPath)}");
                 return handle;
@@ -286,6 +294,97 @@ namespace Game_Engine.Core
     }
 
     /// <summary>
+    /// Stereo balance. -1 is left, 0 is center, +1 is right.
+    /// NAudio's panner accepts only a mono source, so this scales an already-stereo stream.
+    /// </summary>
+    public sealed class StereoPanProvider : ISampleProvider
+    {
+        readonly ISampleProvider _source;
+        float _pan;
+
+        public StereoPanProvider(ISampleProvider source)
+        {
+            if (source.WaveFormat.Channels != 2)
+                throw new ArgumentException("Stereo pan expects two channels.", nameof(source));
+            _source = source;
+        }
+
+        public WaveFormat WaveFormat => _source.WaveFormat;
+
+        public float Pan
+        {
+            get => _pan;
+            set => _pan = Math.Clamp(value, -1f, 1f);
+        }
+
+        public int Read(float[] buffer, int offset, int count)
+            => Read(buffer.AsSpan(offset, count));
+
+        public int Read(Span<float> buffer)
+        {
+            int read = _source.Read(buffer);
+            float lGain = Math.Clamp(1f - Math.Max(_pan, 0f), 0f, 1f);
+            float rGain = Math.Clamp(1f + Math.Min(_pan, 0f), 0f, 1f);
+            for (int i = 0; i + 1 < read; i += 2)
+            {
+                buffer[i] *= lGain;
+                buffer[i + 1] *= rGain;
+            }
+            return read;
+        }
+    }
+
+    /// <summary>
+    /// Short feedback delay. Wet mix follows <see cref="Component.ReverbZone"/> at the listener.
+    /// No zone, or a listener outside every zone, stays dry.
+    /// </summary>
+    sealed class ZoneReverbProvider : ISampleProvider
+    {
+        readonly ISampleProvider _source;
+        readonly float[] _delay;
+        int _write;
+
+        public ZoneReverbProvider(ISampleProvider source)
+        {
+            _source = source;
+            int samples = Math.Max(1, (int)(source.WaveFormat.SampleRate * 0.08f)) * Math.Max(1, source.WaveFormat.Channels);
+            _delay = new float[samples];
+        }
+
+        public WaveFormat WaveFormat => _source.WaveFormat;
+
+        public int Read(float[] buffer, int offset, int count)
+            => Read(buffer.AsSpan(offset, count));
+
+        public int Read(Span<float> buffer)
+        {
+            int read = _source.Read(buffer);
+            float wet = CurrentWet();
+            for (int i = 0; i < read; i++)
+            {
+                float dry = buffer[i];
+                float delayed = _delay[_write];
+                float fed = dry + delayed * 0.45f;
+                _delay[_write] = fed;
+                _write++;
+                if (_write >= _delay.Length) _write = 0;
+                buffer[i] = dry * (1f - wet) + fed * wet;
+            }
+            return read;
+        }
+
+        static float CurrentWet()
+        {
+            var (zone, weight) = Component.ReverbZone.GetActiveZone(AudioBackend.LastListenerPosition);
+            if (zone == null || weight <= 0f) return 0f;
+            float decay = zone.Preset == Component.ReverbPreset.None
+                ? zone.DecayTime
+                : Component.ReverbZone.GetPresetParams(zone.Preset).decayTime;
+            return Math.Clamp(weight * Math.Clamp(decay / 5f, 0f, 1f), 0f, 0.85f);
+        }
+    }
+
+    /// <summary>
     /// Handle to a playing audio clip. Controls volume, pause, stop.
     /// </summary>
     public sealed class AudioHandle : IDisposable
@@ -293,16 +392,19 @@ namespace Game_Engine.Core
         private readonly WaveOut _output;
         private readonly AudioFileReader _reader;
         private readonly LoopingReader _looper;
+        private readonly StereoPanProvider _panner;
         private bool _disposed;
+        private float _pan;
 
         public bool IsPlaying => !_disposed && _output.PlaybackState == PlaybackState.Playing;
         public TimeSpan Duration => _reader.TotalTime;
 
-        internal AudioHandle(WaveOut output, AudioFileReader reader, LoopingReader looper)
+        internal AudioHandle(WaveOut output, AudioFileReader reader, LoopingReader looper, StereoPanProvider panner)
         {
             _output = output;
             _reader = reader;
             _looper = looper;
+            _panner = panner;
 
             // Auto-cleanup when playback finishes naturally
             _output.PlaybackStopped += (s, e) =>
@@ -323,8 +425,16 @@ namespace Game_Engine.Core
             set => _looper.Loop = value;
         }
 
-        /// <summary>Stereo pan: -1 left, 0 center, +1 right. (Approximate via volume for now.)</summary>
-        public float Pan { get; set; }
+        /// <summary>Stereo pan: -1 left, 0 center, +1 right.</summary>
+        public float Pan
+        {
+            get => _pan;
+            set
+            {
+                _pan = Math.Clamp(value, -1f, 1f);
+                _panner.Pan = _pan;
+            }
+        }
 
         public void Pause()
         {

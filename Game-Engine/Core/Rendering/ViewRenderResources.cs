@@ -30,7 +30,8 @@ public sealed class ViewRenderResources : IDisposable
         Standard = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.StandardVert, es), ShaderSources.Adapt(ShaderSources.StandardFrag, es));
         Depth = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.DepthOnlyVert, es), ShaderSources.Adapt(ShaderSources.DepthOnlyFrag, es));
         Sky = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.SkyVert, es), ShaderSources.Adapt(ShaderSources.SkyFrag, es));
-        Terrain = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.TerrainVert, es), ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
+        int terrainUnits = g.GetInteger(GLEnum.MaxTextureImageUnits);
+        Terrain = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.TerrainVert, es), ShaderSources.Adapt(ShaderSources.TerrainFragForUnits(terrainUnits), es));
         Particle = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.ParticleVert, es), ShaderSources.Adapt(ShaderSources.ParticleFrag, es));
         Water = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.WaterVert, es), ShaderSources.Adapt(ShaderSources.WaterFrag, es));
         PlanetTerrain = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es), ShaderSources.Adapt(ShaderSources.PlanetTerrainFrag, es));

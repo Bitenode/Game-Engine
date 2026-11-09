@@ -45,7 +45,7 @@ Each material can have multiple texture slots with different usage types:
 | `Occlusion` | 5           | Ambient occlusion map (darkens crevices)       |
 | `Emission`  | 6           | Self-illumination map (glows without light)    |
 | `Opacity`   | —           | Alpha/transparency map                         |
-| `Height`    | —           | Heightmap for parallax (reserved for future)   |
+| `Height`    | —           | Height map for parallax. On a 16-unit context the terrain shader keeps splat normals 0–4 and reads parallax from the normal-map alpha. Normals 5–7 and dedicated height maps are compiled in only when the device reports more texture units. |
 
 ### Texture Slot Structure
 Each slot contains:

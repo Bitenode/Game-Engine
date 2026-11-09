@@ -68,7 +68,7 @@ The Standard fragment shader supports cascaded shadow maps (`uShadowVPC[]`, `uCa
 
 ## Shaders
 
-All GLSL source code is stored as `const string` fields in `ShaderSources.cs`. The `Adapt()` method converts desktop GLSL (`#version 330 core`) to OpenGL ES (`#version 300 es`) by replacing the version directive and adding `precision mediump float;` qualifiers for ANGLE compatibility.
+All GLSL source code is stored as `const string` fields in `ShaderSources.cs`. The `Adapt()` method trims leading whitespace, then on OpenGL ES replaces `#version 330 core` with `#version 300 es` and adds `precision highp float`, `highp int`, `highp sampler2D`, and `highp samplerCube`. `#version` has to stay the first token. `TerrainFragForUnits` inserts its sampler `#define` lines after that version line and accepts either LF or CRLF, so ANGLE keeps GLSL ES 3.00 instead of falling back to ES 1.00.
 
 ### Standard Shader (StandardVert + StandardFrag)
 
@@ -137,6 +137,8 @@ Specialized shader for terrain objects with splatmap-based multi-material blendi
 **Features:**
 - **Up to 8 texture layers** — weighted by 2 RGBA splatmap textures
 - **Per-layer UV tiling** — independent texture repetition scale per layer
+- **Sampler budget** — Scene View, Game View, and `ViewRenderResources` compile `TerrainFragForUnits` from `GL_MAX_TEXTURE_IMAGE_UNITS`. Normals 0–4 always fit. Normals 5–7, then dedicated height maps, are compiled only when units remain
+- **Parallax** — dedicated height map when that sampler exists and a texture is bound; otherwise normal-map alpha
 - **Triplanar projection** — on steep cliff faces (where the surface normal is mostly horizontal), texture is projected from the side to prevent stretching
 - **Full shadow support** — same PCF shadow sampling as the Standard shader
 - **Fallback** — uses standard material color when no layers are defined
@@ -150,6 +152,9 @@ Specialized shader for terrain objects with splatmap-based multi-material blendi
 | `uLayerCount`  | int        | Number of active layers (0-8)      |
 | `uLayer0..7`   | sampler2D  | Layer albedo textures               |
 | `uTiling0..7`  | float      | Per-layer UV tiling scale           |
+| `uNormalLayer0..N` | sampler2D | Tangent normals. N is 4 on a 16-unit context, up to 7 when units remain |
+| `uHeightLayer0..N` | sampler2D | Parallax height. Absent when the budget is 0 |
+| `uHasNormal0..7` / `uHasHeight0..7` | int | 1 when that layer has a bound map |
 
 ### Water Shader (WaterVert + WaterFrag)
 

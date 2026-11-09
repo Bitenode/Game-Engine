@@ -9,10 +9,10 @@ The engine uses **AssimpNet** (the .NET binding for the Open Asset Import Librar
 |--------|-------------------|--------------------------------------|
 | FBX    | `.fbx`            | Autodesk FBX (most common, best skeletal support) |
 | OBJ    | `.obj`            | Wavefront OBJ (with `.mtl` material file)        |
-| glTF   | `.gltf`, `.glb`   | Listed in the file dialog; **AssimpNet 4.1 in this build often cannot load glTF/GLB** — use FBX or DAE instead |
+| glTF   | `.gltf`, `.glb`   | glTF 2 via AssimpNet 5. FBX and DAE remain the best path for skinned clips |
 | DAE    | `.dae`            | Collada (recommended for shipped Standard Assets such as **StarterCharacter**) |
 
-AssimpNet supports additional formats beyond these — any format that the Assimp library can read will work. For skinned characters with baked clips, prefer **FBX** or **Collada (`.dae`)** until glTF import is upgraded.
+AssimpNet supports additional formats beyond these — any format that the Assimp library can read will work. For skinned characters with baked clips, **FBX** or **Collada (`.dae`)** are still the most tested paths. glTF 2 imports through AssimpNet 5.
 
 ### How to Import
 1. **Right-click** in the Hierarchy Panel
@@ -208,8 +208,8 @@ When animations are detected during import:
 
 | File | Purpose |
 |------|---------|
-| `StarterCharacter.dae` | **Import this** — mesh, skeleton, material, and matrix-based bone clips Assimp 4.1 reads correctly |
-| `StarterCharacter.gltf` + `.bin` | Source copy only — do not import with the current Assimp build |
+| `StarterCharacter.dae` | **Import this** — mesh, skeleton, material, and matrix-based bone clips. This is the tested path |
+| `StarterCharacter.gltf` + `.bin` | Source copy. glTF 2 can load through AssimpNet 5; DAE is still the shipped import |
 | `textures/StarterCharacter_albedo.png` | 512×512 albedo atlas |
 | `{import folder}/StarterCharacter_Animations/*.boneanim` | Clips written on import |
 

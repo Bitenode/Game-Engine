@@ -63,7 +63,7 @@ namespace Game_Engine.Core.Component
         /// <summary>Whether the agent currently has a valid path.</summary>
         public bool HasPath { get; private set; }
 
-        /// <summary>Whether a path computation is pending (reserved for async).</summary>
+        /// <summary>True while <see cref="SetDestination"/> is searching. Cleared before the call returns.</summary>
         public bool PathPending { get; private set; }
 
         /// <summary>Total remaining distance along the path to the destination.</summary>
@@ -121,10 +121,17 @@ namespace Game_Engine.Core.Component
             _repathTimer = 0f;
             _stuckTimer = 0f;
 
-            _path = NavMesh.FindPath(GetWorldPos(), destination);
+            PathPending = true;
+            try
+            {
+                _path = NavMesh.FindPath(GetWorldPos(), destination);
+            }
+            finally
+            {
+                PathPending = false;
+            }
             HasPath = _path != null && _path.Count > 1;
             _pathIndex = HasPath ? 1 : 0;   // index 0 is the start point
-            PathPending = false;
 
             if (HasPath)
             {

@@ -200,10 +200,10 @@ Each terrain layer has:
 |----------------|----------|---------|--------------------------------------|
 | `TexturePath`  | `string` | `""`    | Albedo image file path               |
 | `Tiling`       | `float`  | `10`    | UV repetition scale                  |
-| `NormalMapPath` | `string`| `""`    | Tangent-space normal map (RGB). **Applied for layers 0–4** (GPU texture unit budget); layers 5–7 use geometry normals for normal mapping but still blend albedo / roughness / metallic |
+| `NormalMapPath` | `string`| `""`    | Tangent-space normal map (RGB). Layers **0–4** always have a sampler. Layers **5–7** are compiled in only when the context reports more than 16 texture units; otherwise those layers keep the geometry normal |
 | `Roughness`    | `float`  | `0.8`   | Splatted PBR roughness (blended by weights) |
 | `Metallic`     | `float`  | `0`     | Splatted PBR metallic (blended by weights) |
-| `HeightMapPath` | `string`| `""`    | Optional reserved path; **parallax** uses the **alpha channel of the normal map** when height is empty |
+| `HeightMapPath` | `string`| `""`    | Dedicated height map for parallax. Compiled in after normals 5–7, so a 16-unit context has none. An empty path, or a layer with no height sampler, falls back to the **alpha channel of the normal map** |
 
 ### Terrain Layers UI (Inspector)
 When a Terrain is selected, a "Terrain Layers" section appears below the brush tools:
@@ -222,8 +222,10 @@ When a Terrain is selected, a "Terrain Layers" section appears below the brush t
 - Splatmap data is uploaded to the GPU as **RGBA32F** float textures
 - Each view (SceneView, GameView) maintains its own GPU splatmap textures
 - A `SplatmapVersion` counter ensures both views re-upload independently when data changes
-- The terrain fragment shader blends up to **8 albedo layers**, splat-weighted **roughness** and **metallic**, **tangent normals** from layers **0–4** (when normal maps are set), optional **parallax** from normal-map **alpha**, then Blinn–Phong-style lighting with shadow mapping
-- **Texture units:** splatmaps + shadow + 8 albedos + 5 normal slots fit within typical **16** fragment texture units (layers 5–7 omit bound normal maps)
+- The terrain fragment shader blends up to **8 albedo layers**, splat-weighted **roughness** and **metallic**, splat-weighted **tangent normals**, optional **parallax**, then Blinn–Phong-style lighting with shadow mapping
+- **Texture units:** `TerrainFragForUnits` counts `GL_MAX_TEXTURE_IMAGE_UNITS` and injects `TERRAIN_NORMAL_LAYERS` / `TERRAIN_HEIGHT_LAYERS` **after** `#version`. The fixed set is 2 splatmaps + 1 shadow + 8 albedos + normals 0–4 (16). Extra units add normals 5–7, then height maps. Declaring unused samplers fails the link on a 16-unit device, which is what ANGLE reports
+- **Parallax:** a bound height map wins. Otherwise the shader reads normal-map alpha. Layers with neither contribute no height
+- **Version line:** `#version` must be the first token. The define injection matches the version token without assuming a Unix newline, so a CRLF source cannot push the defines above `#version` and drop ANGLE back to GLSL ES 1.00
 - **Triplanar projection:** On steep cliff faces (where the surface normal is mostly horizontal), textures are projected from the side to prevent stretching artifacts
 - **Fallback:** When no layers are defined, the terrain uses the standard material color from its `MeshRenderer`
 

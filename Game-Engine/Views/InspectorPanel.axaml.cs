@@ -4789,10 +4789,10 @@ public partial class InspectorPanel : UserControl
                     VerticalAlignment = VerticalAlignment.Center
                 };
                 ToolTip.SetTip(hLabel, string.IsNullOrEmpty(layer.HeightMapPath)
-                    ? "Optional height map for future use; parallax uses normal-map alpha when this is empty."
+                    ? "No height map. Parallax uses the normal map alpha."
                     : layer.HeightMapPath);
                 var hBtn = new Button { Content = "…", MinWidth = 22, MinHeight = 20, Padding = new Thickness(2) };
-                ToolTip.SetTip(hBtn, "Optional dedicated height texture (reserved; parallax uses normal alpha today)");
+                ToolTip.SetTip(hBtn, "Height texture for parallax. Empty keeps the normal-map alpha.");
                 hBtn.Click += async (_, __) =>
                 {
                     var dlg = new Avalonia.Controls.OpenFileDialog

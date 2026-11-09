@@ -1655,9 +1655,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             DiagLog("[SceneView] Wire shader OK");
 
             DiagLog("[SceneView] Compiling terrain shader...");
+            int terrainUnits = g.GetInteger(GLEnum.MaxTextureImageUnits);
             _terrainShader = new ShaderProgram(g,
                 ShaderSources.Adapt(ShaderSources.TerrainVert, es),
-                ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
+                ShaderSources.Adapt(ShaderSources.TerrainFragForUnits(terrainUnits), es));
             DiagLog("[SceneView] Terrain shader OK");
 
             DiagLog("[SceneView] Compiling particle shader...");

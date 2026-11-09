@@ -13,7 +13,7 @@ A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalon
 | Runtime           | .NET                                          | 9.0       | Core runtime and language features         |
 | UI Framework      | Avalonia                                      | 12.*      | Cross-platform desktop UI (Windows/macOS/Linux) |
 | Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)      | 2.23.0    | GPU-accelerated 3D rendering               |
-| 3D Import         | AssimpNet                                     | 4.1.0     | FBX, OBJ, glTF/GLB, DAE model loading     |
+| 3D Import         | AssimpNet                                     | 5.0.0-beta1 | FBX, OBJ, glTF 2 / GLB, DAE model loading |
 | Image Loading     | SkiaSharp                                     | 2.88.9    | PNG, JPG, BMP texture decoding             |
 | Scripting         | Roslyn (Microsoft.CodeAnalysis.CSharp)        | 4.14.0    | Runtime C# compilation and hot-reload      |
 | Audio             | NAudio                                        | 2.2.1     | Audio playback with spatial 3D sound       |
@@ -26,7 +26,7 @@ A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalon
 - **Nullable**: Enabled project-wide
 - **Implicit Usings**: Enabled
 - **Target**: .NET 9.0, `WinExe` output type
-- **Conditional Defines**: `DEBUG` + `TRACE` (Debug), `TRACE` (Release), `PLAYER` (Engine.Player only)
+- **Conditional Defines**: `DEBUG` + `TRACE` + `WINDOWS` (Debug), `TRACE` + `WINDOWS` (Release), `PLAYER` (Engine.Player only). `WINDOWS` selects the NAudio playback path
 
 The solution contains two projects: **Game_Engine** (the editor) and **Engine.Player** (standalone game player with multi-platform publish support). See the [Build Settings](12_Build_Settings.md) document for full details on project configuration, dependencies, publishing, and ANGLE/OpenGL setup.
 

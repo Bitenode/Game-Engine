@@ -427,11 +427,13 @@ namespace Game_Engine.Core.Blueprint
 
                 ["Event"] = T("Event", BlueprintNodeCategory.Event, "Event",
                     "Legacy event node.", 0x7A, 0x52, 0x1C, false, "Events", ExecOut()),
+                // Kept so saved graphs still log. Omitted from AuthoringPaletteOrdered;
+                // new graphs use LogMessage and the real math nodes.
                 ["Call"] = T("Call", BlueprintNodeCategory.Action, "Call",
                     "Legacy — treated like Print.", act, actG, actB, false, "Action",
                     ExecIn(), ExecOut(), In("message", BlueprintPinType.String, "Message", "Call")),
                 ["Math"] = T("Math", BlueprintNodeCategory.Action, "Math",
-                    "Legacy placeholder.", act, actG, actB, false, "Action",
+                    "Legacy placeholder. Not offered in the palette.", act, actG, actB, false, "Action",
                     ExecIn(), ExecOut(), In("message", BlueprintPinType.String, "Message", "Math")),
             };
 

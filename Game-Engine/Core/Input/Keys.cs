@@ -244,7 +244,7 @@ namespace Game_Engine.Core.Input
             return TryFromAvalonia(key, out c) ? c : KeyCode.None;
         }
 
-        // Reverse map (useful for showing bindings w/ platform labels) not used yet
+        // Reverse map used by the input remapping window to label a binding.
         public static bool TryToAvalonia(KeyCode code, out Key key)
         {
             switch (code)

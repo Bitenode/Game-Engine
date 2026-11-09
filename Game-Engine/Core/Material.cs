@@ -666,7 +666,6 @@ namespace Game_Engine.Core
         [Persist] public bool Lit { get; set; } = true;
 
 
-        //WIP later down roadmap
         public Material Clone(bool copyTextures = true)
         {
             var m = new Material

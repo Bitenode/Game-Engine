@@ -567,6 +567,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     continue;
                 if (e.IsGrass && e.GpuGrassToken != 0)
                     PlanetGpuGrass.RemovePatch(this, e.GpuGrassToken);
+                ForgetScatterRock(e);
                 e.GameObject?.RemoveFromParent();
                 group.RemoveAt(i);
             }
@@ -579,6 +580,7 @@ public sealed class PlanetVegetationSystem : Behavior
         ClearLocalCarpetTrees();
         ClearCarpetBookkeeping();
         PlanetGpuGrass.ClearOwner(this);
+        GetComponent<PlanetScatterRenderer>()?.ClearInstances();
         foreach (var group in _leafEntries.Values)
             for (int i = 0; i < group.Count; i++)
                 group[i].GameObject.RemoveFromParent();
@@ -3093,6 +3095,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     var go = SpawnMeshItemObject(leaf, biome, item, salt, VegKind.Rock, requireDryLand: true, requireGrowthTreeFilters: false, forcedDir: dir);
                     if (_deferSpawnForTemplate) break;
                     if (go == null) { rockCount++; spawnBudget--; continue; }
+                    RegisterScatterRock(scatter, go, recipe.ScatterType, item.ModelPath);
                     AddExtraEntry(entries, go, biome, VegKind.Rock, leaf, salt);
                     rockCount++;
                     currentTotal++;
@@ -3241,6 +3244,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     }
                     string resourceId = string.IsNullOrWhiteSpace(vein.ResourceId) ? "Ore" : vein.ResourceId.Trim();
                     go.Name = $"BiomeVein_{resourceId}_{leaf.Face}";
+                    go.AddBehavior(new PlanetVeinDeposit { ResourceId = resourceId });
                     AddExtraEntry(entries, go, biome, VegKind.Vein, leaf, salt);
                     veinCount++;
                     placed++;
@@ -3250,6 +3254,22 @@ public sealed class PlanetVegetationSystem : Behavior
                 }
             }
         }
+    }
+
+    void RegisterScatterRock(PlanetScatterRenderer? scatter, GameObject go, string? scatterType, string? modelPath)
+    {
+        if (scatter == null || go == null) return;
+        var pos = SceneGraphUtil.AccumulateWorld(go).Translation;
+        float scale = Math.Max(0.01f, (float)go.Transform.Scale.X);
+        scatter.TryAddInstance(new PlanetScatterRenderer.ScatterInstance(
+            pos, scale, 0f, scatterType ?? "Rock", modelPath ?? ""));
+    }
+
+    void ForgetScatterRock(Entry e)
+    {
+        if (e.Kind != VegKind.Rock || e.GameObject == null) return;
+        var pos = SceneGraphUtil.AccumulateWorld(e.GameObject).Translation;
+        GetComponent<PlanetScatterRenderer>()?.RemoveNearest(pos);
     }
 
     void AddExtraEntry(List<Entry> entries, GameObject go, BiomeDefinition biome, VegKind kind, QuadNode leaf, int salt)
@@ -3503,6 +3523,7 @@ public sealed class PlanetVegetationSystem : Behavior
             {
                 if (e.IsGrass)
                     PlanetGpuGrass.RemovePatch(this, e.GpuGrassToken);
+                ForgetScatterRock(e);
                 e.GameObject.RemoveFromParent();
                 entries.RemoveAt(i);
                 LastDespawnedThisUpdate++;
@@ -3517,6 +3538,7 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             if (entries[i].IsGrass)
                 PlanetGpuGrass.RemovePatch(this, entries[i].GpuGrassToken);
+            ForgetScatterRock(entries[i]);
             entries[i].GameObject.RemoveFromParent();
         }
         LastDespawnedThisUpdate += entries.Count;

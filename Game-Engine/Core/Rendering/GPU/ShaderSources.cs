@@ -25,6 +25,60 @@ public static class ShaderSources
             "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;");
     }
 
+    /// <summary>
+    /// How many splat normal and height samplers fit after the terrain shader's
+    /// required maps (2 splats, 8 albedos, 1 shadow, normals 0–4 = 16).
+    /// A 16-unit context keeps that set. Later units add normals 5–7, then height maps.
+    /// </summary>
+    public readonly struct TerrainSamplerBudget
+    {
+        public int NormalLayers { get; init; }
+        public int HeightLayers { get; init; }
+    }
+
+    public static TerrainSamplerBudget TerrainBudget(int maxTextureUnits)
+    {
+        if (maxTextureUnits < 16) maxTextureUnits = 16;
+        int extra = maxTextureUnits - 16;
+        int extraNormals = extra > 3 ? 3 : extra;
+        int height = extra - extraNormals;
+        if (height > 8) height = 8;
+        if (height < 0) height = 0;
+        return new TerrainSamplerBudget
+        {
+            NormalLayers = 5 + extraNormals,
+            HeightLayers = height
+        };
+    }
+
+    /// <summary>
+    /// Terrain fragment source limited to <paramref name="maxTextureUnits"/> samplers.
+    /// The linker counts every declared sampler, so extras cannot be left in the source on a 16-unit device.
+    /// </summary>
+    public static string TerrainFragForUnits(int maxTextureUnits)
+    {
+        var budget = TerrainBudget(maxTextureUnits);
+        string src = TerrainFrag.TrimStart('\r', '\n', ' ', '\t');
+        string defines =
+            "#define TERRAIN_NORMAL_LAYERS " + budget.NormalLayers + "\n" +
+            "#define TERRAIN_HEIGHT_LAYERS " + budget.HeightLayers + "\n";
+
+        // Match the version token only. Verbatim strings keep the source file's
+        // line ending, so "#version 330 core\n" does not match a CRLF file and
+        // the defines were emitted in front of #version. GLSL requires #version
+        // first; without it ANGLE compiles as ES 1.00 and rejects in/out/texture.
+        const string versionToken = "#version 330 core";
+        if (src.StartsWith(versionToken, StringComparison.Ordinal))
+        {
+            int lineEnd = src.IndexOf('\n');
+            if (lineEnd < 0)
+                return versionToken + "\n" + defines + src.Substring(versionToken.Length);
+            return src.Substring(0, lineEnd + 1) + defines + src.Substring(lineEnd + 1);
+        }
+
+        return defines + src;
+    }
+
     // =====================================================================
     // STANDARD (PBR-like: diffuse + Blinn-Phong specular)
     // =====================================================================
@@ -1553,15 +1607,58 @@ uniform float uRough4; uniform float uRough5; uniform float uRough6; uniform flo
 uniform float uMetal0; uniform float uMetal1; uniform float uMetal2; uniform float uMetal3;
 uniform float uMetal4; uniform float uMetal5; uniform float uMetal6; uniform float uMetal7;
 
-// Normal maps: layers 0–4 only (texture unit budget); uHasNormal5–7 reserved / unused samplers
+// Normals 0–4 always fit in a 16-unit budget. 5–7 and height maps are compiled in only when units remain.
+#ifndef TERRAIN_NORMAL_LAYERS
+#define TERRAIN_NORMAL_LAYERS 5
+#endif
+#ifndef TERRAIN_HEIGHT_LAYERS
+#define TERRAIN_HEIGHT_LAYERS 0
+#endif
 uniform sampler2D uNormalLayer0;
 uniform sampler2D uNormalLayer1;
 uniform sampler2D uNormalLayer2;
 uniform sampler2D uNormalLayer3;
 uniform sampler2D uNormalLayer4;
+#if TERRAIN_NORMAL_LAYERS > 5
+uniform sampler2D uNormalLayer5;
+#endif
+#if TERRAIN_NORMAL_LAYERS > 6
+uniform sampler2D uNormalLayer6;
+#endif
+#if TERRAIN_NORMAL_LAYERS > 7
+uniform sampler2D uNormalLayer7;
+#endif
 uniform int uHasNormal0; uniform int uHasNormal1; uniform int uHasNormal2;
 uniform int uHasNormal3; uniform int uHasNormal4;
 uniform int uHasNormal5; uniform int uHasNormal6; uniform int uHasNormal7;
+
+// Dedicated height maps. When a layer has none, or the context has no unit for it, parallax uses normal-map alpha.
+#if TERRAIN_HEIGHT_LAYERS > 0
+uniform sampler2D uHeightLayer0;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 1
+uniform sampler2D uHeightLayer1;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 2
+uniform sampler2D uHeightLayer2;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 3
+uniform sampler2D uHeightLayer3;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 4
+uniform sampler2D uHeightLayer4;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 5
+uniform sampler2D uHeightLayer5;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 6
+uniform sampler2D uHeightLayer6;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 7
+uniform sampler2D uHeightLayer7;
+#endif
+uniform int uHasHeight0; uniform int uHasHeight1; uniform int uHasHeight2; uniform int uHasHeight3;
+uniform int uHasHeight4; uniform int uHasHeight5; uniform int uHasHeight6; uniform int uHasHeight7;
 
 uniform float uParallaxStrength;
 
@@ -1620,6 +1717,96 @@ float layerW(int i, vec4 s0, vec4 s1)
     return s1.a;
 }
 
+float layerTiling(int i)
+{
+    if (i == 0) return uTiling0;
+    if (i == 1) return uTiling1;
+    if (i == 2) return uTiling2;
+    if (i == 3) return uTiling3;
+    if (i == 4) return uTiling4;
+    if (i == 5) return uTiling5;
+    if (i == 6) return uTiling6;
+    return uTiling7;
+}
+
+bool layerHasNormal(int i)
+{
+    if (i >= TERRAIN_NORMAL_LAYERS) return false;
+    if (i == 0) return uHasNormal0 != 0;
+    if (i == 1) return uHasNormal1 != 0;
+    if (i == 2) return uHasNormal2 != 0;
+    if (i == 3) return uHasNormal3 != 0;
+    if (i == 4) return uHasNormal4 != 0;
+    if (i == 5) return uHasNormal5 != 0;
+    if (i == 6) return uHasNormal6 != 0;
+    return uHasNormal7 != 0;
+}
+
+vec4 sampleNormal(int i, vec2 uv)
+{
+    if (i == 0) return texture(uNormalLayer0, uv);
+    if (i == 1) return texture(uNormalLayer1, uv);
+    if (i == 2) return texture(uNormalLayer2, uv);
+    if (i == 3) return texture(uNormalLayer3, uv);
+    if (i == 4) return texture(uNormalLayer4, uv);
+#if TERRAIN_NORMAL_LAYERS > 5
+    if (i == 5) return texture(uNormalLayer5, uv);
+#endif
+#if TERRAIN_NORMAL_LAYERS > 6
+    if (i == 6) return texture(uNormalLayer6, uv);
+#endif
+#if TERRAIN_NORMAL_LAYERS > 7
+    if (i == 7) return texture(uNormalLayer7, uv);
+#endif
+    return vec4(0.5, 0.5, 1.0, 1.0);
+}
+
+bool layerHasHeight(int i)
+{
+#if TERRAIN_HEIGHT_LAYERS == 0
+    return false;
+#else
+    if (i >= TERRAIN_HEIGHT_LAYERS) return false;
+    if (i == 0) return uHasHeight0 != 0;
+    if (i == 1) return uHasHeight1 != 0;
+    if (i == 2) return uHasHeight2 != 0;
+    if (i == 3) return uHasHeight3 != 0;
+    if (i == 4) return uHasHeight4 != 0;
+    if (i == 5) return uHasHeight5 != 0;
+    if (i == 6) return uHasHeight6 != 0;
+    return uHasHeight7 != 0;
+#endif
+}
+
+float sampleHeight(int i, vec2 uv)
+{
+#if TERRAIN_HEIGHT_LAYERS > 0
+    if (i == 0) return texture(uHeightLayer0, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 1
+    if (i == 1) return texture(uHeightLayer1, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 2
+    if (i == 2) return texture(uHeightLayer2, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 3
+    if (i == 3) return texture(uHeightLayer3, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 4
+    if (i == 4) return texture(uHeightLayer4, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 5
+    if (i == 5) return texture(uHeightLayer5, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 6
+    if (i == 6) return texture(uHeightLayer6, uv).r;
+#endif
+#if TERRAIN_HEIGHT_LAYERS > 7
+    if (i == 7) return texture(uHeightLayer7, uv).r;
+#endif
+    return 0.0;
+}
+
 void main()
 {
     vec3 Ngeom = normalize(vWorldNormal);
@@ -1644,23 +1831,29 @@ void main()
         vec3 Vw = normalize(uCamPos - vWorldPos);
         vec3 Vts = vec3(dot(Vw, T), dot(Vw, B), dot(Vw, Ngeom));
 
-        // Parallax from normal-map alpha (layers 0–4), weighted by splat
+        // Parallax from a dedicated height map, or normal-map alpha when that map is empty.
         float hAcc = 0.0;
         float hW = 0.0;
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 8; i++)
         {
             if (i >= uLayerCount) break;
-            int hasN = (i == 0) ? uHasNormal0 : (i == 1) ? uHasNormal1 : (i == 2) ? uHasNormal2 : (i == 3) ? uHasNormal3 : uHasNormal4;
-            if (hasN == 0) continue;
             float wi = layerW(i, s0, s1);
             if (wi < 1e-5) continue;
-            vec2 uvi = vUV * ((i == 0) ? uTiling0 : (i == 1) ? uTiling1 : (i == 2) ? uTiling2 : (i == 3) ? uTiling3 : uTiling4);
-            vec4 nsmpl = (i == 0) ? texture(uNormalLayer0, uvi)
-                : (i == 1) ? texture(uNormalLayer1, uvi)
-                : (i == 2) ? texture(uNormalLayer2, uvi)
-                : (i == 3) ? texture(uNormalLayer3, uvi)
-                : texture(uNormalLayer4, uvi);
-            hAcc += nsmpl.a * wi;
+            vec2 uvi = vUV * layerTiling(i);
+            float hSample = 0.0;
+            bool gotH = false;
+            if (layerHasHeight(i))
+            {
+                hSample = sampleHeight(i, uvi);
+                gotH = true;
+            }
+            else if (layerHasNormal(i))
+            {
+                hSample = sampleNormal(i, uvi).a;
+                gotH = true;
+            }
+            if (!gotH) continue;
+            hAcc += hSample * wi;
             hW += wi;
         }
         if (hW > 1e-4 && uParallaxStrength > 0.0)
@@ -1704,7 +1897,7 @@ void main()
         }
         if (rw > 1e-5) { rough /= rw; metal /= rw; }
 
-        // Blended tangent-space normal (layers 0–4 have maps; 5–7 default to flat)
+        // Blended tangent-space normal. Layers without a map stay flat.
         vec3 tSum = vec3(0.0);
         float nW = 0.0;
         for (int i = 0; i < 8; i++)
@@ -1713,19 +1906,10 @@ void main()
             float wi = layerW(i, s0, s1);
             if (wi < 1e-6) continue;
             vec3 tn = vec3(0.0, 0.0, 1.0);
-            if (i < 5)
+            if (layerHasNormal(i))
             {
-                int hasN = (i == 0) ? uHasNormal0 : (i == 1) ? uHasNormal1 : (i == 2) ? uHasNormal2 : (i == 3) ? uHasNormal3 : uHasNormal4;
-                if (hasN != 0)
-                {
-                    vec2 uvi = uvDetail * ((i == 0) ? uTiling0 : (i == 1) ? uTiling1 : (i == 2) ? uTiling2 : (i == 3) ? uTiling3 : uTiling4);
-                    vec3 samp = (i == 0) ? texture(uNormalLayer0, uvi).rgb
-                        : (i == 1) ? texture(uNormalLayer1, uvi).rgb
-                        : (i == 2) ? texture(uNormalLayer2, uvi).rgb
-                        : (i == 3) ? texture(uNormalLayer3, uvi).rgb
-                        : texture(uNormalLayer4, uvi).rgb;
-                    tn = samp * 2.0 - 1.0;
-                }
+                vec2 uvi = uvDetail * layerTiling(i);
+                tn = sampleNormal(i, uvi).rgb * 2.0 - 1.0;
             }
             tSum += tn * wi;
             nW += wi;

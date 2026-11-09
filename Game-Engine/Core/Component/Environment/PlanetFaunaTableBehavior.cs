@@ -82,6 +82,9 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         if (terrain == null || terrain.Config == null) return;
 
         float dt = Math.Max(0f, Time.deltaTime);
+        SN.Vector3 center = terrain.GetWorldCenter();
+        bool haveCam = TryPlayerAnchor(terrain, center, out var anchor);
+        SN.Vector3 camDir = haveCam ? SN.Vector3.Normalize(anchor - center) : SN.Vector3.UnitY;
         for (int i = _herd.Count - 1; i >= 0; i--)
         {
             var animal = _herd[i];
@@ -90,8 +93,15 @@ public sealed class PlanetFaunaTableBehavior : Behavior
                 _herd.RemoveAt(i);
                 continue;
             }
+            if (haveCam && !CellInCameraRing(animal.CellKey, animal.Dir, camDir))
+            {
+                animal.Go.RemoveFromParent();
+                _herd.RemoveAt(i);
+                continue;
+            }
             animal.Go.Enabled = true;
             StepAnimal(terrain, animal, dt);
+            animal.CellKey = CellKeyFor(animal.Dir);
         }
 
         _playerSearchWait -= dt;
@@ -117,7 +127,11 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             any = true;
             if (_missing.Contains(species)) continue;
 
-            int want = Math.Clamp((int)MathF.Round(Math.Max(layer.Density, 0.2f) * 30f), 2, 6);
+            bool aquatic = IsAquaticSpecies(species);
+            float fish = aquatic ? AquaticFishScale(terrain) : 1f;
+            if (fish <= 0.001f) continue;
+            int want = Math.Clamp((int)MathF.Round(Math.Max(layer.Density, 0.2f) * 30f * fish), 0, 6);
+            if (want < 1) continue;
             int have = 0;
             for (int i = 0; i < _herd.Count; i++)
                 if (string.Equals(_herd[i].Species, species, StringComparison.OrdinalIgnoreCase))
@@ -218,6 +232,8 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             if (ground < 1f) continue;
             pos = center + dir * ground;
             if (TooClose(species, pos, Math.Min(spacing, 12f))) continue;
+            string cell = CellKeyFor(dir);
+            if (cell.Length > 0 && SpeciesOccupiesCell(species, cell)) continue;
             return true;
         }
         LogIdle($"no {(aquatic ? "water" : "land")} spot for {species} ({last})");
@@ -306,7 +322,8 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             Heading = Hash01(species, _herd.Count + 3) * MathF.Tau,
             Spacing = layer.HerdSpacing,
             Diurnal = layer.Diurnal,
-            IdleLeft = 1.5f + Hash01(species, 4) * 3f
+            IdleLeft = 1.5f + Hash01(species, 4) * 3f,
+            CellKey = CellKeyFor(dir)
         };
         Seat(terrain, animal, SN.Vector3.Zero);
         _herd.Add(animal);
@@ -432,6 +449,77 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         for (int i = 0; i < parts.Length; i++)
             if (NameHit(biomeName, parts[i])) return true;
         return false;
+    }
+
+    /// <summary>
+    /// Aquatic herd size multiplier from underwater recipes. 1 keeps the fauna-layer count.
+    /// 0 skips swimmers. No underwater recipe leaves the fauna layer unchanged.
+    /// </summary>
+    float AquaticFishScale(PlanetTerrain terrain)
+    {
+        var layers = GetComponent<PlanetLifeStreaming>()?.UnderwaterLife;
+        if (layers == null || layers.Length == 0) return 1f;
+        float best = 0f;
+        bool any = false;
+        bool water = terrain.EnableWater;
+        for (int i = 0; i < layers.Length; i++)
+        {
+            var layer = layers[i];
+            if (layer == null) continue;
+            if (layer.RequireWaterPlanet && !water) continue;
+            any = true;
+            if (layer.FishDensity > best) best = layer.FishDensity;
+        }
+        return any ? Math.Max(0f, best) : 1f;
+    }
+
+    int StreamingCellsPerEdge()
+    {
+        int edge = GetComponent<PlanetLifeStreaming>()?.CellsPerEdge ?? PlanetLifeStreaming.CellsPerFaceEdge;
+        return Math.Max(1, edge);
+    }
+
+    /// <summary>Cube-face cell for a stand direction. Empty when the direction is degenerate.</summary>
+    string CellKeyFor(SN.Vector3 dir)
+    {
+        if (dir.LengthSquared() < 1e-8f) return "";
+        var uv = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(dir));
+        return PlanetLifeStreaming.MakeCellKey(uv.Face, uv.U, uv.V, StreamingCellsPerEdge());
+    }
+
+    bool SpeciesOccupiesCell(string species, string cell)
+    {
+        for (int i = 0; i < _herd.Count; i++)
+        {
+            var other = _herd[i];
+            if (!string.Equals(other.Species, species, StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.Equals(other.CellKey, cell, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>True when the cell is on the camera face within two cells, or still close on a neighbor face.</summary>
+    bool CellInCameraRing(string cellKey, SN.Vector3 animalDir, SN.Vector3 camDir)
+    {
+        if (cellKey.Length == 0 || camDir.LengthSquared() < 1e-8f) return true;
+        if (!TryParseCell(cellKey, out int face, out int cu, out int cv)) return true;
+        var cam = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(camDir));
+        int edge = StreamingCellsPerEdge();
+        var (ccu, ccv) = PlanetLifeStreaming.CellCoords(cam.U, cam.V, edge);
+        if (face == cam.Face)
+            return Math.Abs(cu - ccu) <= 2 && Math.Abs(cv - ccv) <= 2;
+        float d = animalDir.LengthSquared() > 1e-8f ? SN.Vector3.Dot(SN.Vector3.Normalize(animalDir), SN.Vector3.Normalize(camDir)) : 0f;
+        return d > 0.92f;
+    }
+
+    static bool TryParseCell(string cellKey, out int face, out int cu, out int cv)
+    {
+        face = cu = cv = 0;
+        var parts = cellKey.Split(':');
+        if (parts.Length != 3) return false;
+        return int.TryParse(parts[0], out face)
+            && int.TryParse(parts[1], out cu)
+            && int.TryParse(parts[2], out cv);
     }
 
     /// <summary>Fish and other swimmers. They stay under the water surface, not on dry shore.</summary>
@@ -788,6 +876,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         public float IdleLeft;
         public bool Diurnal;
         public string Pose = "";
+        public string CellKey = "";
     }
 
     sealed class SpeciesAssets

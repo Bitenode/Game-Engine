@@ -7,10 +7,8 @@ using SN = System.Numerics;
 namespace Game_Engine.Core.Component;
 
 /// <summary>
-/// GPU-instanced rocks/grass hook. Collects scatter recipes and instance transforms;
-/// SceneRenderer can draw them via the existing <c>DrawArraysInstanced</c> billboard path
-/// (and later mesh instances). Does not replace CPU grass merge in
-/// <see cref="PlanetVegetationSystem"/> yet — companion storage only.
+/// Tracks scatter recipes and the rock meshes <see cref="PlanetVegetationSystem"/> already
+/// placed. Drawing stays on those scene meshes. Billboard instancing would turn rocks into cards.
 /// </summary>
 [ComponentCategory("Environment")]
 public sealed class PlanetScatterRenderer : Behavior
@@ -39,6 +37,26 @@ public sealed class PlanetScatterRenderer : Behavior
         if (!Enabled) return false;
         if (_instances.Count >= Math.Max(1, MaxInstances)) return false;
         _instances.Add(instance);
+        return true;
+    }
+
+    /// <summary>Drop the instance nearest <paramref name="position"/> when it is within <paramref name="maxDistance"/>.</summary>
+    public bool RemoveNearest(SN.Vector3 position, float maxDistance = 1.5f)
+    {
+        float maxSq = maxDistance * maxDistance;
+        int best = -1;
+        float bestSq = maxSq;
+        for (int i = 0; i < _instances.Count; i++)
+        {
+            float d = SN.Vector3.DistanceSquared(_instances[i].Position, position);
+            if (d <= bestSq)
+            {
+                bestSq = d;
+                best = i;
+            }
+        }
+        if (best < 0) return false;
+        _instances.RemoveAt(best);
         return true;
     }
 

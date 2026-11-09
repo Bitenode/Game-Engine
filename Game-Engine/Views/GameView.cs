@@ -287,9 +287,10 @@ namespace Game_Engine.Views
                 _gridShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.GridVert, es),
                     ShaderSources.Adapt(ShaderSources.GridFrag, es));
+                int terrainUnits = g.GetInteger(GLEnum.MaxTextureImageUnits);
                 _terrainShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.TerrainVert, es),
-                    ShaderSources.Adapt(ShaderSources.TerrainFrag, es));
+                    ShaderSources.Adapt(ShaderSources.TerrainFragForUnits(terrainUnits), es));
                 _particleShader = new ShaderProgram(g,
                     ShaderSources.Adapt(ShaderSources.ParticleVert, es),
                     ShaderSources.Adapt(ShaderSources.ParticleFrag, es));

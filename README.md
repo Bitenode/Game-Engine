@@ -62,7 +62,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 | Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)| 2.23.0    |
 | Audio Playback    | Silk.NET OpenAL (cross-platform)       | 2.23.0    |
 | Audio Decoding    | NAudio (WAV/MP3/OGG file reading)      | 2.2.1     |
-| 3D Model Import   | AssimpNet                              | 4.1.0     |
+| 3D Model Import   | AssimpNet                              | 5.0.0-beta1 |
 | Image Loading     | SkiaSharp                              | 2.88.9    |
 | Scripting         | Roslyn (Microsoft.CodeAnalysis.CSharp) | 4.14.0    |
 | Reactive          | System.Reactive                        | 6.1.0     |

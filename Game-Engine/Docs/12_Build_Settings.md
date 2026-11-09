@@ -89,8 +89,8 @@ Both projects build under all configurations.
 
 | Configuration | Defined Constants | Purpose |
 |---------------|-------------------|---------|
-| Debug | `DEBUG`, `TRACE` | Debug assertions, trace logging, development diagnostics |
-| Release | `TRACE` | Trace logging only, no debug overhead |
+| Debug | `DEBUG`, `TRACE`, `WINDOWS` | Debug assertions, trace logging, and the Windows NAudio path (stereo pan and reverb zones) |
+| Release | `TRACE`, `WINDOWS` | Trace logging and the same Windows audio path, without debug overhead |
 
 ### NuGet Dependencies
 
@@ -101,7 +101,7 @@ Both projects build under all configurations.
 | `Avalonia.Themes.Fluent` | `12.*` | UI | Fluent design theme (modern look) |
 | `Avalonia.Fonts.Inter` | `12.*` | UI | Inter font family for the editor UI |
 | `Silk.NET.OpenGL` | `2.23.0` | Rendering | OpenGL / OpenGL ES 3.0 bindings |
-| `AssimpNet` | `4.1.0` | Import | 3D model loading (FBX, OBJ, glTF, DAE) |
+| `AssimpNet` | `5.0.0-beta1` | Import | 3D model loading (FBX, OBJ, glTF 2, DAE). Engine.Player and the Android player still reference `4.1.0` |
 | `SkiaSharp` | `2.88.9` | Image | 2D image decoding (PNG, JPG, BMP) |
 | `Microsoft.CodeAnalysis.CSharp` | `4.14.0` | Scripting | Roslyn C# compiler for runtime script compilation |
 | `NAudio` | `2.2.1` | Audio | Audio playback backend |
@@ -328,7 +328,7 @@ All shaders are written as desktop GLSL (`#version 330 core`) and automatically 
 
 | Platform | GL Version | Shader Version | Adaptation |
 |----------|-----------|----------------|------------|
-| Windows (ANGLE) | OpenGL ES 3.0 | `#version 300 es` | Adds `precision mediump float;` qualifiers |
+| Windows (ANGLE) | OpenGL ES 3.0 | `#version 300 es` | Adds `precision highp` for float, int, sampler2D, and samplerCube. `#version` stays the first token |
 | macOS | OpenGL 3.3 Core | `#version 330 core` | No adaptation needed |
 | Linux | OpenGL 3.3 Core | `#version 330 core` | No adaptation needed |
 

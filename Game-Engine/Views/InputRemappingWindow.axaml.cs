@@ -314,6 +314,13 @@ namespace Game_Engine.Views
             }
         }
 
+        static string FormatBinding<T>(T item)
+        {
+            if (item is KeyCode code && KeyMap.TryToAvalonia(code, out var key))
+                return key.ToString();
+            return item?.ToString() ?? "";
+        }
+
         static StackPanel LabeledChips<T>(string label, List<T> items, Action<T> onRemove)
         {
             var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
@@ -335,7 +342,7 @@ namespace Game_Engine.Views
                     var captured = item;
                     var chip = new Button
                     {
-                        Content = captured + "  ×",
+                        Content = FormatBinding(captured) + "  ×",
                         Padding = new Avalonia.Thickness(8, 2),
                         Margin = new Avalonia.Thickness(0, 0, 4, 2)
                     };

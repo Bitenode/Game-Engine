@@ -225,8 +225,8 @@ The palette also includes authoring nodes that compile into `BiomeGraphResult` /
 `FloraLayer` can push profile id, densities, **Bush Density**, patchiness, grass min/max scale, and growth/treeline ranges onto matching layers by `TargetBiome`. **Season** nodes write `SeasonPhase` (weather sine offset) and snow/growth fields. **Weather profile** ids on biome layers select compiled weather tables. **Cloud layer** nodes push cloud detail/softness/speed onto matching atmosphere layers. **Wetland** nodes apply a shallow flood dip via crust editing.
 
 Runtime companions (optional on the planet GameObject):
-- `PlanetLifeStreaming` — face/UV cell keys + fauna/underwater/vein recipe bind
-- `PlanetScatterRenderer` — GPU-instanced rock/grass buffer hook (`DrawArraysInstanced`-ready)
+- `PlanetLifeStreaming` — face/UV cell keys + fauna/underwater/vein recipe bind. Fauna keeps one animal of each species per cell and drops animals that leave the camera cell ring.
+- `PlanetScatterRenderer` — stores scatter recipes and the rock meshes vegetation already placed. Rocks stay scene meshes (not camera-facing billboards).
 - `PlanetFloraSpawner` — unique imported-mesh cap for trees
 
 `PlanetVegetationSystem` keeps streaming plants; `UseUniversalLandVegetation` defaults to **false** so per-biome `VegetationProfileId` matters. It honors `VegetationPatchiness`, growth temperature/moisture, and tree slope/altitude reject.
@@ -238,7 +238,8 @@ On `ApplyGraphResult`, `PlanetTerrain` binds compiled tables onto companions whe
 When play mode is active and the biome graph compiled fauna layers, `PlanetFaunaTableBehavior` spawns skinned animals around the player:
 
 - **Species resolution** — `SpeciesId` maps to `Assets/Animals/Models/{Species}_Rig.fbx` (with filename fallbacks under `Assets/Animals/Models/`). `ModelImporter` loads loose clips (`Animations/{stem}_*.fbx`) and builds **Idle** / **Walk** / **Run** states on an `Animator`. Optional maps under `Assets/Animals/Textures/` are applied when the imported `.material` has no albedo (species name matching ignores underscores).
-- **Placement** — land species use dry crust above sea level and biome mask / dominance. Aquatic species (sharks, fish, crabs, etc.) require **submerged** water (crust below the water surface by a minimum depth), not merely a biome named Ocean. Spots are picked in a ring around the player / camera anchor on the stand surface.
+- **Placement** — land species use dry crust above sea level and biome mask / dominance. Aquatic species require **submerged** water (crust below the water surface by a minimum depth), not merely a biome named Ocean. Spots are picked in a ring around the player / camera anchor on the stand surface. Each species occupies at most one animal per streaming cell, and animals outside the camera cell ring are removed.
+- **Fish density** — `UnderwaterLife.FishDensity` scales how many aquatic fauna spawn (`0` skips swimmers, `1` keeps the fauna-layer count). It does not add a built-in fish list. With no underwater recipe, aquatic fauna layers are unchanged.
 - **Locomotion** — idle / walk / graze; feet are planted from mesh bounds so rigs sit on slopes instead of floating at the bone pivot.
 - **Scaling** — each **FaunaLayer** exposes **Scale** (default `1`). Only this uniform multiplier is applied at spawn (`Transform.Scale` on the imported model). The engine does not ship per-species size tables; tune sizes in the biome graph after import normalization (~1 unit wide rigs).
 - **Performance** — empty rig pivot nodes with no renderers are pruned after import to cut hierarchy walk cost per animal.
@@ -249,7 +250,7 @@ When play mode is active and the biome graph compiled fauna layers, `PlanetFauna
 - Vegetation profiles whose id is **Ocean** (or paths containing `/coral` / `coral_`) are excluded from the land tree carpet.
 - **`UnderwaterLife`** recipes drive kelp (bush items) and coral (tree items) through `PlanetVegetationSystem` with `requireDryLand: false`.
 - Imported reef meshes use **`scaleToTreeHeight: false`** so they are not inflated to tree height; placement respects depth and slope limits near the camera.
-- **`PlanetVegetationSystem`** also spawns bushes, scatter rocks, underwater props, and cave ore markers from compiled flora/scatter/underwater/vein recipes.
+- **`PlanetVegetationSystem`** also spawns bushes, scatter rocks, underwater props, and vein markers from compiled flora/scatter/underwater/vein recipes. Each vein marker gets a `PlanetVeinDeposit` (`ResourceId`, `Amount`, `TryHarvest`). Harvest does not dig the crust. Placed rocks are registered on `PlanetScatterRenderer` so its instance list matches the meshes in the scene.
 
 ### Vegetation clear zones (`VegetationClearZone`)
 

@@ -8,7 +8,8 @@ namespace Game_Engine.Core.Component;
 /// <summary>
 /// Face/UV cell streaming glue for planet life. Shared key space with
 /// <see cref="PlanetVegetationSystem"/> so LOD splits do not pop plants.
-/// Holds compiled fauna/underwater tables for later consumers.
+/// Holds compiled fauna, underwater, and vein tables. Fauna uses the cell keys to
+/// keep one animal per cell near the camera.
 /// </summary>
 [ComponentCategory("Environment")]
 public sealed class PlanetLifeStreaming : Behavior

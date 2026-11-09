@@ -1,0 +1,22 @@
+{
+  "name": "StarterCharacter",
+  "type": "Material",
+  "version": 1,
+  "shader": "",
+  "parameters": {
+    "Tint": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "Metallic": 0,
+    "Roughness": 0.5,
+    "Transparent": false,
+    "AlphaCutoff": 0,
+    "LumaClip": 0
+  },
+  "textures": {
+    "Albedo": "c:\\Users\\Bitenode\\Desktop\\GameEngine\\Game-Engine\\Game-Engine\\Standard Assets\\Characters\\StarterCharacter\\textures\\StarterCharacter_albedo.png"
+  }
+}
