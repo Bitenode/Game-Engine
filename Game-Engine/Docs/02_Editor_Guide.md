@@ -823,14 +823,17 @@ Access the full Profiler panel via **Window > Profiler**.
 
 ## Build Settings Window
 
-The Build Settings window configures game packaging and platform targeting:
+The Build Settings window configures game packaging and platform targeting (Windows, Xbox MSIX, Linux, macOS, Android). Full pipeline details: [12_Build_Settings.md](12_Build_Settings.md).
 
 ### Features
-- **Scene list** — select which scenes to include in the build
-- **Platform selection** — target Windows, macOS, or Linux (x64/ARM64)
-- **Build configuration** — Debug or Release
-- **Output path** — choose the build destination folder
-- **Build button** — packages the game as a standalone Engine.Player executable
+- **Scenes in build** — startup scene is first in the list; only scenes listed here are copied to the player `Data/Scenes/` folder.
+- **Platform** — Windows, **Xbox** (Visual Studio packaging + MSIX), Linux, macOS, Android. Xbox builds are **x64 only**.
+- **Configuration** — Debug or Release for the published player.
+- **Compression** — affects `Assets.dll` zip packing (`None` = store-only, fastest). Does not re-compress already-compressed image/audio/model types.
+- **Progress** — determinate percent and step text (scripts → publish → scene assets → MSIX on Xbox).
+- **Assets.dll** — packs **only assets referenced by the scenes in the build list** (material textures and model sidecars included), not the whole `Assets/` tree.
+- **Xbox (after first build)** — **Run Local** launches `Builds/Xbox/layout/Engine.Player.exe` with external `Data/` (quick PC test, no MSIX). **Open in Visual Studio** opens the generated `.sln` for **Local Machine** deploy/debug (CoreCLR, `layout/Data/build.json` passed on the command line).
+- **Build / Build & Run** — produces `Builds/<Platform>/` output; Xbox **Build & Run** sideloads the `.msix` and starts the packaged player with the external data path.
 
 Access via **Project > Build Settings**.
 

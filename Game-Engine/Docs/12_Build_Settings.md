@@ -34,9 +34,44 @@ Github Engine/
 
 ### Android, MSIX / Store, and Xbox from Build Settings
 
+- **Asset packing** — `Data/Assets.dll` includes **only files referenced by the scenes in the build list** (plus material textures and common model sidecars), not the entire project `Assets/` folder. A Main Menu–only build therefore stays small; unused GB of models/textures are left out. The player caches extracted assets across launches.
 - **Android** — Build Settings runs `dotnet publish` on `Engine.Player.Android` with `-f net9.0-android35.0`. The Android host currently pins **Avalonia 11.3.11** (desktop/editor use **Avalonia 12** on .NET 9); **Avalonia.Android 12.x requires .NET 10** (`net10.0-android36.0`) — upgrade the Android TFM and packages after installing the .NET 10 SDK. Game `Data` is zipped and passed as **`Data.zip`** in the APK **assets**; the player extracts it on first launch (see `Engine.Player.Android` and player `Program.cs` for asset loading). Install the [.NET Android workload](https://learn.microsoft.com/dotnet/mobile/get-started) (`dotnet workload install android`). Release APK signing: set keystore properties as in [Avalonia Android deployment](https://docs.avaloniaui.net/docs/deployment/android).
 - **Windows MSIX / Microsoft Store** — The `Engine.Player` project includes **`Properties/Package.appxmanifest`** for packaged desktop identity. Publishing with **`net9.0-windows10.0.19041.0`** produces a layout suitable for **MSIX** / Store tooling (Visual Studio “Packaging” or `dotnet publish` with Windows App SDK / Windows packaging projects). The editor build panel should use the same output folder conventions as the CLI (`publish/` under the player project, plus copied `Data/`). Replace placeholder `Assets/` tiles and set a valid package **identity** publisher before Store submission.
-- **Xbox** — Publishes `Engine.Player` with `net9.0-windows10.0.19041.0` (Windows app package TFM). `Package.appxmanifest` declares **`Windows.Desktop`** and **`Windows.Xbox`** so a Store submission can target PC and Xbox device families where Microsoft allows your app type. **Important:** a **full-trust Win32** (`Windows.FullTrustApplication`) Avalonia player is not the same as a native **Xbox GDK** title; shipping a game to retail Xbox consoles usually requires the [Microsoft GDK](https://learn.microsoft.com/gaming/gdk/) and an Xbox-specific build pipeline, not only this editor packaging path. Use this target for manifest and publish settings aligned with Xbox + PC Store packaging; replace placeholder `Assets/` tiles and set a valid package identity publisher. A signed app package (often a `.msix` file from tooling) may require [Windows App SDK](https://learn.microsoft.com/windows/apps/windows-app-sdk/) / Visual Studio packaging; the build always produces a runnable `Engine.Player.exe` plus `Data/` when no packaged output appears.
+- **Xbox** — See [Xbox / Visual Studio packaging](#xbox--visual-studio-packaging) below.
+
+### Xbox / Visual Studio packaging
+
+| Output under `Builds/Xbox/` | Contents |
+|-----------------------------|----------|
+| `layout/` | `Engine.Player` publish + `Data/` (scripts, optional `Assets.dll`, scenes, `build.json`) |
+| `VisualStudio/` | Per-game `{Name}.sln`, `{Name}.wapproj`, `Package.appxmanifest`, logos, `XboxDev.pfx` copy |
+| `AppPackages/` | Signed `.msix` from MSBuild (player runtime only) |
+| `README.txt` | Layout explanation and launch notes |
+
+**Prerequisites:** Visual Studio 2022, **MSBuild**, and **MSIX Packaging Tools** (`Microsoft.DesktopBridge.targets`). Editor implementation: `Core/Editor/XboxVisualStudioPackager.cs`.
+
+1. Publish `Engine.Player` (`net9.0-windows10.0.19041.0`, `win-x64`, `--force`) into `layout/`.
+2. Build `Data/` (scripts, scene-referenced `Assets.dll`, scenes, manifest).
+3. Generate a **Windows Application Packaging Project** and run MSBuild **Release \| x64**.
+
+The **MSIX contains only the player runtime**. `layout/Data/` stays outside the package so MakeAppx does not hit **`0x8007000e` (out of memory)** on large projects. Game content is passed at launch: `Engine.Player.exe "<path-to-layout/Data/build.json>"`.
+
+**Testing without rebuilding assets every time**
+
+- **Run Local** (Build Settings, Xbox) — runs the unpackaged `layout/Engine.Player.exe` with `layout/Data/build.json`. Use this for day-to-day PC checks.
+- **Open in Visual Studio** — opens the generated `.sln`. Use **Local Machine** (not Remote). The solution has **Deploy** enabled; `{Name}.wapproj.user` sets **Managed (CoreCLR)** debugging and the `build.json` command line. Re-run **F5** after changing player code only if you re-published `layout/` (editor Build with `--force`, or `dotnet publish` to `layout/`).
+
+**Build & Run** (editor) imports `ProjectSettings/XboxDev.pfx` into `CurrentUser\TrustedPeople`, sideloads the MSIX, then starts the app with the external data path.
+
+**Limits:** This path targets **Windows.Desktop** and **Windows.Xbox** device families in the manifest; it is **not** a retail **Xbox GDK** console title. Large commercial titles usually stream assets rather than one monolithic package.
+
+### Player asset loading
+
+`Engine.Player` reads `build.json`, loads scenes from `Data/Scenes/`, and optionally unpacks `Data/Assets.dll` (zip) into a cache under `%TEMP%/EnginePlayerCache/` keyed by file size and timestamp. Extraction runs **off the UI thread** so the window does not sit at “Not Responding” while a large pack expands. UI-only builds with no external asset paths may omit `Assets.dll` entirely.
+
+### Scene-referenced asset collection
+
+`Core/Editor/BuildAssetCollector.cs` walks the **scenes in the build list**, collects quoted asset paths (models, textures, materials, prefabs, audio, etc.), follows `.material` / `.prefab` dependencies, and includes model `_Materials` folders. Those files alone are zipped into `Data/Assets.dll`.
 
 ---
 

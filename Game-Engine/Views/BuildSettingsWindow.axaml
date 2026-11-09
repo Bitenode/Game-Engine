@@ -280,7 +280,8 @@
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Compression"/>
                 <ComboBox x:Name="CompressionBox" Width="160"
-                          SelectedIndex="0">
+                          SelectedIndex="0"
+                          ToolTip.Tip="Assets.dll packing. None = store only (fast, best for large asset folders). LZ4/LZMA currently use fast zip deflate.">
                   <ComboBoxItem Content="None"/>
                   <ComboBoxItem Content="LZ4"/>
                   <ComboBoxItem Content="LZMA"/>
@@ -296,14 +297,29 @@
     <!-- ─── Bottom bar ─── -->
     <StackPanel Grid.Row="2" Spacing="6">
       <!-- Progress -->
-      <ProgressBar x:Name="BuildProgress" Classes="build-progress"
-                   Minimum="0" Maximum="100" Value="0"
-                   IsVisible="False"/>
+      <Grid IsVisible="False" x:Name="BuildProgressPanel">
+        <ProgressBar x:Name="BuildProgress" Classes="build-progress"
+                     Minimum="0" Maximum="100" Value="0"
+                     IsIndeterminate="False"/>
+        <TextBlock x:Name="BuildProgressPercent"
+                   Text="0%"
+                   FontSize="11" FontWeight="SemiBold"
+                   Foreground="#C8CDD4"
+                   HorizontalAlignment="Right"
+                   VerticalAlignment="Center"
+                   Margin="0,-2,2,0"/>
+      </Grid>
       <TextBlock x:Name="StatusText" Classes="status" Text="Ready"/>
 
       <!-- Buttons -->
       <StackPanel Orientation="Horizontal" Spacing="8"
                   HorizontalAlignment="Right" Margin="0,6,0,0">
+        <Button x:Name="BtnRunLocal"    Classes="secondary" Content="Run Local"
+                IsVisible="False" IsEnabled="False"
+                ToolTip.Tip="Launch unpackaged layout\\Engine.Player.exe with layout\\Data (no MSIX, no 10GB rebuild). Use this for quick PC tests."/>
+        <Button x:Name="BtnOpenInVS"    Classes="secondary" Content="Open in Visual Studio"
+                IsVisible="False" IsEnabled="False"
+                ToolTip.Tip="Open the generated Xbox packaging .sln in Visual Studio 2022"/>
         <Button x:Name="BtnBuild"       Classes="primary"   Content="Build"/>
         <Button x:Name="BtnBuildAndRun" Classes="primary"   Content="Build &amp; Run"/>
         <Button x:Name="BtnCancel"      Classes="secondary" Content="Close"/>
