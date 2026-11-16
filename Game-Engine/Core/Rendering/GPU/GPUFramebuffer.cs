@@ -200,6 +200,46 @@ public sealed class GPUFramebuffer : IDisposable
     {
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
         _gl.Viewport(0, 0, (uint)Width, (uint)Height);
+        // ANGLE keeps glDrawBuffers as context state. The shadow FBO sets None,
+        // and without this the scene color the post pass samples stays blank.
+        ApplyDrawBuffers();
+    }
+
+    /// <summary>
+    /// The default framebuffer presents with <c>GL_BACK</c>. A leftover
+    /// <c>GL_COLOR_ATTACHMENT0</c> or <c>GL_NONE</c> from an FBO makes the
+    /// post-process triangle draw nothing on ANGLE.
+    /// </summary>
+    public static unsafe void DrawColorTo(GL gl, uint framebuffer)
+    {
+        DrawBufferMode buf = framebuffer == 0
+            ? DrawBufferMode.Back
+            : DrawBufferMode.ColorAttachment0;
+        gl.DrawBuffers(1, &buf);
+    }
+
+    unsafe void ApplyDrawBuffers()
+    {
+        if (ColorTextures != null && ColorTextures.Length > 1)
+        {
+            DrawBufferMode* bufs = stackalloc DrawBufferMode[3];
+            int n = ColorTextures.Length > 3 ? 3 : ColorTextures.Length;
+            bufs[0] = DrawBufferMode.ColorAttachment0;
+            if (n > 1) bufs[1] = DrawBufferMode.ColorAttachment1;
+            if (n > 2) bufs[2] = DrawBufferMode.ColorAttachment2;
+            _gl.DrawBuffers((uint)n, bufs);
+            return;
+        }
+
+        if (ColorTexture != null || (ColorTextures != null && ColorTextures.Length == 1))
+        {
+            DrawBufferMode color0 = DrawBufferMode.ColorAttachment0;
+            _gl.DrawBuffers(1, &color0);
+            return;
+        }
+
+        DrawBufferMode none = DrawBufferMode.None;
+        _gl.DrawBuffers(1, &none);
     }
 
     /// <summary>Unbind (restore default framebuffer 0 or a specific one).</summary>

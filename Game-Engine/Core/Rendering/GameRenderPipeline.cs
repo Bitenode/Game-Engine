@@ -12,8 +12,11 @@ namespace Game_Engine.Core.Rendering;
 /// <summary>Shared play/player world draw: planet stack + deferred lighting.</summary>
 public static class GameRenderPipeline
 {
+    /// <summary>Xbox sets this so the console stays on the forward path until deferred is measured.</summary>
+    public static bool PreferForward { get; set; }
+
     public static bool UseDeferred(bool needsPostCapture)
-        => ProjectRenderingSettings.UseDeferredRendering && !needsPostCapture;
+        => !PreferForward && ProjectRenderingSettings.UseDeferredRendering && !needsPostCapture;
 
     public static void UpdateLod(SN.Vector3 camPos)
     {
@@ -129,7 +132,7 @@ public static class GameRenderPipeline
         GPUFramebuffer? shadowFbo, SN.Matrix4x4 shadowVP, SN.Vector3 sunSD,
         SN.Vector3 lightColor, Light? light, Skybox? sky,
         AColor skyTop, AColor skyBot, SN.Vector3? sunDir, Texture2D? skyTex, float skyMix, float skyYaw,
-        PostProcessVolume? postVolume, SN.Vector3 fallbackSun)
+        PostProcessVolume? postVolume, SN.Vector3 fallbackSun, SN.Vector3? planetSkyUp = null)
     {
         if (res.GBuffer == null || res.Cache == null || res.FsQuad == null || res.DeferredLight == null || res.Sky == null)
             return null;
@@ -184,7 +187,7 @@ public static class GameRenderPipeline
         res.SceneFbo.Bind();
         g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
         g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-        Sky.RenderGPU(g, res.Sky, res.FsQuad, res.Cache, view, proj, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
+        Sky.RenderGPU(g, res.Sky, res.FsQuad, res.Cache, view, proj, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
 
         g.BindVertexArray(res.FsQuad.VAO);
         float ssaoIntensity = postVolume != null ? postVolume.SSAOIntensity : 1f;

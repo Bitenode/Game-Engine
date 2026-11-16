@@ -521,22 +521,13 @@ public static class PlanetSurfaceUtility
         t = 1f;
         featDir = dir;
         int count = Math.Clamp((int)(12f + Math.Clamp(density, 0.05f, 1f) * 48f), 12, 36);
+        var feats = InlandVolcanoDirs(config, n, count, offset, angRadius, calderaRadius, volcanoRadius);
         float best = 4f;
         var bestFeat = dir;
         bool found = false;
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < feats.Length; i++)
         {
-            float z = 1f - 2f * (i + 0.5f) / count;
-            float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
-            float theta = i * 2.3999632f + offset;
-            var feat = new SN.Vector3(MathF.Cos(theta) * rr, z, MathF.Sin(theta) * rr);
-            float jx = n.Noise3D(feat.X * 3.1f + offset, feat.Y * 3.1f, feat.Z * 3.1f);
-            float jy = n.Noise3D(feat.Y * 3.1f, feat.Z * 3.1f + offset, feat.X * 3.1f);
-            float jz = n.Noise3D(feat.Z * 3.1f + offset, feat.X * 3.1f, feat.Y * 3.1f);
-            feat = SN.Vector3.Normalize(feat + new SN.Vector3(jx, jy, jz) * 0.18f);
-            if (!VolcanoCenterFitsInland(config, n, feat, angRadius, calderaRadius, volcanoRadius))
-                continue;
-
+            var feat = feats[i];
             float d = MathF.Acos(Math.Clamp(SN.Vector3.Dot(dir, feat), -1f, 1f));
             if (d < best)
             {
@@ -551,6 +542,153 @@ public static class PlanetSurfaceUtility
         featDir = bestFeat;
         t = best / MathF.Max(1e-4f, angRadius);
         return true;
+    }
+
+    /// <summary>
+    /// Feature centres for one recipe. The scatter depends on the noise and the recipe,
+    /// never on the point being sampled, so it is built once and reused. Rebuilding it
+    /// was three noise calls per centre, plus seven continent samples per volcano
+    /// centre, on every height, lava and water sample.
+    /// </summary>
+    sealed class FeatureScatter
+    {
+        public SimplexNoise Noise = null!;
+        public int Count;
+        public float Offset;
+        /// <summary>Volcano centres only: the entries below are part of the key.</summary>
+        public bool InlandOnly;
+        public float AngRadius;
+        public float CalderaRadius;
+        public float VolcanoRadius;
+        public float PlanetRadius;
+        public float[] Continents = Array.Empty<float>();
+        public SN.Vector3[] Dirs = Array.Empty<SN.Vector3>();
+    }
+
+    static FeatureScatter[] s_scatters = Array.Empty<FeatureScatter>();
+    static readonly object s_scatterLock = new();
+    const int MaxFeatureScatters = 256;
+
+    /// <summary>Jittered centres in generation order, same values the per-sample loop produced.</summary>
+    static SN.Vector3[] FeatureDirs(SimplexNoise n, int count, float offset)
+    {
+        var sets = System.Threading.Volatile.Read(ref s_scatters);
+        for (int i = 0; i < sets.Length; i++)
+        {
+            var s = sets[i];
+            if (!s.InlandOnly && ReferenceEquals(s.Noise, n) && s.Count == count && s.Offset == offset)
+                return s.Dirs;
+        }
+
+        var dirs = new SN.Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            float z = 1f - 2f * (i + 0.5f) / count;
+            float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+            float theta = i * 2.3999632f + offset;
+            var feat = new SN.Vector3(MathF.Cos(theta) * rr, z, MathF.Sin(theta) * rr);
+            float jx = n.Noise3D(feat.X * 3.1f + offset, feat.Y * 3.1f, feat.Z * 3.1f);
+            float jy = n.Noise3D(feat.Y * 3.1f, feat.Z * 3.1f + offset, feat.X * 3.1f);
+            float jz = n.Noise3D(feat.Z * 3.1f + offset, feat.X * 3.1f, feat.Y * 3.1f);
+            dirs[i] = SN.Vector3.Normalize(feat + new SN.Vector3(jx, jy, jz) * 0.18f);
+        }
+        PublishScatter(new FeatureScatter { Noise = n, Count = count, Offset = offset, Dirs = dirs });
+        return dirs;
+    }
+
+    /// <summary>The centres from <see cref="FeatureDirs"/> whose caldera sits on the continent, in the same order.</summary>
+    static SN.Vector3[] InlandVolcanoDirs(
+        PlanetConfig config,
+        SimplexNoise n,
+        int count,
+        float offset,
+        float angRadius,
+        float calderaRadius,
+        float volcanoRadius)
+    {
+        var continents = config.Continents;
+        var sets = System.Threading.Volatile.Read(ref s_scatters);
+        for (int i = 0; i < sets.Length; i++)
+        {
+            var s = sets[i];
+            if (s.InlandOnly
+                && ReferenceEquals(s.Noise, n)
+                && s.Count == count
+                && s.Offset == offset
+                && s.AngRadius == angRadius
+                && s.CalderaRadius == calderaRadius
+                && s.VolcanoRadius == volcanoRadius
+                && s.PlanetRadius == config.Radius
+                && SameContinents(s.Continents, continents))
+                return s.Dirs;
+        }
+
+        var all = FeatureDirs(n, count, offset);
+        var fit = new System.Collections.Generic.List<SN.Vector3>(all.Length);
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (VolcanoCenterFitsInland(config, n, all[i], angRadius, calderaRadius, volcanoRadius))
+                fit.Add(all[i]);
+        }
+        var dirs = fit.ToArray();
+        PublishScatter(new FeatureScatter
+        {
+            Noise = n,
+            Count = count,
+            Offset = offset,
+            InlandOnly = true,
+            AngRadius = angRadius,
+            CalderaRadius = calderaRadius,
+            VolcanoRadius = volcanoRadius,
+            PlanetRadius = config.Radius,
+            Continents = SnapshotContinents(continents),
+            Dirs = dirs
+        });
+        return dirs;
+    }
+
+    /// <summary>Everything <see cref="SampleContinentLand"/> reads from the continent list.</summary>
+    static float[] SnapshotContinents(Game_Engine.Core.Biome.Graph.ContinentRecipe[]? continents)
+    {
+        if (continents == null || continents.Length == 0)
+            return Array.Empty<float>();
+        var snap = new float[continents.Length * 3];
+        for (int i = 0; i < continents.Length; i++)
+        {
+            snap[i * 3] = continents[i].Frequency;
+            snap[i * 3 + 1] = continents[i].Threshold;
+            snap[i * 3 + 2] = continents[i].Strength;
+        }
+        return snap;
+    }
+
+    static bool SameContinents(float[] snap, Game_Engine.Core.Biome.Graph.ContinentRecipe[]? continents)
+    {
+        int len = continents?.Length ?? 0;
+        if (snap.Length != len * 3)
+            return false;
+        for (int i = 0; i < len; i++)
+        {
+            var c = continents![i];
+            if (snap[i * 3] != c.Frequency || snap[i * 3 + 1] != c.Threshold || snap[i * 3 + 2] != c.Strength)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>Mesh jobs and the game thread sample at once: readers take a snapshot, writers swap in a new array.</summary>
+    static void PublishScatter(FeatureScatter scatter)
+    {
+        lock (s_scatterLock)
+        {
+            var old = s_scatters;
+            // Oldest first, so a planet rebuilt with a new seed ages its old scatters out.
+            int keep = Math.Min(old.Length, MaxFeatureScatters - 1);
+            var next = new FeatureScatter[keep + 1];
+            Array.Copy(old, old.Length - keep, next, 0, keep);
+            next[keep] = scatter;
+            System.Threading.Volatile.Write(ref s_scatters, next);
+        }
     }
 
     static bool VolcanoCenterFitsInland(
@@ -605,18 +743,12 @@ public static class PlanetSurfaceUtility
         ang = 99f;
         featDir = dir;
         int count = Math.Clamp((int)(6f + Math.Clamp(density, 0.05f, 1f) * 36f), 5, 24);
+        var feats = FeatureDirs(n, count, offset);
         float best = 4f;
         var bestFeat = dir;
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < feats.Length; i++)
         {
-            float z = 1f - 2f * (i + 0.5f) / count;
-            float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
-            float theta = i * 2.3999632f + offset;
-            var feat = new SN.Vector3(MathF.Cos(theta) * rr, z, MathF.Sin(theta) * rr);
-            float jx = n.Noise3D(feat.X * 3.1f + offset, feat.Y * 3.1f, feat.Z * 3.1f);
-            float jy = n.Noise3D(feat.Y * 3.1f, feat.Z * 3.1f + offset, feat.X * 3.1f);
-            float jz = n.Noise3D(feat.Z * 3.1f + offset, feat.X * 3.1f, feat.Y * 3.1f);
-            feat = SN.Vector3.Normalize(feat + new SN.Vector3(jx, jy, jz) * 0.18f);
+            var feat = feats[i];
             float d = MathF.Acos(Math.Clamp(SN.Vector3.Dot(dir, feat), -1f, 1f));
             if (d < best)
             {

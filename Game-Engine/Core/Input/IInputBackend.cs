@@ -16,9 +16,13 @@ public static class InputBackends
 
     public static IInputBackend CreateDefault()
     {
+#if XBOX_UWP
+        return new UwpGamepadBackend();
+#else
         if (OperatingSystem.IsWindows())
             return new WindowsGamepadBackend();
         return new SdlGamepadBackend();
+#endif
     }
 
     public static void Set(IInputBackend backend) => Current = backend ?? CreateDefault();

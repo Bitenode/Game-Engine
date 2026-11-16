@@ -381,6 +381,9 @@ namespace Game_Engine.Core
             var latest = ScriptTypeReload.TryResolveLatestType(fullName);
             if (latest != null) return latest;
 
+            var playerType = ScriptTypeReload.FindPlayerScriptType(fullName);
+            if (playerType != null) return playerType;
+
             var t = Type.GetType(aqn, false);
             if (t != null) return t;
 
@@ -1100,7 +1103,15 @@ namespace Game_Engine.Core
             if (string.IsNullOrWhiteSpace(stored)) return null;
             try
             {
-                if (Path.IsPathRooted(stored)) return stored;
+                if (Path.IsPathRooted(stored))
+                {
+#if PLAYER
+                    // Absolute path from the authoring machine: use the copy packed under Assets.
+                    if (!File.Exists(stored))
+                        return AssetPathRemap.FindExisting(stored) ?? stored;
+#endif
+                    return stored;
+                }
                 var proj = ProjectService.Current;
                 if (proj == null) return stored;
                 return Path.Combine(proj.RootPath, stored);

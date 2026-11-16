@@ -25,6 +25,8 @@
     <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
     <ApplicationVersion>1</ApplicationVersion>
     <AppxBundle>Never</AppxBundle>
+    <!-- NAudio path in AudioBackend (editor already defines WINDOWS). -->
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(TargetFramework)'=='net9.0-windows10.0.19041.0'">
@@ -35,6 +37,11 @@
   <!-- Player-specific define so shared Core files can #if !PLAYER -->
   <PropertyGroup>
     <DefineConstants>$(DefineConstants);PLAYER</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Unpackaged Windows publish (net9.0 + win-* RID) also uses NAudio. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' AND $(RuntimeIdentifier.StartsWith('win'))">
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
   </PropertyGroup>
 
   <!-- Android host lives in Engine.Player.Android; keep stubs out of desktop builds -->

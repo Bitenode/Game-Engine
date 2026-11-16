@@ -251,6 +251,20 @@ namespace Game_Engine.Core
 
         // -------- Require enforcement (guarded & idempotent) -------------------
         static readonly HashSet<string> s_guard = new(StringComparer.Ordinal);
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, Type[]> s_requiredByType = new();
+
+        /// <summary>
+        /// [Require] types for a component type. Attributes are fixed per type, and reading
+        /// them by reflection on every attach, enable and start was a cost on each spawn.
+        /// </summary>
+        static Type[] RequiredTypesFor(Type type)
+            => s_requiredByType.GetOrAdd(type, static t =>
+                t.GetCustomAttributes(typeof(RequireAttribute), inherit: true)
+                 .OfType<RequireAttribute>()
+                 .SelectMany(a => a.Types ?? Array.Empty<Type>())
+                 .Where(req => req != null && typeof(Behavior).IsAssignableFrom(req))
+                 .Distinct()
+                 .ToArray());
 
         protected void EnsureRequiredComponents()
         {
@@ -258,18 +272,18 @@ namespace Game_Engine.Core
             if (go == null) return;
 
             var meType = GetType();
-            var guardKey = $"{RuntimeHelpersGetId(go)}|{meType.FullName}";
-            if (!s_guard.Add(guardKey)) return;
+            var reqs = RequiredTypesFor(meType);
+            if (reqs.Length == 0) return;
+
+            var guardKey = $"{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(go)}|{meType.FullName}";
+            // Model imports attach components on worker threads too.
+            lock (s_guard)
+            {
+                if (!s_guard.Add(guardKey)) return;
+            }
 
             try
             {
-                var reqs = meType.GetCustomAttributes(typeof(RequireAttribute), inherit: true)
-                                 .OfType<RequireAttribute>()
-                                 .SelectMany(a => a.Types ?? Array.Empty<Type>())
-                                 .Where(t => t != null && typeof(Behavior).IsAssignableFrom(t))
-                                 .Distinct()
-                                 .ToList();
-
                 bool addedAny = false;
                 foreach (var t in reqs)
                 {
@@ -298,21 +312,9 @@ namespace Game_Engine.Core
             }
             finally
             {
-                s_guard.Remove(guardKey);
+                lock (s_guard)
+                    s_guard.Remove(guardKey);
             }
-        }
-
-
-        static int RuntimeHelpersGetId(object o)
-        {
-            try
-            {
-                var t = Type.GetType("System.Runtime.CompilerServices.RuntimeHelpers");
-                var m = t?.GetMethod("GetHashCode", new[] { typeof(object) });
-                if (m != null) return (int)m.Invoke(null, new object[] { o });
-            }
-            catch { }
-            return o.GetHashCode();
         }
     }
 }

@@ -529,6 +529,9 @@ namespace Game_Engine.Core
             // Always bind the post-process shader, even for passthrough —
             // rendering without a shader causes a black screen.
             postShader.Use();
+            gl.GetInteger(GetPName.DrawFramebufferBinding, out int presentFb);
+            GPUFramebuffer.DrawColorTo(gl, (uint)presentFb);
+            gl.ColorMask(true, true, true, true);
 
             sceneTexture.Bind(TextureUnit.Texture0);
             postShader.SetTexture("uScene", 0);
@@ -603,6 +606,7 @@ namespace Game_Engine.Core
             // Draw fullscreen triangle (covers entire screen with a single triangle)
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.Blend);
+            gl.Disable(EnableCap.CullFace);
             gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
             gl.Enable(EnableCap.DepthTest);
         }
@@ -787,6 +791,11 @@ namespace Game_Engine.Core
                 gl.Enable(EnableCap.Blend);
                 gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                 gl.DepthMask(false);
+                // Glass is a second surface in the wall's plane. ANGLE's depth buffer is coarser than
+                // desktop GL, and Less rejects that layer so the windows stay empty.
+                gl.DepthFunc(DepthFunction.Lequal);
+                gl.Enable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(-2f, -2f);
 
                 // Ensure standard shader is active for transparent pass
                 standardShader.Use();
@@ -801,6 +810,9 @@ namespace Game_Engine.Core
                     DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
                 }
 
+                gl.DepthFunc(DepthFunction.Less);
+                gl.Disable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(0f, 0f);
                 gl.DepthMask(true);
                 gl.Disable(EnableCap.Blend);
             }
@@ -1915,6 +1927,9 @@ namespace Game_Engine.Core
                         dir = dir.Parent;
                     }
                 }
+
+                // 6) Absolute path from another machine: the same asset under this project's Assets
+                return AssetPathRemap.FindExisting(path);
             }
             catch { }
 
@@ -1931,7 +1946,11 @@ namespace Game_Engine.Core
             {
                 var abs = ResolveTexturePath(path);
                 if (abs != null)
+                {
                     tex = Texture2D.FromFile(abs);
+                    if (tex != null && (tex.Width > BiomeCpuMaxEdge || tex.Height > BiomeCpuMaxEdge))
+                        tex = tex.DownscaleMaxEdge(BiomeCpuMaxEdge);
+                }
             }
             catch { }
 
@@ -2201,6 +2220,7 @@ namespace Game_Engine.Core
             gl.ColorMask(false, false, false, false);
             gl.DepthMask(true);
             gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
             gl.Disable(EnableCap.StencilTest);
             depthCopyShader.Use();
             gbufferDepth.Bind(TextureUnit.Texture0);
@@ -2385,6 +2405,11 @@ namespace Game_Engine.Core
                 gl.Enable(EnableCap.Blend);
                 gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                 gl.DepthMask(false);
+                // Glass is a second surface in the wall's plane. ANGLE's depth buffer is coarser than
+                // desktop GL, and Less rejects that layer so the windows stay empty.
+                gl.DepthFunc(DepthFunction.Lequal);
+                gl.Enable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(-2f, -2f);
 
                 standardShader.Use();
                 if (shadowFBO?.DepthTexture != null)
@@ -2398,6 +2423,9 @@ namespace Game_Engine.Core
                     DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
                 }
 
+                gl.DepthFunc(DepthFunction.Less);
+                gl.Disable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(0f, 0f);
                 gl.DepthMask(true);
                 gl.Disable(EnableCap.Blend);
             }
@@ -2446,6 +2474,7 @@ namespace Game_Engine.Core
             ssaoShader.SetVector2("uNoiseScale", screenWidth / 4f, screenHeight / 4f);
 
             gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
             gl.Enable(EnableCap.DepthTest);
         }
@@ -2473,6 +2502,7 @@ namespace Game_Engine.Core
             blurShader.SetFloat("uDepthSigma", depthSigma);
 
             gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
             gl.Enable(EnableCap.DepthTest);
         }
@@ -2527,6 +2557,7 @@ namespace Game_Engine.Core
             ssrShader.SetFloat("uMaxRayLength", Math.Max(1f, maxRayLength));
 
             gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
             gl.Enable(EnableCap.DepthTest);
         }
@@ -2561,6 +2592,7 @@ namespace Game_Engine.Core
             taaShader.SetFloat("uSharpen", Math.Clamp(sharpen, 0f, 1f));
 
             gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
             gl.Enable(EnableCap.DepthTest);
         }
@@ -2610,7 +2642,7 @@ namespace Game_Engine.Core
             volFogShader.SetFloat("uFogNoiseSpeed", volume.VolumetricFogNoiseSpeed);
             volFogShader.SetFloat("uFogMaxDistance", volume.VolumetricFogMaxDistance);
             volFogShader.SetVector3("uFogColor", volume.VolumetricFogColor);
-            volFogShader.SetInt("uFogSteps", Math.Clamp(volume.VolumetricFogSteps, 4, 128));
+            volFogShader.SetInt("uFogSteps", Math.Clamp(volume.VolumetricFogSteps, 4, 16));
             volFogShader.SetFloat("uTime", time);
 
             if (shadowFBO?.DepthTexture != null)
@@ -2626,6 +2658,7 @@ namespace Game_Engine.Core
             }
 
             gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
             gl.Enable(EnableCap.DepthTest);
         }
@@ -3019,7 +3052,11 @@ namespace Game_Engine.Core
                 cloudSoftness: Math.Clamp(atmo?.CloudSoftness ?? 0.30f, 0.01f, 1.0f),
                 cloudLightResponse: Math.Max(0f, atmo?.CloudLightResponse ?? 0.9f),
                 cloudSilverLining: Math.Max(0f, atmo?.CloudSilverLining ?? 0.65f),
+#if XBOX_UWP
+                cloudStepCount: Math.Clamp(Math.Min(atmo?.CloudStepCount ?? 16, 8), 4, 8));
+#else
                 cloudStepCount: Math.Clamp(atmo?.CloudStepCount ?? 16, 4, 64));
+#endif
         }
 
         /// <summary>
@@ -3161,8 +3198,16 @@ namespace Game_Engine.Core
                 gl.Enable(EnableCap.Blend);
                 gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                 gl.DepthMask(false);
+                // Glass is a second surface in the wall's plane. ANGLE's depth buffer is coarser than
+                // desktop GL, and Less rejects that layer so the windows stay empty.
+                gl.DepthFunc(DepthFunction.Lequal);
+                gl.Enable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(-2f, -2f);
                 for (int i = 0; i < vegTransparent.Count; i++)
                     DrawMeshItem(gl, standardShader, cache, vegTransparent[i], in renderCtx);
+                gl.DepthFunc(DepthFunction.Less);
+                gl.Disable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(0f, 0f);
                 gl.DepthMask(true);
                 gl.Disable(EnableCap.Blend);
             }
@@ -3420,6 +3465,52 @@ namespace Game_Engine.Core
                 return;
             }
 
+#if XBOX_UWP
+            // Dig stays off (R32F atlas). Splat is what paints rock versus dirt the way the
+            // editor does. One RGBA8 atlas per frame so the upload cannot stall the console.
+            shader.SetInt("uUsePlanetDig", 0);
+            if (!surface.HasBaseHeights || surface.Splat0 == null || surface.Splat1 == null)
+            {
+                var white = cache.GetWhiteTexture();
+                white.Bind(TextureUnit.Texture8);
+                shader.SetTexture("uPlanetSplat0", 8);
+                white.Bind(TextureUnit.Texture9);
+                shader.SetTexture("uPlanetSplat1", 9);
+                shader.SetInt("uUsePlanetSplat", 0);
+                return;
+            }
+
+            int xboxSplatVersion = surface.SplatVersion;
+            var (xboxSplat0, xboxSplat1, xboxNeedsUpload) = cache.GetPlanetSplatTextures(planet, xboxSplatVersion);
+            if (xboxNeedsUpload)
+            {
+                int res = surface.Resolution;
+                if (_planetSplatUploadPhase == 0)
+                {
+                    xboxSplat0.UploadRgba16FloatFaces(surface.Splat0, res);
+                    _planetSplatUploadPhase = 1;
+                    var pendingWhite = cache.GetWhiteTexture();
+                    pendingWhite.Bind(TextureUnit.Texture8);
+                    shader.SetTexture("uPlanetSplat0", 8);
+                    pendingWhite.Bind(TextureUnit.Texture9);
+                    shader.SetTexture("uPlanetSplat1", 9);
+                    shader.SetInt("uUsePlanetSplat", 0);
+                    return;
+                }
+
+                xboxSplat1.UploadRgba16FloatFaces(surface.Splat1, res);
+                cache.SetPlanetSplatVersion(planet, xboxSplatVersion);
+                _planetSplatUploadPhase = 0;
+                Log.Info($"[Planet] Xbox splat atlases uploaded {res}px");
+            }
+
+            xboxSplat0.Bind(TextureUnit.Texture8);
+            shader.SetTexture("uPlanetSplat0", 8);
+            xboxSplat1.Bind(TextureUnit.Texture9);
+            shader.SetTexture("uPlanetSplat1", 9);
+            shader.SetInt("uUsePlanetSplat", 1);
+            return;
+#else
             // Scratch cubemap during an in-flight graph bake has empty splat —
             // keep vertex biome blends so the first dig cannot paint the planet dirt.
             if (!surface.HasBaseHeights)
@@ -3465,6 +3556,7 @@ namespace Game_Engine.Core
             digAtlas.Bind(TextureUnit.Texture14);
             shader.SetTexture("uPlanetDigAtlas", 14);
             shader.SetInt("uUsePlanetDig", 1);
+#endif
         }
 
         private static void ExtractFrustumPlanes(in SN.Matrix4x4 vp, out SN.Vector4[] planes)
@@ -3499,6 +3591,10 @@ namespace Game_Engine.Core
         private static string?[]? _boundBiomePaths;
         private static string?[]? _boundBiomeUnderPaths;
         private static bool _biomeTexDirty = true;
+        private static bool _biomeMetaReady;
+        private static int _biomeLoadCursor;
+        private static int _biomeLoadFrame = -1;
+        private static int _planetSplatUploadPhase; // Xbox: 0 splat0, 1 splat1, 2 dig, 3 done
         private static float[]? _cachedTiling;
         private static float[]? _cachedUnderTiling;
         private static SN.Vector3[]? _cachedBaseColor;
@@ -3506,8 +3602,22 @@ namespace Game_Engine.Core
         private static int[]? _cachedHasUnder;
         // Under maps share the 16-unit GLES budget with top/splat/dig/shadow: biomes 0-3.
         private const int MaxBoundUnderBiomes = 4;
+#if XBOX_UWP
+        private const int BiomeCpuMaxEdge = 1024;
+#else
+        private const int BiomeCpuMaxEdge = 2048;
+#endif
 
-        public static void ResetBiomeTexDebug() { _biomeTexDirty = true; }
+        public static void ResetBiomeTexDebug()
+        {
+            _biomeTexDirty = true;
+            _biomeMetaReady = false;
+            _biomeLoadCursor = 0;
+            _biomeLoadFrame = -1;
+        }
+
+        /// <summary>True while planet biome CPU textures are still trickling in one-per-frame.</summary>
+        public static bool BiomeTexturesStreaming => _biomeTexDirty;
 
         static void ResolveWeatherOverlays(PlanetTerrain planet, out float wetness, out float snowCoverage, out float weatherOn)
         {
@@ -3548,6 +3658,101 @@ namespace Game_Engine.Core
                 _cachedHasUnder = new int[8];
             }
 
+#if XBOX_UWP
+            // Console: one biome top+under decode per frame so the first SwapBuffers survives.
+            bool pathsChanged = false;
+            for (int i = 0; i < 8 && i < biomes.Length; i++)
+            {
+                if (_boundBiomePaths![i] != biomes[i].TopTexturePath
+                    || _boundBiomeUnderPaths![i] != biomes[i].UnderTexturePath)
+                { pathsChanged = true; break; }
+            }
+            if (_biomeTexDirty || pathsChanged)
+            {
+                if (!_biomeMetaReady || pathsChanged)
+                {
+                    Log.Info("[BiomeTex] Rebuilding biome texture bindings (staggered)...");
+                    for (int i = 0; i < 8; i++)
+                    {
+                        if (i < biomes.Length)
+                        {
+                            var b = biomes[i];
+                            _boundBiomePaths![i] = b.TopTexturePath;
+                            _boundBiomeUnderPaths![i] = b.UnderTexturePath;
+                            _cachedTiling![i] = b.TopTiling;
+                            _cachedUnderTiling![i] = Math.Max(0.25f, b.UnderTiling);
+                            _cachedBaseColor![i] = new SN.Vector3(b.BaseColorR, b.BaseColorG, b.BaseColorB);
+                            _cachedUnderColor![i] = new SN.Vector3(
+                                Math.Max(b.BaseColorR * 0.6f, 0.12f),
+                                Math.Max(b.BaseColorG * 0.5f, 0.1f),
+                                Math.Max(b.BaseColorB * 0.5f, 0.1f));
+                        }
+                        else
+                        {
+                            _boundBiomePaths![i] = "";
+                            _boundBiomeUnderPaths![i] = "";
+                            _cachedTiling![i] = 24f;
+                            _cachedUnderTiling![i] = 10f;
+                            _cachedBaseColor![i] = new SN.Vector3(0.5f);
+                            _cachedUnderColor![i] = new SN.Vector3(0.22f);
+                        }
+                        _boundBiomeTex2D[i] = null;
+                        _boundBiomeUnderTex2D![i] = null;
+                        _cachedHasUnder![i] = 0;
+                    }
+                    _biomeLoadCursor = 0;
+                    _biomeLoadFrame = -1;
+                    _biomeMetaReady = true;
+                    _biomeTexDirty = true;
+                }
+
+                int biomeCount = Math.Min(8, biomes.Length);
+                if (_biomeLoadCursor < biomeCount && _biomeLoadFrame != Time.frameCount)
+                {
+                    _biomeLoadFrame = Time.frameCount;
+                    int i = _biomeLoadCursor++;
+                    var b = biomes[i];
+                    if (!string.IsNullOrWhiteSpace(b.TopTexturePath))
+                    {
+                        try
+                        {
+                            var tex2d = TryLoadLayerTexture(b.TopTexturePath);
+                            if (tex2d != null)
+                            {
+                                _boundBiomeTex2D[i] = tex2d;
+                                Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': {tex2d.Width}x{tex2d.Height} OK");
+                            }
+                            else
+                                Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': file not found '{b.TopTexturePath}'");
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}' EXCEPTION: {ex.Message}");
+                        }
+                    }
+                    if (i < MaxBoundUnderBiomes && !string.IsNullOrWhiteSpace(b.UnderTexturePath))
+                    {
+                        try
+                        {
+                            var underTex = TryLoadLayerTexture(b.UnderTexturePath);
+                            if (underTex != null)
+                            {
+                                _boundBiomeUnderTex2D![i] = underTex;
+                                _cachedHasUnder![i] = 1;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Info($"[BiomeTex] Biome[{i}] under EXCEPTION: {ex.Message}");
+                        }
+                    }
+                }
+
+                if (_biomeLoadCursor >= biomeCount)
+                    _biomeTexDirty = false;
+            }
+#else
+            // Desktop editor Game View: load every biome in one rebuild (pre-Xbox behavior).
             bool needRebuild = _biomeTexDirty;
             if (!needRebuild)
             {
@@ -3583,9 +3788,7 @@ namespace Game_Engine.Core
                                 Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': {tex2d.Width}x{tex2d.Height} OK");
                             }
                             else
-                            {
                                 Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': file not found '{b.TopTexturePath}'");
-                            }
                         }
                         catch (Exception ex)
                         {
@@ -3597,7 +3800,6 @@ namespace Game_Engine.Core
                     _cachedUnderTiling![i] = Math.Max(0.25f, b.UnderTiling);
                     _cachedBaseColor![i] = new SN.Vector3(b.BaseColorR, b.BaseColorG, b.BaseColorB);
 
-                    // Under-texture: bind real map when possible; else average color fallback.
                     var underCol = new SN.Vector3(
                         Math.Max(b.BaseColorR * 0.6f, 0.12f),
                         Math.Max(b.BaseColorG * 0.5f, 0.1f),
@@ -3611,8 +3813,8 @@ namespace Game_Engine.Core
                             {
                                 if (i < MaxBoundUnderBiomes)
                                 {
-                                    _boundBiomeUnderTex2D[i] = underTex;
-                                    _cachedHasUnder[i] = 1;
+                                    _boundBiomeUnderTex2D![i] = underTex;
+                                    _cachedHasUnder![i] = 1;
                                     Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}' under: {underTex.Width}x{underTex.Height} OK");
                                 }
                                 else
@@ -3630,7 +3832,8 @@ namespace Game_Engine.Core
                                         }
                                     }
                                     if (samples > 0)
-                                        underCol = new SN.Vector3(rSum / (samples * 255f), gSum / (samples * 255f), bSum / (samples * 255f));
+                                        underCol = new SN.Vector3(
+                                            rSum / (samples * 255f), gSum / (samples * 255f), bSum / (samples * 255f));
                                 }
                             }
                         }
@@ -3652,8 +3855,11 @@ namespace Game_Engine.Core
                     _cachedUnderColor![i] = new SN.Vector3(0.22f);
                 }
 
+                _biomeMetaReady = true;
+                _biomeLoadCursor = Math.Min(8, biomes.Length);
                 _biomeTexDirty = false;
             }
+#endif
 
             for (int i = 0; i < 8; i++)
             {

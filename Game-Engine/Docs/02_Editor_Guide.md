@@ -823,17 +823,18 @@ Access the full Profiler panel via **Window > Profiler**.
 
 ## Build Settings Window
 
-The Build Settings window configures game packaging and platform targeting (Windows, Xbox MSIX, Linux, macOS, Android). Full pipeline details: [12_Build_Settings.md](12_Build_Settings.md).
+The Build Settings window configures game packaging and platform targeting (Windows, Xbox UWP, Xbox GDK, Linux, macOS, Android). Full pipeline details: [12_Build_Settings.md](12_Build_Settings.md).
 
 ### Features
 - **Scenes in build** — startup scene is first in the list; only scenes listed here are copied to the player `Data/Scenes/` folder.
-- **Platform** — Windows, **Xbox** (Visual Studio packaging + MSIX), Linux, macOS, Android. Xbox builds are **x64 only**.
-- **Configuration** — Debug or Release for the published player.
+- **Platform** — Windows (Avalonia player), **Xbox** (UWP Dev Mode host that launches on console), **Xbox GDK** (native XAudio2 / GameInput / XSAPI when the GDK is installed), Linux, macOS, Android. Xbox family builds are **x64 only**.
+- **Configuration** — Debug or Release for the published player / UWP / GDK host.
 - **Compression** — affects `Assets.dll` zip packing (`None` = store-only, fastest). Does not re-compress already-compressed image/audio/model types.
-- **Progress** — determinate percent and step text (scripts → publish → scene assets → MSIX on Xbox).
+- **Progress** — determinate percent and step text (scripts → assets → UWP or GDK MSBuild).
 - **Assets.dll** — packs **only assets referenced by the scenes in the build list** (material textures and model sidecars included), not the whole `Assets/` tree.
-- **Xbox (after first build)** — **Run Local** launches `Builds/Xbox/layout/Engine.Player.exe` with external `Data/` (quick PC test, no MSIX). **Open in Visual Studio** opens the generated `.sln` for **Local Machine** deploy/debug (CoreCLR, `layout/Data/build.json` passed on the command line).
-- **Build / Build & Run** — produces `Builds/<Platform>/` output; Xbox **Build & Run** sideloads the `.msix` and starts the packaged player with the external data path.
+- **Xbox (after first build)** — **Open in Visual Studio** opens the staged UWP `.sln`. Deploy with Target device **Remote Machine** (signed-in user on the console). FullTrust Avalonia MSIX is not used for Xbox.
+- **Xbox GDK** — requires Microsoft GDK + Partner Center **SCID** / **Title Id** / **Sandbox**. Stages `Engine.Player.Gdk` into `Builds/XboxGdk/`. Xbox Live API for scripts: `Game_Engine.Core.Xbox.XboxLive` (null service on the C# player; XSAPI only in the GDK host — never in `Assets.dll`).
+- **Build / Build & Run** — produces `Builds/<Platform>/` output; Xbox **Build & Run** opens the UWP `.sln` for Remote Machine deploy; Xbox GDK **Build & Run** launches the native host with `--scid=...`.
 
 Access via **Project > Build Settings**.
 

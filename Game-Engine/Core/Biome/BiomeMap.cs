@@ -47,6 +47,10 @@ public sealed class BiomeMap
     float _biomeCacheAlt = float.NaN;
     BiomeBlend[]? _biomeCache;
 
+    [ThreadStatic] static (BiomeDefinition biome, float dist)[]? t_candidates;
+    static readonly Comparison<(BiomeDefinition biome, float dist)> s_byDistance =
+        static (a, b) => a.dist.CompareTo(b.dist);
+
     /// <summary>When true (BiomeSelect wired), altitude weighs more in classification.</summary>
     public bool UseSelectClassifier { get; set; }
 
@@ -134,7 +138,12 @@ public sealed class BiomeMap
             moisture = Math.Clamp(moisture + mOff, 0f, 1f);
         }
 
-        var candidates = new List<(BiomeDefinition biome, float dist)>();
+        // Mesh jobs call this from several threads, so the scratch is per thread.
+        // A new list per call was five allocations for every terrain sample.
+        var candidates = t_candidates;
+        if (candidates == null || candidates.Length < _biomes.Length)
+            t_candidates = candidates = new (BiomeDefinition biome, float dist)[Math.Max(16, _biomes.Length)];
+        int candidateCount = 0;
 
         foreach (var b in _biomes)
         {
@@ -172,12 +181,13 @@ public sealed class BiomeMap
             dist *= IceSheetDistanceScale(b, temperature, altitude, sphereDir);
             dist *= WetlandDistanceScale(b, moisture, altitude);
 
-            candidates.Add((b, dist));
+            candidates[candidateCount++] = (b, dist);
         }
 
-        candidates.Sort((a, b) => a.dist.CompareTo(b.dist));
+        // Same sort List.Sort ran, so equal distances keep the order they had.
+        candidates.AsSpan(0, candidateCount).Sort(s_byDistance);
 
-        int count = Math.Min(4, candidates.Count);
+        int count = Math.Min(4, candidateCount);
         var results = new BiomeBlend[count];
 
         if (count == 0)

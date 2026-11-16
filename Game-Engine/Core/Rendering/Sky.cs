@@ -29,7 +29,8 @@ public static class Sky
         SN.Vector3? sunDirWorld = null,
         Texture2D? skyTex = null,
         float skyTexBlend = 0f,
-        float skyYawDegrees = 0f)
+        float skyYawDegrees = 0f,
+        SN.Vector3? planetUp = null)
     {
         // Compute inverse VP for world-ray reconstruction
         var vp = view * proj;
@@ -48,6 +49,11 @@ public static class Sky
         float yawRad = skyYawDegrees * (MathF.PI / 180f);
         skyShader.SetFloat("uSkyYaw", yawRad);
 
+        bool hasPlanetUp = planetUp.HasValue && planetUp.Value.LengthSquared() > 0.25f;
+        skyShader.SetInt("uHasPlanetUp", hasPlanetUp ? 1 : 0);
+        if (hasPlanetUp)
+            skyShader.SetVector3("uPlanetUp", SN.Vector3.Normalize(planetUp!.Value));
+
         bool hasTex = skyTex != null && skyTexBlend > 0.0001f;
         skyShader.SetInt("uHasSkyTex", hasTex ? 1 : 0);
         skyShader.SetFloat("uSkyBlend", skyTexBlend);
@@ -64,6 +70,7 @@ public static class Sky
 
         // Draw fullscreen - no depth test, write at far depth
         gl.Disable(EnableCap.DepthTest);
+        gl.Disable(EnableCap.CullFace);
         gl.DepthMask(false);
 
         quad.Draw();

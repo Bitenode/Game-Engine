@@ -544,6 +544,7 @@ namespace Game_Engine.Views
             var sky = _sky;
             var skyTop = sky?.Top ?? FallbackSkyTop;
             var skyBot = sky?.Bottom ?? FallbackSkyBot;
+            SN.Vector3? planetSkyUp = null;
             Texture2D? skyTex = sky?.Texture;
             float skyMix = sky != null ? Math.Clamp(sky.TextureBlend, 0f, 1f) : 0f;
             float skyYaw = sky?.Yaw ?? 0f;
@@ -662,6 +663,9 @@ namespace Game_Engine.Views
                     var bot = atmo.HorizonTint;
                     skyTop = Color.FromRgb((byte)Math.Clamp((int)(top.X * 255f), 0, 255), (byte)Math.Clamp((int)(top.Y * 255f), 0, 255), (byte)Math.Clamp((int)(top.Z * 255f), 0, 255));
                     skyBot = Color.FromRgb((byte)Math.Clamp((int)(bot.X * 255f), 0, 255), (byte)Math.Clamp((int)(bot.Y * 255f), 0, 255), (byte)Math.Clamp((int)(bot.Z * 255f), 0, 255));
+                    var up = camPos - center;
+                    if (up.LengthSquared() > 1f)
+                        planetSkyUp = up;
                     break;
                 }
             }
@@ -675,7 +679,7 @@ namespace Game_Engine.Views
 
             // --- SKY ---
             Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
-                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
+                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
 
             _tSetup = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
@@ -886,7 +890,7 @@ namespace Game_Engine.Views
                     g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
                     g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
                     Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
-                        skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
+                        skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
                 }
 
                 var planetRenderSwF = Stopwatch.StartNew();
@@ -921,7 +925,7 @@ namespace Game_Engine.Views
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky,
                 skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
-                postVolume, fallbackPlanetSunDir);
+                postVolume, fallbackPlanetSunDir, planetSkyUp);
             SyncSharedPipe();
             planetRenderSw.Stop();
             planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;

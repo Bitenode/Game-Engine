@@ -88,7 +88,13 @@ public sealed class PlanetMeshGenerator
 
         TransvoxelMeshData? cave = null;
         VoxelChunk? caveChunk = null;
+#if XBOX_UWP
+        // Surface chunks stay a solid shell. Cave voxels on the crust were the
+        // blocky white patches, and punching the shell there is the walk-through.
+        if (_config.CameraBelowCrust && ShouldGenerateCrustCaves(face, u0, v0, u1, v1, resolution))
+#else
         if (ShouldGenerateCrustCaves(face, u0, v0, u1, v1, resolution))
+#endif
         {
             var built = GenerateCrustCave(face, u0, v0, u1, v1, lodLevel, transitionMask);
             cave = built.Mesh;

@@ -65,7 +65,8 @@ namespace Game_Engine.Views
             ToolTip.SetTip(PlatformBox,
                 "Desktop: publish Engine.Player to the output folder below. " +
                 "Android: zips game Data as Data.zip in APK assets (first-launch extract). " +
-                "Xbox: publishes the Windows app-package player, generates a Visual Studio packaging project under Builds/Xbox/VisualStudio, and builds a signed MSIX (see Docs/12_Build_Settings.md).");
+                "Xbox: UWP Dev Mode host (launches on console — not FullTrust Avalonia). " +
+                "Xbox GDK: native PC host with XAudio2 / GameInput / XSAPI. See Docs/12_Build_Settings.md.");
 
             ProjectRenderingSettings.Load(ProjectService.Current);
             DeferredRenderingCheck.IsChecked = ProjectRenderingSettings.UseDeferredRendering;
@@ -106,34 +107,47 @@ namespace Game_Engine.Views
             OutputFolderBox.Text = Path.Combine(proj.BuildsPath, SelectedPlatform);
         }
 
-        /// <summary>Xbox packaging is x64-only; lock the architecture radios accordingly.</summary>
+        private static bool IsXboxFamilyPlatform(string platform) =>
+            string.Equals(platform, "Xbox", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(platform, "Xbox GDK", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Xbox / Xbox GDK packaging is x64-only; lock the architecture radios accordingly.</summary>
         private void ApplyPlatformConstraints()
         {
-            var xbox = string.Equals(SelectedPlatform, "Xbox", StringComparison.OrdinalIgnoreCase);
-            if (xbox)
+            var xboxFamily = IsXboxFamilyPlatform(SelectedPlatform);
+            if (xboxFamily)
             {
                 ArchX64.IsChecked = true;
                 ArchArm64.IsChecked = false;
             }
-            ArchArm64.IsEnabled = !xbox;
+            ArchArm64.IsEnabled = !xboxFamily;
             ArchX64.IsEnabled = true;
+
+            var gdk = string.Equals(SelectedPlatform, "Xbox GDK", StringComparison.OrdinalIgnoreCase);
+            var xboxUwp = string.Equals(SelectedPlatform, "Xbox", StringComparison.OrdinalIgnoreCase);
+            XboxGameConfigSection.IsVisible = xboxFamily;
+            XboxUwpDeployFields.IsVisible = xboxUwp;
+            XboxGdkLiveFields.IsVisible = gdk;
         }
 
         private void RefreshOpenInVisualStudioButton()
         {
             var proj = ProjectService.Current;
-            var xboxOut = proj != null ? Path.Combine(proj.BuildsPath, "Xbox") : null;
-            var sln = xboxOut != null ? XboxVisualStudioPackager.FindExistingSolution(xboxOut) : null;
-            var show = string.Equals(SelectedPlatform, "Xbox", StringComparison.OrdinalIgnoreCase);
-            BtnOpenInVS.IsVisible = show;
-            BtnOpenInVS.IsEnabled = show && !string.IsNullOrEmpty(sln) && File.Exists(sln);
+            var isMsixXbox = string.Equals(SelectedPlatform, "Xbox", StringComparison.OrdinalIgnoreCase);
+            var isGdk = string.Equals(SelectedPlatform, "Xbox GDK", StringComparison.OrdinalIgnoreCase);
 
-            var exe = xboxOut != null ? Path.Combine(xboxOut, "layout", "Engine.Player.exe") : null;
-            var buildJson = xboxOut != null ? Path.Combine(xboxOut, "layout", "Data", "build.json") : null;
-            BtnRunLocal.IsVisible = show;
-            BtnRunLocal.IsEnabled = show
-                && !string.IsNullOrEmpty(exe) && File.Exists(exe)
-                && !string.IsNullOrEmpty(buildJson) && File.Exists(buildJson);
+            string? sln = null;
+            if (proj != null && isMsixXbox)
+                sln = XboxVisualStudioPackager.FindExistingSolution(Path.Combine(proj.BuildsPath, "Xbox"));
+            else if (proj != null && isGdk)
+                sln = XboxGdkPackager.FindExistingSolution(Path.Combine(proj.BuildsPath, "XboxGdk"));
+
+            BtnOpenInVS.IsVisible = isMsixXbox || isGdk;
+            BtnOpenInVS.IsEnabled = (isMsixXbox || isGdk) && !string.IsNullOrEmpty(sln) && File.Exists(sln);
+
+            // UWP Xbox builds deploy via Visual Studio Remote Machine — no Avalonia layout Run Local.
+            BtnRunLocal.IsVisible = false;
+            BtnRunLocal.IsEnabled = false;
         }
 
         private void OnOpenInVisualStudioClicked(object? sender, RoutedEventArgs e)
@@ -145,10 +159,15 @@ namespace Game_Engine.Views
                 return;
             }
 
-            var sln = XboxVisualStudioPackager.FindExistingSolution(Path.Combine(proj.BuildsPath, "Xbox"));
+            string? sln = null;
+            if (string.Equals(SelectedPlatform, "Xbox GDK", StringComparison.OrdinalIgnoreCase))
+                sln = XboxGdkPackager.FindExistingSolution(Path.Combine(proj.BuildsPath, "XboxGdk"));
+            else
+                sln = XboxVisualStudioPackager.FindExistingSolution(Path.Combine(proj.BuildsPath, "Xbox"));
+
             if (string.IsNullOrEmpty(sln))
             {
-                StatusText.Text = "No generated Visual Studio solution yet — build for Xbox first.";
+                StatusText.Text = "No generated Visual Studio solution yet — build for this platform first.";
                 return;
             }
 
@@ -283,6 +302,34 @@ namespace Game_Engine.Views
                 if (root.TryGetProperty("compression", out var comp))
                     SelectComboBoxItem(CompressionBox, comp.GetString() ?? "None");
 
+                // ── Xbox Game Config / Live ──
+                if (root.TryGetProperty("gdkScid", out var scid))
+                    GdkScidBox.Text = scid.GetString() ?? "";
+                if (root.TryGetProperty("gdkTitleId", out var titleId))
+                    GdkTitleIdBox.Text = titleId.GetString() ?? "";
+                if (root.TryGetProperty("gdkSandbox", out var sandbox))
+                    GdkSandboxBox.Text = sandbox.GetString() ?? "XDKS.1";
+                if (root.TryGetProperty("gcIdentityName", out var idName))
+                    GcIdentityNameBox.Text = idName.GetString() ?? "";
+                if (root.TryGetProperty("gcDisplayName", out var dispName))
+                    GcDisplayNameBox.Text = dispName.GetString() ?? "";
+                if (root.TryGetProperty("gcPublisherDisplay", out var pubDisp))
+                    GcPublisherDisplayBox.Text = pubDisp.GetString() ?? "";
+                if (root.TryGetProperty("gcDescription", out var desc))
+                    GcDescriptionBox.Text = desc.GetString() ?? "";
+                if (root.TryGetProperty("gcStoreId", out var storeId))
+                    GcStoreIdBox.Text = storeId.GetString() ?? "";
+                if (root.TryGetProperty("gcMsaAppId", out var msaAppId))
+                    GcMsaAppIdBox.Text = msaAppId.GetString() ?? "";
+                if (root.TryGetProperty("gcLogo150", out var logo150))
+                    GcLogo150Box.Text = logo150.GetString() ?? "";
+                if (root.TryGetProperty("gcLogo44", out var logo44))
+                    GcLogo44Box.Text = logo44.GetString() ?? "";
+                if (root.TryGetProperty("gcDeviceFamily", out var deviceFamily))
+                    SelectComboBoxItem(GcDeviceFamilyBox, deviceFamily.GetString() ?? "PC");
+                if (root.TryGetProperty("gcRemoteMachine", out var remoteMachine))
+                    GcRemoteMachineBox.Text = remoteMachine.GetString() ?? "";
+
                 // ── Scenes ──
                 if (root.TryGetProperty("scenes", out var scenes) && scenes.ValueKind == JsonValueKind.Array)
                 {
@@ -342,7 +389,20 @@ namespace Game_Engine.Views
                     scenes        = sceneOrder,
                     resolution    = new { width = info.Width, height = info.Height, fullscreen = info.Fullscreen },
                     compression   = info.Compression,
-                    builtUtc      = DateTime.UtcNow
+                    gdkScid            = info.GdkScid,
+                    gdkTitleId         = info.GdkTitleId,
+                    gdkSandbox         = info.GdkSandbox,
+                    gcIdentityName     = info.GcIdentityName,
+                    gcDisplayName      = info.GcDisplayName,
+                    gcPublisherDisplay = info.GcPublisherDisplay,
+                    gcDescription      = info.GcDescription,
+                    gcStoreId          = info.GcStoreId,
+                    gcMsaAppId         = info.GcMsaAppId,
+                    gcLogo150          = info.GcLogo150,
+                    gcLogo44           = info.GcLogo44,
+                    gcDeviceFamily     = info.GcDeviceFamily,
+                    gcRemoteMachine    = info.GcRemoteMachine,
+                    builtUtc           = DateTime.UtcNow
                 }, new JsonSerializerOptions { WriteIndented = true });
 
                 File.WriteAllText(settingsPath, obj);
@@ -661,7 +721,20 @@ namespace Game_Engine.Views
                     Compression   = SelectedCompression,
                     Width         = (int)(ResWidth.Value ?? 1920),
                     Height        = (int)(ResHeight.Value ?? 1080),
-                    Fullscreen    = FullscreenCheck.IsChecked == true
+                    Fullscreen    = FullscreenCheck.IsChecked == true,
+                    GdkScid            = GdkScidBox.Text ?? "",
+                    GdkTitleId         = GdkTitleIdBox.Text ?? "",
+                    GdkSandbox         = GdkSandboxBox.Text ?? "XDKS.1",
+                    GcIdentityName     = GcIdentityNameBox.Text ?? "",
+                    GcDisplayName      = GcDisplayNameBox.Text ?? "",
+                    GcPublisherDisplay = GcPublisherDisplayBox.Text ?? "",
+                    GcDescription      = GcDescriptionBox.Text ?? "",
+                    GcStoreId          = GcStoreIdBox.Text ?? "",
+                    GcMsaAppId         = GcMsaAppIdBox.Text ?? "",
+                    GcLogo150          = GcLogo150Box.Text ?? "",
+                    GcLogo44           = GcLogo44Box.Text ?? "",
+                    GcDeviceFamily     = (GcDeviceFamilyBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "PC",
+                    GcRemoteMachine    = GcRemoteMachineBox.Text ?? ""
                 };
 
                 var progress = new Progress<(int Percent, string Message)>(p =>
@@ -686,22 +759,43 @@ namespace Game_Engine.Views
                 BuildProgressPercent.Text = "100%";
                 RefreshOpenInVisualStudioButton();
 
-                if (launch && !string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                if (launch && string.Equals(buildInfo.Platform, "Xbox", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sln = XboxVisualStudioPackager.FindExistingSolution(outDir);
+                    if (!string.IsNullOrEmpty(sln) && File.Exists(sln))
+                    {
+                        StatusText.Text += " — Opening UWP solution for Xbox Remote Machine deploy...";
+                        try { XboxVisualStudioPackager.OpenInVisualStudio(sln); }
+                        catch (Exception openEx)
+                        {
+                            StatusText.Text += $" (open failed: {openEx.Message})";
+                        }
+                    }
+                    else
+                    {
+                        StatusText.Text += " — Open Builds/Xbox/VisualStudio/*.sln in VS and Deploy to Remote Machine.";
+                    }
+                }
+                else if (launch && !string.IsNullOrEmpty(exePath) && File.Exists(exePath))
                 {
                     StatusText.Text += " — Launching...";
                     Log.Info($"[Build] Launching {exePath}");
                     try
                     {
-                        if (IsWindowsAppPackagePath(exePath))
+                        if (string.Equals(buildInfo.Platform, "Xbox GDK", StringComparison.OrdinalIgnoreCase)
+                                 && exePath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                         {
-                            // MSIX is player-only; game Data stays in layout/Data and is passed as argv[0].
-                            var certPath = Path.Combine(proj.RootPath, "ProjectSettings", "XboxDev.pfx");
-                            XboxVisualStudioPackager.TrustCertificate(certPath);
-
-                            var packageName = XboxVisualStudioPackager.SanitizePackageName(
-                                buildInfo.ProductName, proj.RootPath);
-                            var buildJson = Path.Combine(outDir, "layout", "Data", "build.json");
-                            XboxVisualStudioPackager.SideloadAndLaunch(exePath, packageName, buildJson);
+                            var args = new List<string>();
+                            if (!string.IsNullOrWhiteSpace(buildInfo.GdkScid))
+                                args.Add($"--scid={buildInfo.GdkScid.Trim()}");
+                            args.Add("--test-tone=1");
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = exePath,
+                                Arguments = string.Join(" ", args),
+                                WorkingDirectory = Path.GetDirectoryName(exePath),
+                                UseShellExecute = true
+                            });
                         }
                         else if (exePath.EndsWith(".apk", StringComparison.OrdinalIgnoreCase))
                         {
@@ -779,6 +873,9 @@ namespace Game_Engine.Views
             public string Platform, Architecture, Configuration, Compression;
             public int Width, Height;
             public bool Fullscreen;
+            public string GdkScid, GdkTitleId, GdkSandbox;
+            public string GcIdentityName, GcDisplayName, GcPublisherDisplay, GcDescription;
+            public string GcStoreId, GcMsaAppId, GcLogo150, GcLogo44, GcDeviceFamily, GcRemoteMachine;
         }
 
         /// <summary>Returns true if <paramref name="path"/> is a sideloadable Windows app package (.msix, .msixbundle, or .appx).</summary>
@@ -802,6 +899,7 @@ namespace Game_Engine.Views
                 "Linux"            => $"linux-{arch}",
                 "Android"          => architecture.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? "android-arm64" : "android-x64",
                 "Xbox"             => $"win-{arch}",
+                "Xbox GDK"         => $"win-{arch}",
                 _                  => $"win-{arch}"   // Windows (unpackaged)
             };
         }
@@ -810,6 +908,7 @@ namespace Game_Engine.Views
             platform switch
             {
                 "Xbox"           => "net9.0-windows10.0.19041.0",
+                "Xbox GDK"       => "net9.0-windows10.0.19041.0",
                 "Android"        => "net9.0-android35.0",
                 _                => "net9.0"
             };
@@ -885,20 +984,23 @@ namespace Game_Engine.Views
             BuildInfo info,
             IProgress<(int Percent, string Message)>? progress = null)
         {
-            if (string.Equals(info.Platform, "Xbox", StringComparison.OrdinalIgnoreCase)
-                && !OperatingSystem.IsWindows())
+            if (IsXboxFamilyPlatform(info.Platform) && !OperatingSystem.IsWindows())
                 throw new Exception("Xbox packaging must be run on Windows.");
 
             if (string.Equals(info.Platform, "Android", StringComparison.OrdinalIgnoreCase))
                 return PerformBuildAndroid(proj, outDir, scenePaths, info, progress);
 
+            if (string.Equals(info.Platform, "Xbox GDK", StringComparison.OrdinalIgnoreCase))
+                return PerformBuildXboxGdk(proj, outDir, scenePaths, info, progress);
+
             var isXbox = string.Equals(info.Platform, "Xbox", StringComparison.OrdinalIgnoreCase);
+            if (isXbox)
+                return PerformBuildXboxUwp(proj, outDir, scenePaths, info, progress);
 
             _copyWarnings = 0;
             Directory.CreateDirectory(outDir);
 
-            // Xbox: publish into layout/ so the generated packaging project does not nest AppPackages inside the payload.
-            var publishDir = isXbox ? Path.Combine(outDir, "layout") : outDir;
+            var publishDir = outDir;
             Directory.CreateDirectory(publishDir);
 
             var rid = GetRuntimeIdentifier(info.Platform, info.Architecture);
@@ -915,28 +1017,11 @@ namespace Game_Engine.Views
             Report(progress, 15, $"Publishing Engine.Player ({tfm}, {rid})...");
             Log.Info($"[Build] Step 2/5: Publishing Engine.Player ({tfm}, {rid}, {info.Configuration})...");
             var playerCsproj = FindPlayerCsproj();
-            // --force so a second Build always refreshes the player (not only when Assets change).
-            // Xbox: wipe prior AppPackages so VS Local Machine deploy picks up a new MSIX.
-            if (isXbox)
-            {
-                var appPackages = Path.Combine(outDir, "AppPackages");
-                try
-                {
-                    if (Directory.Exists(appPackages))
-                        Directory.Delete(appPackages, recursive: true);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning($"[Build] Could not clear AppPackages before rebuild: {ex.Message}");
-                }
-            }
             RunDotnetPublish(playerCsproj,
                 $"publish \"{playerCsproj}\" -c {info.Configuration} -f {tfm} -r {rid} --self-contained --force -o \"{publishDir}\"");
 
             // ── Step 3: Package only assets referenced by scenes in this build ──
-            var assetProgressMin = isXbox ? 55 : 65;
-            var assetProgressMax = isXbox ? 70 : 82;
-            Report(progress, assetProgressMin, "Collecting assets used by build scenes...");
+            Report(progress, 65, "Collecting assets used by build scenes...");
             Log.Info("[Build] Step 3/5: Packaging scene-referenced assets into Assets.dll...");
             if (Directory.Exists(proj.AssetsPath))
             {
@@ -949,51 +1034,187 @@ namespace Game_Engine.Views
                 }
                 else
                 {
-                    CreateAssetPak(proj.AssetsPath, dllPath, referenced, info.Compression, progress, assetProgressMin, assetProgressMax);
+                    CreateAssetPak(proj.AssetsPath, dllPath, referenced, info.Compression, progress, 65, 82);
                     Log.Info($"[Build] Assets.dll created ({new FileInfo(dllPath).Length / 1024.0 / 1024.0:F1} MB) from {referenced.Count} scene-referenced file(s).");
                 }
             }
 
-            Report(progress, isXbox ? 65 : 80, "Copying scenes and input bindings...");
+            Report(progress, 80, "Copying scenes and input bindings...");
             Log.Info("[Build] Step 4/5: Copying scenes...");
             CopyBuildScenes(dataDir, scenePaths);
             CopyInputBindings(proj, dataDir);
 
-            Report(progress, isXbox ? 72 : 90, "Writing build manifest...");
+            Report(progress, 90, "Writing build manifest...");
             Log.Info("[Build] Step 5/5: Writing build manifest...");
             var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
             SaveBuildSettings(info, sceneOrder);
-
-            if (isXbox)
-            {
-                Report(progress, 80, "Generating Visual Studio project and building MSIX...");
-                Log.Info("[Build] Generating Visual Studio packaging project and building MSIX...");
-                var playerAssets = Path.Combine(Path.GetDirectoryName(playerCsproj)!, "Assets");
-                var result = XboxVisualStudioPackager.GenerateAndBuild(new XboxVisualStudioPackager.Options(
-                    XboxOutDir: outDir,
-                    LayoutDir: publishDir,
-                    ProjectRootPath: proj.RootPath,
-                    ProductName: info.ProductName,
-                    Company: info.Company,
-                    Version: info.Version,
-                    PlayerAssetsDir: Directory.Exists(playerAssets) ? playerAssets : null,
-                    Progress: progress));
-                Report(progress, 98, "MSIX packaging finished...");
-                return result.MsixPath;
-            }
 
             string exeName = rid.StartsWith("win") ? "Engine.Player.exe" : "Engine.Player";
             var exePath = Path.Combine(publishDir, exeName);
             return File.Exists(exePath) ? exePath : null;
         }
 
+        /// <summary>
+        /// Stage Engine.Player.XboxUwp (real UWP) with game Data for Xbox Dev Mode Remote Machine deploy.
+        /// Does not publish Avalonia FullTrust Engine.Player — Xbox rejects that app model.
+        /// </summary>
+        private string? PerformBuildXboxUwp(
+            Project proj,
+            string outDir,
+            List<string> scenePaths,
+            BuildInfo info,
+            IProgress<(int Percent, string Message)>? progress = null)
+        {
+            _copyWarnings = 0;
+            Directory.CreateDirectory(outDir);
+
+            var dataDir = Path.Combine(outDir, "Data");
+            Directory.CreateDirectory(dataDir);
+
+            Report(progress, 5, "Compiling user scripts (Xbox UWP)...");
+            CompilePlayerScripts(dataDir, info.Configuration == "Release");
+
+            // Assets named by the scenes, by the project's scripts and by the data files those load,
+            // plus the scenes themselves with absolute paths rewritten for the package.
+            Report(progress, 20, "Staging assets and scenes (Xbox UWP)...");
+            var staged = XboxContentStager.Stage(proj, scenePaths, dataDir,
+                message => Report(progress, 35, message));
+            Log.Info($"[Build] Xbox content: {staged.ProjectFiles} project file(s), {staged.ExternalFiles} external, "
+                     + $"{staged.TexturesBaked} texture(s) compressed, {staged.StaleFilesRemoved} stale file(s) removed.");
+            _copyWarnings += staged.Unresolved.Count + staged.Undecodable.Count;
+            try
+            {
+                Game_Engine.Core.Component.UI.DefaultFontGenerator.Generate(
+                    Path.Combine(dataDir, "Assets", "Standard Assets", "Fonts"));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("[Build] Default font bake failed: " + ex.Message);
+            }
+
+            Report(progress, 60, "Writing manifest...");
+            CopyInputBindings(proj, dataDir);
+            var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
+            SaveBuildSettings(info, sceneOrder);
+
+            Report(progress, 75, "Staging Engine.Player.XboxUwp and building package...");
+            var result = XboxVisualStudioPackager.GenerateAndBuild(new XboxVisualStudioPackager.Options(
+                XboxOutDir: outDir,
+                DataDir: dataDir,
+                ProjectRootPath: proj.RootPath,
+                ProductName: info.ProductName,
+                Company: info.Company,
+                Version: info.Version,
+                IdentityName: info.GcIdentityName,
+                DisplayName: info.GcDisplayName,
+                PublisherDisplayName: info.GcPublisherDisplay,
+                Description: info.GcDescription,
+                RemoteMachine: info.GcRemoteMachine,
+                Configuration: info.Configuration,
+                Progress: progress));
+
+            Report(progress, 98, "Xbox UWP package ready for Remote Machine deploy...");
+            return result.SolutionPath;
+        }
+
+        /// <summary>
+        /// Overwrite a staged file even when an earlier copy was marked read-only.
+        /// Asset packs often ship that way, and <see cref="File.Copy(string, string, bool)"/>
+        /// then throws "Access to the path is denied" on the next build.
+        /// </summary>
+        static void CopyReplacing(string src, string dest)
+        {
+            MakeWritable(dest);
+            File.Copy(src, dest, overwrite: true);
+            MakeWritable(dest);
+        }
+
+        static void MakeWritable(string path)
+        {
+            if (!File.Exists(path)) return;
+            var attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+        }
+
         private static string DescribeBuildOutput(string outDir, string? primaryOutput)
         {
+            if (!string.IsNullOrEmpty(primaryOutput) && primaryOutput.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+                return Path.GetFileName(primaryOutput) + " (Xbox UWP — Deploy via VS Remote Machine)";
             if (!string.IsNullOrEmpty(primaryOutput) && IsWindowsAppPackagePath(primaryOutput))
                 return Path.GetFileName(primaryOutput);
             if (!string.IsNullOrEmpty(primaryOutput) && primaryOutput.EndsWith(".apk", StringComparison.OrdinalIgnoreCase))
                 return Path.GetFileName(primaryOutput);
             return outDir;
+        }
+
+        /// <summary>
+        /// Stage Engine.Player.Gdk, write Partner Center identity, MSBuild Gaming.Desktop.x64.
+        /// Fails clearly when the Microsoft GDK is not installed.
+        /// </summary>
+        private string? PerformBuildXboxGdk(
+            Project proj,
+            string outDir,
+            List<string> scenePaths,
+            BuildInfo info,
+            IProgress<(int Percent, string Message)>? progress = null)
+        {
+            _copyWarnings = 0;
+            Directory.CreateDirectory(outDir);
+
+            if (!XboxGdkPackager.IsGdkInstalled())
+            {
+                throw new Exception(
+                    "Microsoft GDK was not found. Install the GDK (sets the GameDK environment variable) " +
+                    "and Visual Studio Gaming.* platforms. See Engine.Player.Gdk/README.md. " +
+                    "Xbox Live (XSAPI) is not packed into Assets.dll.");
+            }
+
+            // Still produce Data/ for future content streaming next to the GDK host.
+            var dataDir = Path.Combine(outDir, "Data");
+            Directory.CreateDirectory(dataDir);
+
+            Report(progress, 5, "Compiling user scripts (Xbox GDK)...");
+            CompilePlayerScripts(dataDir, info.Configuration == "Release");
+
+            Report(progress, 15, "Collecting scene-referenced assets (Xbox GDK)...");
+            if (Directory.Exists(proj.AssetsPath))
+            {
+                var referenced = BuildAssetCollector.CollectForScenes(proj, scenePaths);
+                var dllPath = Path.Combine(dataDir, "Assets.dll");
+                if (File.Exists(dllPath)) File.Delete(dllPath);
+                if (referenced.Count > 0)
+                    CreateAssetPak(proj.AssetsPath, dllPath, referenced, info.Compression, progress, 15, 35);
+            }
+
+            CopyBuildScenes(dataDir, scenePaths);
+            CopyInputBindings(proj, dataDir);
+            var sceneOrder = WriteDataManifest(dataDir, scenePaths, info);
+            SaveBuildSettings(info, sceneOrder);
+
+            Report(progress, 40, "Building Engine.Player.Gdk (XAudio2 / GameInput / XSAPI)...");
+            var result = XboxGdkPackager.GenerateAndBuild(new XboxGdkPackager.Options(
+                XboxGdkOutDir: outDir,
+                ProjectRootPath: proj.RootPath,
+                ProductName: info.ProductName,
+                Company: info.Company,
+                Version: info.Version,
+                Scid: info.GdkScid,
+                TitleId: info.GdkTitleId,
+                Sandbox: info.GdkSandbox,
+                Configuration: info.Configuration,
+                IdentityName: info.GcIdentityName,
+                DisplayName: info.GcDisplayName,
+                PublisherDisplayName: info.GcPublisherDisplay,
+                Description: info.GcDescription,
+                StoreId: info.GcStoreId,
+                MsaAppId: info.GcMsaAppId,
+                Logo150: info.GcLogo150,
+                Logo44: info.GcLogo44,
+                TargetDeviceFamily: info.GcDeviceFamily,
+                Progress: progress));
+
+            return result.OutputExePath;
         }
 
         private string? PerformBuildAndroid(
@@ -1100,6 +1321,7 @@ namespace Game_Engine.Views
                 var dest = Path.Combine(scenesOutDir, Path.GetFileName(src));
                 try
                 {
+                    MakeWritable(dest);
                     using var srcStream = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                     using var dstStream = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None);
                     srcStream.CopyTo(dstStream);
@@ -1118,7 +1340,7 @@ namespace Game_Engine.Views
             if (!File.Exists(src)) return;
             var dstDir = Path.Combine(dataDir, "ProjectSettings");
             Directory.CreateDirectory(dstDir);
-            File.Copy(src, Path.Combine(dstDir, "input.bindings.json"), overwrite: true);
+            CopyReplacing(src, Path.Combine(dstDir, "input.bindings.json"));
             Log.Info("[Build] Copied input.bindings.json");
         }
 

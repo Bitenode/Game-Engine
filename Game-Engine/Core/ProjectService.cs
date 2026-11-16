@@ -184,10 +184,14 @@ namespace Game_Engine.Core
         public static void TouchModified()
         {
             if (Current is null) return;
+#if !PLAYER
             var updated = Current with { ModifiedUtc = DateTime.UtcNow };
             Current = updated;
             WriteManifest(updated);
             Changed?.Invoke();
+#endif
+            // A built player's project is not a project on disk: there is no manifest to update,
+            // and on a console the folder is read-only. Terrain loading calls this on every scene load.
         }
 
         /// <summary>Persist the most recently opened scene path in project.json.</summary>

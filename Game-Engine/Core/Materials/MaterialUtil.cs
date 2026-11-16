@@ -329,6 +329,14 @@ public static class MaterialUtil
 
         if (TryGetString(mt, mat, "BlendMode", out var blendMode) && BlendImpliesTransparency(blendMode)) return true;
 
+#if XBOX_UWP
+        // AlphaCutoff means punch-through (opaque pass + discard). Treating leaf/grass albedo
+        // alpha as "transparent" put those cards in the blend pass on ANGLE, where the
+        // rectangular backdrop stayed solid. Desktop keeps the pre-Xbox pass so leaves stay.
+        if (TryGetDouble(mt, mat, "AlphaCutoff", out var cut) && cut > 0.05)
+            return false;
+#endif
+
         var texListProp = mt.GetProperty("Textures", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         if (texListProp?.GetValue(mat) is System.Collections.IEnumerable slots)
         {

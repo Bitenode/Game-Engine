@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
-#if !ANDROID
+#if !ANDROID && !XBOX_UWP
 using ImageMagick;
 #endif
+#if !XBOX_UWP
 using SkiaSharp;
+#endif
 
 namespace Game_Engine.Core
 {
@@ -24,15 +26,74 @@ namespace Game_Engine.Core
             Width = width; Height = height; Rgba = rgba; SourcePath = sourcePath;
         }
 
+        /// <summary>
+        /// Box-downscale so the longest edge is at most <paramref name="maxEdge"/>.
+        /// Used on Xbox to keep planet biome maps from OOM/TDR during first frames.
+        /// </summary>
+        public Texture2D DownscaleMaxEdge(int maxEdge)
+        {
+            if (maxEdge < 1 || (Width <= maxEdge && Height <= maxEdge))
+                return this;
+            int tw, th;
+            if (Width >= Height)
+            {
+                tw = maxEdge;
+                th = Math.Max(1, (int)((long)Height * maxEdge / Width));
+            }
+            else
+            {
+                th = maxEdge;
+                tw = Math.Max(1, (int)((long)Width * maxEdge / Height));
+            }
+            var dst = new byte[tw * th * 4];
+            for (int y = 0; y < th; y++)
+            {
+                int sy0 = y * Height / th;
+                int sy1 = Math.Max(sy0 + 1, (y + 1) * Height / th);
+                for (int x = 0; x < tw; x++)
+                {
+                    int sx0 = x * Width / tw;
+                    int sx1 = Math.Max(sx0 + 1, (x + 1) * Width / tw);
+                    int r = 0, g = 0, b = 0, a = 0, n = 0;
+                    for (int sy = sy0; sy < sy1; sy++)
+                    {
+                        int row = sy * Width * 4;
+                        for (int sx = sx0; sx < sx1; sx++)
+                        {
+                            int i = row + sx * 4;
+                            r += Rgba[i]; g += Rgba[i + 1]; b += Rgba[i + 2]; a += Rgba[i + 3];
+                            n++;
+                        }
+                    }
+                    if (n == 0) n = 1;
+                    int o = (y * tw + x) * 4;
+                    dst[o] = (byte)(r / n);
+                    dst[o + 1] = (byte)(g / n);
+                    dst[o + 2] = (byte)(b / n);
+                    dst[o + 3] = (byte)(a / n);
+                }
+            }
+            return new Texture2D(tw, th, dst, SourcePath);
+        }
+
         static readonly Dictionary<string, Texture2D> s_fromFileCache = new(StringComparer.OrdinalIgnoreCase);
         static readonly object s_fromFileLock = new();
 
         /// <summary>Decoded RGBA cache keyed by full file path (materials, models, UI share one copy in RAM).</summary>
+        /// <summary>
+        /// Absolute path if the file exists. Absolute editor paths that are not on this machine
+        /// fall back to the same file name under the project Assets folder.
+        /// </summary>
+        public static string? ResolveExisting(string path) => AssetPathRemap.FindExisting(path);
+
         public static Texture2D FromFile(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path required", nameof(path));
-            string key = Path.GetFullPath(path);
+            var resolved = ResolveExisting(path);
+            if (string.IsNullOrEmpty(resolved))
+                throw new FileNotFoundException("Texture not found: " + path, path);
+            string key = resolved;
             lock (s_fromFileLock)
             {
                 if (s_fromFileCache.TryGetValue(key, out var cached) && cached != null)
@@ -49,13 +110,35 @@ namespace Game_Engine.Core
             }
         }
 
+        /// <summary>
+        /// Decode without keeping the pixels in the shared cache. Build steps read hundreds of images
+        /// once each, and caching them would hold all of that in the editor's memory.
+        /// </summary>
+        public static Texture2D FromFileUncached(string path)
+        {
+            var resolved = ResolveExisting(path);
+            if (string.IsNullOrEmpty(resolved))
+                throw new FileNotFoundException("Texture not found: " + path, path);
+            return LoadFromFileUncached(resolved);
+        }
+
         static Texture2D LoadFromFileUncached(string path)
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();
 
+#if XBOX_UWP
+            // The Xbox build converts Photoshop grass cards to a PNG beside the original path.
+            if (ext is ".psd" or ".psb")
+            {
+                var png = Path.ChangeExtension(path, ".png");
+                if (File.Exists(png))
+                    return LoadFromFileUncached(png);
+            }
+#endif
+
             if (ext is ".tga" or ".targa" or ".tif" or ".tiff")
             {
-#if !ANDROID
+#if !ANDROID && !XBOX_UWP
                 try { return DecodeWithMagick(path); }
                 catch { /* custom TGA/TIFF fallbacks below */ }
 #endif
@@ -63,6 +146,11 @@ namespace Game_Engine.Core
                     return DecodeTga(File.ReadAllBytes(path), path);
             }
 
+#if XBOX_UWP
+            if (TextureImageDecoder.DecodeFile == null)
+                throw new NotSupportedException("No Xbox image decoder registered for " + path);
+            return TextureImageDecoder.DecodeFile(path);
+#else
             try
             {
                 using var codec = SKCodec.Create(path);
@@ -92,9 +180,10 @@ namespace Game_Engine.Core
                     return DecodeTiff(path);
                 throw;
             }
+#endif
         }
 
-#if !ANDROID
+#if !ANDROID && !XBOX_UWP
         static Texture2D DecodePsdWithMagick(string path) => DecodeWithMagick(path);
 
         static Texture2D DecodeWithMagick(string path)
@@ -106,7 +195,6 @@ namespace Game_Engine.Core
             else
                 img.Alpha(AlphaOption.Off);
 
-            // Ensure 8-bit RGBA output expected by renderer.
             img.Depth = 8;
             var pixels = img.GetPixels();
             var rgba = pixels.ToByteArray(PixelMapping.RGBA)
@@ -137,8 +225,14 @@ namespace Game_Engine.Core
             if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
                 throw new Exception($"TGA invalid dimensions {width}x{height}: {debugPath}");
 
-            int bytesPerPixel = bpp / 8;
-            if (bytesPerPixel < 3 || bytesPerPixel > 4)
+            bool grayscale = imageType == 3 || imageType == 11;
+            int bytesPerPixel = grayscale ? 1 : bpp / 8;
+            if (grayscale)
+            {
+                if (bpp != 8)
+                    throw new Exception($"TGA grayscale bpp {bpp}: {debugPath}");
+            }
+            else if (bytesPerPixel < 3 || bytesPerPixel > 4)
                 throw new Exception($"TGA unsupported bpp {bpp}: {debugPath}");
 
             int offset = 18 + idLength;
@@ -178,7 +272,7 @@ namespace Game_Engine.Core
                         rgba[di + 0] = data[si + 2];
                         rgba[di + 1] = data[si + 1];
                         rgba[di + 2] = data[si + 0];
-                        rgba[di + 3] = 255;
+                        rgba[di + 3] = bytesPerPixel == 4 ? data[si + 3] : (byte)255;
                     }
                 }
             }
@@ -198,6 +292,7 @@ namespace Game_Engine.Core
                     {
                         if (si + bytesPerPixel > data.Length) break;
                         byte tb = data[si], tg = data[si + 1], tr = data[si + 2];
+                        byte ta = bytesPerPixel == 4 ? data[si + 3] : (byte)255;
                         si += bytesPerPixel;
 
                         for (int i = 0; i < count && pixelIndex < totalPixels; i++, pixelIndex++)
@@ -207,7 +302,7 @@ namespace Game_Engine.Core
                             int destY = topToBottom ? py : (height - 1 - py);
                             int destX = rightToLeft ? (width - 1 - px) : px;
                             int di = (destY * width + destX) * 4;
-                            rgba[di] = tr; rgba[di + 1] = tg; rgba[di + 2] = tb; rgba[di + 3] = 255;
+                            rgba[di] = tr; rgba[di + 1] = tg; rgba[di + 2] = tb; rgba[di + 3] = ta;
                         }
                     }
                     else
@@ -221,7 +316,8 @@ namespace Game_Engine.Core
                             int destX = rightToLeft ? (width - 1 - px) : px;
                             int di = (destY * width + destX) * 4;
                             rgba[di] = data[si + 2]; rgba[di + 1] = data[si + 1];
-                            rgba[di + 2] = data[si]; rgba[di + 3] = 255;
+                            rgba[di + 2] = data[si];
+                            rgba[di + 3] = bytesPerPixel == 4 ? data[si + 3] : (byte)255;
                             si += bytesPerPixel;
                         }
                     }
@@ -242,6 +338,43 @@ namespace Game_Engine.Core
                         byte v = data[si];
                         rgba[di] = v; rgba[di + 1] = v; rgba[di + 2] = v; rgba[di + 3] = 255;
                     }
+                }
+            }
+            else if (imageType == 11)
+            {
+                int si = offset;
+                int pixelIndex = 0;
+                int totalPixels = width * height;
+                while (pixelIndex < totalPixels && si < data.Length)
+                {
+                    byte header = data[si++];
+                    int count = (header & 0x7F) + 1;
+                    bool isRle = (header & 0x80) != 0;
+                    if (isRle)
+                    {
+                        if (si >= data.Length) break;
+                        byte v = data[si++];
+                        for (int n = 0; n < count && pixelIndex < totalPixels; n++, pixelIndex++)
+                            WriteGray(pixelIndex, v);
+                    }
+                    else
+                    {
+                        for (int n = 0; n < count && pixelIndex < totalPixels; n++, pixelIndex++)
+                        {
+                            if (si >= data.Length) break;
+                            WriteGray(pixelIndex, data[si++]);
+                        }
+                    }
+                }
+
+                void WriteGray(int index, byte v)
+                {
+                    int py = index / width;
+                    int px = index % width;
+                    int destY = topToBottom ? py : (height - 1 - py);
+                    int destX = rightToLeft ? (width - 1 - px) : px;
+                    int di = (destY * width + destX) * 4;
+                    rgba[di] = v; rgba[di + 1] = v; rgba[di + 2] = v; rgba[di + 3] = 255;
                 }
             }
             else
@@ -535,6 +668,11 @@ namespace Game_Engine.Core
 
         public static Texture2D FromBytes(byte[] encoded)
         {
+#if XBOX_UWP
+            if (TextureImageDecoder.DecodeBytes == null)
+                throw new NotSupportedException("No Xbox image decoder registered.");
+            return TextureImageDecoder.DecodeBytes(encoded);
+#else
             using var codec = SKCodec.Create(new MemoryStream(encoded));
             if (codec == null) throw new Exception("Failed to decode image bytes.");
 
@@ -548,6 +686,7 @@ namespace Game_Engine.Core
             pixels.CopyTo(rgba);
 
             return new Texture2D(bmp.Width, bmp.Height, rgba);
+#endif
         }
     }
 

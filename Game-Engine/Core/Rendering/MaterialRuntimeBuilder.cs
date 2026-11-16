@@ -135,10 +135,15 @@ namespace Game_Engine.Core.Rendering
             try
             {
                 if (string.IsNullOrWhiteSpace(relOrAbs)) return null;
-                if (Path.IsPathRooted(relOrAbs)) return Path.GetFullPath(relOrAbs);
+                if (Path.IsPathRooted(relOrAbs))
+                {
+                    var abs = Path.GetFullPath(relOrAbs);
+                    return File.Exists(abs) ? abs : (AssetPathRemap.FindExisting(relOrAbs) ?? abs);
+                }
                 var proj = ProjectService.Current;
                 if (proj == null) return relOrAbs;
-                return Path.GetFullPath(Path.Combine(proj.RootPath, relOrAbs));
+                var fromRoot = Path.GetFullPath(Path.Combine(proj.RootPath, relOrAbs));
+                return File.Exists(fromRoot) ? fromRoot : (AssetPathRemap.FindExisting(relOrAbs) ?? fromRoot);
             }
             catch { return relOrAbs; }
         }

@@ -1918,6 +1918,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         Texture2D? skyTex = sky?.Texture;
         float skyBlend = sky?.TextureBlend ?? 0f;
         float skyYaw = sky?.Yaw ?? 0f;
+        SN.Vector3? planetSkyUp = null;
 
         // If camera is inside a planet atmosphere shell, suppress skybox stars/textures.
         foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -1938,6 +1939,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 var bot = atmo.HorizonTint;
                 skyTop = Avalonia.Media.Color.FromRgb((byte)Math.Clamp((int)(top.X * 255f), 0, 255), (byte)Math.Clamp((int)(top.Y * 255f), 0, 255), (byte)Math.Clamp((int)(top.Z * 255f), 0, 255));
                 skyBot = Avalonia.Media.Color.FromRgb((byte)Math.Clamp((int)(bot.X * 255f), 0, 255), (byte)Math.Clamp((int)(bot.Y * 255f), 0, 255), (byte)Math.Clamp((int)(bot.Z * 255f), 0, 255));
+                var up = camPos - center;
+                if (up.LengthSquared() > 1f)
+                    planetSkyUp = up;
                 break;
             }
         }
@@ -1962,7 +1966,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         // --- SKY PASS ---
         Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
-            skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw);
+            skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw, planetSkyUp);
 
         // --- GRID PASS ---
         if (ShowGrid && !active.UsingComponent)
@@ -2059,7 +2063,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
             // Re-render sky into the FBO
             Sky.RenderGPU(g, _skyShader, _fsQuad, _cache, view, proj,
-                skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw);
+                skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw, planetSkyUp);
         }
 
         // --- SCENE PASS (GPU draw calls) ---

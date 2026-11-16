@@ -184,6 +184,7 @@ public sealed class PlanetVegetationSystem : Behavior
     readonly Dictionary<string, List<Entry>> _leafEntries = new();
     Dictionary<string, VegetationProfile> _vegProfiles = new(StringComparer.OrdinalIgnoreCase);
     PlanetTerrain? _terrain;
+    bool _honoredFreshWorld;
     float _updateAccum;
     float _wetness;
     float _snow;
@@ -213,7 +214,9 @@ public sealed class PlanetVegetationSystem : Behavior
     GameObject? _gpuGrassMarker;
     bool _queuedProfileTemplates;
     bool _localTreeScanDone;
+    long _localTreeScanAt;
     bool _carpetUsedFallbackTrees;
+    readonly HashSet<int> _carpetProceduralTreeTokens = new();
     float _treeImportWaitSec;
     int _nextGpuGrassToken = -1;
     int _lastStreamFrame = int.MinValue;
@@ -228,6 +231,8 @@ public sealed class PlanetVegetationSystem : Behavior
     readonly Dictionary<int, GameObject> _coralPatches = new();
     float _coralTick;
     readonly List<string> _readyTreeScratch = new();
+    int _readyTreeVersion = -1;
+    int _readyTreeModelCount = -1;
     readonly List<int> _carpetStale = new();
     readonly record struct CarpetSeat(float R, float Yaw, float PatchR, int Blades);
     /// <summary>Planted seat per carpet token; re-validated against the live mesh so LOD swaps do not leave grass floating.</summary>
@@ -267,6 +272,33 @@ public sealed class PlanetVegetationSystem : Behavior
         public bool Cut;
         public bool Settled;
         public SN.Vector3 SettledDir;
+        /// <summary>
+        /// Centre and range (metres on the centre's tangent plane) of the last pass that left
+        /// every cell it covers planted or ruled out. Later passes skip probes inside it, so a
+        /// pass only walks the strip the player has moved into instead of the whole band.
+        /// NaN when there is none on record. A patch removed inside it clears it.
+        /// </summary>
+        public SN.Vector3 DoneCenter = new(float.NaN);
+        public float DoneLo;
+        public float DoneHi;
+        /// <summary>This pass skips the region on record. Fixed when the pass begins.</summary>
+        public bool SkipDone;
+        /// <summary>Passes in a row that skipped. Every so often one walks everything again.</summary>
+        public int SkipPasses;
+        /// <summary>
+        /// Whole-range walks still owed before skipping starts. The probes of one walk miss
+        /// about one cell in a hundred (the lattice is not the cell grid); a second walk from
+        /// another centre reaches those, as every re-walk used to.
+        /// </summary>
+        public int FullPassesOwed = CarpetFullPassesAfterReset;
+        /// <summary>Centre of the last whole-range walk counted against <see cref="FullPassesOwed"/>.</summary>
+        public SN.Vector3 FullCenter = new(float.NaN);
+        /// <summary>This pass met a cell it could not decide: no chunk mesh yet, or its card still decoding.</summary>
+        public bool Undecided;
+        /// <summary>A patch this pass covers was removed while the pass was running.</summary>
+        public bool Tainted;
+        /// <summary>Farthest the camera got from the pass centre while the pass ran, in metres.</summary>
+        public float CamDrift;
     }
 
     // Sparser, wider patches further out; the far band draws one card per blade.
@@ -285,6 +317,11 @@ public sealed class PlanetVegetationSystem : Behavior
     bool _treeSettled;
     SN.Vector3 _treeSettledDir = new(float.NaN);
     int _carpetReseatCursor;
+    /// <summary>Last <see cref="QuadNode.VisibleEpoch"/> this system looked at.</summary>
+    int _vegSurfaceEpoch = -1;
+    /// <summary>Anchor height each local tree / saved-placement tree was planted at.</summary>
+    readonly Dictionary<int, float> _treeShellR = new();
+    readonly Dictionary<int, float> _assetTreeShellR = new();
     /// <summary>Terrain samples (dry-land tests) still allowed this frame. Rejections are cached, so a walk converges over frames.</summary>
     int _carpetSamplesLeft;
     /// <summary>Stopwatch tick after which the carpet stops seating new patches this frame.</summary>
@@ -292,6 +329,12 @@ public sealed class PlanetVegetationSystem : Behavior
     const double CarpetFrameBudgetSec = 0.002;
     /// <summary>Where far grass / trees were last released, so standing still never churns the cap.</summary>
     SN.Vector3 _carpetRecycleDir = new(float.NaN);
+    /// <summary>Where and when patches outside their band were last swept out.</summary>
+    SN.Vector3 _carpetDropDir = new(float.NaN);
+    int _carpetDropFrame;
+    Camera? _playCam;
+    bool _playCamIsMain;
+    float _playCamFoundAt = float.NegativeInfinity;
     SN.Vector3 _treeRecycleDir = new(float.NaN);
     static readonly float[] s_treeRecycleTiersM = { 200f, 150f, 120f, 90f };
     /// <summary>Planet-local centre direction and cos(angular radius) of each <see cref="VegetationClearZone"/>.</summary>
@@ -326,6 +369,7 @@ public sealed class PlanetVegetationSystem : Behavior
         public string ModelPath = "";
         public string TexturePath = "";
         public int GpuGrassToken;
+        public float SeatRadius;
     }
 
     sealed class ImportedTreeTemplate
@@ -353,18 +397,30 @@ public sealed class PlanetVegetationSystem : Behavior
     static int s_templateLoaderRunning;
     bool _deferSpawnForTemplate;
 
+    /// <summary>Bumped whenever a tree template is added or dropped, so "which models are ready" is rebuilt only then.</summary>
+    static int s_treeTemplateVersion;
+
     static void ResetStaticTemplateCaches()
     {
         lock (s_treeTemplateLock)
         {
             s_treeTemplateCache.Clear();
             s_queuedTemplateLoads.Clear();
+            Interlocked.Increment(ref s_treeTemplateVersion);
         }
         while (s_pendingTemplateLoads.TryDequeue(out _)) { }
+        s_treeFileSeen.Clear();
+        s_treeTemplateKeys.Clear();
         PlanetGrassTextureCache.Clear();
     }
 
     bool PlayPerfLimited => SceneService.PlayMode && !VegetationStressTest;
+#if XBOX_UWP
+    // Dev Mode reboots when the first planet frames decode 8×2k biomes + warm 50k placements + fauna FBX.
+    bool ConsoleTight => true;
+#else
+    bool ConsoleTight => false;
+#endif
 
     public override void Awake() => EnsureInitialized();
 
@@ -373,6 +429,7 @@ public sealed class PlanetVegetationSystem : Behavior
     public override void OnEnable()
     {
         EnsureInitialized();
+        HonorFreshWorld();
         if (AutoUseSavedPlacementsWhenPresent && _assetPlacements.Count > 0)
             UsePlanetAssetPlacements = true;
         if (AutoSpawn && UsePlanetAssetPlacements && _assetPlacements.Count > 0)
@@ -382,6 +439,7 @@ public sealed class PlanetVegetationSystem : Behavior
     public override void Start()
     {
         EnsureInitialized();
+        HonorFreshWorld();
         if (AutoUseSavedPlacementsWhenPresent && _assetPlacements.Count > 0)
             UsePlanetAssetPlacements = true;
         PruneSubmergedAssetPlacements();
@@ -389,11 +447,40 @@ public sealed class PlanetVegetationSystem : Behavior
             WarmSpawnAfterDeferredImport();
     }
 
+    /// <summary>
+    /// A menu-created world must not reuse the template's baked forest.
+    /// Procedural streaming then follows the new seed.
+    /// </summary>
+    void HonorFreshWorld()
+    {
+        if (_honoredFreshWorld) return;
+        var terrain = _terrain ?? GetComponent<PlanetTerrain>();
+        if (terrain == null || !terrain.FreshWorldLaunch) return;
+        _terrain = terrain;
+        _honoredFreshWorld = true;
+        _assetPlacements.Clear();
+        UsePlanetAssetPlacements = false;
+        AutoSpawn = true;
+        RebuildAssetPlacementAccel();
+    }
+
     void EnsureInitialized()
     {
         _terrain ??= GetComponent<PlanetTerrain>();
         if (_vegProfiles.Count == 0)
-            _vegProfiles = VegetationProfileLibrary.LoadAll();
+        {
+            try { _vegProfiles = VegetationProfileLibrary.LoadAll(); }
+            catch (Exception ex)
+            {
+                // Creating the profiles folder throws in a read-only package. Without this
+                // catch, every frame retries, logs, and never reaches the texture upload.
+                Log.Warning("[PlanetVegetation] Profiles unavailable: " + ex.Message);
+                _vegProfiles = new Dictionary<string, VegetationProfile>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Default"] = new VegetationProfile { Id = "Default" }
+                };
+            }
+        }
         s_vegetationCellsPerFaceEdge = Math.Clamp(VegetationCellsPerFaceEdge, 8, 128);
         if (!s_activeSystems.Contains(this))
             s_activeSystems.Add(this);
@@ -424,6 +511,7 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         if (!AutoSpawn) return;
         EnsureInitialized();
+        HonorFreshWorld();
         if (_terrain == null || _terrain.gameObject == null || _terrain.Config == null) return;
 
         if (_assetPlacements.Count == 0)
@@ -441,10 +529,12 @@ public sealed class PlanetVegetationSystem : Behavior
         if (dt <= 1e-6f) dt = 1f / 60f;
 
         RefreshClearZones(dt, Math.Max(1.7f, ResolveGpuGrassHeight(1f) * 0.38f));
+        NoteSurfaceEpoch();
         // Carpet must run every frame. The asset-stream interval (0.10s+)
         // is what made walking grass trickle in.
         TickLocalGpuGrassCarpet(cameraPos, dt);
         TickLocalTrees(cameraPos, dt);
+        ReseatQueuedAssets();
         TickUnderwaterCoral(cameraPos, dt);
 
         _updateAccum += dt;
@@ -462,7 +552,11 @@ public sealed class PlanetVegetationSystem : Behavior
         int liveCount = streamUsingAssets ? _assetActive.Count : ActiveVegetationInstances;
         int maxStreamActive = ResolveActiveGrassCap() + ResolveActiveTreeCap();
         bool streamSaturated = streamUsingAssets && liveCount >= maxStreamActive;
-        float moveThreshSq = PlayPerfLimited ? 35f * 35f : VegRefreshMoveThresholdSq;
+        // Console must keep despawning behind the player; a 35 m gate left the
+        // whole walked trail resident until the freeze.
+        float moveThreshSq = ConsoleTight
+            ? 6f * 6f
+            : PlayPerfLimited ? 35f * 35f : VegRefreshMoveThresholdSq;
         if (!float.IsNaN(_lastVegCamPos.X) && liveCount > 0 && streamSaturated
             && SN.Vector3.DistanceSquared(cameraPos, _lastVegCamPos) < moveThreshSq)
         {
@@ -781,7 +875,7 @@ public sealed class PlanetVegetationSystem : Behavior
             ClearLocalCarpetTrees();
             ClearCarpetBookkeeping();
             PlanetGpuGrass.ClearOwner(this);
-            _assetActive.Clear();
+            ClearAssetActive();
             _assetPlacements.Clear();
             _prunedWetPlacements = false;
             RebuildAssetPlacementAccel();
@@ -950,11 +1044,17 @@ public sealed class PlanetVegetationSystem : Behavior
     }
 
     int ResolveDespawnCap()
-        => PlayPerfLimited ? PlayMaxDespawnsPerRefresh : MaxDespawnsPerRefresh;
+    {
+        if (ConsoleTight)
+            return 24;
+        return PlayPerfLimited ? PlayMaxDespawnsPerRefresh : MaxDespawnsPerRefresh;
+    }
 
     int ResolveActiveTreeCap()
     {
         int configured = Math.Max(8, MaxActiveAssetTrees);
+        if (ConsoleTight)
+            return Math.Clamp(configured, 6, 12);
         if (!PlayPerfLimited)
             return configured;
         return Math.Clamp(configured, 24, 96);
@@ -963,6 +1063,8 @@ public sealed class PlanetVegetationSystem : Behavior
     int ResolveActiveGrassCap()
     {
         int configured = Math.Max(4, MaxActiveAssetGrassPatches);
+        if (ConsoleTight)
+            return Math.Clamp(configured, 24, 64);
         if (!PlayPerfLimited)
             return Math.Min(configured, 1024);
         return Math.Clamp(configured, 96, 280);
@@ -991,14 +1093,16 @@ public sealed class PlanetVegetationSystem : Behavior
             ClearLocalCarpetTrees();
             ClearCarpetBookkeeping();
             PlanetGpuGrass.ClearOwner(this);
-            _assetActive.Clear();
+            ClearAssetActive();
         }
 
         LastSpawnedThisUpdate = 0;
         LastDespawnedThisUpdate = 0;
-        int budget = _manualSpawnPass
-            ? Math.Clamp(budgetOverride ?? 16, 8, 32)
-            : Math.Clamp(budgetOverride ?? 16, 8, 20);
+        int budget = ConsoleTight
+            ? Math.Clamp(budgetOverride ?? 4, 1, 6)
+            : _manualSpawnPass
+                ? Math.Clamp(budgetOverride ?? 16, 8, 32)
+                : Math.Clamp(budgetOverride ?? 16, 8, 20);
         const string key = "asset";
         if (!_leafEntries.TryGetValue(key, out var entries))
         {
@@ -1081,7 +1185,7 @@ public sealed class PlanetVegetationSystem : Behavior
         int attemptCap = budget * 3 + 8;
         int treeSpawnsThisTick = 0;
         long spawnStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        long spawnBudgetTicks = (long)(4.0 * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+        long spawnBudgetTicks = (long)((ConsoleTight ? 1.5 : 4.0) * System.Diagnostics.Stopwatch.Frequency / 1000.0);
         foreach (var idx in _assetSpawnOrder)
         {
             if (budget <= 0 || attempts >= attemptCap) break;
@@ -1104,7 +1208,9 @@ public sealed class PlanetVegetationSystem : Behavior
             }
             if (activeTrees >= treeCap)
                 continue;
-            if (PlayPerfLimited && treeSpawnsThisTick >= 8)
+            if (ConsoleTight && treeSpawnsThisTick >= 1)
+                continue;
+            if (!ConsoleTight && PlayPerfLimited && treeSpawnsThisTick >= 8)
                 continue;
             if (InsideClearZone(SafeNormalize(new SN.Vector3(p.DirX, p.DirY, p.DirZ), SN.Vector3.UnitY)))
                 continue;
@@ -1127,6 +1233,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 TexturePath = p.TexturePath ?? "",
             };
             _assetActive[idx] = entry;
+            RememberTreeGround(idx, entry.SurfaceDir, _assetTreeShellR);
             activeTrees++;
             treeSpawnsThisTick++;
             LastSpawnedThisUpdate++;
@@ -1147,8 +1254,13 @@ public sealed class PlanetVegetationSystem : Behavior
             _terrain = GetComponent<PlanetTerrain>();
         if (!UsePlanetAssetPlacements || _assetPlacements.Count == 0 || _terrain?.Config == null)
             return;
+        // Skip entirely during the first ~3s on console — hydrate/OnEnable warm spawn
+        // was stacking with biome decode and rebooting Dev Mode before SwapBuffers.
+        if (ConsoleTight && Time.frameCount < 90)
+            return;
         EnsureInitialized();
-        SpawnFromAssetPlacements(clearExisting: false, budgetOverride: 8);
+        int budget = ConsoleTight ? 2 : 8;
+        SpawnFromAssetPlacements(clearExisting: false, budgetOverride: budget);
     }
 
     void RebuildAssetPlacementAccel()
@@ -1276,6 +1388,7 @@ public sealed class PlanetVegetationSystem : Behavior
             ModelPath = p.ModelPath ?? "",
             TexturePath = p.TexturePath ?? "",
             GpuGrassToken = token,
+            SeatRadius = center.Length(),
         };
         return true;
     }
@@ -1411,7 +1524,12 @@ public sealed class PlanetVegetationSystem : Behavior
     float ResolveCarpetSeatRadius(SN.Vector3 dir, float crust)
     {
         float rendR = _terrain!.SampleRenderedCrustLocal(dir).Length();
-        if (rendR > 1f && rendR <= crust + 8f)
+        if (rendR <= 1f)
+            return crust;
+        // Hills from a LOD swap can sit well off the cubemap. Follow that mesh
+        // unless the sample is garbage (cave/sky), so grass resets with the ground.
+        float slack = Math.Max(12f, _terrain.WorldToLocalLength(64f));
+        if (MathF.Abs(rendR - crust) <= slack)
             return rendR;
         return crust;
     }
@@ -1458,9 +1576,17 @@ public sealed class PlanetVegetationSystem : Behavior
             _carpetCamDir = camDir;
             return;
         }
-        // On a 1 km planet the horizon from eye height is ~100 m; 400 m covers hilltop views.
-        float outer = Math.Clamp(radius * 0.40f, 260f, 400f);
+        // Desktop keeps a far hilltop carpet. Console must stay near the player or
+        // walking freezes once thousands of patches stay resident.
+        float outer = ConsoleTight
+            ? Math.Clamp(radius * 0.28f, 180f, 240f)
+            : Math.Clamp(radius * 0.40f, 260f, 400f);
         _carpetBands[2].RMax = outer;
+        if (ConsoleTight)
+        {
+            _carpetBands[1].RMax = Math.Min(200f, outer * 0.9f);
+            _carpetBands[0].RMax = Math.Min(_carpetBands[0].RMax, 95f);
+        }
         var prevDir = float.IsNaN(_carpetCamDir.X) ? camDir : _carpetCamDir;
         var step = camDir - prevDir;
         float stepM = step.Length() * radius;
@@ -1473,35 +1599,60 @@ public sealed class PlanetVegetationSystem : Behavior
 
         float h = ResolveGpuGrassHeight(1f);
         float patchR = Math.Max(1.7f, h * 0.38f);
-        DropCarpetOutsideBands(camDir, radius);
+        // The sweep visits every patch. Each band keeps a margin of six metres and more
+        // past its range, so it only has to run once the player has moved a step.
+        int frameNow = Time.frameCount;
+        float sinceDropM = float.IsNaN(_carpetDropDir.X)
+            ? float.MaxValue
+            : (camDir - _carpetDropDir).Length() * radius;
+        if (sinceDropM >= 1f || frameNow - _carpetDropFrame >= 30 || frameNow < _carpetDropFrame)
+        {
+            DropCarpetOutsideBands(camDir, radius);
+            _carpetDropDir = camDir;
+            _carpetDropFrame = frameNow;
+        }
 
-        // Grass planted on a coarse far LOD floats/sinks once the chunk splits under
-        // you. Re-check a slice of live patches each frame against the current mesh.
-        ReseatDriftedCarpet(checkBudget: moving ? 16 : 48, fixBudget: 6, h);
+        // Grass planted on a coarse LOD floats once that chunk becomes a hill. Patches on
+        // chunks whose mesh just changed are queued and checked first. The rolling slice
+        // behind it covers anything a change did not announce.
+        ReseatQueuedCarpet(
+            checkBudget: ConsoleTight ? 48 : 128,
+            fixBudget: ConsoleTight ? 8 : 24,
+            h);
+        ReseatDriftedCarpet(
+            checkBudget: ConsoleTight ? (moving ? 8 : 12) : (moving ? 16 : 48),
+            fixBudget: ConsoleTight ? 3 : 6,
+            h);
 
-        int cap = PlayPerfLimited ? 18000 : 22000;
+        int cap = ConsoleTight ? 1100 : (PlayPerfLimited ? 18000 : 22000);
         // Each new patch is a few cubemap/mesh samples; the frame deadline bounds the rest.
-        int perTick = moving
-            ? (PlayPerfLimited ? 360 : 420)
-            : (PlayPerfLimited ? 300 : 360);
+        int perTick = ConsoleTight
+            ? (moving ? 28 : 16)
+            : moving
+                ? (PlayPerfLimited ? 360 : 420)
+                : (PlayPerfLimited ? 300 : 360);
         // Until the surface cubemap bake lands, every candidate costs ~6 full
         // biome-graph noise evaluations. Trickle instead of freezing the first seconds.
         if (!_terrain.HasBakedStandSurface)
-            perTick = Math.Min(perTick, 120);
+            perTick = Math.Min(perTick, ConsoleTight ? 32 : 120);
         // Bound rejections too: an all-ocean heading is otherwise ~70k water tests in one frame.
         _carpetSamplesLeft = _terrain.HasBakedStandSurface ? perTick * 3 : 160;
         _carpetDeadline = System.Diagnostics.Stopwatch.GetTimestamp()
-            + (long)(System.Diagnostics.Stopwatch.Frequency * CarpetFrameBudgetSec);
+            + (long)(System.Diagnostics.Stopwatch.Frequency * (ConsoleTight ? 0.0035 : CarpetFrameBudgetSec));
 
-        // Once the cap is nearly full, release the farthest grass (behind the player first)
-        // every few metres travelled so the carpet follows the player.
+        // Release grass behind the player before planting more. Console used to wait
+        // until 3500 patches filled, which froze after a short walk.
+        int softCap = ConsoleTight ? (int)(cap * 0.8f) : cap - perTick;
         int slack = cap - _carpetDirs.Count;
         float sinceRecycleM = float.IsNaN(_carpetRecycleDir.X)
             ? float.MaxValue
             : (camDir - _carpetRecycleDir).Length() * radius;
-        if (slack < perTick && sinceRecycleM > 12f)
+        float recycleStepM = ConsoleTight ? 8f : 28f;
+        float minKeepM = ConsoleTight ? 90f : 110f;
+        if (_carpetDirs.Count > softCap || (slack < perTick && sinceRecycleM > recycleStepM))
         {
-            RecycleFarCarpet(camDir, radius, perTick * 3 - slack, minKeepM: 110f, outer);
+            int need = Math.Max(perTick, _carpetDirs.Count - softCap);
+            RecycleFarCarpet(camDir, radius, need, minKeepM, outer);
             _carpetRecycleDir = camDir;
             slack = cap - _carpetDirs.Count;
         }
@@ -1511,11 +1662,17 @@ public sealed class PlanetVegetationSystem : Behavior
             _carpetRejected.Clear();
             UnsettleCarpetBands();
         }
-        if (_carpetTexStamp != PlanetGrassTextureCache.ReadyStamp)
+        // Wake settled bands once when the mix first becomes plantable. Bands can settle
+        // empty while waiting for cards; without this the carpet stays blank until you move.
+        // Do not unsettle on every new decode — that restarts planting and looks like flicker.
+        int mixReady = PlanetGrassTextureCache.ReadyMixCount();
+        if (_carpetTexStamp < 10 && mixReady >= 10)
         {
-            _carpetTexStamp = PlanetGrassTextureCache.ReadyStamp;
+            _carpetTexStamp = mixReady;
             UnsettleCarpetBands();
         }
+        else if (mixReady > _carpetTexStamp)
+            _carpetTexStamp = mixReady;
 
         if (slack <= 0) return;
         int want = Math.Min(slack, perTick);
@@ -1542,6 +1699,10 @@ public sealed class PlanetVegetationSystem : Behavior
             || (camDir - band.Center).Length() * radius > band.RestartM)
             BeginCarpetBandPass(band, camDir);
 
+        float camDrift = (camDir - band.Center).Length() * radius;
+        if (camDrift > band.CamDrift)
+            band.CamDrift = camDrift;
+
         // Probes are denser than the cells so every cell in range is hit at least once.
         float probe = band.Spacing * 0.7f;
         float rMin2 = band.RMin * band.RMin;
@@ -1554,6 +1715,47 @@ public sealed class PlanetVegetationSystem : Behavior
         int added = 0;
         int visited = 0;
 
+        // The region an earlier pass left fully decided, as seen from this pass's centre.
+        // A probe's distance from that region's centre D, measured on D's tangent plane the
+        // way that pass measured its own range, is R * tan(angle), and
+        // tan^2 = (|P|^2 |D|^2 - (P.D)^2) / (P.D)^2 for the probe point P = R C + T px + B py.
+        // Both products are polynomials in px and py. They are kept in doubles: the
+        // difference is a few metres squared taken from the planet's radius squared.
+        // The region is taken in by a cell and a half at each edge: a cell that straddles
+        // the edge may have been reached only by a probe that was out of range.
+        bool skipDone = band.SkipDone && !float.IsNaN(band.DoneCenter.X);
+        float doneLo = 0f, doneHi = 0f, doneArc = 0f;
+        double doneLo2 = 0, doneHi2 = 0, dd = 1;
+        double pdC = 0, pdT = 0, pdB = 0;
+        double ppCC = 0, ppTT = 0, ppBB = 0, ppCT = 0, ppCB = 0, ppTB = 0;
+        double radius2 = (double)radius * radius;
+        if (skipDone)
+        {
+            float edge = band.Spacing * 1.5f;
+            doneLo = band.DoneLo > 0f ? band.DoneLo + edge : 0f;
+            doneHi = band.DoneHi - edge;
+            var done = band.DoneCenter;
+            float chord = (band.Center - done).Length();
+            if (doneHi <= doneLo || chord > 1f)
+                skipDone = false;
+            else
+            {
+                doneLo2 = (double)doneLo * doneLo;
+                doneHi2 = (double)doneHi * doneHi;
+                doneArc = 2f * MathF.Asin(chord * 0.5f);
+                dd = Dot64(done, done);
+                pdC = radius * Dot64(band.Center, done);
+                pdT = Dot64(band.T, done);
+                pdB = Dot64(band.B, done);
+                ppCC = radius2 * Dot64(band.Center, band.Center);
+                ppTT = Dot64(band.T, band.T);
+                ppBB = Dot64(band.B, band.B);
+                ppCT = 2.0 * radius * Dot64(band.Center, band.T);
+                ppCB = 2.0 * radius * Dot64(band.Center, band.B);
+                ppTB = 2.0 * Dot64(band.T, band.B);
+            }
+        }
+
         for (; band.Ring <= band.Rings; band.Ring++, band.K = 0)
         {
             if (band.Ring * probe > band.RMax)
@@ -1564,6 +1766,16 @@ public sealed class PlanetVegetationSystem : Behavior
             // Whole ring inside the hole (mid/far annuli): nothing to plant here.
             if ((band.Ring + 1) * probe * 1.42f < band.RMin)
                 continue;
+            // Whole ring inside the decided region. Its probes sit between ring * probe and
+            // that times root two from this pass's centre, and the two centres are doneArc apart.
+            if (skipDone && band.K == 0)
+            {
+                float farArc = MathF.Atan(band.Ring * probe * 1.4143f / radius) + doneArc;
+                float nearArc = MathF.Atan(band.Ring * probe / radius) - doneArc;
+                if (farArc < 1.2f && radius * MathF.Tan(farArc) <= doneHi
+                    && (doneLo <= 0f || (nearArc > 0f && radius * MathF.Tan(nearArc) >= doneLo)))
+                    continue;
+            }
             int perim = band.Ring == 0 ? 1 : band.Ring * 8;
             while (band.K < perim)
             {
@@ -1580,6 +1792,17 @@ public sealed class PlanetVegetationSystem : Behavior
                 float d2 = px * px + py * py;
                 if (d2 < rMin2 || d2 > rMax2)
                     continue;
+                if (skipDone)
+                {
+                    double pd = pdC + px * pdT + py * pdB;
+                    if (pd > 0.0)
+                    {
+                        double pp = ppCC + px * (px * ppTT + ppCT + py * ppTB) + py * (py * ppBB + ppCB);
+                        double fromDone2 = radius2 * (pp * dd - pd * pd) / (pd * pd);
+                        if (fromDone2 >= doneLo2 && fromDone2 <= doneHi2)
+                            continue;
+                    }
+                }
 
                 var probeDir = SafeNormalize(origin + band.T * px + band.B * py, band.Center);
                 // Cheap hash checks first - the terrain sample below is the expensive part.
@@ -1592,7 +1815,11 @@ public sealed class PlanetVegetationSystem : Behavior
 
                 string? tex = PlanetGrassTextureCache.TryPickReady(token);
                 if (string.IsNullOrWhiteSpace(tex))
+                {
+                    // Its card is still decoding: the cell is neither planted nor ruled out.
+                    band.Undecided = true;
                     continue;
+                }
 
                 if (_carpetSamplesLeft-- <= 0 || CarpetOutOfTime())
                 {
@@ -1605,6 +1832,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 {
                     // Chunk mesh not built yet: try again on a later pass.
                     band.Cut = true;
+                    band.Undecided = true;
                     continue;
                 }
                 if (CarpetCellRoll(token) >= density || !TryPrepareCarpetClump(dir, out var center, out var upLocal, out var surfN))
@@ -1616,10 +1844,33 @@ public sealed class PlanetVegetationSystem : Behavior
                 float yaw = CarpetCellYaw(token);
                 float pr = SlopePatchRadius(patchR, dir, surfN);
                 if (PlanetGpuGrass.RegisterPatch(this, token, center, upLocal, height, yaw, pr, band.Blades, tex, surfN, band.SingleCard) <= 0)
+                {
+                    band.Undecided = true;
                     continue;
+                }
                 AddCarpetPatch(token, dir, center, yaw, patchR, band.Blades);
                 band.Added++;
                 added++;
+            }
+        }
+
+        // Every probe in range was walked by this pass or lies in the region an earlier
+        // pass decided, so the whole range around this centre is decided now. The camera
+        // must have stayed near the centre: cells are also limited to 1.05 x range from the
+        // camera, and past 4% drift that limit starts to leave out cells this pass covers.
+        if (!band.Undecided && !band.Tainted && band.CamDrift <= band.RMax * 0.04f)
+        {
+            band.DoneCenter = band.Center;
+            band.DoneLo = band.RMin;
+            band.DoneHi = band.RMax;
+            // A whole-range walk counts once per place: from the same centre it lands
+            // its probes on the same cells again.
+            if (!band.SkipDone && band.FullPassesOwed > 0
+                && (float.IsNaN(band.FullCenter.X)
+                    || (band.Center - band.FullCenter).Length() * radius >= band.Spacing * 0.5f))
+            {
+                band.FullPassesOwed--;
+                band.FullCenter = band.Center;
             }
         }
 
@@ -1633,6 +1884,11 @@ public sealed class PlanetVegetationSystem : Behavior
         return added;
     }
 
+    /// <summary>Every this many passes the walk visits each probe again, whatever is on record as decided.</summary>
+    const int CarpetFullPassEvery = 32;
+    /// <summary>Whole-range walks, from different centres, before a band starts skipping what it has decided.</summary>
+    const int CarpetFullPassesAfterReset = 2;
+
     static void BeginCarpetBandPass(CarpetBand band, SN.Vector3 camDir)
     {
         band.Center = camDir;
@@ -1643,12 +1899,22 @@ public sealed class PlanetVegetationSystem : Behavior
         band.K = 0;
         band.Added = 0;
         band.Cut = false;
+        band.Undecided = false;
+        band.Tainted = false;
+        band.CamDrift = 0f;
+        band.SkipDone = !float.IsNaN(band.DoneCenter.X)
+            && band.FullPassesOwed <= 0
+            && band.SkipPasses < CarpetFullPassEvery;
+        band.SkipPasses = band.SkipDone ? band.SkipPasses + 1 : 0;
     }
 
     void UnsettleCarpetBands()
     {
         for (int i = 0; i < _carpetBands.Length; i++)
+        {
             _carpetBands[i].Settled = false;
+            ForgetCarpetDone(_carpetBands[i]);
+        }
     }
 
     void ResetCarpetBands()
@@ -1661,8 +1927,61 @@ public sealed class PlanetVegetationSystem : Behavior
             band.Ring = 0;
             band.K = 0;
             band.Rings = 0;
+            ForgetCarpetDone(band);
         }
     }
+
+    /// <summary>Cells in the band may have become plantable again: the next pass walks every probe.</summary>
+    static void ForgetCarpetDone(CarpetBand band)
+    {
+        band.DoneCenter = new SN.Vector3(float.NaN);
+        band.FullCenter = new SN.Vector3(float.NaN);
+        band.FullPassesOwed = CarpetFullPassesAfterReset;
+        // A pass under way may already have skipped or walked past the cells in question.
+        band.Tainted = true;
+    }
+
+    /// <summary>
+    /// A planted cell is about to be removed. If it lies in the range its band has on
+    /// record as decided, or in the range of the pass under way, neither can be relied on:
+    /// the cell is plantable again and nothing else would walk back to it.
+    /// </summary>
+    void NoteCarpetCellFreed(int token)
+    {
+        var band = _carpetBands[Math.Min(CarpetTokenBand(token), _carpetBands.Length - 1)];
+        bool haveDone = !float.IsNaN(band.DoneCenter.X);
+        bool inPass = !float.IsNaN(band.Center.X) && !band.Tainted;
+        if (!haveDone && !inPass)
+            return;
+        if (_terrain?.Config == null || !_carpetDirs.TryGetValue(token, out var dir))
+        {
+            ForgetCarpetDone(band);
+            return;
+        }
+        float radius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+        // The cell's point is within a cell and a half of any probe that reached it.
+        float reach = band.Spacing * 1.5f;
+        if (haveDone && WithinCarpetRange(dir, band.DoneCenter, radius, band.DoneLo - reach, band.DoneHi + reach))
+            ForgetCarpetDone(band);
+        else if (inPass && WithinCarpetRange(dir, band.Center, radius, band.RMin - reach, band.RMax + reach))
+            band.Tainted = true;
+    }
+
+    /// <summary>Is <paramref name="dir"/> between <paramref name="lo"/> and <paramref name="hi"/> metres from <paramref name="center"/>, measured on the tangent plane at the centre?</summary>
+    static bool WithinCarpetRange(SN.Vector3 dir, SN.Vector3 center, float radius, float lo, float hi)
+    {
+        double along = Dot64(dir, center);
+        if (along <= 0.0)
+            return false;
+        double along2 = along * along;
+        double dist2 = (double)radius * radius * (Dot64(dir, dir) * Dot64(center, center) - along2) / along2;
+        if (dist2 > (double)hi * hi)
+            return false;
+        return lo <= 0f || dist2 >= (double)lo * lo;
+    }
+
+    static double Dot64(SN.Vector3 a, SN.Vector3 b)
+        => (double)a.X * b.X + (double)a.Y * b.Y + (double)a.Z * b.Z;
 
     /// <summary>Each band keeps only its own distance range; the neighbouring band plants the rest.</summary>
     void DropCarpetOutsideBands(SN.Vector3 camDir, float radius)
@@ -1797,6 +2116,7 @@ public sealed class PlanetVegetationSystem : Behavior
             return;
         _clearZoneVersion = VegetationClearZone.Version;
         _clearZoneRefreshSec = 1f;
+        int before = ClearZoneSignature();
         _clearZones.Clear();
         if (_terrain == null)
             return;
@@ -1812,8 +2132,27 @@ public sealed class PlanetVegetationSystem : Behavior
             float ang = (_terrain.WorldToLocalLength(z.Radius) + marginLocal) / len;
             _clearZones.Add((local / len, MathF.Cos(Math.Clamp(ang, 0f, 0.5f))));
         }
+        // A zone that moved, shrank or went away leaves cells the carpet skipped while it
+        // was there. They are plantable now, so no band may treat its range as decided.
+        if (ClearZoneSignature() != before)
+        {
+            for (int i = 0; i < _carpetBands.Length; i++)
+                ForgetCarpetDone(_carpetBands[i]);
+        }
         if (_clearZones.Count > 0)
             ClearVegetationInZones();
+    }
+
+    int ClearZoneSignature()
+    {
+        var hash = new HashCode();
+        hash.Add(_clearZones.Count);
+        for (int i = 0; i < _clearZones.Count; i++)
+        {
+            hash.Add(_clearZones[i].Dir);
+            hash.Add(_clearZones[i].MinDot);
+        }
+        return hash.ToHashCode();
     }
 
     static bool IsAttachedToScene(GameObject? go)
@@ -1911,6 +2250,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
     void RemoveCarpetPatch(int token)
     {
+        NoteCarpetCellFreed(token);
         PlanetGpuGrass.RemovePatch(this, token);
         _carpetDirs.Remove(token);
         _carpetSeatR.Remove(token);
@@ -1941,8 +2281,20 @@ public sealed class PlanetVegetationSystem : Behavior
         _carpetDirs.Clear();
         _carpetSeatR.Clear();
         _carpetRejected.Clear();
+        _reseatNear.Clear();
+        _reseatFar.Clear();
+        _reseatQueued.Clear();
         ResetCarpetBands();
         _treeSettled = false;
+    }
+
+    /// <summary>Forget every live saved-placement instance, with what was remembered about its ground.</summary>
+    void ClearAssetActive()
+    {
+        _assetActive.Clear();
+        _assetTreeShellR.Clear();
+        _reseatAssets.Clear();
+        _reseatAssetsQueued.Clear();
     }
 
     /// <summary>
@@ -1958,14 +2310,13 @@ public sealed class PlanetVegetationSystem : Behavior
         // Before the bake lands every sample is full live noise — not worth it.
         if (!_terrain.HasBakedStandSurface)
             return;
+        float tol = CarpetSeatTolerance();
+
+        _carpetDrifted.Clear();
         if (_carpetReseatCursor >= n)
             _carpetReseatCursor = 0;
         int start = _carpetReseatCursor;
         int end = Math.Min(n, start + checkBudget);
-        // Only real LOD-swap drift (~half a metre+), not bilinear stand-grid noise.
-        float tol = Math.Max(0.5f, _terrain.WorldToLocalLength(0.45f));
-
-        _carpetDrifted.Clear();
         int i = 0;
         foreach (var kv in _carpetDirs)
         {
@@ -1985,20 +2336,256 @@ public sealed class PlanetVegetationSystem : Behavior
         for (int k = 0; k < fixes; k++)
         {
             int token = _carpetDrifted[k];
-            if (!_carpetDirs.TryGetValue(token, out var dir) || !_carpetSeatR.TryGetValue(token, out var seat))
+            if (_carpetDirs.TryGetValue(token, out var dir) && _carpetSeatR.TryGetValue(token, out var seat))
+                ReseatCarpetPatch(token, dir, seat, height);
+        }
+    }
+
+    /// <summary>Only real LOD-swap drift (~half a metre+), not bilinear stand-grid noise.</summary>
+    float CarpetSeatTolerance() => Math.Max(0.5f, _terrain!.WorldToLocalLength(0.45f));
+
+    /// <summary>Register the patch again where the ground is now. A patch that is no longer valid land is removed.</summary>
+    void ReseatCarpetPatch(int token, SN.Vector3 dir, CarpetSeat seat, float height)
+    {
+        string? tex = PlanetGrassTextureCache.TryPickReady(token);
+        bool singleCard = _carpetBands[Math.Min(CarpetTokenBand(token), _carpetBands.Length - 1)].SingleCard;
+        if (string.IsNullOrWhiteSpace(tex)
+            || !TryPrepareCarpetClump(dir, out var center, out var upLocal, out var surfN)
+            || PlanetGpuGrass.RegisterPatch(this, token, center, upLocal, height, seat.Yaw,
+                SlopePatchRadius(seat.PatchR, dir, surfN), seat.Blades, tex, surfN, singleCard) <= 0)
+        {
+            RemoveCarpetPatch(token);
+            return;
+        }
+        _carpetSeatR[token] = seat with { R = center.Length() };
+    }
+
+    // ── Following the ground when a chunk's mesh changes ──
+    //
+    // The chunk manager records which patch of which cube face was rebuilt, split or
+    // merged. Only the grass and trees standing on those patches are looked at again,
+    // a budgeted few per frame. Walking over the whole carpet to find them, every
+    // frame the terrain was still streaming, cost more than planting it.
+
+    /// <summary>Cells per cube-face edge in <see cref="_changedCells"/>: one bit per cell, a row per ulong.</summary>
+    const int ChangeGrid = 64;
+    readonly ulong[] _changedCells = new ulong[6 * ChangeGrid];
+    readonly List<QuadNode.VisibleChange> _surfaceChanges = new();
+    /// <summary>Carpet tokens waiting for a seat check. Near band first, it is the grass at the player's feet.</summary>
+    readonly Queue<int> _reseatNear = new();
+    readonly Queue<int> _reseatFar = new();
+    readonly HashSet<int> _reseatQueued = new();
+    readonly Queue<int> _reseatAssets = new();
+    readonly HashSet<int> _reseatAssetsQueued = new();
+
+    void NoteSurfaceEpoch()
+    {
+        int epoch = QuadNode.VisibleEpoch;
+        int since = _vegSurfaceEpoch;
+        if (epoch == since)
+            return;
+        _vegSurfaceEpoch = epoch;
+        // Nothing was planted against the ground before the first look.
+        if (since < 0 || _terrain?.Config == null)
+            return;
+        if (_carpetDirs.Count == 0 && _carpetTreeDirs.Count == 0 && _assetActive.Count == 0)
+            return;
+
+        _surfaceChanges.Clear();
+        if (QuadNode.TryReadVisibleChanges(since, _surfaceChanges))
+        {
+            Array.Clear(_changedCells);
+            for (int i = 0; i < _surfaceChanges.Count; i++)
+                MarkChangedCells(_surfaceChanges[i]);
+        }
+        else
+        {
+            // More changes than the log holds. Treat the whole planet as changed.
+            Array.Fill(_changedCells, ulong.MaxValue);
+        }
+
+        float radius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+        Span<float> invCells = stackalloc float[4];
+        for (int b = 0; b < 4; b++)
+            invCells[b] = 1f / CarpetCellsPerEdge(radius, _carpetBands[Math.Min(b, _carpetBands.Length - 1)].Spacing);
+
+        foreach (var kv in _carpetDirs)
+        {
+            // The token is the patch's cell on the same face/UV grid the chunks use.
+            int token = kv.Key;
+            int band = CarpetTokenBand(token);
+            int face = (token >> 24) & 7;
+            float u = (((token >> 12) & 0xFFF) + 0.5f) * invCells[band];
+            float v = ((token & 0xFFF) + 0.5f) * invCells[band];
+            if (!CellChanged(face, u, v) || !_reseatQueued.Add(token))
                 continue;
-            string? tex = PlanetGrassTextureCache.TryPickReady(token);
-            bool singleCard = _carpetBands[Math.Min(CarpetTokenBand(token), _carpetBands.Length - 1)].SingleCard;
-            if (string.IsNullOrWhiteSpace(tex)
-                || !TryPrepareCarpetClump(dir, out var center, out var upLocal, out var surfN)
-                || PlanetGpuGrass.RegisterPatch(this, token, center, upLocal, height, seat.Yaw,
-                    SlopePatchRadius(seat.PatchR, dir, surfN), seat.Blades, tex, surfN, singleCard) <= 0)
+            (band == 0 ? _reseatNear : _reseatFar).Enqueue(token);
+        }
+
+        // Few enough to move right away.
+        foreach (var kv in _carpetTreeDirs)
+        {
+            var (face, u, v) = CubeSphereMath.SphereToCubeExact(kv.Value);
+            if (CellChanged(face, u, v) && _carpetTrees.TryGetValue(kv.Key, out var go))
+                SlideOntoVisibleGround(go, kv.Value, kv.Key, _treeShellR);
+        }
+
+        foreach (var kv in _assetActive)
+        {
+            var d = kv.Value.SurfaceDir;
+            if (d.LengthSquared() < 1e-8f)
+                continue;
+            var (face, u, v) = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(d));
+            if (CellChanged(face, u, v) && _reseatAssetsQueued.Add(kv.Key))
+                _reseatAssets.Enqueue(kv.Key);
+        }
+    }
+
+    void MarkChangedCells(in QuadNode.VisibleChange change)
+    {
+        if ((uint)change.Face >= 6)
+            return;
+        int u0 = Math.Clamp((int)(change.U0 * ChangeGrid), 0, ChangeGrid - 1);
+        int u1 = Math.Clamp((int)(change.U1 * ChangeGrid), 0, ChangeGrid - 1);
+        int v0 = Math.Clamp((int)(change.V0 * ChangeGrid), 0, ChangeGrid - 1);
+        int v1 = Math.Clamp((int)(change.V1 * ChangeGrid), 0, ChangeGrid - 1);
+        int width = u1 - u0 + 1;
+        ulong row = (width >= 64 ? ulong.MaxValue : (1UL << width) - 1UL) << u0;
+        int at = change.Face * ChangeGrid;
+        for (int v = v0; v <= v1; v++)
+            _changedCells[at + v] |= row;
+    }
+
+    bool CellChanged(int face, float u, float v)
+    {
+        if ((uint)face >= 6)
+            return false;
+        int cu = Math.Clamp((int)(u * ChangeGrid), 0, ChangeGrid - 1);
+        int cv = Math.Clamp((int)(v * ChangeGrid), 0, ChangeGrid - 1);
+        return ((_changedCells[face * ChangeGrid + cv] >> cu) & 1UL) != 0UL;
+    }
+
+    /// <summary>Check queued carpet patches against the mesh now on screen and re-seat the ones that moved.</summary>
+    void ReseatQueuedCarpet(int checkBudget, int fixBudget, float height)
+    {
+        if (_reseatNear.Count == 0 && _reseatFar.Count == 0)
+            return;
+        if (_terrain == null || !_terrain.HasBakedStandSurface)
+            return;
+        float tol = CarpetSeatTolerance();
+        int fixes = 0;
+        while (checkBudget > 0)
+        {
+            var queue = _reseatNear.Count > 0 ? _reseatNear : _reseatFar;
+            if (queue.Count == 0)
+                break;
+            int token = queue.Peek();
+            if (!_carpetDirs.TryGetValue(token, out var dir) || !_carpetSeatR.TryGetValue(token, out var seat))
             {
-                RemoveCarpetPatch(token);
+                // Recycled or removed since it was queued.
+                queue.Dequeue();
+                _reseatQueued.Remove(token);
                 continue;
             }
-            _carpetSeatR[token] = seat with { R = center.Length() };
+            checkBudget--;
+            float expect = ResolveCarpetSeatRadius(dir, out _);
+            if (expect <= 1f || MathF.Abs(expect - seat.R) <= tol)
+            {
+                queue.Dequeue();
+                _reseatQueued.Remove(token);
+                continue;
+            }
+            // It moved, but this frame's re-seats are spent. It stays at the front for the next frame.
+            if (fixes >= fixBudget)
+                break;
+            queue.Dequeue();
+            _reseatQueued.Remove(token);
+            fixes++;
+            ReseatCarpetPatch(token, dir, seat, height);
         }
+    }
+
+    /// <summary>Saved-placement grass and trees whose chunk changed: a few per frame.</summary>
+    void ReseatQueuedAssets()
+    {
+        if (_reseatAssets.Count == 0 || _terrain == null)
+            return;
+        float tol = CarpetSeatTolerance();
+        int budget = ConsoleTight ? 6 : 16;
+        while (budget-- > 0 && _reseatAssets.Count > 0)
+        {
+            int key = _reseatAssets.Dequeue();
+            _reseatAssetsQueued.Remove(key);
+            if (!_assetActive.TryGetValue(key, out var e))
+                continue;
+            if (e.SurfaceDir.LengthSquared() < 1e-8f)
+                continue;
+            var dir = SN.Vector3.Normalize(e.SurfaceDir);
+            if (!e.IsGrass)
+            {
+                if (e.GameObject != null)
+                    SlideOntoVisibleGround(e.GameObject, dir, key, _assetTreeShellR);
+                continue;
+            }
+            // Only patches planted by TryRegisterCheapGpuGrass carry a seat, keyed by placement index.
+            if (e.SeatRadius <= 1f || (uint)key >= (uint)_assetPlacements.Count)
+                continue;
+            var center = ResolveGrassSeatLocal(dir);
+            float seatR = center.Length();
+            if (seatR <= 1f || MathF.Abs(seatR - e.SeatRadius) <= tol)
+                continue;
+            // The same registration it was planted with, on the ground as it is now.
+            var p = _assetPlacements[key];
+            if (PlanetGpuGrass.RegisterPatch(
+                    this, e.GpuGrassToken, center, dir, ResolveGpuGrassHeight(p.Scale), p.YawDeg,
+                    Math.Max(1.7f, ResolveGpuGrassHeight(1f) * 0.45f),
+                    Math.Clamp(GrassBladesPerPatch, 8, 12), ResolveGrassTexturePath(p)) > 0)
+                e.SeatRadius = seatR;
+        }
+    }
+
+    /// <summary>
+    /// Remember the anchor height a tree was just planted at, so a later change to the
+    /// mesh under it can move the tree by exactly as much as its anchor moved.
+    /// </summary>
+    void RememberTreeGround(int key, SN.Vector3 dir, Dictionary<int, float> anchors)
+    {
+        if (_terrain == null)
+            return;
+        float anchor = _terrain.SampleVegetationAnchorLocal(SafeNormalize(dir, SN.Vector3.UnitY)).Length();
+        if (anchor > 1f)
+            anchors[key] = anchor;
+        else
+            anchors.Remove(key);
+    }
+
+    /// <summary>
+    /// Move a planted tree along its radial by however much its anchor moved since it
+    /// was planted (or last moved). The anchor is the same sample the tree was seated
+    /// with, so the roots keep the depth they were sunk to. A tree with no remembered
+    /// anchor is left where it is and remembered from here on.
+    /// </summary>
+    void SlideOntoVisibleGround(GameObject go, SN.Vector3 dir, int key, Dictionary<int, float> anchors)
+    {
+        if (go == null || _terrain == null)
+            return;
+        dir = SafeNormalize(dir, SN.Vector3.UnitY);
+        float anchor = _terrain.SampleVegetationAnchorLocal(dir).Length();
+        if (anchor <= 1f)
+            return;
+        if (!anchors.TryGetValue(key, out float prev) || prev <= 1f)
+        {
+            anchors[key] = anchor;
+            return;
+        }
+
+        float delta = anchor - prev;
+        if (MathF.Abs(delta) <= Math.Max(0.45f, _terrain.WorldToLocalLength(0.4f)))
+            return;
+        var pos = go.Transform.Position;
+        var shifted = new SN.Vector3((float)pos.X, (float)pos.Y, (float)pos.Z) + dir * delta;
+        go.Transform.Position = new Vector3(shifted.X, shifted.Y, shifted.Z);
+        anchors[key] = anchor;
     }
 
     /// <summary>k-th cell on the perimeter of square ring <paramref name="ring"/> (8*ring cells, ring 0 = origin).</summary>
@@ -2142,7 +2729,9 @@ public sealed class PlanetVegetationSystem : Behavior
             _treeCamDir = camDir;
             return;
         }
-        float outer = Math.Clamp(radius * 0.22f, 160f, 240f);
+        float outer = ConsoleTight
+            ? Math.Clamp(radius * 0.14f, 90f, 130f)
+            : Math.Clamp(radius * 0.22f, 160f, 240f);
         var prevDir = float.IsNaN(_treeCamDir.X) ? camDir : _treeCamDir;
         var step = camDir - prevDir;
         float stepM = step.Length() * radius;
@@ -2152,7 +2741,7 @@ public sealed class PlanetVegetationSystem : Behavior
             : camDir;
         _treeCamDir = camDir;
 
-        float keep = moving ? outer * 1.15f : outer * 1.45f;
+        float keep = moving ? outer * 1.05f : outer * 1.25f;
         float maxDirDeltaSq = (keep / radius) * (keep / radius);
         _carpetStale.Clear();
         foreach (var kv in _carpetTreeDirs)
@@ -2165,22 +2754,23 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_carpetStale.Count > 0 || moving)
             _treeSettled = false;
 
-        int cap = PlayPerfLimited ? 56 : 80;
+        int cap = ConsoleTight ? 14 : (PlayPerfLimited ? 56 : 80);
         // Each tree is a cloned model plus surface sampling. Five to eight a frame stalled
         // the walk; the cap is unchanged so the forest fills in over a second or two.
-        int perTick = moving ? 3 : 2;
+        int perTick = ConsoleTight ? 1 : (moving ? 3 : 2);
         long treeDeadline = System.Diagnostics.Stopwatch.GetTimestamp()
             + (long)(System.Diagnostics.Stopwatch.Frequency * 0.002);
 
-        // Same as the grass: free the farthest trees every few metres travelled once the
-        // cap is reached, or the forest stays wherever the player first stood.
+        // Free trees behind the player before the hard cap fills.
+        int softCap = ConsoleTight ? Math.Max(8, (int)(cap * 0.7f)) : cap - perTick;
         int slack = cap - _carpetTrees.Count;
         float sinceRecycleM = float.IsNaN(_treeRecycleDir.X)
             ? float.MaxValue
             : (camDir - _treeRecycleDir).Length() * radius;
-        if (slack < perTick && sinceRecycleM > 15f)
+        if (_carpetTrees.Count > softCap || (slack < perTick && sinceRecycleM > (ConsoleTight ? 8f : 15f)))
         {
-            RecycleFarTrees(camDir, radius, perTick * 3 - slack, minKeepM: 90f);
+            int need = Math.Max(perTick, _carpetTrees.Count - softCap);
+            RecycleFarTrees(camDir, radius, need, minKeepM: ConsoleTight ? 55f : 90f);
             _treeRecycleDir = camDir;
             slack = cap - _carpetTrees.Count;
         }
@@ -2285,7 +2875,18 @@ public sealed class PlanetVegetationSystem : Behavior
             go?.RemoveFromParent();
         _carpetTrees.Clear();
         _carpetTreeDirs.Clear();
+        _carpetProceduralTreeTokens.Clear();
+        _treeShellR.Clear();
         _carpetUsedFallbackTrees = false;
+    }
+
+    void RemoveProceduralCarpetTrees()
+    {
+        if (_carpetProceduralTreeTokens.Count == 0)
+            return;
+        foreach (var token in _carpetProceduralTreeTokens.ToArray())
+            RemoveLocalCarpetTree(token);
+        _carpetProceduralTreeTokens.Clear();
     }
 
     void RemoveLocalCarpetTree(int token)
@@ -2294,6 +2895,8 @@ public sealed class PlanetVegetationSystem : Behavior
             go?.RemoveFromParent();
         _carpetTrees.Remove(token);
         _carpetTreeDirs.Remove(token);
+        _carpetProceduralTreeTokens.Remove(token);
+        _treeShellR.Remove(token);
     }
 
     void EnsureLocalTreeModels()
@@ -2302,6 +2905,13 @@ public sealed class PlanetVegetationSystem : Behavior
             return;
         if (ProjectService.Current == null)
             return;
+        // No profile model on disk yet (procedural trees only, or assets still copying):
+        // look again every two seconds. A scan probes the disk for every profile entry,
+        // and with nothing found the tree and coral ticks both ran it every frame.
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_localTreeScanDone && now - _localTreeScanAt < System.Diagnostics.Stopwatch.Frequency * 2)
+            return;
+        _localTreeScanAt = now;
         _localTreeScanDone = true;
         if (_vegProfiles.Count == 0)
             _vegProfiles = VegetationProfileLibrary.LoadAll();
@@ -2380,9 +2990,11 @@ public sealed class PlanetVegetationSystem : Behavior
         int ready = CountReadyLocalTreeModels();
         if (ready > 0)
         {
+            // Drop only procedural stand-ins. Clearing the whole carpet made real trees
+            // vanish and reappear every time another FBX finished.
             if (_carpetUsedFallbackTrees)
             {
-                ClearLocalCarpetTrees();
+                RemoveProceduralCarpetTrees();
                 _carpetUsedFallbackTrees = false;
             }
             _treeImportWaitSec = 0f;
@@ -2412,14 +3024,29 @@ public sealed class PlanetVegetationSystem : Behavior
 
     int CountReadyLocalTreeModels()
     {
-        int n = 0;
+        RefreshReadyTreeModels();
+        return _readyTreeScratch.Count;
+    }
+
+    /// <summary>
+    /// Fill <see cref="_readyTreeScratch"/> with the profile models whose template has loaded.
+    /// Rebuilt only when a template was added or dropped. The tree tick asks every frame, and
+    /// each ask used to resolve every model's path and build its cache key again.
+    /// </summary>
+    void RefreshReadyTreeModels()
+    {
+        int version = Volatile.Read(ref s_treeTemplateVersion);
+        if (version == _readyTreeVersion && _readyTreeModelCount == _localTreeModels.Count)
+            return;
+        _readyTreeVersion = version;
+        _readyTreeModelCount = _localTreeModels.Count;
+        _readyTreeScratch.Clear();
         for (int i = 0; i < _localTreeModels.Count; i++)
         {
             string? abs = ResolveTreeModelAbsPath(_localTreeModels[i]);
             if (!string.IsNullOrWhiteSpace(abs) && TryGetReadyTreeTemplate(abs, out _))
-                n++;
+                _readyTreeScratch.Add(_localTreeModels[i]);
         }
-        return n;
     }
 
     void TryForceLoadProfileTreesOnMainThread()
@@ -2480,7 +3107,10 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             spawned = TrySpawnProceduralPlanetTree(go, scale, surface, radialW, placeUp, yaw);
             if (spawned)
+            {
                 _carpetUsedFallbackTrees = true;
+                _carpetProceduralTreeTokens.Add(token);
+            }
         }
         if (!spawned)
         {
@@ -2490,6 +3120,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
         _carpetTrees[token] = go;
         _carpetTreeDirs[token] = dir;
+        RememberTreeGround(token, dir, _treeShellR);
         return true;
     }
 
@@ -2535,6 +3166,7 @@ public sealed class PlanetVegetationSystem : Behavior
         CarpetTangentBasis(camDir, out var t, out var b);
         float probe = 14f;
         int added = 0;
+        float seaTop = CoralSeaTop(out float carveMax);
         for (int ring = 1; ring <= 6 && added < 2 && _coralPatches.Count < cap; ring++)
         {
             int perim = ring * 6;
@@ -2545,15 +3177,71 @@ public sealed class PlanetVegetationSystem : Behavior
                 var dir = SafeNormalize(camDir * radius + t * (MathF.Cos(ang) * dist) + b * (MathF.Sin(ang) * dist), camDir);
                 int token = CarpetCellToken(9, dir, 48, out _, out _, out _);
                 if (_coralPatches.ContainsKey(token)) continue;
+                // Two height lookups rule out ground that cannot be deep enough. Inland this
+                // is every probe, and each one used to run the full dry-land and water tests.
+                if (!CoralDepthPossible(dir, seaTop, carveMax)) continue;
                 if (IsCheapDryLandForCarpet(dir)) continue;
                 // Cliff faces next to the sea still sample as shallow water.
                 // Corals need a real basin, not the shoreline.
                 if (!PassesSlopeAltitude(dir, 0f, 18f, 0f, 1f)) continue;
-                if (!TryGetWaterDepth(dir, out float depth) || depth < 8f || depth > 40f) continue;
+                if (!TryGetWaterDepth(dir, out float depth) || depth < CoralMinDepth || depth > 40f) continue;
                 if (!TrySpawnCoral(token, dir)) continue;
                 added++;
             }
         }
+    }
+
+    const float CoralMinDepth = 8f;
+
+    /// <summary>
+    /// Highest water surface that can reach coral depth (planet-local), and the most the
+    /// water carve can lower the crust below the baked height.
+    /// </summary>
+    float CoralSeaTop(out float carveMax)
+    {
+        var config = _terrain!.Config!;
+        carveMax = 0f;
+        var paths = config.WaterPaths;
+        if (paths is { Length: > 0 })
+        {
+            for (int i = 0; i < paths.Length && i < PlanetWaterSampler.MaxWaterPaths; i++)
+                carveMax += MathF.Abs(paths[i].Depth);
+        }
+        else if (config.HasRiver)
+            carveMax += MathF.Abs(config.RiverDepth);
+        if (config.UseFlowAccumulationRivers)
+            carveMax += MathF.Abs(config.FlowRiverDepth);
+        var bodies = config.WaterBodies;
+        if (bodies != null)
+        {
+            // Each inland body lowers its basin by at most 4.
+            for (int i = 0; i < bodies.Length && i < PlanetWaterSampler.MaxWaterBodies; i++)
+            {
+                if (bodies[i].Kind != PlanetWaterBodyKind.Ocean)
+                    carveMax += 4f;
+            }
+        }
+        return MathF.Max(config.SeaLevel, PlanetWaterSampler.GetOceanFillRadius(config));
+    }
+
+    /// <summary>
+    /// False when the crust here cannot be under <see cref="CoralMinDepth"/> of water.
+    /// Only the sea gets that deep. A lake fills at most 4.5 over its bed, and a river
+    /// 0.35 over its bed or, where it runs out to the ocean, no higher than the sea.
+    /// So the baked height, less what the water carve can take off, must sit that far
+    /// below the sea surface.
+    /// </summary>
+    bool CoralDepthPossible(SN.Vector3 dir, float seaTop, float carveMax)
+    {
+        if (!_terrain!.HasBakedStandSurface)
+            return true;
+        float crust = _terrain.WorldToLocalLength(_terrain.SampleEditedCubemapWorldRadius(dir));
+        if (crust - carveMax <= seaTop - CoralMinDepth)
+            return true;
+        // Dug or built ground. The water table reads the undug crust, so a pit can
+        // hold more water than its bed height suggests. Leave those to the full test.
+        float undug = _terrain.WorldToLocalLength(_terrain.SampleUndugStandWorldRadius(dir));
+        return MathF.Abs(undug - crust) > 0.01f;
     }
 
     bool TrySpawnCoral(int token, SN.Vector3 dir)
@@ -2582,13 +3270,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
     string? PickReadyLocalTreeModel(int token)
     {
-        _readyTreeScratch.Clear();
-        for (int i = 0; i < _localTreeModels.Count; i++)
-        {
-            string? abs = ResolveTreeModelAbsPath(_localTreeModels[i]);
-            if (!string.IsNullOrWhiteSpace(abs) && TryGetReadyTreeTemplate(abs, out _))
-                _readyTreeScratch.Add(_localTreeModels[i]);
-        }
+        RefreshReadyTreeModels();
         if (_readyTreeScratch.Count == 0)
             return null;
         int idx = token < 0 ? -token : token;
@@ -3489,31 +4171,36 @@ public sealed class PlanetVegetationSystem : Behavior
             float decay = e.Biome.VegetationDecayRate * stress;
             e.Vitality = Math.Clamp(e.Vitality + (growth - decay) * Math.Max(0.05f, UpdateIntervalSeconds), 0f, 1f);
 
-            if (e.GameObject?.Behaviors?.OfType<Tree>().FirstOrDefault() is Tree t)
+            // One indexed look over the object's behaviors. This runs for every tracked
+            // plant several times a second, and OfType().FirstOrDefault() made an iterator
+            // and a boxed enumerator on each of its three asks.
+            Tree? t = null;
+            VegetationPainter? vp = null;
+            GameObject? plant = e.GameObject;
+            var behaviors = plant?.Behaviors;
+            if (behaviors != null)
+            {
+                for (int b = 0; b < behaviors.Count; b++)
+                {
+                    if (t == null && behaviors[b] is Tree tree) t = tree;
+                    else if (vp == null && behaviors[b] is VegetationPainter painter) vp = painter;
+                }
+            }
+
+            if (t != null && plant != null)
             {
                 float lifeScale = 0.55f + e.Vitality * 0.65f;
                 float scale = Math.Max(0.01f, e.BaseScale) * lifeScale;
-                var s = e.GameObject.Transform.Scale;
+                var s = plant.Transform.Scale;
                 s.X = scale;
                 s.Y = scale;
                 s.Z = scale;
-                e.GameObject.Transform.Scale = s;
+                plant.Transform.Scale = s;
                 t.WindSway = Math.Clamp((e.IsGrass ? 1f : 0.65f) * _windMultiplier, 0f, 3f);
                 t.WindSpeed = Math.Clamp((e.IsGrass ? 1.35f : 1f) * _windMultiplier, 0f, 4f);
             }
-            else if (!e.IsGrass && e.GameObject?.Behaviors?.OfType<Tree>().FirstOrDefault() != null)
-            {
-                // Procedural trees only - imported meshes keep spawn scale/orientation stable.
-                float lifeScale = 0.55f + e.Vitality * 0.65f;
-                float scale = Math.Max(0.01f, e.BaseScale) * lifeScale;
-                var s = e.GameObject.Transform.Scale;
-                s.X = scale;
-                s.Y = scale;
-                s.Z = scale;
-                e.GameObject.Transform.Scale = s;
-            }
 
-            if (e.GameObject?.Behaviors?.OfType<VegetationPainter>().FirstOrDefault() is VegetationPainter vp)
+            if (vp != null)
             {
                 vp.WindStrength = Math.Clamp(0.35f + _windMultiplier * 0.5f, 0f, 3f);
                 vp.WindSpeed = Math.Clamp(0.8f + _windMultiplier * 0.8f, 0f, 4f);
@@ -3939,7 +4626,7 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         meshExtent = 0f;
         string? abs = ResolveTreeModelAbsPath(modelPath);
-        if (string.IsNullOrWhiteSpace(abs) || !File.Exists(abs))
+        if (string.IsNullOrWhiteSpace(abs) || !TreeModelFileExists(abs))
             return false;
 
         if (!TryGetReadyTreeTemplate(abs, out var tpl))
@@ -4406,11 +5093,61 @@ public sealed class PlanetVegetationSystem : Behavior
     static string TreeTemplateKey(string absModelPath, bool grassOrient)
         => Path.GetFullPath(absModelPath) + TreeTemplateCacheKeySuffix + (grassOrient ? "|zupy" : "");
 
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Full, string Key)> s_treeTemplateKeys =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Full path and template cache key of a model. Every tree that spawns asks for its
+    /// template, and building the key normalised the path twice and joined three strings.
+    /// </summary>
+    static (string Full, string Key) TreeTemplateKeyFor(string absModelPath)
+    {
+        // A relative path resolves against the working directory, which can change.
+        if (!Path.IsPathFullyQualified(absModelPath))
+        {
+            string resolved = Path.GetFullPath(absModelPath);
+            return (resolved, TreeTemplateKey(resolved, LooksLikeImportedGrassModel(resolved)));
+        }
+        if (s_treeTemplateKeys.TryGetValue(absModelPath, out var known))
+            return known;
+        string full = Path.GetFullPath(absModelPath);
+        var made = (full, TreeTemplateKey(full, LooksLikeImportedGrassModel(full)));
+        if (s_treeTemplateKeys.Count > 1024)
+            s_treeTemplateKeys.Clear();
+        s_treeTemplateKeys[absModelPath] = made;
+        return made;
+    }
+
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long At, bool Exists, bool Heavy)> s_treeFileSeen =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Is the model file on disk, and is it too heavy to import? Every tree that spawns
+    /// asks, and so does every spawn waiting on an import, so the disk is asked at most
+    /// once a second per file. A model deleted, added or replaced while running is
+    /// noticed within that second.
+    /// </summary>
+    static (bool Exists, bool Heavy) TreeModelFileState(string absModelPath)
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (s_treeFileSeen.TryGetValue(absModelPath, out var seen)
+            && now - seen.At < System.Diagnostics.Stopwatch.Frequency)
+            return (seen.Exists, seen.Heavy);
+        bool exists;
+        try { exists = File.Exists(absModelPath); }
+        catch { exists = false; }
+        bool heavy = !exists || IsExcessivelyHeavySourceModel(absModelPath);
+        if (s_treeFileSeen.Count > 1024)
+            s_treeFileSeen.Clear();
+        s_treeFileSeen[absModelPath] = (now, exists, heavy);
+        return (exists, heavy);
+    }
+
+    static bool TreeModelFileExists(string absModelPath) => TreeModelFileState(absModelPath).Exists;
+
     static bool TryGetReadyTreeTemplate(string absModelPath, out ImportedTreeTemplate tpl)
     {
-        absModelPath = Path.GetFullPath(absModelPath);
-        bool grassOrient = LooksLikeImportedGrassModel(absModelPath);
-        string cacheKey = TreeTemplateKey(absModelPath, grassOrient);
+        string cacheKey = TreeTemplateKeyFor(absModelPath).Key;
         lock (s_treeTemplateLock)
         {
             if (s_treeTemplateCache.TryGetValue(cacheKey, out tpl!) && TemplateHasVisual(tpl))
@@ -4422,20 +5159,30 @@ public sealed class PlanetVegetationSystem : Behavior
 
     static void RequestTreeTemplateLoad(string absModelPath)
     {
-        if (string.IsNullOrWhiteSpace(absModelPath) || !File.Exists(absModelPath))
+        if (string.IsNullOrWhiteSpace(absModelPath))
             return;
-        absModelPath = Path.GetFullPath(absModelPath);
-        if (IsExcessivelyHeavySourceModel(absModelPath))
-            return;
+        var (full, cacheKey) = TreeTemplateKeyFor(absModelPath);
+        // A spawn waiting on an import asks again every frame. Loaded or already queued
+        // is answered from memory; only a new request goes on to look at the file.
         lock (s_treeTemplateLock)
         {
-            bool grassOrient = LooksLikeImportedGrassModel(absModelPath);
-            string cacheKey = TreeTemplateKey(absModelPath, grassOrient);
+            if (s_treeTemplateCache.TryGetValue(cacheKey, out var loaded) && TemplateHasVisual(loaded))
+                return;
+            if (s_queuedTemplateLoads.Contains(full))
+                return;
+        }
+        var file = TreeModelFileState(full);
+        if (!file.Exists || file.Heavy)
+            return;
+        absModelPath = full;
+        lock (s_treeTemplateLock)
+        {
             if (s_treeTemplateCache.TryGetValue(cacheKey, out var existing))
             {
                 if (TemplateHasVisual(existing))
                     return;
                 s_treeTemplateCache.Remove(cacheKey);
+                Interlocked.Increment(ref s_treeTemplateVersion);
             }
             if (!s_queuedTemplateLoads.Add(absModelPath))
                 return;
@@ -4473,11 +5220,16 @@ public sealed class PlanetVegetationSystem : Behavior
 
     void QueueProfileTemplateLoads()
     {
+        int queued = 0;
+        int limit = ConsoleTight ? 2 : int.MaxValue;
         foreach (var profile in _vegProfiles.Values)
         {
             if (profile == null) continue;
+            if (queued >= limit) break;
             QueueStoredModelLoad(profile.TreeModelPath);
-            QueueItemModelLoads(profile.TreeItems);
+            queued++;
+            if (!ConsoleTight)
+                QueueItemModelLoads(profile.TreeItems);
         }
     }
 
@@ -4485,7 +5237,8 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int queued = 0;
-        for (int t = 0; t < _treePlacementIdx.Count && queued < 8; t++)
+        int limit = ConsoleTight ? 2 : 8;
+        for (int t = 0; t < _treePlacementIdx.Count && queued < limit; t++)
         {
             int i = _treePlacementIdx[t];
             if ((uint)i >= (uint)_assetPlacements.Count) continue;
@@ -4526,7 +5279,8 @@ public sealed class PlanetVegetationSystem : Behavior
         {
             if (s_treeTemplateCache.TryGetValue(cacheKey, out var hit) && TemplateHasVisual(hit))
                 return hit;
-            s_treeTemplateCache.Remove(cacheKey);
+            if (s_treeTemplateCache.Remove(cacheKey))
+                Interlocked.Increment(ref s_treeTemplateVersion);
         }
 
         var tpl = new ImportedTreeTemplate();
@@ -4541,7 +5295,10 @@ public sealed class PlanetVegetationSystem : Behavior
             PreferBestLodPerMeshStem(root);
             EnsurePlanetImportedTreeCrustLocal(root, forceGrassZUp: false, isGrass: grassOrient);
             if (!grassOrient)
+            {
+                StripPaperThinTreeMeshes(root);
                 FixSpeedTreeImportedTreeMaterials(root, absModelPath);
+            }
             ResolveImportedTreeMaterialsRecursive(root);
             int tris = CountHierarchyTriangles(root);
             if (tris <= 0)
@@ -4583,29 +5340,77 @@ public sealed class PlanetVegetationSystem : Behavior
                     s_treeTemplateCache.Remove(oldest);
             }
             s_treeTemplateCache[cacheKey] = tpl;
+            Interlocked.Increment(ref s_treeTemplateVersion);
             return tpl;
         }
     }
 
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> s_treeAbsPaths =
+        new(StringComparer.OrdinalIgnoreCase);
+    static string? s_treeAbsPathsRoot;
+
+    /// <summary>
+    /// Stored model reference to a file on disk. The answer is kept once the file has been
+    /// found: the tree tick asks for every profile model each frame, and each ask was one
+    /// or two file-system probes.
+    /// </summary>
     static string? ResolveTreeModelAbsPath(string stored)
     {
         if (string.IsNullOrWhiteSpace(stored)) return null;
+        string? root = ProjectService.Current?.RootPath;
+        if (!string.Equals(root, s_treeAbsPathsRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            // Relative references mean a different file under another project.
+            s_treeAbsPaths.Clear();
+            s_treeAbsPathsRoot = root;
+        }
+        if (s_treeAbsPaths.TryGetValue(stored, out var known))
+            return known;
+
+        string? found = FindTreeModelOnDisk(stored, out bool exists);
+        if (exists && found != null)
+            s_treeAbsPaths[stored] = found;
+        return found;
+    }
+
+    static string? FindTreeModelOnDisk(string stored, out bool exists)
+    {
+        exists = false;
         try
         {
             if (Path.IsPathRooted(stored))
-                return Path.GetFullPath(stored);
+            {
+                if (File.Exists(stored))
+                {
+                    exists = true;
+                    return Path.GetFullPath(stored);
+                }
+                string? remapped = AssetPathRemap.FindExisting(stored);
+                exists = remapped != null;
+                return remapped;
+            }
             var proj = ProjectService.Current;
             if (proj == null)
                 return Path.GetFullPath(stored);
             string rel = stored.Replace('\\', '/');
             string fromRoot = Path.Combine(proj.RootPath, rel);
-            if (File.Exists(fromRoot)) return fromRoot;
+            if (File.Exists(fromRoot))
+            {
+                exists = true;
+                return fromRoot;
+            }
             if (!string.IsNullOrWhiteSpace(proj.AssetsPath))
             {
                 string fromAssets = Path.Combine(proj.AssetsPath, rel);
-                if (File.Exists(fromAssets)) return fromAssets;
+                if (File.Exists(fromAssets))
+                {
+                    exists = true;
+                    return fromAssets;
+                }
             }
-            return fromRoot;
+            string? existing = AssetPathRemap.FindExisting(stored);
+            exists = existing != null;
+            return existing ?? fromRoot;
         }
         catch { return null; }
     }
@@ -5714,7 +6519,7 @@ public sealed class PlanetVegetationSystem : Behavior
         ClearLocalCarpetTrees();
         ClearCarpetBookkeeping();
         PlanetGpuGrass.ClearOwner(this);
-        _assetActive.Clear();
+        ClearAssetActive();
         RebuildAssetPlacementAccel();
     }
 
@@ -6091,12 +6896,36 @@ public sealed class PlanetVegetationSystem : Behavior
         return string.Equals(Path.GetExtension(path), ".prefab", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The camera the player sees through. Finding it is a walk over the whole scene,
+    /// which ran every frame. The one found is kept until it is switched off, stops
+    /// being the main camera, or half a second has passed.
+    /// </summary>
+    Camera? ResolvePlayCamera()
+    {
+        float now = Time.time;
+        var cam = _playCam;
+        if (cam != null
+            && cam.Enabled
+            && cam.gameObject != null
+            && cam.IsMain == _playCamIsMain
+            && now >= _playCamFoundAt
+            && now - _playCamFoundAt < 0.5f)
+            return cam;
+
+        cam = SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled && c.IsMain)
+           ?? SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled);
+        _playCam = cam;
+        _playCamIsMain = cam != null && cam.IsMain;
+        _playCamFoundAt = now;
+        return cam;
+    }
+
     SN.Vector3 ResolveCameraPosition()
     {
         if (SceneService.PlayMode)
         {
-            var playCam = SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled && c.IsMain)
-                       ?? SceneQuery.FindBehaviors<Camera>().FirstOrDefault(c => c.Enabled);
+            var playCam = ResolvePlayCamera();
             if (playCam != null && playCam.TryGetWorldLookRay(out var playOrigin, out _))
                 return playOrigin;
         }
@@ -6399,12 +7228,24 @@ public sealed class PlanetVegetationSystem : Behavior
                     if (b is not MeshFilter mf || !mf.Enabled) continue;
                     var vtx = mf.Mesh?.Vertices;
                     if (vtx == null || vtx.Length == 0) continue;
+                    // Height of a vertex along the axis is dot(v * W - surfacePoint, axis).
+                    // Carrying the axis into mesh space makes that one dot product per
+                    // vertex. A tree is thousands of vertices and each used to be moved
+                    // to world space first, for every tree planted.
+                    float ax = W.M11 * axis.X + W.M12 * axis.Y + W.M13 * axis.Z;
+                    float ay = W.M21 * axis.X + W.M22 * axis.Y + W.M23 * axis.Z;
+                    float az = W.M31 * axis.X + W.M32 * axis.Y + W.M33 * axis.Z;
+                    float lowest = float.MaxValue;
                     for (int i = 0; i < vtx.Length; i++)
                     {
-                        var wp = SN.Vector3.Transform(vtx[i], W);
-                        float h = SN.Vector3.Dot(wp - surfacePoint, axis);
-                        if (h < minV) minV = h;
+                        ref readonly var p = ref vtx[i];
+                        float h = p.X * ax + p.Y * ay + p.Z * az;
+                        if (h < lowest) lowest = h;
                     }
+                    lowest += (W.M41 - surfacePoint.X) * axis.X
+                              + (W.M42 - surfacePoint.Y) * axis.Y
+                              + (W.M43 - surfacePoint.Z) * axis.Z;
+                    if (lowest < minV) minV = lowest;
                 }
                 foreach (var c in node.Children)
                     Walk(c, W);

@@ -130,7 +130,9 @@ public sealed class ResourceCache : IDisposable
     public void InvalidateAll()
     {
         _globalVersion++;
-        _skipBcnCompress.Clear();
+        // Do NOT clear _skipBcnCompress here. Transform/animal NotifyChanged fires every
+        // frame in play mode; wiping the skip set forced File.Exists on every texture bind
+        // and froze Xbox Dev Mode after fauna started moving.
     }
 
     /// <summary>
@@ -330,7 +332,16 @@ public sealed class ResourceCache : IDisposable
             return gpuTex;
 
         gpuTex = new GPUTexture(_gl);
+#if XBOX_UWP
+        // Mip chains average punch-through alpha toward grey. Leaf and grass cards then
+        // keep a solid rectangle instead of discarding the backdrop.
+        if (MaterialUtil.TextureHasMeaningfulAlpha(tex))
+            gpuTex.UploadLinearClampNoMip(tex);
+        else
+            gpuTex.Upload(tex);
+#else
         gpuTex.Upload(tex);
+#endif
         _textures[key] = gpuTex;
         return gpuTex;
     }
@@ -354,6 +365,21 @@ public sealed class ResourceCache : IDisposable
         }
 
         string ddsPath = TextureBcCompression.GetSidecarDdsPath(abs);
+        // An opacity map is the surface alpha. BC1 has none, and a compressed albedo then reports
+        // alpha 0, which discards every pixel of glass and other transparent layers.
+        if (slot.Usage == MaterialTexture.TexUsage.Opacity)
+        {
+            skipFutureCompressionAttempts = true;
+            return false;
+        }
+#if XBOX_UWP
+        // Do not encode BC on the console. The package is read-only and a 2k PNG encode stalls the frame.
+        if (!File.Exists(ddsPath))
+        {
+            skipFutureCompressionAttempts = true;
+            return false;
+        }
+#endif
         bool ddsStale = !File.Exists(ddsPath)
             || (File.Exists(abs) && File.GetLastWriteTimeUtc(ddsPath) < File.GetLastWriteTimeUtc(abs));
         if (ddsStale)
@@ -363,6 +389,9 @@ public sealed class ResourceCache : IDisposable
         }
 
         if (!TextureBcCompression.TryLoadDdsForGpu(ddsPath, out var dds, out var bcFmt) || dds == null)
+            return false;
+        // BC1 has no alpha. A leaf or grass card compressed that way draws the whole rectangle.
+        if (hasAlpha && TextureBcCompression.DropsAlpha(bcFmt))
             return false;
         if (!TextureBcCompression.IsFormatUploadSupported(bcFmt))
         {

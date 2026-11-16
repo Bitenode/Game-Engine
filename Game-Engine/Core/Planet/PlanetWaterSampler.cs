@@ -9,6 +9,7 @@ public static class PlanetWaterSampler
 {
     public const int MaxWaterBodies = 8;
     public const int MaxWaterPaths = 8;
+    static readonly string[] s_beachOnly = { "Beach" };
 
     public static (float min, float max) GetTerrainRange(PlanetConfig config)
     {
@@ -200,7 +201,7 @@ public static class PlanetWaterSampler
             // Beach only extends an existing ocean shoreline — never creates ocean alone.
             if (oceanW <= 0.05f)
                 return oceanW;
-            return MathF.Max(oceanW, AllowedBiomeWeight(blends, new[] { "Beach" }));
+            return MathF.Max(oceanW, AllowedBiomeWeight(blends, s_beachOnly));
         }
         if (body.MaskBiomes is { Length: > 0 })
             return MaskBiomeWeight(blends, body.MaskBiomes);

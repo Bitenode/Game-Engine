@@ -27,7 +27,9 @@ public static class PlanetGrassTextureCache
     static int s_readyStamp;
     static int s_loadGeneration;
     const int CarpetMixSize = 14;
-    const int MaxReadyTextures = 32;
+    // Carpet + planted patches keep texture keys forever. 32 forced eviction of live
+    // cards, which drew the flat green stand-in then vanished until re-decode.
+    const int MaxReadyTextures = 128;
 
     static PlanetGrassTextureCache()
     {
@@ -133,9 +135,15 @@ public static class PlanetGrassTextureCache
     /// </summary>
     public static string? TryPickReady(int token)
     {
-        EnsureCarpetMix();
         lock (s_catalogLock)
         {
+            // The carpet tick refreshes the mix once a frame. This is asked for every cell
+            // the walk considers, so only an empty mix is worth building here.
+            if (s_carpetMix.Count == 0)
+            {
+                EnsureCatalog();
+                BuildCarpetMixUnlocked();
+            }
             if (s_carpetMix.Count == 0)
                 return null;
             int idx = token < 0 ? -token : token;
@@ -146,6 +154,11 @@ public static class PlanetGrassTextureCache
 
     public static void Request(string? projectRelative)
     {
+        // Every planted patch asks, nearly always with a key this cache handed out.
+        // That key is found as given, without the path arithmetic below.
+        if (!string.IsNullOrEmpty(projectRelative)
+            && (s_ready.ContainsKey(projectRelative) || s_queued.ContainsKey(projectRelative)))
+            return;
         string rel = PlanetAssetIO.NormalizeAssetReference(projectRelative ?? "");
         if (string.IsNullOrWhiteSpace(rel) || !IsGrassImageExt(Path.GetExtension(rel)))
             return;
@@ -163,6 +176,9 @@ public static class PlanetGrassTextureCache
     public static bool TryGet(string? projectRelative, out Texture2D tex)
     {
         tex = null!;
+        // Grass batches look their card up every frame with the key they were given.
+        if (!string.IsNullOrEmpty(projectRelative) && s_ready.TryGetValue(projectRelative, out tex!))
+            return true;
         string rel = PlanetAssetIO.NormalizeAssetReference(projectRelative ?? "");
         if (string.IsNullOrWhiteSpace(rel))
             return false;
@@ -215,7 +231,10 @@ public static class PlanetGrassTextureCache
                 {
                     if (!File.Exists(abs))
                         continue;
-                    var tex = Texture2D.FromFile(abs);
+                    // FromFile keeps the full image for the rest of the session. A grass card is
+                    // downscaled to a couple of hundred pixels, so retaining the source (often a
+                    // multi-megapixel PSD) fills memory and the texture load stops.
+                    var tex = Texture2D.FromFileUncached(abs);
                     if (tex == null || tex.Width <= 0 || tex.Height <= 0)
                         continue;
                     tex = PrepareGrassCard(tex);

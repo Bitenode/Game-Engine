@@ -56,6 +56,8 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     bool _awakened, _started, _collidersWarm, _needsWarm;
     bool _playing;
+    readonly Game_Engine.Core.Rendering.PlayerFrameState _frame = new();
+    readonly Game_Engine.Core.PlayerSimulation _sim = new();
 
     const double FIXED_DT = 1.0 / 60.0;
     double _fixedAccum = 0.0;
@@ -92,7 +94,9 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         };
         _fixedTimer.Tick += (_, __) => TickFixedUpdate();
 
-        SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; _res?.Cache?.InvalidateAll(); RequestNextFrameRendering(); };
+        // Play-mode NotifyChanged is extremely chatty (transforms). Do not InvalidateAll here —
+        // that wiped BCn skip state and re-probed every texture path every frame.
+        SceneService.Changed += () => { RebuildSceneCaches(); _needsWarm = true; RequestNextFrameRendering(); };
 
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
@@ -114,6 +118,7 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         if (_playing) return;
         _playing = true;
+        _sim.Start();
 
         _needsWarm = true;
         Focus();
@@ -138,6 +143,9 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             var g = _glCtx.GL;
             _res = new ViewRenderResources();
             _res.Initialize(g, _glCtx.IsES, shadowResolution: 768);
+            _frame.Res = _res;
+            _frame.FpsTick.Restart();
+            _frame.FpsWindow.Restart();
         }
         catch (Exception ex)
         {
@@ -159,246 +167,18 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         if (_glCtx == null || _res?.Standard == null || _res.Sky == null || _res.FsQuad == null || _res.Cache == null)
             return;
 
-        var g = _glCtx.GL;
-
-        // Flush stale GL errors
-        while (g.GetError() != GLEnum.NoError) { }
-
-        _frameWatch.Restart();
-
-        double dt = _fpsTick.IsRunning ? _fpsTick.Elapsed.TotalSeconds : 0.0;
-        _fpsTick.Restart();
-        UpdateFps(dt);
-
-        // Wind system update
-        WindSystem.Update((float)Math.Min(dt, 0.1));
-
-        double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
-        double Wdip = Math.Max(1.0, Bounds.Width);
-        double Hdip = Math.Max(1.0, Bounds.Height);
-        int W = Math.Max(1, (int)(Wdip * scaling));
-        int H = Math.Max(1, (int)(Hdip * scaling));
-
-        g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-        g.Viewport(0, 0, (uint)W, (uint)H);
-        g.Enable(EnableCap.DepthTest);
-        g.DepthFunc(DepthFunction.Less);
-        g.Disable(EnableCap.Blend);
-        g.ColorMask(true, true, true, true);
-        g.DepthMask(true);
-
-        // If not yet playing, show black screen
-        if (!_playing)
-        {
-            g.ClearColor(0f, 0f, 0f, 1f);
-            g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-            CleanupGLState(g, fb);
-            return;
-        }
-
-        // --- SCENE SETUP ---
-        var sky = _sky;
-        var skyTop = sky?.Top ?? FallbackSkyTop;
-        var skyBot = sky?.Bottom ?? FallbackSkyBot;
-        Texture2D? skyTex = sky?.Texture;
-        float skyMix = sky != null ? Math.Clamp(sky.TextureBlend, 0f, 1f) : 0f;
-        float skyYaw = sky?.Yaw ?? 0f;
-
-        // Sun direction
-        SN.Vector3? sunDir = null;
-        if (sky != null)
-        {
-            float elevRad = Math.Clamp(sky.SunElevation, 1f, 89f) * MathF.PI / 180f;
-            float yawRad = sky.Yaw * MathF.PI / 180f;
-            var baseSun = new SN.Vector3(0f, MathF.Sin(elevRad), MathF.Cos(elevRad));
-            var rotY = SN.Matrix4x4.CreateFromAxisAngle(SN.Vector3.UnitY, yawRad);
-            sunDir = SN.Vector3.Normalize(SN.Vector3.Transform(baseSun, rotY));
-        }
-
-        // Lighting
-        float Ambient = Math.Clamp(sky?.Ambient ?? 0f, 0f, 1f);
-        var light = _light;
-        SN.Vector3 L = SN.Vector3.UnitY;
-        float DiffuseK = 0f;
-        bool lightIsPoint = false;
-        SN.Vector3 lightPosW = SN.Vector3.Zero;
-        float lightRange = 0f;
-
-        SN.Vector3 lightColorNorm = new SN.Vector3(1f, 1f, 1f);
-        if (light?.gameObject != null)
-        {
-            float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
-            DiffuseK = Math.Max(light.Intensity * Math.Max(lum, 0.001f), 0.001f);
-            lightColorNorm = new SN.Vector3(light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f);
-            var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
-            if (light.Type == LightType.Directional)
-            {
-                var fwd = SN.Vector3.Normalize(new SN.Vector3(m.M13, m.M23, m.M33));
-                L = -fwd;
-            }
-            else
-            {
-                lightIsPoint = true;
-                lightPosW = SN.Vector3.Transform(SN.Vector3.Zero, m);
-                lightRange = Math.Max(0.001f, light.Range);
-            }
-        }
-
-        // Camera
-        Camera? cam = _cams.Count > 0 ? _cams[0] : null;
-        SN.Matrix4x4 view, proj;
-        if (cam != null)
-        {
-            view = cam.GetViewMatrix();
-            proj = cam.GetProjectionMatrix(new Size(Wdip, Hdip));
-        }
-        else
-        {
-            view = SN.Matrix4x4.CreateLookAt(new SN.Vector3(0, 5, 10), SN.Vector3.Zero, SN.Vector3.UnitY);
-            proj = SN.Matrix4x4.CreatePerspectiveFieldOfView(60f * MathF.PI / 180f, (float)(Wdip / Math.Max(1, Hdip)), 0.1f, 1000f);
-        }
-
-        SN.Matrix4x4.Invert(view, out var invView);
-        var camPos = new SN.Vector3(invView.M41, invView.M42, invView.M43);
-
-        // --- CLEAR ---
-        g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
-        g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
-        var res = _res!;
-
-        // --- SKY ---
-        Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj,
-            skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
-
-        // --- SHADOW MAP PASS ---
-        SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
-        GPUFramebuffer? shadowFBO = null;
-        if (res.Shadow != null && res.Depth != null)
-        {
-            var sunShineDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
-            SN.Matrix4x4.Invert(view, out var invV);
-            var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
-            var sceneCenter = camPos + camFwd * 12f;
-            float sceneRadius = 50f;
-            shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, sceneRadius);
-            res.Shadow.LightVP = shadowVP;
-
-            res.Shadow.Begin(g);
-            g.Enable(EnableCap.DepthTest);
-            g.DepthFunc(DepthFunction.Less);
-            SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache!, shadowVP);
-            res.Shadow.End(g, (uint)fb);
-
-            g.Viewport(0, 0, (uint)W, (uint)H);
-            shadowFBO = res.Shadow.FBO;
-        }
-
-        var underwater = UnderwaterQuery.GetState(camPos);
-        var postVolume = PostProcessVolume.GetActive();
-        bool usePostFX = (postVolume != null || underwater != null) && res.PostProcess != null;
-        bool useDeferred = GameRenderPipeline.UseDeferred(usePostFX);
-
-        var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
-        var fallbackPlanetSunDir = sunSD.LengthSquared() > 1e-8f
-            ? SN.Vector3.Normalize(sunSD)
-            : SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
-
-        GameRenderPipeline.UpdateLod(camPos);
-
-        GPUTexture? finalSceneTex = null;
-        if (useDeferred)
-        {
-            finalSceneTex = GameRenderPipeline.RenderDeferred(g, res, W, H,
-                view, proj, camPos, L, DiffuseK, Ambient,
-                lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky,
-                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
-                postVolume, fallbackPlanetSunDir);
-            _sceneFBO = res.SceneFbo;
-            _sceneFBO_W = res.SceneW;
-            _sceneFBO_H = res.SceneH;
-        }
-        else
-        {
-            if (usePostFX)
-            {
-                if (_sceneFBO == null) _sceneFBO = new GPUFramebuffer(g);
-                if (_sceneFBO_W != W || _sceneFBO_H != H)
-                {
-                    _sceneFBO.SetupColorDepth(W, H);
-                    _sceneFBO_W = W; _sceneFBO_H = H;
-                }
-                _sceneFBO.Bind();
-                g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
-                g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-                Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj,
-                    skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw);
-            }
-
-            GameRenderPipeline.RenderForwardWorld(g, res,
-                view, proj, camPos, L, DiffuseK, Ambient,
-                lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky, fallbackPlanetSunDir);
-            finalSceneTex = usePostFX ? _sceneFBO?.ColorTexture : null;
-        }
-
-        if (res.Canvas != null && res.Cache != null)
-        {
-            var viewProj = view * proj;
-            foreach (var wc in Core.Component.UI.Canvas.All)
-            {
-                if (wc.IsActiveAndEnabled && wc.RenderMode == Core.Component.UI.CanvasRenderMode.WorldSpace)
-                    res.Canvas.RenderWorldCanvas(wc, in viewProj, res.Cache);
-            }
-        }
-
-        if (finalSceneTex != null && res.PostProcess != null)
-        {
-            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-            g.Viewport(0, 0, (uint)W, (uint)H);
-            g.Disable(EnableCap.DepthTest);
-            g.BindVertexArray(res.FsQuad!.VAO);
-            SceneRenderer.ApplyPostProcessing(g, res.PostProcess, finalSceneTex, W, H,
-                usePostFX ? postVolume : null, usePostFX ? underwater : null,
-                usePostFX ? (float)Core.Time.time : 0f);
-            g.BindVertexArray(0);
-            g.Enable(EnableCap.DepthTest);
-        }
-
-        if (res.Particle != null && res.Cache != null)
-        {
-            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-            g.Viewport(0, 0, (uint)W, (uint)H);
-            SceneRenderer.RenderParticles(g, res.Particle, res.Cache, view, proj, W, H, overlayPass: true);
-        }
-
-        g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-        g.Viewport(0, 0, (uint)W, (uint)H);
-        if (res.Canvas != null && res.Cache != null)
-            res.Canvas.RenderOverlays(W, H, res.Cache);
-
-        g.Flush();
-        CleanupGLState(g, fb);
-    }
-
-    void CleanupGLState(GL g, int fb)
-    {
-        g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-        g.UseProgram(0);
-        g.BindVertexArray(0);
-        g.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
-        g.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
-        g.Disable(EnableCap.DepthTest);
-        g.Disable(EnableCap.CullFace);
-        g.Disable(EnableCap.Blend);
-        g.ActiveTexture(TextureUnit.Texture0);
-        g.BindTexture(TextureTarget.Texture2D, 0);
-
-        _frameWatch.Stop();
-        _msFrameLast = _frameWatch.Elapsed.TotalMilliseconds;
-        Ema(ref _msFrameEma, _msFrameLast, 0.18);
-        _renderInFlight = false;
+        _frame.Res = _res;
+        _frame.Playing = _playing;
+        _frame.Sky = _sky;
+        _frame.Light = _light;
+        _frame.Cameras = _cams;
+        _frame.RenderScale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
+        _frame.WidthDip = Math.Max(1.0, Bounds.Width);
+        _frame.HeightDip = Math.Max(1.0, Bounds.Height);
+        Game_Engine.Core.Rendering.PlayerFrameRenderer.Render(_glCtx.GL, _frame, fb);
+        _renderInFlight = _frame.RenderInFlight;
+        _msFrameEma = _frame.MsFrameEma;
+        _fpsDisplay = _frame.FpsDisplay;
     }
     #endregion
 
@@ -529,102 +309,17 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     void TickUpdate()
     {
         if (!_playing) return;
-
-        // Process any deferred scene load queued by SceneManager.LoadScene()
-        if (SceneManager.HasPendingLoad)
-        {
-            SceneManager.ProcessPendingLoad(
-                callOnDestroyAll: () => SceneService.ForEachActiveBehavior(b => b.__OnDestroy()),
-                clearRegistries: () =>
-                {
-                    PostProcessVolume.ClearAll();
-                    Core.Component.UI.Canvas.ClearAll();
-                    Core.Rendering.UI.UIEventSystem.Reset();
-                    Input.ClearAll();
-                },
-                rebuildCaches: () =>
-                {
-                    _needsWarm = true;
-                    _collidersWarm = false;
-                },
-                callAwakeStart: () =>
-                {
-                    _awakened = false; _started = false;
-                });
-        }
-
-        if (!_awakened) { SceneService.ForEachActiveBehavior(b => b.__Awake()); _awakened = true; }
-        if (!_started) { SceneService.ForEachActiveBehavior(b => b.__Start()); _started = true; }
-        if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
-
-        var dt = _updateWatch.IsRunning ? _updateWatch.Elapsed.TotalSeconds : 0.0;
-        _updateWatch.Restart();
-        if (dt > 0.05) dt = 0.05;
-        Core.Time.BeginUpdate(dt);
-        Input.NewFrame((float)dt);
-        Input.PollHardwareHeldKeys();
-        Input.PollPlayMouseButtons(_capturedPointer != null || IsPointerOver);
-        float uiScale = PlayUiScale();
-        float uiW = Math.Max(1f, (float)Bounds.Width * uiScale);
-        float uiH = Math.Max(1f, (float)Bounds.Height * uiScale);
-        Input.FeedViewportSize(uiW, uiH);
-        UIEventSystem.ProcessEvents(uiW, uiH);
-        if (NetworkManager.IsActive)
-            NetworkManager.Update();
-        AudioManager.UpdateListenerTransform();
-        SceneService.TickActiveBehaviors(Profiler.ScriptPhase.Update);
-        SceneService.TickActiveBehaviors(Profiler.ScriptPhase.LateUpdate);
-        Profiler.PublishScriptCosts();
-        Input.EndFrame();
+        float s = PlayUiScale();
+        _sim.TickUpdate(
+            Math.Max(1f, (float)Bounds.Width * s),
+            Math.Max(1f, (float)Bounds.Height * s),
+            _capturedPointer != null || IsPointerOver);
     }
 
     void TickFixedUpdate()
     {
         if (!_playing) return;
-        if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
-
-        double dt = _fixedWatch.IsRunning ? _fixedWatch.Elapsed.TotalSeconds : FIXED_DT;
-        _fixedWatch.Restart();
-        if (dt > 0.1) dt = 0.1;
-        _fixedAccum += dt;
-        if (_fixedAccum > 0.25) _fixedAccum = 0.25;
-        while (_fixedAccum >= FIXED_DT)
-        {
-            Core.Time.BeginFixedUpdate(FIXED_DT);
-            PhysicsCache.Tick();
-            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.FixedUpdate);
-            _fixedAccum -= FIXED_DT;
-        }
-    }
-
-    void WarmAllColliders()
-    {
-        if (_collidersWarm) return;
-        foreach (var root in SceneService.Root)
-            Traverse(root, b =>
-            {
-                if (b is Collider c)
-                {
-                    var t = c.GetType();
-                    string[] names = { "EnsureReady", "EnsureBaked", "Bake", "Precompute", "Rebuild", "SyncFromTransform", "Warm" };
-                    foreach (var n in names)
-                    {
-                        var m = t.GetMethod(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
-                        if (m != null) { try { m.Invoke(c, null); } catch { } break; }
-                    }
-                }
-            });
-        _collidersWarm = true;
-    }
-
-    static void Traverse(GameObject go, Action<Behavior> a)
-    {
-        var behaviors = go.Behaviors;
-        for (int i = 0; i < behaviors.Count; i++)
-            a(behaviors[i]);
-        var children = go.Children;
-        for (int i = 0; i < children.Count; i++)
-            Traverse(children[i], a);
+        _sim.TickFixed();
     }
     #endregion
 }

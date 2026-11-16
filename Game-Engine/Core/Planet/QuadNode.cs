@@ -60,6 +60,48 @@ public sealed class QuadNode
 
     public bool NeedsMeshRebuild { get; set; } = true;
 
+    /// <summary>A patch of one cube face whose visible shell changed (new mesh, split, or merge).</summary>
+    public readonly record struct VisibleChange(int Epoch, int Face, float U0, float V0, float U1, float V1);
+
+    const int VisibleChangeCapacity = 256;
+    static readonly VisibleChange[] s_visibleChanges = new VisibleChange[VisibleChangeCapacity];
+
+    static int s_visibleEpoch;
+
+    /// <summary>Count of visible-shell changes so far. Plants compare it to know when to look.</summary>
+    public static int VisibleEpoch => System.Threading.Volatile.Read(ref s_visibleEpoch);
+
+    /// <summary>
+    /// Record that the shell drawn over <paramref name="node"/> changed. The patch is kept
+    /// with the count so vegetation re-checks only what stands on it, not every plant.
+    /// </summary>
+    public static void NoteVisibleChange(QuadNode node)
+    {
+        int epoch = System.Threading.Interlocked.Increment(ref s_visibleEpoch);
+        s_visibleChanges[epoch & (VisibleChangeCapacity - 1)] =
+            new VisibleChange(epoch, node.Face, node.U0, node.V0, node.U1, node.V1);
+    }
+
+    /// <summary>
+    /// Changes after <paramref name="sinceEpoch"/>. False when some were already overwritten
+    /// (or one is still being written), in which case the caller should treat everything
+    /// as changed.
+    /// </summary>
+    public static bool TryReadVisibleChanges(int sinceEpoch, System.Collections.Generic.List<VisibleChange> into)
+    {
+        int now = VisibleEpoch;
+        if (sinceEpoch < 0 || sinceEpoch > now || now - sinceEpoch > VisibleChangeCapacity)
+            return false;
+        for (int e = sinceEpoch + 1; e <= now; e++)
+        {
+            var change = s_visibleChanges[e & (VisibleChangeCapacity - 1)];
+            if (change.Epoch != e)
+                return false;
+            into.Add(change);
+        }
+        return true;
+    }
+
     public volatile bool IsGenerating;
 
     /// <summary>Incremented when this node is merged/cancelled so stale async jobs are ignored.</summary>
@@ -101,11 +143,23 @@ public sealed class QuadNode
         if (LodLevel >= maxDepth) return false;
         float size = WorldSize(worldRadius);
         float dist = CameraPriorityDistance(cameraPos, worldRadius);
-        return dist < size * splitMultiplier;
+        float threshold = size * splitMultiplier;
+        // Finished shell: only refine when the camera is clearly closer. Stops
+        // already-good hills from keeping split/merge thrash.
+        if (GeneratedMesh != null && !NeedsMeshRebuild && !IsGenerating)
+            threshold *= 0.65f;
+        return dist < threshold;
     }
 
     public bool ShouldPrefetch(SN.Vector3 cameraPos, float worldRadius, float prefetchMultiplier, int maxDepth)
-        => ShouldSplit(cameraPos, worldRadius, prefetchMultiplier, maxDepth);
+    {
+        if (LodLevel >= maxDepth) return false;
+        // Finished leaf: no speculative child builds. FaceQuadtree still ensures
+        // children when ShouldSplit actually trips.
+        if (GeneratedMesh != null && !NeedsMeshRebuild && !IsGenerating)
+            return false;
+        return ShouldSplit(cameraPos, worldRadius, prefetchMultiplier, maxDepth);
+    }
 
     public bool ShouldMerge(SN.Vector3 cameraPos, float worldRadius, float mergeMultiplier)
     {
@@ -171,9 +225,12 @@ public sealed class QuadNode
         if (_splitCommitted || Children == null || !ChildrenHaveMeshes())
             return false;
         _splitCommitted = true;
-        // Parent shell is no longer renderable. Keep it and it can z-fight / float
-        // over the child mountain with no stand collider.
-        ReleaseHiddenShell();
+        // Editor: free the parent immediately. Play: keep it as a fallback shell so a
+        // coastal commit cannot drop land under the player; CollectRenderable still
+        // draws the children (cliff/slope detail) once they are ready.
+        if (!SceneService.PlayMode)
+            ReleaseHiddenShell();
+        NoteVisibleChange(this);
         return true;
     }
 
@@ -209,7 +266,12 @@ public sealed class QuadNode
         if (ChildrenHaveMeshes())
         {
             _splitCommitted = true;
-            ReleaseHiddenShell();
+            // Play: keep the parent shell. CollectRenderable draws the children, but
+            // dropping the land mesh beside the player is what dumped them in water
+            // on coastal hills. Editor can free it immediately.
+            if (!SceneService.PlayMode)
+                ReleaseHiddenShell();
+            NoteVisibleChange(this);
         }
     }
 
@@ -235,13 +297,10 @@ public sealed class QuadNode
         }
 
         bool childrenDirty = false;
-        bool hadChildMeshes = false;
         for (int i = 0; i < 4; i++)
         {
             var child = Children[i];
             if (child == null) continue;
-            if (child.GeneratedMesh != null)
-                hadChildMeshes = true;
             if (SubtreeNeedsRebuild(child))
                 childrenDirty = true;
             child.Merge();
@@ -249,9 +308,16 @@ public sealed class QuadNode
         }
         Children = null;
         _splitCommitted = false;
-        // Child leaves held higher-detail geometry; the pre-split parent mesh is stale.
-        if (GeneratedMesh == null || childrenDirty || hadChildMeshes)
-            NeedsMeshRebuild = true;
+        NoteVisibleChange(this);
+
+        // Play keeps the parent shell across splits. Reusing it on merge avoids a
+        // multi-frame hole where the whole cliff side is gone while remesh queues.
+        // Only force a rebuild when the shell is missing or children carried edits.
+        if (GeneratedMesh != null && !childrenDirty)
+            return;
+
+        ReleaseHiddenShell();
+        NeedsMeshRebuild = true;
     }
 
     static bool SubtreeNeedsRebuild(QuadNode node)
@@ -325,8 +391,16 @@ public sealed class QuadNode
             Children[i]?.CollectPrefetchChildren(nodes);
     }
 
-    public void CollectRenderable(System.Collections.Generic.List<QuadNode> nodes)
+    public void CollectRenderable(
+        System.Collections.Generic.List<QuadNode> nodes,
+        SN.Vector3 playCamLocal = default,
+        float worldRadius = 0f,
+        float playLockDist = 0f)
     {
+        _ = playCamLocal;
+        _ = worldRadius;
+        _ = playLockDist;
+
         if (IsLeaf)
         {
             if (GeneratedMesh != null)
@@ -334,10 +408,12 @@ public sealed class QuadNode
             return;
         }
 
+        // Always prefer children once ready — parent shells miss biome-merge
+        // cliffs/slopes that only exist at the finer LOD.
         if (ChildrenHaveMeshes())
         {
             for (int i = 0; i < 4; i++)
-                Children![i]?.CollectRenderable(nodes);
+                Children![i]?.CollectRenderable(nodes, playCamLocal, worldRadius, playLockDist);
             return;
         }
 
@@ -352,7 +428,7 @@ public sealed class QuadNode
         if (Children != null)
         {
             for (int i = 0; i < 4; i++)
-                Children[i]?.CollectRenderable(nodes);
+                Children[i]?.CollectRenderable(nodes, playCamLocal, worldRadius, playLockDist);
         }
     }
 

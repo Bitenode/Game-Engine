@@ -19,23 +19,60 @@ namespace Game_Engine.Core.Component;
 public sealed class PlanetFaunaTableBehavior : Behavior
 {
     FaunaLayerRecipe[] _layers = Array.Empty<FaunaLayerRecipe>();
+    LayerInfo[] _layerInfo = Array.Empty<LayerInfo>();
     readonly List<HerdAnimal> _herd = new();
     readonly Dictionary<string, SpeciesAssets> _species = new(StringComparer.OrdinalIgnoreCase);
     readonly HashSet<string> _missing = new(StringComparer.OrdinalIgnoreCase);
+    static readonly Dictionary<string, RigTemplate> s_templates = new(StringComparer.OrdinalIgnoreCase);
+    static readonly System.Collections.Concurrent.ConcurrentQueue<RigTemplate> s_pendingImports = new();
+    static int s_importerRunning;
+    readonly List<MeshFilter> _filterScratch = new();
+    readonly List<MeshRenderer> _rendererScratch = new();
+    readonly Dictionary<string, string[]> _dirFiles = new(StringComparer.OrdinalIgnoreCase);
     GameObject? _root;
     float _spawnWait;
     bool _loggedIdle;
     PlanetTerrain? _terrain;
+    PlanetLifeStreaming? _life;
     RigidbodyPlayer? _player;
     float _playerSearchWait;
+    /// <summary>Layer the next spawn pass starts on, so one layer with no room does not hold up the rest.</summary>
+    int _nextLayer;
+
+    /// <summary>Spot searches run per spawn pass. Each is up to 16 biome and water samples.</summary>
+    const int MaxSpotSearchesPerPass = 4;
+    const float FailedSearchRetrySec = 3f;
+    const float FailedSearchMoveM = 15f;
 
     public FaunaLayerRecipe[] Layers => _layers;
 
     public void Bind(FaunaLayerRecipe[]? layers)
     {
         _layers = layers ?? Array.Empty<FaunaLayerRecipe>();
+        _layerInfo = new LayerInfo[_layers.Length];
+        for (int i = 0; i < _layers.Length; i++)
+        {
+            var layer = _layers[i];
+            string species = (layer?.SpeciesId ?? "").Trim();
+            _layerInfo[i] = new LayerInfo
+            {
+                Species = species,
+                Aquatic = IsAquaticSpecies(species),
+                Mask = string.IsNullOrWhiteSpace(layer?.BiomeMask)
+                    ? Array.Empty<string>()
+                    : layer!.BiomeMask.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            };
+        }
+        _nextLayer = 0;
+        // A new bind looks at the asset folders afresh.
+        _dirFiles.Clear();
         ClearHerd();
+#if XBOX_UWP
+        // Assimp FBX imports during the first planet frames reboot Dev Mode. Wait for biomes/veg to settle.
+        _spawnWait = 18f;
+#else
         _spawnWait = 0f;
+#endif
         _loggedIdle = false;
         if (_layers.Length > 0)
             Log.Info($"[Fauna] Bound {_layers.Length} layer(s): {string.Join(", ", _layers.Select(l => l?.SpeciesId ?? "?"))}.");
@@ -77,14 +114,25 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     {
         if (!SceneService.PlayMode || _layers.Length == 0) return;
         if (_terrain == null || _terrain.gameObject != gameObject)
+        {
             _terrain = GetComponent<PlanetTerrain>();
+            _life = GetComponent<PlanetLifeStreaming>();
+        }
         var terrain = _terrain;
         if (terrain == null || terrain.Config == null) return;
 
         float dt = Math.Max(0f, Time.deltaTime);
+#if XBOX_UWP
+        // Assimp + GPU uploads while biome maps are still landing reboots Dev Mode.
+        if (SceneRenderer.BiomeTexturesStreaming)
+            return;
+#endif
         SN.Vector3 center = terrain.GetWorldCenter();
         bool haveCam = TryPlayerAnchor(terrain, center, out var anchor);
         SN.Vector3 camDir = haveCam ? SN.Vector3.Normalize(anchor - center) : SN.Vector3.UnitY;
+        // The camera's cell is the same for the whole herd this frame.
+        int edge = StreamingCellsPerEdge();
+        var camCell = haveCam ? CellFor(camDir, edge) : default;
         for (int i = _herd.Count - 1; i >= 0; i--)
         {
             var animal = _herd[i];
@@ -93,21 +141,31 @@ public sealed class PlanetFaunaTableBehavior : Behavior
                 _herd.RemoveAt(i);
                 continue;
             }
-            if (haveCam && !CellInCameraRing(animal.CellKey, animal.Dir, camDir))
+            if (haveCam && !CellInCameraRing(animal, camCell, camDir))
             {
                 animal.Go.RemoveFromParent();
                 _herd.RemoveAt(i);
                 continue;
             }
-            animal.Go.Enabled = true;
+            if (!animal.Go.Enabled)
+                animal.Go.Enabled = true;
             StepAnimal(terrain, animal, dt);
-            animal.CellKey = CellKeyFor(animal.Dir);
+            // Only a walking animal changes cell.
+            if (animal.Cell.Edge != edge || animal.Dir != animal.CellDir)
+            {
+                animal.Cell = CellFor(animal.Dir, edge);
+                animal.CellDir = animal.Dir;
+            }
         }
 
         _playerSearchWait -= dt;
         _spawnWait -= dt;
         if (_spawnWait > 0f) return;
+#if XBOX_UWP
+        _spawnWait = 1.75f;
+#else
         _spawnWait = 0.35f;
+#endif
         TrySpawnOne(terrain);
     }
 
@@ -119,25 +177,60 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         bool anchored = false;
         var center = SN.Vector3.Zero;
         var camDir = SN.Vector3.UnitY;
-        foreach (var layer in _layers)
+        float failMoveSq = 0f;
+        float now = Time.time;
+        int searches = 0;
+        int count = _layers.Length;
+        if (_layerInfo.Length != count) return;
+        for (int step = 0; step < count; step++)
         {
+            int li = (_nextLayer + step) % count;
+            var layer = _layers[li];
             if (layer == null || layer.Density <= 0.001f) continue;
-            string species = (layer.SpeciesId ?? "").Trim();
+            var info = _layerInfo[li];
+            string species = info.Species;
             if (species.Length == 0) continue;
             any = true;
             if (_missing.Contains(species)) continue;
 
-            bool aquatic = IsAquaticSpecies(species);
-            float fish = aquatic ? AquaticFishScale(terrain) : 1f;
+            float fish = info.Aquatic ? AquaticFishScale(terrain) : 1f;
             if (fish <= 0.001f) continue;
+#if XBOX_UWP
+            int want = Math.Clamp((int)MathF.Round(Math.Max(layer.Density, 0.2f) * 12f * fish), 0, 2);
+#else
             int want = Math.Clamp((int)MathF.Round(Math.Max(layer.Density, 0.2f) * 30f * fish), 0, 6);
+#endif
             if (want < 1) continue;
             int have = 0;
             for (int i = 0; i < _herd.Count; i++)
                 if (string.Equals(_herd[i].Species, species, StringComparison.OrdinalIgnoreCase))
                     have++;
             if (have >= want) continue;
-            if (ResolveSpecies(species) == null) continue;
+            var assets = ResolveSpecies(species);
+            if (assets == null) continue;
+
+            // The rig imports on a worker. Until it lands there is nothing to place.
+            var rig = PeekTemplate(assets.ModelPath);
+            if (rig != null && rig.Failed)
+            {
+                Log.Warning($"[Fauna] {species} import failed: {rig.Error}");
+                _missing.Add(species);
+                // Not kept as failed for good: the next play session gets a fresh try.
+                lock (s_templates)
+                    s_templates.Remove(assets.ModelPath);
+                continue;
+            }
+            if (rig != null && !rig.Loaded) continue;
+
+            // A landed rig still has to be turned into something animals are copied from.
+            // That is two steps of game-thread work, taken one per pass so neither shares
+            // a frame with a spawn.
+            if (rig != null && !rig.Ready)
+            {
+                PrepareRig(rig, assets, species);
+                _nextLayer = li;
+                return;
+            }
 
             if (!anchored)
             {
@@ -148,16 +241,46 @@ public sealed class PlanetFaunaTableBehavior : Behavior
                     return;
                 }
                 camDir = SN.Vector3.Normalize(anchor - center);
+                float worldR = Math.Max(1f, (anchor - center).Length());
+                failMoveSq = (FailedSearchMoveM / worldR) * (FailedSearchMoveM / worldR);
                 anchored = true;
             }
 
-            float spacing = layer.HerdSpacing > 0.5f ? layer.HerdSpacing : 18f;
-            if (!TryPickSpot(terrain, camDir, center, species, spacing, layer, out var dir, out var pos, out var biomeName))
+            // The candidate spots come from the species, the herd size and where the player
+            // stands. Until one of those changes, a search that found no ground finds none again.
+            // (A wait longer than the retry window means the play clock restarted.)
+            if (now < info.RetryAt
+                && info.RetryAt - now <= FailedSearchRetrySec
+                && info.FailedHerd == _herd.Count
+                && (camDir - info.FailedDir).LengthSquared() < failMoveSq)
                 continue;
+            if (searches >= MaxSpotSearchesPerPass)
+            {
+                _nextLayer = li;
+                return;
+            }
+            searches++;
 
-            if (!TrySpawn(terrain, layer, species, dir, pos))
+            float spacing = layer.HerdSpacing > 0.5f ? layer.HerdSpacing : 18f;
+            if (!TryPickSpot(terrain, camDir, center, info, spacing, layer, out var dir, out var pos, out var biomeName))
+            {
+                info.RetryAt = now + FailedSearchRetrySec;
+                info.FailedHerd = _herd.Count;
+                info.FailedDir = camDir;
+                continue;
+            }
+
+            // Import only species that have somewhere to stand near the player.
+            if (rig == null)
+            {
+                RequestTemplate(assets, species);
+                continue;
+            }
+
+            if (!TrySpawn(terrain, layer, info, assets, rig, dir, pos))
                 continue;
             Log.Info($"[Fauna] {species} on {biomeName}.");
+            _nextLayer = (li + 1) % count;
             return;
         }
         if (!any)
@@ -191,7 +314,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         return (anchor - center).LengthSquared() > 16f;
     }
 
-    bool TryPickSpot(PlanetTerrain terrain, SN.Vector3 camDir, SN.Vector3 center, string species,
+    bool TryPickSpot(PlanetTerrain terrain, SN.Vector3 camDir, SN.Vector3 center, LayerInfo info,
         float spacing, FaunaLayerRecipe layer, out SN.Vector3 dir, out SN.Vector3 pos, out string biomeName)
     {
         dir = camDir;
@@ -204,9 +327,11 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             return false;
         }
 
+        string species = info.Species;
         string last = "";
         bool wantNote = !_loggedIdle && _herd.Count == 0;
-        bool aquatic = IsAquaticSpecies(species);
+        bool aquatic = info.Aquatic;
+        int edge = StreamingCellsPerEdge();
         for (int attempt = 0; attempt < 16; attempt++)
         {
             float ang = (Hash01(species, _herd.Count * 17 + attempt * 13) * 2f - 1f) * MathF.PI;
@@ -217,7 +342,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             if (!TryReadSurface(terrain, dir, wantNote, aquatic, out var biome, out _, out last))
                 continue;
             biomeName = biome?.Name ?? "land";
-            if (biome != null && !AllowsBiome(layer, biome))
+            if (biome != null && !AllowsBiome(layer, info.Mask, biome))
                 continue;
             if (biome == null)
                 continue;
@@ -232,8 +357,8 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             if (ground < 1f) continue;
             pos = center + dir * ground;
             if (TooClose(species, pos, Math.Min(spacing, 12f))) continue;
-            string cell = CellKeyFor(dir);
-            if (cell.Length > 0 && SpeciesOccupiesCell(species, cell)) continue;
+            var cell = CellFor(dir, edge);
+            if (cell.IsSet && SpeciesOccupiesCell(species, cell)) continue;
             return true;
         }
         LogIdle($"no {(aquatic ? "water" : "land")} spot for {species} ({last})");
@@ -275,15 +400,14 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         Log.Info($"[Fauna] Not spawned yet: {reason}. Layers={_layers.Length}.");
     }
 
-    bool TrySpawn(PlanetTerrain terrain, FaunaLayerRecipe layer, string species, SN.Vector3 dir, SN.Vector3 pos)
+    bool TrySpawn(PlanetTerrain terrain, FaunaLayerRecipe layer, LayerInfo info, SpeciesAssets assets,
+        RigTemplate rig, SN.Vector3 dir, SN.Vector3 pos)
     {
-        var assets = ResolveSpecies(species);
-        if (assets == null) return false;
-
+        string species = info.Species;
         GameObject model;
         try
         {
-            model = ModelImporter.ImportModel(assets.ModelPath);
+            model = NewAnimal(rig, assets.ModelPath);
         }
         catch (Exception ex)
         {
@@ -292,7 +416,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             return false;
         }
 
-        PruneEmptyRigNodes(model);
         var host = new GameObject(species);
         EnsureRoot();
         _root!.AddChild(host);
@@ -301,7 +424,19 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         model.Transform.Scale = new Vector3(scale, scale, scale);
         model.Transform.Position = new Vector3(0, 0, 0);
         PlantFeet(model);
-        ApplySpeciesTextures(model, species);
+        try
+        {
+            ApplySpeciesTextures(model, assets);
+        }
+        catch (Exception ex)
+        {
+            // A bad map used to escape after the animal was already in the scene, so the
+            // next frame imported it again. That pile is what froze the load.
+            Log.Warning($"[Fauna] {species} textures failed: {ex.Message}");
+            host.RemoveFromParent();
+            _missing.Add(species);
+            return false;
+        }
 
         var anim = model.Behaviors.OfType<Animator>().FirstOrDefault()
             ?? model.Children.SelectMany(c => c.Behaviors.OfType<Animator>()).FirstOrDefault();
@@ -318,12 +453,14 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             Model = model,
             Anim = anim,
             Species = species,
+            Aquatic = info.Aquatic,
             Dir = dir,
             Heading = Hash01(species, _herd.Count + 3) * MathF.Tau,
             Spacing = layer.HerdSpacing,
             Diurnal = layer.Diurnal,
             IdleLeft = 1.5f + Hash01(species, 4) * 3f,
-            CellKey = CellKeyFor(dir)
+            Cell = CellFor(dir, StreamingCellsPerEdge()),
+            CellDir = dir
         };
         Seat(terrain, animal, SN.Vector3.Zero);
         _herd.Add(animal);
@@ -332,10 +469,10 @@ public sealed class PlanetFaunaTableBehavior : Behavior
 
     void StepAnimal(PlanetTerrain terrain, HerdAnimal animal, float dt)
     {
-        float radius = Math.Max(1f, terrain.SampleStandWorldRadius(animal.Dir));
-        if (IsAquaticSpecies(animal.Species) && !IsSubmerged(terrain, animal.Dir, 0.6f))
+        bool aquatic = animal.Aquatic;
+        if (aquatic && !IsSubmerged(terrain, animal.Dir, 0.6f))
         {
-            animal.Go.RemoveFromParent();
+            animal.Go!.RemoveFromParent();
             return;
         }
         animal.IdleLeft -= dt;
@@ -346,12 +483,13 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         SN.Vector3 travel = SN.Vector3.Zero;
         if (walking)
         {
+            float radius = Math.Max(1f, terrain.SampleStandWorldRadius(animal.Dir));
             var tangent = Tangent(animal.Dir, animal.Heading);
             float step = 2.6f * dt / radius;
             var next = SN.Vector3.Normalize(animal.Dir + tangent * step);
             // Land herds turn back at the shoreline. Swimmers turn back onto land.
-            bool nextWet = IsSubmerged(terrain, next, IsAquaticSpecies(animal.Species) ? 0.8f : 0.35f);
-            bool blocked = IsAquaticSpecies(animal.Species) ? !nextWet : nextWet;
+            bool nextWet = IsSubmerged(terrain, next, aquatic ? 0.8f : 0.35f);
+            bool blocked = aquatic ? !nextWet : nextWet;
             if (blocked)
                 animal.Heading += dt * 1.2f;
             else
@@ -388,6 +526,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         }
         var pos = center + animal.Dir * r;
         SceneGraphUtil.SetPositionWorld(animal.Go, pos);
+        animal.WorldPos = pos;
         var fwd = travel.LengthSquared() > 1e-6f ? travel : Tangent(animal.Dir, animal.Heading);
         if (fwd.LengthSquared() > 1e-8f)
             animal.Facing = fwd;
@@ -451,13 +590,39 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         return false;
     }
 
+    /// <summary>Same rule as the overload above, with the layer's biome mask already split.</summary>
+    static bool AllowsBiome(FaunaLayerRecipe layer, string[] mask, BiomeDefinition biome)
+    {
+        string name = biome.Name ?? "";
+        if (name.Length == 0) return false;
+        bool target = NameHit(name, layer.TargetBiome);
+        bool inMask = false;
+        for (int i = 0; i < mask.Length; i++)
+            if (NameHit(name, mask[i])) { inMask = true; break; }
+        bool listed = target || inMask;
+        if (!listed && string.IsNullOrWhiteSpace(layer.TargetBiome) && string.IsNullOrWhiteSpace(layer.BiomeMask))
+            listed = !biome.SpawnWater;
+        if (!listed) return false;
+        if (biome.SpawnWater && !target && !inMask)
+            return false;
+        return true;
+    }
+
+    PlanetLifeStreaming? LifeStreaming()
+    {
+        // Added when the graph is applied, which can be after this component.
+        if (_life == null || _life.gameObject != gameObject)
+            _life = GetComponent<PlanetLifeStreaming>();
+        return _life;
+    }
+
     /// <summary>
     /// Aquatic herd size multiplier from underwater recipes. 1 keeps the fauna-layer count.
     /// 0 skips swimmers. No underwater recipe leaves the fauna layer unchanged.
     /// </summary>
     float AquaticFishScale(PlanetTerrain terrain)
     {
-        var layers = GetComponent<PlanetLifeStreaming>()?.UnderwaterLife;
+        var layers = LifeStreaming()?.UnderwaterLife;
         if (layers == null || layers.Length == 0) return 1f;
         float best = 0f;
         bool any = false;
@@ -475,51 +640,51 @@ public sealed class PlanetFaunaTableBehavior : Behavior
 
     int StreamingCellsPerEdge()
     {
-        int edge = GetComponent<PlanetLifeStreaming>()?.CellsPerEdge ?? PlanetLifeStreaming.CellsPerFaceEdge;
+        int edge = LifeStreaming()?.CellsPerEdge ?? PlanetLifeStreaming.CellsPerFaceEdge;
         return Math.Max(1, edge);
     }
 
-    /// <summary>Cube-face cell for a stand direction. Empty when the direction is degenerate.</summary>
-    string CellKeyFor(SN.Vector3 dir)
+    /// <summary>
+    /// Cube-face cell of the streaming grid, the same cell <see cref="PlanetLifeStreaming.MakeCellKey(int, float, float, int)"/>
+    /// names. Kept as numbers: the herd is checked against the camera cell every frame, and
+    /// building and re-parsing a key string per animal per frame was most of that check.
+    /// </summary>
+    readonly record struct FaunaCell(int Face, int U, int V, int Edge)
     {
-        if (dir.LengthSquared() < 1e-8f) return "";
-        var uv = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(dir));
-        return PlanetLifeStreaming.MakeCellKey(uv.Face, uv.U, uv.V, StreamingCellsPerEdge());
+        /// <summary>False for a degenerate direction, which has no cell.</summary>
+        public bool IsSet => Edge > 0;
     }
 
-    bool SpeciesOccupiesCell(string species, string cell)
+    static FaunaCell CellFor(SN.Vector3 dir, int edge)
+    {
+        if (dir.LengthSquared() < 1e-8f) return default;
+        var uv = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(dir));
+        var (cu, cv) = PlanetLifeStreaming.CellCoords(uv.U, uv.V, edge);
+        return new FaunaCell(uv.Face, cu, cv, Math.Max(1, edge));
+    }
+
+    bool SpeciesOccupiesCell(string species, FaunaCell cell)
     {
         for (int i = 0; i < _herd.Count; i++)
         {
             var other = _herd[i];
             if (!string.Equals(other.Species, species, StringComparison.OrdinalIgnoreCase)) continue;
-            if (string.Equals(other.CellKey, cell, StringComparison.Ordinal)) return true;
+            if (other.Cell == cell) return true;
         }
         return false;
     }
 
     /// <summary>True when the cell is on the camera face within two cells, or still close on a neighbor face.</summary>
-    bool CellInCameraRing(string cellKey, SN.Vector3 animalDir, SN.Vector3 camDir)
+    static bool CellInCameraRing(HerdAnimal animal, FaunaCell camCell, SN.Vector3 camDir)
     {
-        if (cellKey.Length == 0 || camDir.LengthSquared() < 1e-8f) return true;
-        if (!TryParseCell(cellKey, out int face, out int cu, out int cv)) return true;
-        var cam = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(camDir));
-        int edge = StreamingCellsPerEdge();
-        var (ccu, ccv) = PlanetLifeStreaming.CellCoords(cam.U, cam.V, edge);
-        if (face == cam.Face)
-            return Math.Abs(cu - ccu) <= 2 && Math.Abs(cv - ccv) <= 2;
-        float d = animalDir.LengthSquared() > 1e-8f ? SN.Vector3.Dot(SN.Vector3.Normalize(animalDir), SN.Vector3.Normalize(camDir)) : 0f;
+        var cell = animal.Cell;
+        if (!cell.IsSet || !camCell.IsSet) return true;
+        // A cell from an older grid size is refreshed after this frame's step.
+        if (cell.Edge != camCell.Edge) return true;
+        if (cell.Face == camCell.Face)
+            return Math.Abs(cell.U - camCell.U) <= 2 && Math.Abs(cell.V - camCell.V) <= 2;
+        float d = animal.Dir.LengthSquared() > 1e-8f ? SN.Vector3.Dot(SN.Vector3.Normalize(animal.Dir), camDir) : 0f;
         return d > 0.92f;
-    }
-
-    static bool TryParseCell(string cellKey, out int face, out int cu, out int cv)
-    {
-        face = cu = cv = 0;
-        var parts = cellKey.Split(':');
-        if (parts.Length != 3) return false;
-        return int.TryParse(parts[0], out face)
-            && int.TryParse(parts[1], out cu)
-            && int.TryParse(parts[2], out cv);
     }
 
     /// <summary>Fish and other swimmers. They stay under the water surface, not on dry shore.</summary>
@@ -535,9 +700,12 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     static bool IsSubmerged(PlanetTerrain terrain, SN.Vector3 dir, float minDepth)
     {
         if (terrain.Config == null || !terrain.EnableWater) return false;
-        float crust = terrain.WorldToLocalLength(terrain.SampleStandWorldRadius(dir));
-        var water = terrain.SampleWaterSurface(dir);
+        // Every animal asks this each frame, and a walking one asks again for the step
+        // ahead. The water table is the costly half, so it comes from the per-cell cache
+        // and dry ground stops there. The crust stays exact for the direction asked.
+        var water = terrain.SampleWaterSurfaceCached(dir);
         if (water.Mask < 0.18f || water.Kind == PlanetWaterKind.Lava) return false;
+        float crust = terrain.WorldToLocalLength(terrain.SampleStandWorldRadius(dir));
         return water.Radius - crust >= minDepth;
     }
 
@@ -570,8 +738,8 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             var other = _herd[i];
             if (other.Go == null) continue;
             if (!string.Equals(other.Species, species, StringComparison.OrdinalIgnoreCase)) continue;
-            var p = SceneGraphUtil.AccumulateWorld(other.Go).Translation;
-            if (SN.Vector3.DistanceSquared(p, pos) < min) return true;
+            // Where Seat last put it, which is its world position.
+            if (SN.Vector3.DistanceSquared(other.WorldPos, pos) < min) return true;
         }
         return false;
     }
@@ -595,25 +763,49 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             return null;
         }
         string animDir = Path.Combine(assetsRoot, "Animals", "Animations");
+        string texDir = Path.Combine(assetsRoot, "Animals", "Textures");
         var assets = new SpeciesAssets
         {
             ModelPath = model,
             IdlePath = FindFile(animDir, species, "_Idle", ".fbx"),
             WalkPath = FindFile(animDir, species, "_Walk", ".fbx"),
-            RunPath = FindFile(animDir, species, "_Run", ".fbx")
+            RunPath = FindFile(animDir, species, "_Run", ".fbx"),
+            // Looked up once. Every spawn used to list the texture folder three times.
+            AlbedoPath = FindSpeciesMap(texDir, species, "col", "albedo", "diffuse"),
+            NormalPath = FindSpeciesMap(texDir, species, "nrm", "normal"),
+            AoPath = FindSpeciesMap(texDir, species, "ao", "occl")
         };
         _species[species] = assets;
         return assets;
     }
 
-    static string? FindFile(string dir, string species, string suffix, string ext)
+    /// <summary>
+    /// The files of one asset folder, listed once per bind. Resolving a species looks
+    /// through the model, clip and texture folders seven times between them, and every
+    /// layer resolves on the first spawn pass.
+    /// </summary>
+    string[] FilesIn(string dir)
     {
-        if (!Directory.Exists(dir)) return null;
-        string exact = Path.Combine(dir, species + suffix + ext);
-        if (File.Exists(exact)) return exact;
-        exact = Path.Combine(dir, species + suffix + ext.ToUpperInvariant());
-        if (File.Exists(exact)) return exact;
-        foreach (var file in Directory.EnumerateFiles(dir))
+        if (_dirFiles.TryGetValue(dir, out var files))
+            return files;
+        try { files = Directory.Exists(dir) ? Directory.GetFiles(dir) : Array.Empty<string>(); }
+        catch { files = Array.Empty<string>(); }
+        _dirFiles[dir] = files;
+        return files;
+    }
+
+    string? FindFile(string dir, string species, string suffix, string ext)
+    {
+        var files = FilesIn(dir);
+        if (files.Length == 0) return null;
+        // The exact name first, with either case of the extension.
+        string exactName = species + suffix + ext;
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (string.Equals(Path.GetFileName(files[i]), exactName, StringComparison.OrdinalIgnoreCase))
+                return files[i];
+        }
+        foreach (var file in files)
         {
             var name = Path.GetFileNameWithoutExtension(file);
             if (name.Contains(species, StringComparison.OrdinalIgnoreCase)
@@ -624,15 +816,14 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         return null;
     }
 
-    static void ApplySpeciesTextures(GameObject model, string species)
+    static void ApplySpeciesTextures(GameObject model, SpeciesAssets assets)
     {
         var proj = ProjectService.Current;
         if (proj == null || string.IsNullOrWhiteSpace(proj.AssetsPath)) return;
-        string texDir = Path.Combine(proj.AssetsPath, "Animals", "Textures");
-        string? albedo = FindSpeciesMap(texDir, species, "col", "albedo", "diffuse");
+        string? albedo = assets.AlbedoPath;
         if (albedo == null) return;
-        string? normal = FindSpeciesMap(texDir, species, "nrm", "normal");
-        string? ao = FindSpeciesMap(texDir, species, "ao", "occl");
+        string? normal = assets.NormalPath;
+        string? ao = assets.AoPath;
 
         void Walk(GameObject go)
         {
@@ -671,9 +862,406 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         return false;
     }
 
+    static RigTemplate? PeekTemplate(string modelPath)
+    {
+        lock (s_templates)
+            return s_templates.TryGetValue(modelPath, out var rig) ? rig : null;
+    }
+
+    /// <summary>Queue the species' rig, clips and maps to load off the game thread.</summary>
+    static void RequestTemplate(SpeciesAssets assets, string species)
+    {
+        RigTemplate rig;
+        lock (s_templates)
+        {
+            if (s_templates.ContainsKey(assets.ModelPath))
+                return;
+            rig = new RigTemplate
+            {
+                ModelPath = assets.ModelPath,
+                Species = species,
+                WarmTextures = new[] { assets.AlbedoPath, assets.NormalPath, assets.AoPath }
+            };
+            s_templates[assets.ModelPath] = rig;
+        }
+        s_pendingImports.Enqueue(rig);
+        if (System.Threading.Interlocked.CompareExchange(ref s_importerRunning, 1, 0) == 0)
+            System.Threading.Tasks.Task.Run(ImportLoop);
+    }
+
+    /// <summary>One rig at a time, so a planet's worth of species queues up instead of all parsing at once.</summary>
+    static void ImportLoop()
+    {
+        try
+        {
+            while (s_pendingImports.TryDequeue(out var rig))
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    var imported = ModelImporter.ImportModel(rig.ModelPath);
+                    PruneEmptyRigNodes(imported);
+                    // First use of a clip or map decodes it. Do that here, not on the first spawn.
+                    WarmClips(imported);
+                    for (int i = 0; i < rig.WarmTextures.Length; i++)
+                    {
+                        var path = rig.WarmTextures[i];
+                        if (path == null) continue;
+                        try { Texture2D.FromFile(path); }
+                        catch { /* AddMap reports a bad map when the animal spawns */ }
+                    }
+                    rig.Imported = imported;
+                    Log.Info($"[Fauna] {rig.Species} rig loaded in {clock.ElapsedMilliseconds} ms (background).");
+                }
+                catch (Exception ex)
+                {
+                    rig.Error = ex.Message;
+                    rig.Failed = true;
+                }
+            }
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref s_importerRunning, 0);
+            // A request can land between the last dequeue and the flag reset.
+            if (!s_pendingImports.IsEmpty
+                && System.Threading.Interlocked.CompareExchange(ref s_importerRunning, 1, 0) == 0)
+                System.Threading.Tasks.Task.Run(ImportLoop);
+        }
+    }
+
+    static void WarmClips(GameObject node)
+    {
+        foreach (var b in node.Behaviors)
+        {
+            if (b is not Animator anim) continue;
+            foreach (var state in anim.StateList)
+            {
+                if (!string.IsNullOrWhiteSpace(state.BoneClipPath))
+                    BoneAnimationClipAsset.Load(state.BoneClipPath);
+            }
+        }
+        foreach (var child in node.Children)
+            WarmClips(child);
+    }
+
+    static void CollectMeshFilters(GameObject node, List<MeshFilter> filters)
+    {
+        foreach (var b in node.Behaviors)
+        {
+            if (b is MeshFilter mf)
+                filters.Add(mf);
+        }
+        foreach (var child in node.Children)
+            CollectMeshFilters(child, filters);
+    }
+
+    /// <summary>
+    /// One step of making a landed rig ready: first the JSON, then the animal that is
+    /// restored from it once and copied from after that.
+    /// </summary>
+    void PrepareRig(RigTemplate rig, SpeciesAssets assets, string species)
+    {
+        if (rig.Json.Length == 0)
+        {
+            try
+            {
+                FinishTemplate(rig);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[Fauna] {species} rig could not be saved for reuse: {ex.Message}");
+            }
+            // With no JSON every animal of this species is imported on its own, as before.
+            if (rig.Json.Length == 0)
+                rig.NoPrototype = true;
+            return;
+        }
+
+        try
+        {
+            var prototype = RestoreRig(rig);
+            if (prototype == null)
+            {
+                rig.NoPrototype = true;
+                return;
+            }
+            // The maps are the same for every animal of the species. They go on once here.
+            ApplySpeciesTextures(prototype, assets);
+            rig.Prototype = prototype;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[Fauna] {species} textures failed: {ex.Message}");
+            _missing.Add(species);
+            lock (s_templates)
+                s_templates.Remove(assets.ModelPath);
+        }
+    }
+
+    /// <summary>
+    /// Turn the worker's import into the JSON the rig is restored from. Two things are
+    /// kept aside and handed back after each restore instead of going through the JSON.
+    /// The mesh and model path: with a model path in the JSON the scene loader imports
+    /// the FBX again for each mesh part. And each renderer's material with its list of
+    /// material files: the importer's material carries the maps the FBX names, which the
+    /// saved file often lacks, and writing a material out searches the asset folders for
+    /// a file of its name.
+    /// </summary>
+    void FinishTemplate(RigTemplate rig)
+    {
+        var root = rig.Imported;
+        if (root == null) return;
+        _filterScratch.Clear();
+        CollectMeshFilters(root, _filterScratch);
+        int n = _filterScratch.Count;
+        rig.Meshes = new Mesh?[n];
+        rig.ModelPaths = new string[n];
+        rig.PartIndices = new string[n];
+        for (int i = 0; i < n; i++)
+        {
+            var mf = _filterScratch[i];
+            rig.Meshes[i] = mf.Mesh;
+            rig.ModelPaths[i] = mf.ModelPath;
+            rig.PartIndices[i] = mf.ModelPartIndex;
+            mf.Mesh = null;
+            mf.ModelPath = "";
+        }
+        _filterScratch.Clear();
+
+        _rendererScratch.Clear();
+        CollectRenderers(root, _rendererScratch);
+        int r = _rendererScratch.Count;
+        rig.Materials = new Material?[r];
+        rig.MaterialFiles = new string[r][];
+        for (int i = 0; i < r; i++)
+        {
+            var mr = _rendererScratch[i];
+            rig.Materials[i] = mr.Material;
+            rig.MaterialFiles[i] = mr.MaterialPaths.ToArray();
+            mr.Material = null;
+            mr.MaterialPaths.Clear();
+        }
+        _rendererScratch.Clear();
+
+        rig.Json = SceneSerialization.SerializeGameObjectToJson(root);
+        rig.Imported = null;
+    }
+
+    static void CollectRenderers(GameObject node, List<MeshRenderer> renderers)
+    {
+        foreach (var b in node.Behaviors)
+        {
+            if (b is MeshRenderer mr)
+                renderers.Add(mr);
+        }
+        foreach (var child in node.Children)
+            CollectRenderers(child, renderers);
+    }
+
+    /// <summary>
+    /// The rig as the scene loader restores it, with the rig's meshes and the importer's
+    /// materials handed back, so it stands as the import itself did.
+    /// </summary>
+    GameObject? RestoreRig(RigTemplate rig)
+    {
+        if (rig.Json.Length == 0)
+            return null;
+        var restored = SceneSerialization.DeserializeGameObjectFromJson(rig.Json);
+        if (restored == null)
+            return null;
+        _filterScratch.Clear();
+        _rendererScratch.Clear();
+        CollectMeshFilters(restored, _filterScratch);
+        CollectRenderers(restored, _rendererScratch);
+        bool lined = _filterScratch.Count == rig.Meshes.Length
+            && _rendererScratch.Count == rig.Materials.Length;
+        if (lined)
+        {
+            for (int i = 0; i < _filterScratch.Count; i++)
+            {
+                var mf = _filterScratch[i];
+                mf.Mesh = rig.Meshes[i];
+                mf.ModelPath = rig.ModelPaths[i];
+                mf.ModelPartIndex = rig.PartIndices[i];
+            }
+            for (int i = 0; i < _rendererScratch.Count; i++)
+            {
+                var mr = _rendererScratch[i];
+                mr.Material = rig.Materials[i];
+                mr.MaterialPaths.Clear();
+                mr.MaterialPaths.AddRange(rig.MaterialFiles[i]);
+            }
+            RebindSkinned(restored);
+        }
+        _filterScratch.Clear();
+        _rendererScratch.Clear();
+        return lined ? restored : null;
+    }
+
+    /// <summary>A new animal: a copy of the rig's prototype, or the slower routes when there is none.</summary>
+    GameObject NewAnimal(RigTemplate rig, string modelPath)
+    {
+        if (rig.Prototype != null)
+        {
+            var copy = CopyRig(rig.Prototype);
+            if (copy != null)
+            {
+                RebindSkinned(copy);
+                return copy;
+            }
+            // A component the copy does not know. Restore each animal from JSON instead.
+            rig.Prototype = null;
+            rig.NoPrototype = true;
+        }
+
+        var restored = RestoreRig(rig);
+        if (restored != null)
+            return restored;
+
+        // The restore did not line up with the rig. Import it the slow way so the animal still appears.
+        var imported = ModelImporter.ImportModel(modelPath);
+        PruneEmptyRigNodes(imported);
+        return imported;
+    }
+
+    /// <summary>
+    /// Copy of a restored rig for one more animal. A rig is a few objects holding a mesh
+    /// filter, a renderer and an animator, so each is copied by hand: the same mesh and
+    /// material, and the animator's state table. Nothing is read from disk. Null when the
+    /// rig holds a component this does not know how to copy.
+    /// </summary>
+    static GameObject? CopyRig(GameObject source)
+    {
+        var copy = new GameObject(source.Name) { Tag = source.Tag, Layer = source.Layer };
+        if (!source.Enabled)
+            copy.Enabled = false;
+        copy.Transform.Position = source.Transform.Position;
+        copy.Transform.Rotation = source.Transform.Rotation;
+        copy.Transform.Scale = source.Transform.Scale;
+
+        foreach (var b in source.Behaviors)
+        {
+            Behavior made;
+            List<string>? materialPaths = null;
+            switch (b)
+            {
+                case MeshFilter mf:
+                {
+                    var filter = new MeshFilter
+                    {
+                        Mesh = mf.Mesh,
+                        ModelPath = mf.ModelPath,
+                        ModelPartIndex = mf.ModelPartIndex
+                    };
+                    if (mf.TargetPaths != null)
+                        filter.TargetPaths.AddRange(mf.TargetPaths);
+                    made = filter;
+                    break;
+                }
+                case MeshRenderer mr when mr.GetType() == typeof(MeshRenderer) || mr.GetType() == typeof(SkinnedMeshRenderer):
+                {
+                    MeshRenderer renderer = mr is SkinnedMeshRenderer ? new SkinnedMeshRenderer() : new MeshRenderer();
+                    renderer.Color = mr.Color;
+                    renderer.Wireframe = mr.Wireframe;
+                    renderer.LineWidth = mr.LineWidth;
+                    renderer.CastShadows = mr.CastShadows;
+                    renderer.ReceiveShadows = mr.ReceiveShadows;
+                    renderer.DoubleSided = mr.DoubleSided;
+                    renderer.InvertFrontFace = mr.InvertFrontFace;
+                    renderer.Material = mr.Material;
+                    materialPaths = mr.MaterialPaths;
+                    made = renderer;
+                    break;
+                }
+                case Animator anim:
+                {
+                    var animator = new Animator
+                    {
+                        PlayOnAwake = anim.PlayOnAwake,
+                        Speed = anim.Speed,
+                        DefaultStateName = anim.DefaultStateName
+                    };
+                    foreach (var s in anim.StateList)
+                    {
+                        animator.StateList.Add(new Animator.AnimStateDTO
+                        {
+                            Name = s.Name,
+                            ClipPath = s.ClipPath,
+                            BoneClipPath = s.BoneClipPath,
+                            Speed = s.Speed,
+                            EditorX = s.EditorX,
+                            EditorY = s.EditorY
+                        });
+                    }
+                    foreach (var t in anim.TransitionList)
+                    {
+                        animator.TransitionList.Add(new Animator.AnimTransitionDTO
+                        {
+                            FromState = t.FromState,
+                            ToState = t.ToState,
+                            Condition = t.Condition,
+                            ConditionValue = t.ConditionValue,
+                            BoolCondition = t.BoolCondition,
+                            TransitionDuration = t.TransitionDuration,
+                            HasExitTime = t.HasExitTime,
+                            ExitTime = t.ExitTime
+                        });
+                    }
+                    made = animator;
+                    break;
+                }
+                default:
+                    return null;
+            }
+
+            made.LogLifecycle = b.LogLifecycle;
+            made.SetEnabledSilent(b.Enabled);
+            // Same order the scene loader uses: attach, then enable. The renderer is enabled
+            // with no material files listed so it keeps the material it was given instead
+            // of reading the files again. The list goes on afterwards.
+            copy.AddBehaviorForDeserialization(made);
+            made.PostDeserialize();
+            if (made.Enabled)
+                made.OnEnable();
+            if (materialPaths != null && made is MeshRenderer listed)
+                listed.MaterialPaths.AddRange(materialPaths);
+        }
+
+        foreach (var child in source.Children)
+        {
+            var childCopy = CopyRig(child);
+            if (childCopy == null)
+                return null;
+            copy.AddChild(childCopy);
+        }
+        return copy;
+    }
+
+    /// <summary>The skeleton comes from the mesh, which was not there yet when the JSON was restored.</summary>
+    static void RebindSkinned(GameObject node)
+    {
+        foreach (var b in node.Behaviors)
+        {
+            if (b is SkinnedMeshRenderer smr && smr.Enabled)
+            {
+                try { smr.EnsureBoneMatrices(); }
+                catch { /* the renderer binds again before it draws */ }
+            }
+        }
+        foreach (var child in node.Children)
+            RebindSkinned(child);
+    }
+
     static void AddMap(Material mat, string absPath, string usage, string? projectRoot)
     {
-        var tex = Texture2D.FromFile(absPath);
+        Texture2D tex;
+        try { tex = Texture2D.FromFile(absPath); }
+        catch (Exception ex)
+        {
+            Log.Warning($"[Fauna] Skip {usage} map {Path.GetFileName(absPath)}: {ex.Message}");
+            return;
+        }
         string rel = absPath;
         if (!string.IsNullOrWhiteSpace(projectRoot))
         {
@@ -705,11 +1293,10 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         return sb.ToString();
     }
 
-    static string? FindSpeciesMap(string dir, string species, params string[] tokens)
+    string? FindSpeciesMap(string dir, string species, params string[] tokens)
     {
-        if (!Directory.Exists(dir)) return null;
         string? best = null;
-        foreach (var file in Directory.EnumerateFiles(dir))
+        foreach (var file in FilesIn(dir))
         {
             var name = Path.GetFileNameWithoutExtension(file);
             if (!CompactName(name).Contains(CompactName(species), StringComparison.Ordinal)) continue;
@@ -866,6 +1453,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         public GameObject? Model;
         public Animator? Anim;
         public string Species = "";
+        public bool Aquatic;
         public SN.Vector3 Dir;
         public SN.Vector3 Facing;
         public SN.Vector3 Normal;
@@ -876,7 +1464,11 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         public float IdleLeft;
         public bool Diurnal;
         public string Pose = "";
-        public string CellKey = "";
+        public FaunaCell Cell;
+        /// <summary>Direction <see cref="Cell"/> was worked out for.</summary>
+        public SN.Vector3 CellDir;
+        /// <summary>World position from the last seat.</summary>
+        public SN.Vector3 WorldPos;
     }
 
     sealed class SpeciesAssets
@@ -885,5 +1477,51 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         public string? IdlePath;
         public string? WalkPath;
         public string? RunPath;
+        public string? AlbedoPath;
+        public string? NormalPath;
+        public string? AoPath;
+    }
+
+    /// <summary>What a fauna layer needs on every spawn pass, worked out once when the table is bound.</summary>
+    sealed class LayerInfo
+    {
+        public string Species = "";
+        public bool Aquatic;
+        public string[] Mask = Array.Empty<string>();
+        /// <summary>A spot search failed. These say when the same search is worth running again.</summary>
+        public float RetryAt;
+        public int FailedHerd = -1;
+        public SN.Vector3 FailedDir;
+    }
+
+    /// <summary>
+    /// One imported rig that animals are stamped from. The FBX, its clips and its maps
+    /// load once on a worker. The rig is then restored from JSON once, the way the scene
+    /// loader would, and every animal is an in-memory copy of that. It used to be a full
+    /// FBX import per mesh part, per animal, on the game thread.
+    /// </summary>
+    sealed class RigTemplate
+    {
+        public string ModelPath = "";
+        public string Species = "";
+        public string?[] WarmTextures = Array.Empty<string?>();
+        /// <summary>Set by the worker when the import is done. Cleared once <see cref="Json"/> is built.</summary>
+        public volatile GameObject? Imported;
+        public volatile bool Failed;
+        public volatile string? Error;
+        public string Json = "";
+        public Mesh?[] Meshes = Array.Empty<Mesh?>();
+        public string[] ModelPaths = Array.Empty<string>();
+        public string[] PartIndices = Array.Empty<string>();
+        /// <summary>Each renderer's material as the importer made it, and the material files it listed.</summary>
+        public Material?[] Materials = Array.Empty<Material?>();
+        public string[][] MaterialFiles = Array.Empty<string[]>();
+        /// <summary>The restored rig animals are copied from. Never added to the scene.</summary>
+        public GameObject? Prototype;
+        /// <summary>The rig cannot be copied. Each animal is restored (or imported) on its own.</summary>
+        public bool NoPrototype;
+
+        public bool Loaded => Imported != null || Json.Length > 0 || NoPrototype;
+        public bool Ready => Prototype != null || NoPrototype;
     }
 }

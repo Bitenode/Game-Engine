@@ -2,7 +2,6 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Threading;
-using Avalonia.Threading;
 using Game_Engine.Core.Planet;
 
 namespace Game_Engine.Core
@@ -111,10 +110,10 @@ namespace Game_Engine.Core
         public static event Action? FrameRequested;
         public static void RequestFrame()
         {
-            if (Dispatcher.UIThread.CheckAccess())
+            if (EngineDispatcher.CheckAccess())
                 FrameRequested?.Invoke();
             else
-                Dispatcher.UIThread.Post(() => FrameRequested?.Invoke(), DispatcherPriority.Render);
+                EngineDispatcher.Post(() => FrameRequested?.Invoke());
         }
 
         public static event Action? Changed;
@@ -281,13 +280,13 @@ namespace Game_Engine.Core
 
             // Transform/GameObject construction (model import) may run off the UI thread.
             // SceneView/GameView handlers call Avalonia RequestNextFrameRendering and must not.
-            if (!Dispatcher.UIThread.CheckAccess())
+            if (!EngineDispatcher.CheckAccess())
             {
                 if (markDirty && !_suppressDirtyTracking)
                     Interlocked.Exchange(ref _pendingMarkDirty, 1);
                 if (Interlocked.Exchange(ref _pendingRaise, 1) != 0)
                     return;
-                Dispatcher.UIThread.Post(FlushPendingChanged, DispatcherPriority.Render);
+                EngineDispatcher.Post(FlushPendingChanged);
                 return;
             }
 

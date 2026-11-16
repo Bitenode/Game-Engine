@@ -138,7 +138,11 @@ namespace Game_Engine.Core.Component.UI
                 _quadBuffer = new UIQuad[totalGlyphs];
 
             int qi = 0;
-            float cursorY = rect.Y + rect.Height - lineH; // start from top
+            float blockH = lines.Count * lineH;
+            float cursorY = rect.Y + rect.Height - lineH;
+            // Sit the block in the middle of a taller rect so button labels don't cling to the top edge.
+            if (blockH < rect.Height)
+                cursorY -= (rect.Height - blockH) * 0.5f;
 
             foreach (var line in lines)
             {

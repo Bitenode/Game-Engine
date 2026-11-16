@@ -39,9 +39,8 @@ public static class PlanetGpuGrass
         public bool SingleCard;
         public float[] Packed = Array.Empty<float>();
         public readonly List<Key> SlotOwners = new();
-        public uint Vbo;
-        public int GpuFloats;
-        public bool FullUpload = true;
+        /// <summary>Bumped on every CPU edit so each GL context uploads its own copy.</summary>
+        public int Revision;
         public int DirtyMin = int.MaxValue;
         public int DirtyMax = -1;
         public readonly List<int> DirtySlots = new();
@@ -69,20 +68,31 @@ public static class PlanetGpuGrass
     static readonly List<TexBatch> s_batches = new();
     static readonly Dictionary<BatchKey, TexBatch> s_batchByKey = new();
     static readonly float[] s_bladeScratch = new float[MaxBladesPerPatch * FloatsPerInstance];
-    static readonly Dictionary<Texture2D, GPUTexture> s_gpuTex = new();
+    static readonly Dictionary<object, GrassGpu> s_gpus = new();
     static Texture2D? s_fallbackTex;
     static int s_bladeTotal;
 
-    static GL? s_gl;
-    static object? s_gpuKey;
-    static ShaderProgram? s_shader;
-    static uint s_vao;
-    static uint s_meshVbo;
-    static uint s_meshEbo;
-    static uint s_instanceVbo;
-    static int s_indexCount;
-    static bool s_gpuReady;
-    static bool s_gpuFailed;
+    /// <summary>GL objects for one view. Scene and Game each have their own context.</summary>
+    sealed class GrassGpu
+    {
+        public GL Gl = null!;
+        public ShaderProgram? Shader;
+        public uint Vao;
+        public uint MeshVbo;
+        public uint MeshEbo;
+        public uint InstanceVbo;
+        public int IndexCount;
+        public bool Failed;
+        public readonly Dictionary<Texture2D, GPUTexture> Textures = new();
+        public readonly Dictionary<TexBatch, GrassBuf> Bufs = new();
+    }
+
+    sealed class GrassBuf
+    {
+        public uint Vbo;
+        public int GpuFloats;
+        public int Revision = -1;
+    }
 
     public static int BladeCount => s_bladeTotal;
 
@@ -160,7 +170,7 @@ public static class PlanetGpuGrass
             packed[o + 7] = yaw;
         }
 
-        string texKey = PlanetAssetIO.NormalizeAssetReference(texturePath ?? "");
+        string texKey = TextureKey(texturePath);
         if (!string.IsNullOrWhiteSpace(texKey))
             PlanetGrassTextureCache.Request(texKey);
 
@@ -191,6 +201,33 @@ public static class PlanetGpuGrass
         WriteSlot(batch, slot, packed);
         s_bladeTotal += blades;
         return blades;
+    }
+
+    static readonly Dictionary<string, string> s_textureKeys = new(StringComparer.Ordinal);
+    static string? s_textureKeysRoot;
+
+    /// <summary>
+    /// Batch key for a texture path. Normalising is path arithmetic against the project
+    /// root, and a walk plants hundreds of patches a frame from a handful of cards, so the
+    /// answer is kept per spelling. Game thread only, like the rest of patch registration.
+    /// </summary>
+    static string TextureKey(string? texturePath)
+    {
+        if (string.IsNullOrEmpty(texturePath))
+            return PlanetAssetIO.NormalizeAssetReference(texturePath ?? "");
+        string? root = ProjectService.Current?.RootPath;
+        if (!string.Equals(root, s_textureKeysRoot, StringComparison.Ordinal) || s_textureKeys.Count > 1024)
+        {
+            // Keys are relative to the project.
+            s_textureKeys.Clear();
+            s_textureKeysRoot = root;
+        }
+        if (!s_textureKeys.TryGetValue(texturePath, out var key))
+        {
+            key = PlanetAssetIO.NormalizeAssetReference(texturePath);
+            s_textureKeys[texturePath] = key;
+        }
+        return key;
     }
 
     public static void RemovePatch(PlanetVegetationSystem owner, int token)
@@ -228,6 +265,7 @@ public static class PlanetGpuGrass
     static void WriteSlot(TexBatch batch, int slot, float[] src)
     {
         Array.Copy(src, 0, batch.Packed, slot * batch.SlotFloats, batch.SlotFloats);
+        batch.Revision++;
         batch.MarkDirty(slot);
     }
 
@@ -248,6 +286,7 @@ public static class PlanetGpuGrass
             batch.MarkDirty(slot);
         }
         batch.SlotOwners.RemoveAt(last);
+        batch.Revision++;
         s_bladeTotal -= batch.Blades;
     }
 
@@ -268,9 +307,9 @@ public static class PlanetGpuGrass
             return;
         if (!owner.ShouldDrawGpuGrass(camPos))
             return;
-        if (!EnsureGpu(gl, cache))
+        if (!TryGetGpu(gl, cache, out var gpu) || gpu.Shader == null)
             return;
-        if (s_batches.Count == 0 || s_shader == null)
+        if (s_batches.Count == 0)
             return;
 
         var prevCull = gl.IsEnabled(EnableCap.CullFace);
@@ -292,32 +331,34 @@ public static class PlanetGpuGrass
         // Prefer atmosphere night values over a brighter scene ambient floor.
         float amb = Math.Min(Math.Max(0.02f, ambient), Math.Max(0.02f, atmoAmbient));
 
-        s_shader.Use();
-        s_shader.SetMatrix4("uPlanetWorld", planetWorld);
-        s_shader.SetMatrix4("uView", view);
-        s_shader.SetMatrix4("uProj", proj);
-        s_shader.SetVector3("uCamPos", camPos);
-        s_shader.SetVector3("uLightDir", lightDir);
-        s_shader.SetVector3("uLightColor", sunTint);
-        s_shader.SetFloat("uAmbient", Math.Clamp(amb, 0.02f, 0.85f));
-        s_shader.SetFloat("uDiffuseK", Math.Clamp(diffuseK, 0.20f, 1.35f));
-        s_shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.02f, 2f));
-        s_shader.SetFloat("uAlphaCutoff", 0.32f);
-        s_shader.SetFloat("uWetness", wetness);
-        s_shader.SetFloat("uSnow", snow);
-        s_shader.SetFloat("uRain", rain);
-        s_shader.SetFloat("uStorm", storm);
-        s_shader.SetFloat("uCloudiness", cloudiness);
-        s_shader.SetFloat("uWindTime", WindSystem.Time);
-        s_shader.SetFloat("uWindStrength", Math.Clamp(wind * 3.0f, 0.02f, 0.36f));
-        s_shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
+        var shader = gpu.Shader;
+        shader.Use();
+        shader.SetMatrix4("uPlanetWorld", planetWorld);
+        shader.SetMatrix4("uView", view);
+        shader.SetMatrix4("uProj", proj);
+        shader.SetVector3("uCamPos", camPos);
+        shader.SetVector3("uLightDir", lightDir);
+        shader.SetVector3("uLightColor", sunTint);
+        shader.SetFloat("uAmbient", Math.Clamp(amb, 0.02f, 0.85f));
+        shader.SetFloat("uDiffuseK", Math.Clamp(diffuseK, 0.20f, 1.35f));
+        shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.02f, 2f));
+        shader.SetFloat("uAlphaCutoff", 0.32f);
+        shader.SetFloat("uWetness", wetness);
+        shader.SetFloat("uSnow", snow);
+        shader.SetFloat("uRain", rain);
+        shader.SetFloat("uStorm", storm);
+        shader.SetFloat("uCloudiness", cloudiness);
+        shader.SetFloat("uWindTime", WindSystem.Time);
+        shader.SetFloat("uWindStrength", Math.Clamp(wind * 3.0f, 0.02f, 0.36f));
+        shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
             ? SN.Vector3.Normalize(WindSystem.Direction)
             : SN.Vector3.UnitX);
-        s_shader.SetFloat("uCardWidth", Math.Clamp(owner.GrassWidthScale, 0.25f, 4f));
-        s_shader.SetTexture("uAlbedoTex", 0);
+        shader.SetFloat("uCardWidth", Math.Clamp(owner.GrassWidthScale, 0.25f, 4f));
+        shader.SetTexture("uAlbedoTex", 0);
 
-        gl.BindVertexArray(s_vao);
-        int uploadsLeft = 4;
+        gl.BindVertexArray(gpu.Vao);
+        // Enough unique cards per frame that the carpet stays textured once the mix is ready.
+        int uploadsLeft = 16;
 
         for (int bi = 0; bi < s_batches.Count; bi++)
         {
@@ -325,83 +366,68 @@ public static class PlanetGpuGrass
             if (batch.Slots <= 0 || !ReferenceEquals(batch.Key.Owner, owner)) continue;
             if (!PlanetGrassTextureCache.TryGet(batch.Texture, out var cpuTex))
             {
-                // Card not loaded (or evicted): re-request and skip rather than draw
-                // the flat green stand-in — that is the "untextured mesh" look.
+                // Missing card: re-request and skip. Drawing CreateSharedCard here painted
+                // the whole Game View as neon green/yellow static while the mix decoded.
                 PlanetGrassTextureCache.Request(batch.Texture);
                 continue;
             }
-            BindGrassTexture(gl, cpuTex, ref uploadsLeft);
+            if (!BindGrassTexture(gpu, cpuTex, ref uploadsLeft))
+                continue;
 
-            if (batch.Vbo == 0)
+            if (!gpu.Bufs.TryGetValue(batch, out var buf))
             {
-                batch.Vbo = gl.GenBuffer();
-                batch.GpuFloats = 0;
-                batch.FullUpload = true;
+                buf = new GrassBuf { Vbo = gl.GenBuffer() };
+                gpu.Bufs[batch] = buf;
             }
-            gl.BindBuffer(BufferTargetARB.ArrayBuffer, batch.Vbo);
-            UploadBatch(gl, batch);
+            gl.BindBuffer(BufferTargetARB.ArrayBuffer, buf.Vbo);
+            UploadBatch(gl, batch, buf);
 
             gl.VertexAttribPointer(2, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)0);
             gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)(4 * sizeof(float)));
             gl.DrawElementsInstanced(
                 PrimitiveType.Triangles,
-                batch.SingleCard ? 6u : (uint)s_indexCount,
+                batch.SingleCard ? 6u : (uint)gpu.IndexCount,
                 DrawElementsType.UnsignedInt,
                 null,
                 (uint)(batch.Slots * batch.Blades));
         }
 
         gl.BindVertexArray(0);
+        gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+        // Divisor is not reliably stored per VAO. Leaving 2/3 instanced makes the
+        // next UI text draw read garbage and can crash a few frames later.
+        gl.VertexAttribDivisor(2, 0);
+        gl.VertexAttribDivisor(3, 0);
         gl.Disable(EnableCap.PolygonOffsetFill);
+        gl.PolygonOffset(0f, 0f);
+        gl.ActiveTexture(TextureUnit.Texture0);
+        gl.BindTexture(TextureTarget.Texture2D, 0);
         if (prevCull) gl.Enable(EnableCap.CullFace);
         if (prevBlend) gl.Enable(EnableCap.Blend);
         gl.UseProgram(0);
     }
 
     /// <summary>
-    /// Upload only what changed since last draw. The old path repacked and re-uploaded
-    /// every blade of every texture whenever one patch moved, every frame while walking.
+    /// Upload this context's copy when the CPU batch changed. Scene and Game do not
+    /// share buffers, and the first view must not consume the update for the second.
     /// </summary>
-    static unsafe void UploadBatch(GL gl, TexBatch batch)
+    static unsafe void UploadBatch(GL gl, TexBatch batch, GrassBuf buf)
     {
         int floats = batch.Slots * batch.SlotFloats;
-        int sf = batch.SlotFloats;
+        if (floats <= 0 || floats > batch.Packed.Length)
+            return;
+        if (buf.Revision == batch.Revision && buf.GpuFloats >= floats)
+            return;
         fixed (float* ptr = batch.Packed)
         {
-            if (floats > batch.GpuFloats || batch.FullUpload)
+            if (floats > buf.GpuFloats)
             {
-                if (floats > batch.GpuFloats)
-                {
-                    int cap = Math.Max(floats, batch.GpuFloats * 3 / 2);
-                    gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(cap * sizeof(float)), null, BufferUsageARB.DynamicDraw);
-                    batch.GpuFloats = cap;
-                }
-                gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
-                batch.FullUpload = false;
-                batch.ClearDirty();
-                return;
+                int cap = Math.Max(floats, buf.GpuFloats * 3 / 2);
+                gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(cap * sizeof(float)), null, BufferUsageARB.DynamicDraw);
+                buf.GpuFloats = cap;
             }
-
-            if (batch.DirtyMax < 0)
-                return;
-            int lastSlot = batch.Slots - 1;
-            if (batch.DirtySlots.Count <= MaxSparseUploads)
-            {
-                for (int i = 0; i < batch.DirtySlots.Count; i++)
-                {
-                    int s = batch.DirtySlots[i];
-                    if (s > lastSlot) continue;
-                    gl.BufferSubData(BufferTargetARB.ArrayBuffer, (nint)(s * sf * sizeof(float)), (nuint)(sf * sizeof(float)), ptr + s * sf);
-                }
-            }
-            else
-            {
-                int lo = Math.Max(0, batch.DirtyMin);
-                int hi = Math.Min(lastSlot, batch.DirtyMax);
-                if (hi >= lo)
-                    gl.BufferSubData(BufferTargetARB.ArrayBuffer, (nint)(lo * sf * sizeof(float)), (nuint)((hi - lo + 1) * sf * sizeof(float)), ptr + lo * sf);
-            }
-            batch.ClearDirty();
+            gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(floats * sizeof(float)), ptr);
+            buf.Revision = batch.Revision;
         }
     }
 
@@ -415,28 +441,22 @@ public static class PlanetGpuGrass
         return s_fallbackTex;
     }
 
-    static void BindGrassTexture(GL gl, Texture2D cpuTex, ref int uploadsLeft)
+    static bool BindGrassTexture(GrassGpu gpu, Texture2D cpuTex, ref int uploadsLeft)
     {
-        if (!s_gpuTex.TryGetValue(cpuTex, out var gpu))
+        if (!gpu.Textures.TryGetValue(cpuTex, out var tex))
         {
             if (uploadsLeft <= 0)
             {
-                s_fallbackTex ??= CreateSharedCard();
-                if (!s_gpuTex.TryGetValue(s_fallbackTex, out gpu))
-                {
-                    gpu = new GPUTexture(gl);
-                    gpu.UploadLinearClampNoMip(s_fallbackTex);
-                    s_gpuTex[s_fallbackTex] = gpu;
-                }
-                gpu.Bind(TextureUnit.Texture0);
-                return;
+                // Never substitute CreateSharedCard here — that painted Game View as neon static.
+                return false;
             }
             uploadsLeft--;
-            gpu = new GPUTexture(gl);
-            gpu.UploadLinearClampNoMip(cpuTex);
-            s_gpuTex[cpuTex] = gpu;
+            tex = new GPUTexture(gpu.Gl);
+            tex.UploadLinearClampNoMip(cpuTex);
+            gpu.Textures[cpuTex] = tex;
         }
-        gpu.Bind(TextureUnit.Texture0);
+        tex.Bind(TextureUnit.Texture0);
+        return true;
     }
 
     static Texture2D CreateSharedCard()
@@ -464,22 +484,20 @@ public static class PlanetGpuGrass
         return new Texture2D(w, h, rgba);
     }
 
-    static unsafe bool EnsureGpu(GL gl, object gpuKey)
+    static unsafe bool TryGetGpu(GL gl, object gpuKey, out GrassGpu gpu)
     {
-        if (s_gpuReady && ReferenceEquals(s_gl, gl) && ReferenceEquals(s_gpuKey, gpuKey) && s_shader != null)
-            return true;
-        s_gpuFailed = false;
+        if (s_gpus.TryGetValue(gpuKey, out gpu!))
+            return !gpu.Failed && gpu.Shader != null;
 
+        gpu = new GrassGpu { Gl = gl };
+        s_gpus[gpuKey] = gpu;
         try
         {
-            DisposeGpu();
-            s_gl = gl;
-            s_gpuKey = gpuKey;
             bool es = true;
             try { es = gl.GetStringS(StringName.Version)?.Contains("OpenGL ES", StringComparison.OrdinalIgnoreCase) == true; }
             catch { es = true; }
 
-            s_shader = new ShaderProgram(gl,
+            gpu.Shader = new ShaderProgram(gl,
                 ShaderSources.Adapt(ShaderSources.PlanetGpuGrassVert, es),
                 ShaderSources.Adapt(ShaderSources.PlanetGpuGrassFrag, es));
 
@@ -495,22 +513,20 @@ public static class PlanetGpuGrass
                  0f, 1f,  halfW, 1f, 0f,
                  0f, 1f, -halfW, 0f, 0f,
             };
-            // Render() disables face culling, so a single winding per quad is enough.
-            // The old set drew every card twice (both windings) = 2x fragment work.
             uint[] idx =
             {
                 0,1,2, 0,2,3,
                 4,5,6, 4,6,7
             };
-            s_indexCount = idx.Length;
+            gpu.IndexCount = idx.Length;
 
-            s_vao = gl.GenVertexArray();
-            s_meshVbo = gl.GenBuffer();
-            s_meshEbo = gl.GenBuffer();
-            s_instanceVbo = gl.GenBuffer();
+            gpu.Vao = gl.GenVertexArray();
+            gpu.MeshVbo = gl.GenBuffer();
+            gpu.MeshEbo = gl.GenBuffer();
+            gpu.InstanceVbo = gl.GenBuffer();
 
-            gl.BindVertexArray(s_vao);
-            gl.BindBuffer(BufferTargetARB.ArrayBuffer, s_meshVbo);
+            gl.BindVertexArray(gpu.Vao);
+            gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.MeshVbo);
             fixed (float* vp = verts)
                 gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(verts.Length * sizeof(float)), vp, BufferUsageARB.StaticDraw);
             gl.EnableVertexAttribArray(0);
@@ -518,11 +534,11 @@ public static class PlanetGpuGrass
             gl.EnableVertexAttribArray(1);
             gl.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 
-            gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, s_meshEbo);
+            gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, gpu.MeshEbo);
             fixed (uint* ip = idx)
                 gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(idx.Length * sizeof(uint)), ip, BufferUsageARB.StaticDraw);
 
-            gl.BindBuffer(BufferTargetARB.ArrayBuffer, s_instanceVbo);
+            gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.InstanceVbo);
             gl.BufferData(BufferTargetARB.ArrayBuffer, 32, null, BufferUsageARB.StreamDraw);
             gl.EnableVertexAttribArray(2);
             gl.VertexAttribPointer(2, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)0);
@@ -532,61 +548,50 @@ public static class PlanetGpuGrass
             gl.VertexAttribDivisor(3, 1);
 
             gl.BindVertexArray(0);
-            s_gpuReady = true;
             return true;
         }
         catch (Exception ex)
         {
-            s_gpuFailed = true;
+            gpu.Failed = true;
             Log.Error($"[PlanetGpuGrass] Failed to init instanced grass: {ex.Message}");
             return false;
         }
     }
 
-    static void DisposeGpu()
+    static void DisposeGpu(GrassGpu gpu)
     {
-        if (s_gl == null) return;
+        var gl = gpu.Gl;
         try
         {
-            if (s_vao != 0) s_gl.DeleteVertexArray(s_vao);
-            if (s_meshVbo != 0) s_gl.DeleteBuffer(s_meshVbo);
-            if (s_meshEbo != 0) s_gl.DeleteBuffer(s_meshEbo);
-            if (s_instanceVbo != 0) s_gl.DeleteBuffer(s_instanceVbo);
-            for (int i = 0; i < s_batches.Count; i++)
+            if (gpu.Vao != 0) gl.DeleteVertexArray(gpu.Vao);
+            if (gpu.MeshVbo != 0) gl.DeleteBuffer(gpu.MeshVbo);
+            if (gpu.MeshEbo != 0) gl.DeleteBuffer(gpu.MeshEbo);
+            if (gpu.InstanceVbo != 0) gl.DeleteBuffer(gpu.InstanceVbo);
+            foreach (var buf in gpu.Bufs.Values)
             {
-                var b = s_batches[i];
-                if (b.Vbo != 0) s_gl.DeleteBuffer(b.Vbo);
+                if (buf.Vbo != 0) gl.DeleteBuffer(buf.Vbo);
             }
         }
         catch { }
-        for (int i = 0; i < s_batches.Count; i++)
-        {
-            s_batches[i].Vbo = 0;
-            s_batches[i].GpuFloats = 0;
-            s_batches[i].FullUpload = true;
-            s_batches[i].ClearDirty();
-        }
-        foreach (var tex in s_gpuTex.Values)
+        foreach (var tex in gpu.Textures.Values)
         {
             try { tex.Dispose(); } catch { }
         }
-        s_gpuTex.Clear();
-        s_shader?.Dispose();
-        s_shader = null;
-        s_vao = s_meshVbo = s_meshEbo = s_instanceVbo = 0;
-        s_gpuReady = false;
-        s_gl = null;
-        s_gpuKey = null;
+        gpu.Textures.Clear();
+        gpu.Bufs.Clear();
+        gpu.Shader?.Dispose();
+        gpu.Shader = null;
+        gpu.Vao = gpu.MeshVbo = gpu.MeshEbo = gpu.InstanceVbo = 0;
     }
 
     /// <summary>
-    /// Release the static grass GPU state when its owning render-context cache is
-    /// flushed or disposed. Must be called while that GL context is current.
+    /// Release one view's grass GPU state. Must be called while that GL context is current.
+    /// Scene and Game keep separate objects, so flushing one does not wipe the other.
     /// </summary>
     public static void ReleaseGpuFor(object gpuKey)
     {
-        if (ReferenceEquals(s_gpuKey, gpuKey))
-            DisposeGpu();
+        if (s_gpus.Remove(gpuKey, out var gpu))
+            DisposeGpu(gpu);
     }
 
     static SN.Vector3 SafeNormalize(SN.Vector3 v, SN.Vector3 fallback)

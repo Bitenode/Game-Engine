@@ -17,11 +17,14 @@ Github Engine/
 │   ├── MainWindow.axaml            # Editor main window
 │   └── Standard Assets/            # Built-in assets (BiomeGraph, Planet Textures, Planet Vegetation, Skybox, Shader, Scenes, Prefabs, Code Examples)
 │
-└── Engine.Player/                  # Standalone player project (desktop + Windows TFM for packaging)
-    ├── Engine.Player.csproj        # Player project file (net9.0, net9.0-windows10.0.19041.0)
-    ├── Program.cs                  # Player entry point (loads build.json)
-    ├── Properties/Package.appxmanifest # App package manifest (Desktop + Windows.Xbox device families)
-    └── App.axaml                   # Player Avalonia application
+├── Engine.Player/                  # Standalone player (desktop Avalonia + Windows TFM for PC MSIX)
+│   ├── Engine.Player.csproj
+│   ├── Program.cs                  # build.json + PlayerBootstrap / PlayerFrameRenderer
+│   └── App.axaml
+├── Engine.Player.XboxUwp/          # Xbox Dev Mode UWP host (SwapChainPanel + ANGLE ES 3)
+│   └── README.md
+├── Engine.Player.Gdk/              # Native Microsoft GDK scaffold (XAudio2, GameInput, XSAPI)
+│   └── README.md
 └── Engine.Player.Android/          # Avalonia Android host (APK)
     └── Engine.Player.Android.csproj
 ```
@@ -29,7 +32,9 @@ Github Engine/
 | Project | Purpose | Output | Roslyn | UIX | Extensions | Runtime IDs |
 |---------|---------|--------|--------|-----|------------|-------------|
 | **Game_Engine** | Editor + development | `WinExe` | Yes (runtime C# compilation) | Yes | Yes | Any CPU |
-| **Engine.Player** | Standalone game player | `WinExe` | No (loads pre-compiled DLLs) | No | No | Multi-platform + `net9.0-windows10.0.19041.0` for Xbox / Microsoft Store app packages |
+| **Engine.Player** | Standalone game player | `WinExe` | No (loads pre-compiled DLLs) | No | No | Multi-platform + `net9.0-windows10.0.19041.0` for PC MSIX / Store |
+| **Engine.Player.XboxUwp** | Xbox Dev Mode title | UWP `App` | No | No | No | x64 only |
+| **Engine.Player.Gdk** | GDK native bootstrap | Win32 console | — | — | — | x64 (GDK layout) |
 | **Engine.Player.Android** | Same core, Android APK | `Exe` (net9.0-android35.0) | No | No | No | android-arm64, android-x64 |
 
 ### Android, MSIX / Store, and Xbox from Build Settings
@@ -37,33 +42,60 @@ Github Engine/
 - **Asset packing** — `Data/Assets.dll` includes **only files referenced by the scenes in the build list** (plus material textures and common model sidecars), not the entire project `Assets/` folder. A Main Menu–only build therefore stays small; unused GB of models/textures are left out. The player caches extracted assets across launches.
 - **Android** — Build Settings runs `dotnet publish` on `Engine.Player.Android` with `-f net9.0-android35.0`. The Android host currently pins **Avalonia 11.3.11** (desktop/editor use **Avalonia 12** on .NET 9); **Avalonia.Android 12.x requires .NET 10** (`net10.0-android36.0`) — upgrade the Android TFM and packages after installing the .NET 10 SDK. Game `Data` is zipped and passed as **`Data.zip`** in the APK **assets**; the player extracts it on first launch (see `Engine.Player.Android` and player `Program.cs` for asset loading). Install the [.NET Android workload](https://learn.microsoft.com/dotnet/mobile/get-started) (`dotnet workload install android`). Release APK signing: set keystore properties as in [Avalonia Android deployment](https://docs.avaloniaui.net/docs/deployment/android).
 - **Windows MSIX / Microsoft Store** — The `Engine.Player` project includes **`Properties/Package.appxmanifest`** for packaged desktop identity. Publishing with **`net9.0-windows10.0.19041.0`** produces a layout suitable for **MSIX** / Store tooling (Visual Studio “Packaging” or `dotnet publish` with Windows App SDK / Windows packaging projects). The editor build panel should use the same output folder conventions as the CLI (`publish/` under the player project, plus copied `Data/`). Replace placeholder `Assets/` tiles and set a valid package **identity** publisher before Store submission.
-- **Xbox** — See [Xbox / Visual Studio packaging](#xbox--visual-studio-packaging) below.
+- **Xbox** — See [Xbox platforms (UWP vs GDK)](#xbox-platforms-uwp-vs-gdk) and [UWP Dev Mode packaging](#xbox--visual-studio-packaging-uwp-dev-mode) below.
 
-### Xbox / Visual Studio packaging
+### Xbox platforms (UWP vs GDK)
+
+| Build Settings platform | Runtime | Audio | Xbox Live | Output |
+|-------------------------|---------|-------|-----------|--------|
+| **Xbox** | UWP `Engine.Player.XboxUwp` (C#) | **AudioGraph** (WAV/MP3) | none in host | `Builds/Xbox/VisualStudio/` UWP `.sln` |
+| **Xbox GDK** | Native `Engine.Player.Gdk` (C++) | **XAudio2** | **XSAPI** ([xbox-live-api](https://github.com/microsoft/xbox-live-api) via GDK) | `Builds/XboxGdk/` |
+| **Windows** | Avalonia `Engine.Player` (C#) | **NAudio** on Windows TFM | `NullXboxLiveService` | unpackaged `Engine.Player.exe` |
+
+XSAPI / xbox-live-api is a **GDK native dependency**, never copied into `Assets.dll`. Game scripts use `Game_Engine.Core.Xbox.XboxLive.Current`; the Avalonia / UWP hosts stay without Live until a later interop layer exists.
+
+### Xbox / Visual Studio packaging (UWP Dev Mode)
+
+Desktop Bridge / FullTrust Avalonia MSIX packages **do not run on Xbox** (console shows “we don’t support …”). The **Xbox** platform now stages a real UWP app.
 
 | Output under `Builds/Xbox/` | Contents |
 |-----------------------------|----------|
-| `layout/` | `Engine.Player` publish + `Data/` (scripts, optional `Assets.dll`, scenes, `build.json`) |
-| `VisualStudio/` | Per-game `{Name}.sln`, `{Name}.wapproj`, `Package.appxmanifest`, logos, `XboxDev.pfx` copy |
-| `AppPackages/` | Signed `.msix` from MSBuild (player runtime only) |
-| `README.txt` | Layout explanation and launch notes |
+| `Data/` | Scripts, optional `Assets.dll`, scenes, `build.json` |
+| `VisualStudio/` | Staged `Engine.Player.XboxUwp`, `{Name}.sln`, `Package.appxmanifest`, embedded `Data/`, signing cert |
+| `README.txt` | Remote Machine deploy steps |
 
-**Prerequisites:** Visual Studio 2022, **MSBuild**, and **MSIX Packaging Tools** (`Microsoft.DesktopBridge.targets`). Editor implementation: `Core/Editor/XboxVisualStudioPackager.cs`.
+**Prerequisites:** Visual Studio 2022 with UWP support, MSBuild. Editor: `Core/Editor/XboxVisualStudioPackager.cs`. Template: [`Engine.Player.XboxUwp/`](../../Engine.Player.XboxUwp/README.md).
 
-1. Publish `Engine.Player` (`net9.0-windows10.0.19041.0`, `win-x64`, `--force`) into `layout/`.
-2. Build `Data/` (scripts, scene-referenced `Assets.dll`, scenes, manifest).
-3. Generate a **Windows Application Packaging Project** and run MSBuild **Release \| x64**.
+1. Build `Data/` (scripts, scene-referenced assets, scenes, manifest).
+2. Copy `Engine.Player.XboxUwp` into `VisualStudio/`, write identity into `Package.appxmanifest` (**no** `runFullTrust`, EntryPoint = `Engine.Player.XboxUwp.App`).
+3. MSBuild **x64** produces a signed `.msix` for sideload/deploy.
 
-The **MSIX contains only the player runtime**. `layout/Data/` stays outside the package so MakeAppx does not hit **`0x8007000e` (out of memory)** on large projects. Game content is passed at launch: `Engine.Player.exe "<path-to-layout/Data/build.json>"`.
+**Deploy to console:** Open in Visual Studio → platform **x64** → Target device **Remote Machine** → Authentication **Universal** → sign in a user on the Xbox → Deploy / F5.
 
-**Testing without rebuilding assets every time**
+**3D on console:** the host creates an ANGLE ES 3 context on a `SwapChainPanel` (`libEGL.dll` / `libGLESv2.dll` from `vcpkg install angle:x64-uwp`, copied to `Engine.Player.XboxUwp/native/x64`). In Dev Home set the package App type to **Game** (full GPU, 5 GB). The first screen prints `GL_VERSION` and `GL_RENDERER`. 3D play continues only when that string is OpenGL ES 3.0 on a hardware Direct3D11 renderer.
 
-- **Run Local** (Build Settings, Xbox) — runs the unpackaged `layout/Engine.Player.exe` with `layout/Data/build.json`. Use this for day-to-day PC checks.
-- **Open in Visual Studio** — opens the generated `.sln`. Use **Local Machine** (not Remote). The solution has **Deploy** enabled; `{Name}.wapproj.user` sets **Managed (CoreCLR)** debugging and the `build.json` command line. Re-run **F5** after changing player code only if you re-published `layout/` (editor Build with `--force`, or `dotnet publish` to `layout/`).
+Assets are staged loose under `Data/Assets` (not a zip) by `Core/Editor/XboxContentStager.cs`. Build-time `.dds` sidecars are BC1/BC3 only and are made for material textures. Audio is WAV/MP3 via AudioGraph. Pads use `Windows.Gaming.Input`. Ogg is not decoded on the console.
 
-**Build & Run** (editor) imports `ProjectSettings/XboxDev.pfx` into `CurrentUser\TrustedPeople`, sideloads the MSIX, then starts the app with the external data path.
+The player writes `LocalState\player.log` (engine log, failed asset and script loads, scene load times, frame-rate samples). Check it first when a console build looks different from the editor. Linked shader binaries are cached in `LocalCache\Shaders`; only the first launch pays the ANGLE compile.
 
-**Limits:** This path targets **Windows.Desktop** and **Windows.Xbox** device families in the manifest; it is **not** a retail **Xbox GDK** console title. Large commercial titles usually stream assets rather than one monolithic package.
+**Limits:** Retail certification still needs ID@Xbox + GDKX. This path is a Dev Mode UWP title, not a GDK console package.
+
+### Xbox GDK native host
+
+Template: [`Engine.Player.Gdk/`](../../Engine.Player.Gdk/README.md). Editor staging: `Core/Editor/XboxGdkPackager.cs`.
+
+| Piece | Role |
+|-------|------|
+| `src/AudioXAudio2.*` | XAudio2 mastering voice + test tone |
+| `src/InputGameInput.*` | GameInput pad poll (engine Xbox-layout button names) |
+| `src/XboxLiveXsapi.*` | `XGameRuntimeInitialize`, XSAPI sign-in, achievement unlock |
+| `MicrosoftGame.config` | Title identity written from Build Settings |
+
+**Prerequisites:** [Microsoft GDK](https://aka.ms/gdk) (`winget install Microsoft.Gaming.GDK`; `GameDK` / `GameDKCoreLatest`), Visual Studio C++ **x64** (Scarlett console still needs GDKX under a partner account), Partner Center **SCID**, **Title Id**, and **Sandbox**.
+
+Build Settings → **Xbox** or **Xbox GDK** shows an **Xbox Game Config** panel (`MicrosoftGame.config` fields: Identity Name, Display Name, Publisher Display, Description, Title Id, Store Id, MSA App Id, Device Family, logos). **Xbox GDK** also shows SCID / Sandbox. Empty SCID or Title Id fails a GDK build. Missing GDK fails with an install message (no fallback that packs XSAPI into assets). Output goes to `Builds/XboxGdk/`. Package with GDK **MakePkg** / **wdapp**, not MakeAppx.
+
+Retail certification still needs ID@Xbox (or managed partner) credentials; the repo scaffolds and compiles the host when the GDK is installed.
 
 ### Player asset loading
 
@@ -71,7 +103,11 @@ The **MSIX contains only the player runtime**. `layout/Data/` stays outside the 
 
 ### Scene-referenced asset collection
 
-`Core/Editor/BuildAssetCollector.cs` walks the **scenes in the build list**, collects quoted asset paths (models, textures, materials, prefabs, audio, etc.), follows `.material` / `.prefab` dependencies, and includes model `_Materials` folders. Those files alone are zipped into `Data/Assets.dll`.
+`Core/Editor/BuildAssetCollector.cs` walks the **scenes in the build list**, collects quoted asset paths (models, textures, materials, prefabs, audio, etc.), follows `.material` / `.prefab` / `.json` dependencies, and includes model `_Materials` and `_Animations` folders and the textures a model file names. Those files alone are zipped into `Data/Assets.dll` (or copied loose for Xbox).
+
+It also reads the **project's player scripts**. A string literal that names a file or folder under `Assets/` is packed, including the joined literals of a `Path.Combine(root, "Assets", "Game", "Data", "Items.json")` and a bare file name such as `"Items.json"`. This is how data a script loads by path (item catalogs, icon folders, audio folders) reaches the build. A path assembled from variables at run time cannot be detected; name its folder in a literal.
+
+A scene path that is absolute and outside the project is reported in the collector result: Xbox builds copy that file to `Data/Assets/_external` and rewrite the staged scene. At run time, `Core/AssetPathRemap.cs` maps an absolute path that does not exist to the same file under the player's Assets folder.
 
 ---
 
@@ -256,6 +292,19 @@ The player **`<Compile Include="...">`** list adds the Standard Assets **UI** sa
 | `Standard Assets/Code Examples/UI/*.cs` | **MainMenuController**, **ServerHostController**, **HotbarController**, and any future UI samples colocated there |
 
 Other Standard Assets scripts (gameplay demos, planet tools, etc.) are **not** linked automatically; ship them via **GameScripts.dll** or add explicit `<Compile Include="...">` entries if your scenes reference those types.
+
+### Shared player runtime (`Core/PlayerBootstrap`, `PlayerFrameRenderer`)
+
+All C# player hosts share the same load and draw path:
+
+| Type | Role |
+|------|------|
+| `PlayerBootstrap` | Reads `build.json`, unpacks `Assets.dll` / loose `Data/Assets`, loads `GameScripts.dll`, wires scene serialization (`WireSceneSerialization`), loads the startup scene |
+| `PlayerSimulation` | Fixed-update timestep, behavior lifecycle, deferred scene loads |
+| `PlayerFrameState` | Per-frame camera, viewport, and scene handles for the renderer |
+| `PlayerFrameRenderer` | One entry point used by **PlayerView** (Avalonia) and **Engine.Player.XboxUwp** (`XboxGameLoop`): rebuild caches, `SceneRenderer` forward pass, `CanvasRenderer` overlays |
+
+Desktop **Engine.Player** calls `PlayerBootstrap` from `Program.cs` / `PlayerRoot`; Xbox UWP calls `Load` on the GL thread after ANGLE init. **`AssetPathRemap`** rewrites absolute asset paths staged under `Data/Assets/_external`.
 
 ### Runtime UI and game loop (PlayerView)
 

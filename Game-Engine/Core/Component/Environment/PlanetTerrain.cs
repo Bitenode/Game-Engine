@@ -171,6 +171,35 @@ public sealed class PlanetTerrain : Behavior
     float _waterColCrustR;
     PlanetWaterSurfaceSample _waterColSample;
 
+    /// <summary>
+    /// Set before loading the planet scene. The next play-mode initialize uses this
+    /// seed instead of the shared <c>.planet</c> template, drops that file's baked
+    /// trees and digs, and will not write back over the template.
+    /// </summary>
+    public static int? LaunchSeed { get; set; }
+
+    /// <summary>Optional weather seed paired with <see cref="LaunchSeed"/>. Cleared when consumed.</summary>
+    public static int? LaunchWeatherSeed { get; set; }
+
+    /// <summary>
+    /// Project-relative <c>.planetvox</c> for this visit. Digs load and save here
+    /// so a created world does not rewrite the template sidecar.
+    /// </summary>
+    public static string? LaunchVoxelSidecar { get; set; }
+
+    /// <summary>True after a menu launch replaced the template seed for this instance.</summary>
+    public bool FreshWorldLaunch { get; private set; }
+
+    string? _launchVoxelPath;
+
+    /// <summary>Drop a queued menu launch. Called when play mode stops before the planet loads.</summary>
+    public static void ClearLaunchRequest()
+    {
+        LaunchSeed = null;
+        LaunchWeatherSeed = null;
+        LaunchVoxelSidecar = null;
+    }
+
     /// <summary>True while a background height/splat cubemap bake is still running.</summary>
     public bool SurfaceBakePending { get; private set; }
 
@@ -219,12 +248,46 @@ public sealed class PlanetTerrain : Behavior
         ReleaseOrbitWater();
     }
 
+    void ConsumeLaunchSeed()
+    {
+        if (LaunchSeed is not int seed || !SceneService.PlayMode)
+            return;
+
+        LaunchSeed = null;
+        int weather = LaunchWeatherSeed ?? unchecked(seed * 7919 + 1337);
+        LaunchWeatherSeed = null;
+        _launchVoxelPath = string.IsNullOrWhiteSpace(LaunchVoxelSidecar) ? null : LaunchVoxelSidecar.Trim();
+        LaunchVoxelSidecar = null;
+
+        Seed = seed;
+        WeatherSeed = weather;
+        if (_config != null)
+        {
+            _config.Seed = seed;
+            _config.WeatherSeed = weather;
+        }
+
+        FreshWorldLaunch = true;
+        AsyncVegetationHydrationPending = false;
+        _pendingVegetationAssetData = null;
+        _deferredDiskVegetation = null;
+        _useDiskVegetationSnapshotOnSave = false;
+        _pendingHeightDeltaAsset = null;
+        _voxelEditStore = new PlanetVoxelEditStore();
+
+        if (!string.IsNullOrWhiteSpace(_launchVoxelPath))
+            LoadVoxelEdits(_launchVoxelPath);
+
+        Log.Info($"[PlanetTerrain] Fresh world seed {seed}, weather {weather}.");
+    }
+
     void Initialize()
     {
         EnsurePlanetAssetPath();
         _voxelEditStore ??= new PlanetVoxelEditStore();
         bool importVeg = !SceneService.DeferPlanetVegetationImport && !AsyncVegetationHydrationPending;
         TryLoadPlanetAsset(importVegetation: importVeg);
+        ConsumeLaunchSeed();
 
         var baseConfig = _config != null ? CloneConfig(_config) : new PlanetConfig();
         _config = baseConfig;
@@ -400,6 +463,11 @@ public sealed class PlanetTerrain : Behavior
 
     public void SavePlanetAsset()
     {
+        // A created world shares the template for biomes only. Writing here would
+        // stamp that world's seed and an empty forest back onto Earth.
+        if (FreshWorldLaunch)
+            return;
+
         EnsurePlanetAssetPath();
         var data = BuildPlanetAssetData();
         if (PlanetAssetIO.TrySave(PlanetAssetPath, data, out var error))
@@ -479,7 +547,7 @@ public sealed class PlanetTerrain : Behavior
         {
             var baked = PlanetCubemapBaker.Bake(
                 _config, _biomeMap, _noiseCache,
-                PlanetSurfaceCubemap.DefaultResolution,
+                ResolveSurfaceBakeResolution(),
                 _surfaceCubemap);
             ApplySurfaceBakeResult(baked, remesh: true);
         }
@@ -510,7 +578,7 @@ public sealed class PlanetTerrain : Behavior
             ct.ThrowIfCancellationRequested();
             return PlanetCubemapBaker.Bake(
                 config, biomeMap, noise,
-                PlanetSurfaceCubemap.DefaultResolution,
+                ResolveSurfaceBakeResolution(),
                 preserve);
         }
 
@@ -537,6 +605,8 @@ public sealed class PlanetTerrain : Behavior
 
             try
             {
+                // Remesh after bake so mountain height lands in the shell. Splat
+                // uploads are staggered on Xbox, so this no longer freezes Dev Mode.
                 terrain.ApplySurfaceBakeResult(t.Result, remesh: true);
             }
             catch (Exception ex)
@@ -554,7 +624,7 @@ public sealed class PlanetTerrain : Behavior
 #else
         _ = Task.Run(() => Bake(CancellationToken.None)).ContinueWith(t =>
         {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() => OnBakeDone(t));
+            EngineDispatcher.Post(() => OnBakeDone(t));
         }, TaskContinuationOptions.ExecuteSynchronously);
 #endif
     }
@@ -588,8 +658,20 @@ public sealed class PlanetTerrain : Behavior
             _chunkManager?.InvalidateOverlappingGenerations();
             _chunkManager?.RequestFullShellRebuild(16);
         }
+        // Xbox applies bake with remesh:false — splat GPU upload alone paints biomes.
+        // RequestFullShellRebuild marks every leaf and was freezing Dev Mode on apply.
         SurfaceBakePending = false;
         SceneService.NotifyChanged(markDirty: false);
+    }
+
+    static int ResolveSurfaceBakeResolution()
+    {
+#if XBOX_UWP
+        // Match the editor splat density. RGBA8 staggered upload can take 512.
+        return PlanetSurfaceCubemap.DefaultResolution;
+#else
+        return PlanetSurfaceCubemap.DefaultResolution;
+#endif
     }
 
     PlanetWaterCarveContext CreateWaterCarveContext() => new()
@@ -677,6 +759,82 @@ public sealed class PlanetTerrain : Behavior
             _riverNoisePrimary,
             _riverNoiseMeander,
             FindBiomeIndex);
+    }
+
+    const int WaterCacheBits = 14;
+    const int WaterCacheFlushFrames = 2048;
+    long[]? _waterCacheKeys;
+    PlanetWaterSurfaceSample[]? _waterCacheVals;
+    int _waterCacheFrame;
+    BiomeMap? _waterCacheMap;
+    PlanetSurfaceCubemap? _waterCacheCube;
+    bool _waterCacheBaked;
+    object? _waterCacheBodies;
+    object? _waterCachePaths;
+    object? _waterCacheNoise;
+    float _waterCacheSea;
+
+    /// <summary>
+    /// <see cref="SampleWaterSurface"/> for gameplay that asks the same spots every frame
+    /// (a herd checking the shoreline). While playing, the answer is kept per metre-sized
+    /// cell: the water table reads the undug crust, so digging does not move it. Outside
+    /// play mode this is the exact sample, since the graph can change under the editor.
+    /// </summary>
+    public PlanetWaterSurfaceSample SampleWaterSurfaceCached(SN.Vector3 sphereDir)
+    {
+        if (!SceneService.PlayMode || _config == null || _biomeMap == null)
+            return SampleWaterSurface(sphereDir);
+        if (sphereDir.LengthSquared() < 1e-8f)
+            return PlanetWaterSurfaceSample.Empty;
+        sphereDir = SN.Vector3.Normalize(sphereDir);
+
+        int frame = Time.frameCount;
+        var keys = _waterCacheKeys;
+        var vals = _waterCacheVals;
+        // Anything the water table is built from changed (graph applied, bake landed),
+        // or the entries are old enough that a runtime tweak could have gone unseen.
+        if (keys == null || vals == null
+            || !ReferenceEquals(_waterCacheMap, _biomeMap)
+            || !ReferenceEquals(_waterCacheCube, _surfaceCubemap)
+            || _waterCacheBaked != HasBakedStandSurface
+            || !ReferenceEquals(_waterCacheBodies, _config.WaterBodies)
+            || !ReferenceEquals(_waterCachePaths, _config.WaterPaths)
+            || !ReferenceEquals(_waterCacheNoise, _config.GeologyNoise)
+            || _waterCacheSea != _config.SeaLevel
+            || frame - _waterCacheFrame > WaterCacheFlushFrames
+            || frame < _waterCacheFrame)
+        {
+            if (keys == null || vals == null)
+            {
+                _waterCacheKeys = keys = new long[1 << WaterCacheBits];
+                _waterCacheVals = vals = new PlanetWaterSurfaceSample[1 << WaterCacheBits];
+            }
+            Array.Fill(keys, long.MinValue);
+            _waterCacheFrame = frame;
+            _waterCacheMap = _biomeMap;
+            _waterCacheCube = _surfaceCubemap;
+            _waterCacheBaked = HasBakedStandSurface;
+            _waterCacheBodies = _config.WaterBodies;
+            _waterCachePaths = _config.WaterPaths;
+            _waterCacheNoise = _config.GeologyNoise;
+            _waterCacheSea = _config.SeaLevel;
+        }
+
+        // One-metre lattice through the crust shell. Cheaper than a face/UV lookup
+        // and the cells stay the same size everywhere on the sphere.
+        float scale = MathF.Max(64f, _config.Radius);
+        long ix = (long)MathF.Floor(sphereDir.X * scale);
+        long iy = (long)MathF.Floor(sphereDir.Y * scale);
+        long iz = (long)MathF.Floor(sphereDir.Z * scale);
+        long key = ((ix & 0x1FFFFF) << 42) | ((iy & 0x1FFFFF) << 21) | (iz & 0x1FFFFF);
+        int slot = (int)(((ulong)key * 0x9E3779B97F4A7C15UL) >> (64 - WaterCacheBits));
+        if (keys[slot] == key)
+            return vals[slot];
+
+        var sample = SampleWaterSurface(sphereDir);
+        keys[slot] = key;
+        vals[slot] = sample;
+        return sample;
     }
 
     /// <summary>Local crust radius ignoring dig deltas (base cubemap + water carve).</summary>
@@ -1424,11 +1582,25 @@ public sealed class PlanetTerrain : Behavior
             }
             else
             {
+#if XBOX_UWP
+                // Enough leaves for biome-merge cliffs; recycle still keeps jobs bounded.
+                _config.MaxLodDepth = Math.Clamp(Math.Max(MaxLodDepth, 5), 5, 6);
+                int cap = Math.Clamp(Math.Max(MaxActiveChunks, 64), 64, 88);
+                _config.MaxActiveChunks = cap;
+                _config.MaxLeafNodes = cap;
+                _config.MaxGenerationSchedulesPerUpdate = 5;
+                _config.MaxMeshAppliesPerUpdate = 5;
+                // Reach the next slope chunks while standing mid-hill. 0.60 only
+                // refined the patch underfoot; the rest popped in at the edge.
+                _config.LodDistanceMultiplier = Math.Max(1.8f, Math.Min(LodDistanceMultiplier, 2.4f));
+                _config.SplitDistanceScale = 1.05f;
+#else
                 _config.MaxLodDepth = Math.Clamp(MaxLodDepth, 4, 5);
                 int cap = Math.Clamp(MaxActiveChunks, 32, 64);
                 _config.MaxActiveChunks = cap;
                 _config.MaxLeafNodes = cap;
                 _config.MaxGenerationSchedulesPerUpdate = 6;
+#endif
             }
         }
         else
@@ -1852,7 +2024,15 @@ public sealed class PlanetTerrain : Behavior
         _chunkManager?.FlushPendingEditCommands();
         EnsureSurfaceCubemap();
         _voxelEditStore ??= new PlanetVoxelEditStore();
-        var sidecarRel = PlanetAssetIO.GetVoxelEditsSidecarProjectRelative(PlanetAssetPath);
+        string sidecarRel;
+        if (FreshWorldLaunch)
+        {
+            if (string.IsNullOrWhiteSpace(_launchVoxelPath))
+                return false;
+            sidecarRel = PlanetAssetIO.NormalizeProjectRelative(_launchVoxelPath);
+        }
+        else
+            sidecarRel = PlanetAssetIO.GetVoxelEditsSidecarProjectRelative(PlanetAssetPath);
         var asset = _voxelEditStore.ExportAsset(bakeIfOverThreshold: true);
         if (_surfaceCubemap != null)
         {

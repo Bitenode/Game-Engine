@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <!-- Overridden when Build Settings stages this project away from the repo. -->
+    <GameEngineCoreDir Condition="'$(GameEngineCoreDir)'==''">$(MSBuildThisFileDirectory)..\Game-Engine\Core\</GameEngineCoreDir>
+    <GameEngineStdUiDir Condition="'$(GameEngineStdUiDir)'==''">$(MSBuildThisFileDirectory)..\Game-Engine\Standard Assets\Code Examples\UI\</GameEngineStdUiDir>
+    <RootNamespace>Engine.Player.XboxUwp</RootNamespace>
+    <AssemblyName>Engine.Player.XboxUwp</AssemblyName>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseUwp>true</UseUwp>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Xbox Dev Mode has no shared .NET 9. Ship the runtime in the package. -->
+    <SelfContained>true</SelfContained>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <DefineConstants>$(DefineConstants);PLAYER;XBOX_UWP</DefineConstants>
+    <PublishAot>false</PublishAot>
+    <UseUwpTools>true</UseUwpTools>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+    <AppxBundle>Never</AppxBundle>
+    <!-- Single-project MSIX: pick "Remote Machine" launch profile in the VS debug toolbar. -->
+    <WindowsAppContainer>true</WindowsAppContainer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**\*" />
+    <Content Include="Data\**\*" Condition="Exists('Data')" />
+    <!-- Debug already copies ucrtbased.dll from Microsoft.UniversalCRT.Debug. Shipping ours too is APPX1101. -->
+    <Content Include="native\x64\*.dll" Exclude="native\x64\ucrtbased.dll" Condition="Exists('native\x64')">
+      <Link>%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="native\x64\ucrtbased.dll" Condition="'$(Configuration)' != 'Debug' AND Exists('native\x64\ucrtbased.dll')">
+      <Link>ucrtbased.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(GameEngineCoreDir)**\*.cs" Exclude="$(GameEngineCoreDir)UIX\**;$(GameEngineCoreDir)EditorWindows\**;$(GameEngineCoreDir)Extensibility\**;$(GameEngineCoreDir)Editor\**" Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Kept out of GameScripts.dll because the desktop player compiles them in. Xbox must compile them here. -->
+    <Compile Include="$(GameEngineStdUiDir)*.cs" Link="StdUI\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
+    <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
+    <!-- Keep the managed AssimpNet.dll (without it every model import fails). Only the desktop
+         runtimes/win-x64/native/assimp.dll is dropped; native/x64/assimp.dll is the UWP build. -->
+    <PackageReference Include="AssimpNet" Version="4.1.0">
+      <ExcludeAssets>native</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="System.Reactive" Version="6.1.0" />
+  </ItemGroup>
+
+  <!-- PackagingOutputs is what MSIX actually ships. Remove AssimpNet's desktop assimp.dll after NuGet adds it. -->
+  <Target Name="DropDesktopAssimp" BeforeTargets="_ComputeAppxPackagePayload">
+    <ItemGroup>
+      <PackagingOutputs Remove="@(PackagingOutputs)" Condition="'%(Filename)' == 'assimp' AND $([System.String]::Copy('%(FullPath)').Contains('runtimes'))" />
+      <PackagingOutputs Remove="@(PackagingOutputs)" Condition="'%(Filename)' == 'assimp' AND $([System.String]::Copy('%(Identity)').Contains('runtimes'))" />
+    </ItemGroup>
+  </Target>
+</Project>

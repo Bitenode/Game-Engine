@@ -16,9 +16,25 @@ public sealed class ShaderProgram : IDisposable
     public uint Handle { get; }
     private readonly Dictionary<string, int> _uniformCache = new();
 
+    /// <summary>
+    /// Folder for linked program binaries, or null to always compile from source. On ANGLE every
+    /// link runs the HLSL compiler, which took about 37 s for the player's shader set, so the
+    /// Xbox host points this at its local cache folder. A binary the driver rejects is recompiled.
+    /// </summary>
+    public static string? BinaryCacheDirectory { get; set; }
+
+    static string? s_driverTag;
+
     public ShaderProgram(GL gl, string vertexSource, string fragmentSource)
     {
         _gl = gl;
+
+        string? cachePath = BinaryCachePath(vertexSource, fragmentSource);
+        if (cachePath != null && TryLoadBinary(cachePath, out uint cached))
+        {
+            Handle = cached;
+            return;
+        }
 
         uint vert = CompileShader(ShaderType.VertexShader, vertexSource);
         uint frag = CompileShader(ShaderType.FragmentShader, fragmentSource);
@@ -42,6 +58,80 @@ public sealed class ShaderProgram : IDisposable
         _gl.DetachShader(Handle, frag);
         _gl.DeleteShader(vert);
         _gl.DeleteShader(frag);
+
+        if (cachePath != null)
+            TrySaveBinary(cachePath);
+    }
+
+    string? BinaryCachePath(string vertexSource, string fragmentSource)
+    {
+        var dir = BinaryCacheDirectory;
+        if (string.IsNullOrEmpty(dir)) return null;
+        try
+        {
+            // A binary is only valid for the driver that produced it.
+            s_driverTag ??= (_gl.GetStringS(StringName.Renderer) ?? "") + "|" + (_gl.GetStringS(StringName.Version) ?? "");
+            var bytes = System.Text.Encoding.UTF8.GetBytes(s_driverTag + "\0" + vertexSource + "\0" + fragmentSource);
+            var hash = System.Security.Cryptography.SHA256.HashData(bytes);
+            return System.IO.Path.Combine(dir, Convert.ToHexString(hash, 0, 16) + ".glbin");
+        }
+        catch { return null; }
+    }
+
+    unsafe bool TryLoadBinary(string path, out uint program)
+    {
+        program = 0;
+        try
+        {
+            if (!System.IO.File.Exists(path)) return false;
+            var data = System.IO.File.ReadAllBytes(path);
+            if (data.Length <= 4) return false;
+            var format = (GLEnum)BitConverter.ToUInt32(data, 0);
+
+            while (_gl.GetError() != GLEnum.NoError) { }
+            uint p = _gl.CreateProgram();
+            fixed (byte* ptr = &data[4])
+                _gl.ProgramBinary(p, format, ptr, (uint)(data.Length - 4));
+            _gl.GetProgram(p, ProgramPropertyARB.LinkStatus, out int status);
+            if (status == 0 || _gl.GetError() != GLEnum.NoError)
+            {
+                _gl.DeleteProgram(p);
+                try { System.IO.File.Delete(path); } catch { }
+                return false;
+            }
+            program = p;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    unsafe void TrySaveBinary(string path)
+    {
+        try
+        {
+            _gl.GetProgram(Handle, (ProgramPropertyARB)0x8741 /* GL_PROGRAM_BINARY_LENGTH */, out int length);
+            if (length <= 0) return;
+            var data = new byte[length + 4];
+            uint written = 0;
+            GLEnum format = 0;
+            fixed (byte* ptr = &data[4])
+                _gl.GetProgramBinary(Handle, (uint)length, &written, &format, ptr);
+            if (written == 0 || _gl.GetError() != GLEnum.NoError) return;
+            BitConverter.TryWriteBytes(new Span<byte>(data, 0, 4), (uint)format);
+
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            var tmp = path + ".tmp";
+            using (var fs = System.IO.File.Create(tmp))
+                fs.Write(data, 0, (int)written + 4);
+            System.IO.File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            // The cache is an optimization. A failed write only costs the next launch a recompile.
+        }
     }
 
     public void Use() => _gl.UseProgram(Handle);

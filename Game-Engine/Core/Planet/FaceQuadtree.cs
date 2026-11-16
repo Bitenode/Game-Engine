@@ -17,6 +17,18 @@ public sealed class FaceQuadtree
     /// <summary>How far beyond split distance to start generating child meshes.</summary>
     public const float PrefetchDistanceScale = 1.4f;
 
+    /// <summary>
+    /// Play mode: do not commit a split under the player's feet. Keep this tight so
+    /// nearby biome-merge cliffs can still refine.
+    /// </summary>
+    public const float PlaySplitLockDistance = 55f;
+
+    /// <summary>
+    /// Play mode: do not collapse a refined hill the player is still on. Farther
+    /// leaves can merge; the parent shell is kept so that is not a hole.
+    /// </summary>
+    public const float PlayMergeLockDistance = 140f;
+
     public FaceQuadtree(int face)
     {
         Face = face;
@@ -29,15 +41,27 @@ public sealed class FaceQuadtree
     }
 
     /// <summary>Promote prefetch children to visible leaves when all four meshes are ready (no new splits/merges).</summary>
-    public void CommitReadySplits(ref int remainingSplitBudget)
+    public void CommitReadySplits(
+        ref int remainingSplitBudget,
+        SN.Vector3 cameraPos = default,
+        float worldRadius = 0f)
     {
-        CommitReadySplitsRecursive(Root, ref remainingSplitBudget);
+        CommitReadySplitsRecursive(Root, ref remainingSplitBudget, cameraPos, worldRadius);
     }
 
-    void CommitReadySplitsRecursive(QuadNode node, ref int remainingSplitBudget)
+    void CommitReadySplitsRecursive(
+        QuadNode node,
+        ref int remainingSplitBudget,
+        SN.Vector3 cameraPos,
+        float worldRadius)
     {
+        _ = cameraPos;
+        _ = worldRadius;
         if (node.IsLeaf && node.HasPrefetchChildren && remainingSplitBudget > 0)
         {
+            // Finish a ready hill even underfoot. Parent shell stays in play, so
+            // committing no longer drops the ground; holding it left the slope
+            // half-built until the player walked onto the next chunk.
             if (node.TryCommitSplit())
                 remainingSplitBudget = Math.Max(0, remainingSplitBudget - 3);
         }
@@ -45,7 +69,7 @@ public sealed class FaceQuadtree
         if (!node.IsLeaf)
         {
             for (int i = 0; i < 4; i++)
-                CommitReadySplitsRecursive(node.Children![i]!, ref remainingSplitBudget);
+                CommitReadySplitsRecursive(node.Children![i]!, ref remainingSplitBudget, cameraPos, worldRadius);
         }
     }
 
@@ -70,14 +94,21 @@ public sealed class FaceQuadtree
         bool shouldSplit = allowSplit && node.ShouldSplit(cameraPos, worldRadius, splitMult, config.MaxLodDepth);
         bool shouldPrefetch = allowSplit && node.ShouldPrefetch(cameraPos, worldRadius, prefetchMult, config.MaxLodDepth);
 
+        // Keep an in-progress hill. Cancelling it because the leaf budget is full
+        // (or the player is standing on the parent) is what stalled the slope
+        // until they walked to the edge.
+        bool keepPrefetch = SceneService.PlayMode
+            && node.HasPrefetchChildren
+            && node.CameraPriorityDistance(cameraPos, worldRadius) <= PlayMergeLockDistance;
+
         if (node.IsLeaf)
         {
-            if (shouldPrefetch)
+            if (shouldPrefetch || shouldSplit || keepPrefetch)
                 node.EnsurePrefetchChildren();
             else if (node.HasPrefetchChildren && (!allowSplit || node.ShouldMerge(cameraPos, worldRadius, mergeMult)))
                 node.CancelPrefetch();
 
-            if (shouldSplit && node.TryCommitSplit())
+            if ((shouldSplit || node.ChildrenHaveMeshes()) && node.TryCommitSplit())
                 remainingSplitBudget = Math.Max(0, remainingSplitBudget - 3);
         }
         else if (node.ShouldMerge(cameraPos, worldRadius, mergeMult))
@@ -91,7 +122,10 @@ public sealed class FaceQuadtree
                     break;
                 }
             }
-            if (allChildrenLeaves)
+            // Wide merge lock: collapsing nearby refined cliffs unloaded whole faces.
+            bool mergeTouchesPlayer = SceneService.PlayMode
+                && node.CameraPriorityDistance(cameraPos, worldRadius) <= PlayMergeLockDistance;
+            if (allChildrenLeaves && !mergeTouchesPlayer)
             {
                 node.Merge();
                 remainingSplitBudget += 3;
@@ -117,9 +151,13 @@ public sealed class FaceQuadtree
         Root.CollectPrefetchChildren(nodes);
     }
 
-    public void CollectRenderableNodes(List<QuadNode> nodes)
+    public void CollectRenderableNodes(
+        List<QuadNode> nodes,
+        SN.Vector3 playCamLocal = default,
+        float worldRadius = 0f,
+        float playLockDist = 0f)
     {
-        Root.CollectRenderable(nodes);
+        Root.CollectRenderable(nodes, playCamLocal, worldRadius, playLockDist);
     }
 
     /// <summary>
@@ -216,6 +254,12 @@ public sealed class FaceQuadtree
                         if (child != null && child.GeneratedMesh == null)
                             child.NeedsMeshRebuild = true;
                     }
+                    // Play mode: only prepare children here. Committing under the player
+                    // is what split coastal hills into water; Update owns the lock check.
+                    if (SceneService.PlayMode
+                        && neighbor.GeneratedMesh != null
+                        && !neighbor.NeedsMeshRebuild)
+                        continue;
                     if (neighbor.TryCommitSplit())
                         remainingSplitBudget = Math.Max(0, remainingSplitBudget - 3);
                 }

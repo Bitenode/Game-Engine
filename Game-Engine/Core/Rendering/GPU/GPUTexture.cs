@@ -184,6 +184,14 @@ public sealed class GPUTexture : IDisposable
             (int)TextureMinFilter.Nearest);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
             (int)TextureMagFilter.Nearest);
+#if XBOX_UWP
+        // ES 3.0 has no CLAMP_TO_BORDER. An invalid wrap leaves the depth texture
+        // incomplete and the post-process scene target fails to render.
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+#else
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
             (int)TextureWrapMode.ClampToBorder);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
@@ -192,6 +200,7 @@ public sealed class GPUTexture : IDisposable
         // Border color = 1.0 (far) so pixels outside shadow map are never in shadow
         float* border = stackalloc float[4] { 1f, 1f, 1f, 1f };
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureBorderColor, border);
+#endif
 
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
@@ -213,12 +222,19 @@ public sealed class GPUTexture : IDisposable
             (int)TextureMinFilter.Nearest);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
             (int)TextureMagFilter.Nearest);
+#if XBOX_UWP
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+#else
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
             (int)TextureWrapMode.ClampToBorder);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
             (int)TextureWrapMode.ClampToBorder);
         float* border = stackalloc float[4] { 1f, 1f, 1f, 1f };
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureBorderColor, border);
+#endif
 
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
@@ -312,8 +328,9 @@ public sealed class GPUTexture : IDisposable
     }
 
     /// <summary>
-    /// Upload six RGBA float cubemap faces directly into a 3x2 RGBA16F atlas.
-    /// Avoids allocating a large temporary packed atlas and halves splat GPU memory.
+    /// Upload six RGBA weight cubemap faces into a 3x2 atlas.
+    /// Desktop keeps RGBA16F (editor Game View quality). Xbox packs to RGBA8 so the
+    /// surface-bake upload does not freeze Dev Mode.
     /// </summary>
     public unsafe void UploadRgba16FloatFaces(float[][] faces, int faceResolution)
     {
@@ -327,6 +344,40 @@ public sealed class GPUTexture : IDisposable
         Width = faceResolution * 3;
         Height = faceResolution * 2;
         _gl.BindTexture(TextureTarget.Texture2D, Handle);
+#if XBOX_UWP
+        int atlasPixels = Width * Height * 4;
+        var bytes = new byte[atlasPixels];
+        for (int face = 0; face < 6; face++)
+        {
+            int x0 = (face % 3) * faceResolution;
+            int y0 = (face / 3) * faceResolution;
+            var src = faces[face];
+            for (int y = 0; y < faceResolution; y++)
+            {
+                int srcRow = y * faceResolution * 4;
+                int dstRow = ((y0 + y) * Width + x0) * 4;
+                for (int x = 0; x < faceResolution; x++)
+                {
+                    int si = srcRow + x * 4;
+                    int di = dstRow + x * 4;
+                    bytes[di] = Float01ToByte(src[si]);
+                    bytes[di + 1] = Float01ToByte(src[si + 1]);
+                    bytes[di + 2] = Float01ToByte(src[si + 2]);
+                    bytes[di + 3] = Float01ToByte(src[si + 3]);
+                }
+            }
+        }
+
+        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
+        fixed (byte* ptr = bytes)
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.Rgba8,
+                (uint)Width, (uint)Height, 0,
+                PixelFormat.Rgba, PixelType.UnsignedByte, ptr);
+        }
+        while (_gl.GetError() != GLEnum.NoError) { }
+#else
         _gl.TexImage2D(TextureTarget.Texture2D, 0,
             InternalFormat.Rgba16f,
             (uint)Width, (uint)Height, 0,
@@ -343,10 +394,19 @@ public sealed class GPUTexture : IDisposable
                     PixelFormat.Rgba, PixelType.Float, ptr);
             }
         }
-
+#endif
         SetLinearClamp();
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
+
+#if XBOX_UWP
+    static byte Float01ToByte(float v)
+    {
+        if (v <= 0f) return 0;
+        if (v >= 1f) return 255;
+        return (byte)(v * 255f + 0.5f);
+    }
+#endif
 
     /// <summary>
     /// Upload six single-channel float cubemap faces directly into a 3x2 R32F atlas.

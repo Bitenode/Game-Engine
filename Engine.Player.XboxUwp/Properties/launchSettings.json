@@ -1,0 +1,17 @@
+{
+  "profiles": {
+    "Local Machine": {
+      "commandName": "MsixPackage",
+      "alwaysReinstallApp": false,
+      "nativeDebugging": false
+    },
+    "Remote Machine": {
+      "commandName": "MsixPackage",
+      "remoteDebugEnabled": true,
+      "remoteDebugMachine": "",
+      "authenticationMode": "Universal",
+      "alwaysReinstallApp": false,
+      "nativeDebugging": false
+    }
+  }
+}

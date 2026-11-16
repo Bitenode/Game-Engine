@@ -148,6 +148,26 @@ public static class BoneAnimationClipAsset
     private static readonly Dictionary<string, (BoneAnimationClip clip, string relPath)> _cache = new();
     private static readonly Dictionary<BoneAnimationClip, string> _reverseLookup = new();
 
+    // Clips by file. The table above keeps one clip per clip name (the animation panel
+    // lists it), so two rigs that each ship an "Idle" pushed each other out and every
+    // animator built after that re-read and re-parsed its clips from disk.
+    private static readonly Dictionary<string, BoneAnimationClip> _byPath = new(StringComparer.OrdinalIgnoreCase);
+
+    // Rig imports run on worker threads while the game thread builds animators.
+    private static readonly object _sync = new();
+
+    private static string PathKey(string relPath) => relPath.Replace('\\', '/');
+
+    private static void Remember(BoneAnimationClip clip, string projectRelativePath)
+    {
+        lock (_sync)
+        {
+            _cache[clip.Name] = (clip, projectRelativePath);
+            _reverseLookup[clip] = projectRelativePath;
+            _byPath[PathKey(projectRelativePath)] = clip;
+        }
+    }
+
     private static readonly JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented = true,
@@ -194,6 +214,13 @@ public static class BoneAnimationClipAsset
         var absPath = ResolveAbsolute(projectRelativePath);
         if (absPath == null) return;
 
+#if PLAYER
+        // A built player never writes assets (the Xbox package is read-only). The clip that was
+        // packed with the build stays the one on disk; a clip with no file is kept in memory.
+        if (!File.Exists(absPath))
+            Remember(clip, projectRelativePath);
+        return;
+#else
         var dto = new ClipDTO { Name = clip.Name, Duration = clip.Duration, Loop = clip.Loop };
 
         foreach (var track in clip.Tracks)
@@ -218,8 +245,8 @@ public static class BoneAnimationClipAsset
 
         File.WriteAllText(absPath, JsonSerializer.Serialize(dto, _jsonOpts));
 
-        _cache[clip.Name] = (clip, projectRelativePath);
-        _reverseLookup[clip] = projectRelativePath;
+        Remember(clip, projectRelativePath);
+#endif
     }
 
     // ── Load ──
@@ -228,10 +255,10 @@ public static class BoneAnimationClipAsset
     {
         if (string.IsNullOrWhiteSpace(projectRelativePath)) return null;
 
-        foreach (var (_, entry) in _cache)
+        lock (_sync)
         {
-            if (string.Equals(entry.relPath, projectRelativePath, StringComparison.OrdinalIgnoreCase))
-                return entry.clip;
+            if (_byPath.TryGetValue(PathKey(projectRelativePath), out var cached))
+                return cached;
         }
 
         var absPath = ResolveAbsolute(projectRelativePath);
@@ -260,8 +287,13 @@ public static class BoneAnimationClipAsset
                 clip.Tracks.Add(track);
             }
 
-            _cache[clip.Name] = (clip, projectRelativePath);
-            _reverseLookup[clip] = projectRelativePath;
+            lock (_sync)
+            {
+                // Two threads can parse the same file. Keep the first so every animator shares one clip.
+                if (_byPath.TryGetValue(PathKey(projectRelativePath), out var raced))
+                    return raced;
+            }
+            Remember(clip, projectRelativePath);
             return clip;
         }
         catch { return null; }
@@ -270,21 +302,34 @@ public static class BoneAnimationClipAsset
     // ── Helpers ──
 
     public static string? GetPath(BoneAnimationClip clip)
-        => _reverseLookup.TryGetValue(clip, out var p) ? p : null;
+    {
+        lock (_sync)
+            return _reverseLookup.TryGetValue(clip, out var p) ? p : null;
+    }
 
     public static void Register(BoneAnimationClip clip, string projectRelativePath)
-    {
-        _cache[clip.Name] = (clip, projectRelativePath);
-        _reverseLookup[clip] = projectRelativePath;
-    }
+        => Remember(clip, projectRelativePath);
 
     public static IEnumerable<BoneAnimationClip> AllCached()
     {
-        foreach (var (_, (clip, _)) in _cache)
-            yield return clip;
+        lock (_sync)
+        {
+            var clips = new List<BoneAnimationClip>(_cache.Count);
+            foreach (var (_, (clip, _)) in _cache)
+                clips.Add(clip);
+            return clips;
+        }
     }
 
-    public static void ClearCache() { _cache.Clear(); _reverseLookup.Clear(); }
+    public static void ClearCache()
+    {
+        lock (_sync)
+        {
+            _cache.Clear();
+            _reverseLookup.Clear();
+            _byPath.Clear();
+        }
+    }
 
     private static string? ResolveAbsolute(string relPath)
     {

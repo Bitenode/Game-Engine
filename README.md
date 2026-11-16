@@ -27,7 +27,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 
 ### World Building
 - **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
-- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs, fauna/scatter/life output ports, underwater life), async scene-load baking, chunk LOD streaming, GPU grass with clear zones, play-mode fauna herds (biome-graph **Scale** per species), prop/point-lighting on curved surfaces, smoother player stand on LOD seams, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
+- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs, fauna/scatter/life output ports, underwater life), async scene-load baking, chunk LOD streaming, GPU grass (per-GL-context uploads, orbit-camera culling, clear zones), expanded fauna/table placement and vegetation streaming, prop/point-lighting on curved surfaces, smoother player stand on LOD seams, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
 - **3D Model Import** — FBX, OBJ, DAE (and glTF where Assimp supports it) via AssimpNet with automatic material extraction, skeleton building, loose FBX animation clips, and FBX pivot-aware bone animation import; shipped **StarterCharacter** learning asset with Idle/Walk/Run/Wave
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
@@ -48,7 +48,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 
 ### Tools & Profiling
 - **Profiler** — Real-time FPS, frame time, draw call, triangle/chunk counts, and per-script timing (Game View HUD + Profiler panel)
-- **Build Settings** — Package games as standalone Engine.Player executables for Windows, macOS, and Linux (x64/ARM64)
+- **Build Settings** — Package games for Windows, macOS, Linux (x64/ARM64), Android, **Xbox Dev Mode** (UWP + ANGLE), and **Xbox GDK** (native XAudio2 / GameInput / XSAPI scaffold); scene- and script-aware asset collection with Xbox loose `Data/Assets` staging
 - **Wind System** — Global wind parameters driving tree and vegetation animation
 
 ---
@@ -91,10 +91,12 @@ Github Engine/
 │   ├── Standard Assets/  # Built-in shaders, skyboxes, code examples
 │   └── Docs/             # Topic guides (14 markdown files)
 │
-├── Engine.Player/        # Standalone game player (multi-platform)
-│   └── (Loads pre-compiled games without the editor)
+├── Engine.Player/              # Desktop Avalonia player (multi-platform publish)
+├── Engine.Player.XboxUwp/      # Xbox Dev Mode UWP host (ANGLE on SwapChainPanel)
+├── Engine.Player.Gdk/          # Native Microsoft GDK bootstrap (Live / audio / pads)
+├── Engine.Player.Android/      # Android APK host
 │
-└── README.md             # This file
+└── README.md                   # This file
 ```
 
 ---
@@ -116,7 +118,7 @@ Documentation for the engine and editor is in `Game-Engine/Docs/`:
 | [09 — Scene & Project Management](Game-Engine/Docs/09_Scene_And_Project_Management.md) | Projects, scenes, serialization, undo/redo, play mode, audio mixer, networking, profiler |
 | [10 — Model Import & Assets](Game-Engine/Docs/10_Model_Import_And_Assets.md) | 3D model import, animation import, skeletal meshes, primitives, asset pipeline |
 | [11 — UIX Framework](Game-Engine/Docs/11_UIX_Framework.md) | Declarative UI framework, 21 widget types, WindowKit, builder API, custom tool windows |
-| [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, project configuration, dependencies, Engine.Player, publishing, ANGLE/OpenGL setup |
+| [12 — Build Settings](Game-Engine/Docs/12_Build_Settings.md) | Solution structure, desktop/Xbox/Android hosts, PlayerBootstrap, asset staging, ANGLE/OpenGL setup |
 | [13 — Planet System](Game-Engine/Docs/13_Planet_System.md) | Height cubemap crust, biome graph, volcanoes/lava, coastal cliffs, async scene load, play/editor chunk LOD, post-process spawn |
 | [14 — Visual Blueprints](Game-Engine/Docs/14_Visual_Blueprints.md) | `.blueprint` graphs (typed pins, variables, functions), Visual Blueprint component, EventBus |
 

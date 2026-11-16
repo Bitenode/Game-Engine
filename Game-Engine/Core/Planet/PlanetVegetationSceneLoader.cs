@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Avalonia.Threading;
 using Game_Engine.Core.Component;
 
 namespace Game_Engine.Core.Planet;
@@ -27,6 +26,8 @@ public static class PlanetVegetationSceneLoader
 
         foreach (var terrain in terrains)
         {
+            if (terrain.FreshWorldLaunch)
+                continue;
             var relPath = terrain.PlanetAssetPath;
             if (string.IsNullOrWhiteSpace(relPath)) continue;
             if (terrain.gameObject == null) continue;
@@ -72,24 +73,7 @@ public static class PlanetVegetationSceneLoader
             }
 
             var copy = data.Vegetation.Clone();
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (generation != Volatile.Read(ref s_hydrationGeneration)
-                    || !terrainRef.TryGetTarget(out var terrain))
-                    return;
-                try
-                {
-                    Hydrate(terrain, copy);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning($"[PlanetVegetationSceneLoader] UI hydrate failed: {ex.Message}");
-                }
-                finally
-                {
-                    terrain.AsyncVegetationHydrationPending = false;
-                }
-            }, DispatcherPriority.Background);
+            PostHydrateWhenReady(copy, terrainRef, generation, attempt: 0);
         }
         catch (Exception ex)
         {
@@ -100,12 +84,53 @@ public static class PlanetVegetationSceneLoader
 
     static void PostClearPending(WeakReference<PlanetTerrain> terrainRef, int generation)
     {
-        Dispatcher.UIThread.Post(() =>
+        EngineDispatcher.Post(() =>
         {
             if (generation == Volatile.Read(ref s_hydrationGeneration)
                 && terrainRef.TryGetTarget(out var terrain))
                 terrain.AsyncVegetationHydrationPending = false;
-        }, DispatcherPriority.Background);
+        });
+    }
+
+    static void PostHydrateWhenReady(
+        PlanetVegetationAssetData copy,
+        WeakReference<PlanetTerrain> terrainRef,
+        int generation,
+        int attempt)
+    {
+        EngineDispatcher.Post(() =>
+        {
+            if (generation != Volatile.Read(ref s_hydrationGeneration)
+                || !terrainRef.TryGetTarget(out var terrain))
+                return;
+#if XBOX_UWP
+            // Wait out boot frames AND the surface-bake splat upload (that was the freeze).
+            bool bakeBusy = terrain.SurfaceBakePending || terrain.SurfaceCubemap == null
+                || !terrain.SurfaceCubemap.HasBaseHeights;
+            if ((Time.frameCount < 90 || bakeBusy || SceneRenderer.BiomeTexturesStreaming)
+                && attempt < 240)
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(50).ConfigureAwait(false);
+                    PostHydrateWhenReady(copy, terrainRef, generation, attempt + 1);
+                });
+                return;
+            }
+#endif
+            try
+            {
+                Hydrate(terrain, copy);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[PlanetVegetationSceneLoader] UI hydrate failed: {ex.Message}");
+            }
+            finally
+            {
+                terrain.AsyncVegetationHydrationPending = false;
+            }
+        });
     }
 
     static void Hydrate(PlanetTerrain terrain, PlanetVegetationAssetData veg)
@@ -116,10 +141,12 @@ public static class PlanetVegetationSceneLoader
             .FirstOrDefault(v => v.IsActiveAndEnabled);
         if (sys == null) return;
         sys.ImportAssetData(veg);
+#if !XBOX_UWP
         // Without a warmup, MaxAssetSpawnsPerUpdate (often 2) + mixed tree/grass order meant grass could
         // stay invisible for a long time after load; trees dominated the spawn budget.
         sys.WarmSpawnAfterDeferredImport();
-        Log.Info($"[PlanetVegetationSceneLoader] Async-applied saved vegetation ({sys.StoredPlacementCount} placements) on '{terrain.gameObject.Name}'.");
         SceneService.NotifyChanged();
+#endif
+        Log.Info($"[PlanetVegetationSceneLoader] Async-applied saved vegetation ({sys.StoredPlacementCount} placements) on '{terrain.gameObject.Name}'.");
     }
 }

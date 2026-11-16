@@ -56,7 +56,8 @@ public static class TextureBcCompression
         ReadOnlySpan<byte> rgba,
         int width,
         int height,
-        CompressionFormat format)
+        CompressionFormat format,
+        bool ignoreRuntimeCaps = false)
     {
         try
         {
@@ -67,14 +68,22 @@ public static class TextureBcCompression
                     return true;
             }
 
-            if (!GpuCompressionCaps.S3tc && format is CompressionFormat.Bc1 or CompressionFormat.Bc1WithAlpha or CompressionFormat.Bc3 or CompressionFormat.Bc4 or CompressionFormat.Bc5)
+            if (!ignoreRuntimeCaps && !GpuCompressionCaps.S3tc && format is CompressionFormat.Bc1 or CompressionFormat.Bc1WithAlpha or CompressionFormat.Bc3 or CompressionFormat.Bc4 or CompressionFormat.Bc5)
                 return false;
             var encFormat = format;
-            if (encFormat == CompressionFormat.Bc7 && !GpuCompressionCaps.Bptc)
+            if (!ignoreRuntimeCaps && encFormat == CompressionFormat.Bc7 && !GpuCompressionCaps.Bptc)
+                encFormat = HasMeaningfulAlpha(rgba, width, height) ? CompressionFormat.Bc3 : CompressionFormat.Bc1;
+            if (ignoreRuntimeCaps && encFormat == CompressionFormat.Bc7)
                 encFormat = HasMeaningfulAlpha(rgba, width, height) ? CompressionFormat.Bc3 : CompressionFormat.Bc1;
 
             var enc = new BCnEncoder.Encoder.BcEncoder(encFormat);
             var dds = enc.EncodeToDds(rgba.ToArray(), width, height, BcPixelFormat.Rgba32);
+            if (File.Exists(ddsPath))
+            {
+                var ddsAttrs = File.GetAttributes(ddsPath);
+                if ((ddsAttrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(ddsPath, ddsAttrs & ~FileAttributes.ReadOnly);
+            }
             using var fs = File.Create(ddsPath);
             dds.Write(fs);
             return true;
@@ -142,6 +151,10 @@ public static class TextureBcCompression
         if (string.IsNullOrEmpty(root)) return null;
         return Path.GetFullPath(Path.Combine(root, sourcePath.Replace('/', Path.DirectorySeparatorChar)));
     }
+
+    /// <summary>Block formats that cannot store the alpha a cutout card needs.</summary>
+    public static bool DropsAlpha(CompressionFormat fmt) =>
+        fmt is CompressionFormat.Bc1 or CompressionFormat.Bc4 or CompressionFormat.Bc5;
 
     public static bool IsFormatUploadSupported(CompressionFormat fmt) => fmt switch
     {

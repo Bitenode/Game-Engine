@@ -2,7 +2,9 @@
 using System;
 using System.IO;
 using System.Text;
+#if !XBOX_UWP
 using SkiaSharp;
+#endif
 
 namespace Game_Engine.Core.Component.UI
 {
@@ -13,8 +15,8 @@ namespace Game_Engine.Core.Component.UI
     /// </summary>
     public static class DefaultFontGenerator
     {
-        private const int AtlasSize = 512;
-        private const int FontSizePx = 32;
+        private const int AtlasSize = 2048;
+        private const int FontSizePx = 96;
         private const int CellPadding = 2;
         private const string FontFamily = "Segoe UI";
 
@@ -33,6 +35,9 @@ namespace Game_Engine.Core.Component.UI
             if (File.Exists(fntPath) && File.Exists(pngPath))
                 return fntPath;
 
+#if XBOX_UWP
+            throw new NotSupportedException("Default font atlas must be baked by the Xbox build (Data/Assets/Standard Assets/Fonts).");
+#else
             using var typeface = SKTypeface.FromFamilyName(FontFamily, SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
                                  ?? SKTypeface.Default;
             using var font = new SKFont(typeface, FontSizePx);
@@ -47,7 +52,8 @@ namespace Game_Engine.Core.Component.UI
             float baseline = MathF.Ceiling(-metrics.Ascent);
 
             // Generate atlas
-            using var bitmap = new SKBitmap(AtlasSize, AtlasSize, SKColorType.Rgba8888, SKAlphaType.Premul);
+            // Straight alpha. The UI shader multiplies by vertex color; premultiplied ink turns into a gray fringe.
+            using var bitmap = new SKBitmap(AtlasSize, AtlasSize, SKColorType.Rgba8888, SKAlphaType.Unpremul);
             using var canvas = new SKCanvas(bitmap);
             canvas.Clear(SKColors.Transparent);
 
@@ -117,6 +123,7 @@ namespace Game_Engine.Core.Component.UI
 
             Log.Info($"[DefaultFontGenerator] Generated default font atlas at: {fntPath}");
             return fntPath;
+#endif
         }
 
         /// <summary>

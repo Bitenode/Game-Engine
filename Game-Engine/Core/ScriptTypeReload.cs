@@ -17,6 +17,26 @@ public static class ScriptTypeReload
 {
     public static Assembly? LatestEditorScripts { get; private set; }
 
+    static readonly List<Assembly> s_playerScripts = new();
+
+    /// <summary>Player builds compile scripts into GameScripts.dll, while scenes still name EditorScripts_*.</summary>
+    public static void NotePlayerScripts(Assembly asm)
+    {
+        if (asm == null) return;
+        if (!s_playerScripts.Contains(asm))
+            s_playerScripts.Add(asm);
+    }
+
+    public static Type? FindPlayerScriptType(string fullName)
+    {
+        foreach (var asm in s_playerScripts)
+        {
+            var hit = FindType(asm, fullName);
+            if (hit != null) return hit;
+        }
+        return null;
+    }
+
     public static void NoteCompiled(Assembly asm)
     {
         if (asm == null) return;

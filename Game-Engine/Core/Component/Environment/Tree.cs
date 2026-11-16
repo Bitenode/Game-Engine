@@ -217,7 +217,11 @@ namespace Game_Engine.Core.Component
             if (string.IsNullOrWhiteSpace(stored)) return null;
             try
             {
-                if (Path.IsPathRooted(stored)) return stored;
+                if (Path.IsPathRooted(stored))
+                {
+                    if (File.Exists(stored)) return stored;
+                    return AssetPathRemap.FindExisting(stored);
+                }
                 var proj = ProjectService.Current;
                 if (proj == null) return stored;
 
@@ -231,7 +235,7 @@ namespace Game_Engine.Core.Component
                     if (File.Exists(fromAssets)) return fromAssets;
                 }
 
-                return fromRoot;
+                return AssetPathRemap.FindExisting(stored) ?? fromRoot;
             }
             catch
             {

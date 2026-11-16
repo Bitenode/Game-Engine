@@ -193,14 +193,35 @@ public sealed class PlanetChunkManager
         _forceShellRebuildFrames = Math.Max(_forceShellRebuildFrames, Math.Max(1, frames));
         for (int f = 0; f < Faces.Length; f++)
         {
-            var leaves = Faces[f].GetLeafNodes();
-            for (int i = 0; i < leaves.Count; i++)
-            {
-                InvalidateNodeChain(leaves[i]);
-                leaves[i].NeedsMeshRebuild = true;
-            }
+            DiscardShellTree(Faces[f].Root);
             Faces[f].Root.InvalidateGeneration();
             Faces[f].Root.NeedsMeshRebuild = true;
+        }
+    }
+
+    /// <summary>
+    /// Drop every cached shell in the subtree. LOD parents kept for coverage must
+    /// not survive a heightfield bake — that old silhouette is what pops hills.
+    /// </summary>
+    static void DiscardShellTree(QuadNode node)
+    {
+        node.InvalidateGeneration();
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
+        GpuMeshReleaseQueue.Enqueue(node.GeneratedCaveMesh);
+        node.GeneratedMesh = null;
+        node.GeneratedWaterMesh = null;
+        node.GeneratedCaveMesh = null;
+        node.StandRadiusGrid = null;
+        node.Chunk = null;
+        node.NeedsMeshRebuild = true;
+        if (node.Children == null)
+            return;
+        for (int i = 0; i < 4; i++)
+        {
+            var child = node.Children[i];
+            if (child != null)
+                DiscardShellTree(child);
         }
     }
 
@@ -270,6 +291,9 @@ public sealed class PlanetChunkManager
             return 0;
         if (maxApplies <= 0)
             maxApplies = Math.Max(1, Config.MaxMeshAppliesPerUpdate);
+#if XBOX_UWP
+        maxApplies = Math.Min(maxApplies, 4);
+#endif
 
         int applied = 0;
         while (applied < maxApplies && _completed.TryDequeue(out var job))
@@ -326,8 +350,9 @@ public sealed class PlanetChunkManager
         }
         else
         {
+            float worldRCommit = Config.EffectiveWorldRadius;
             for (int f = 0; f < 6; f++)
-                Faces[f].CommitReadySplits(ref remainingSplits);
+                Faces[f].CommitReadySplits(ref remainingSplits, localCameraPos, worldRCommit);
         }
 
         _renderableDirty = true;
@@ -378,8 +403,10 @@ public sealed class PlanetChunkManager
         if (SceneService.PlayMode)
         {
             _playRenderableScratch.Clear();
+            float worldRPlay = Config.EffectiveWorldRadius;
             for (int f = 0; f < 6; f++)
-                Faces[f].CollectRenderableNodes(_playRenderableScratch);
+                Faces[f].CollectRenderableNodes(
+                    _playRenderableScratch, localCameraPos, worldRPlay, FaceQuadtree.PlaySplitLockDistance);
             var renderable = _playRenderableScratch;
             for (int i = 0; i < renderable.Count; i++)
             {
@@ -430,6 +457,17 @@ public sealed class PlanetChunkManager
                 coverage.Add(prefetch[i]);
         }
         coverage.Sort(CompareByCamera);
+        // Play: build the hill pieces already in progress before filling far holes,
+        // otherwise a slope sits half-generated until the camera reaches that edge.
+        if (SceneService.PlayMode)
+        {
+            for (int i = 0; i < prefetch.Count; i++)
+            {
+                if (prefetch[i].CameraPriorityDistance(localCameraPos, worldRadius) > 220f)
+                    continue;
+                TrySchedule(prefetch[i]);
+            }
+        }
         for (int i = 0; i < coverage.Count; i++)
             TrySchedule(coverage[i]);
 
@@ -793,14 +831,21 @@ public sealed class PlanetChunkManager
 
     int ResolveMaxConcurrentJobs()
     {
+#if XBOX_UWP
+        return 3;
+#else
         if (!Config.EnableAdaptiveScheduling)
             return BaselineConcurrentJobs;
         int scheduleCap = Math.Max(BaselineConcurrentJobs, Config.MaxGenerationSchedulesPerUpdate);
         return Math.Clamp(scheduleCap / 2, BaselineConcurrentJobs, 12);
+#endif
     }
 
     int ResolveScheduleBudget(float approachSpeed)
     {
+#if XBOX_UWP
+        return 4;
+#else
         int configured = Math.Max(1, Config.MaxGenerationSchedulesPerUpdate);
         if (!Config.EnableAdaptiveScheduling)
             return configured;
@@ -816,6 +861,7 @@ public sealed class PlanetChunkManager
         int min = Math.Min(configured, Math.Max(1, Config.AdaptiveMinScheduleBudget));
         int max = Math.Min(configured, Math.Max(min, Config.AdaptiveMaxScheduleBudget));
         return min + (int)MathF.Round((max - min) * t);
+#endif
     }
 
     int ResolveMaxLeaves()
@@ -838,22 +884,33 @@ public sealed class PlanetChunkManager
     {
         if (maxLeaves <= 0) return;
         if (CollectLeavesInto(_leafScratch) < maxLeaves) return;
+        float worldRadius = Config.EffectiveWorldRadius;
+        var cam = _lastLocalCamera;
+        // Only dump far prefetches. Cancelling near the camera discarded cliff
+        // children that were about to cover a biome-merge face.
         for (int i = 0; i < _leafScratch.Count; i++)
         {
-            if (_leafScratch[i].HasPrefetchChildren)
-                _leafScratch[i].CancelPrefetch();
+            var leaf = _leafScratch[i];
+            if (!leaf.HasPrefetchChildren)
+                continue;
+            if (SceneService.PlayMode
+                && !float.IsNaN(cam.X)
+                && leaf.CameraPriorityDistance(cam, worldRadius) <= FaceQuadtree.PlayMergeLockDistance)
+                continue;
+            leaf.CancelPrefetch();
         }
     }
 
-    const float PlayMergeSafeDist = 150f;
-    const int PlayMergeBudgetHysteresis = 6;
+    // Keep in sync with FaceQuadtree.PlayMergeLockDistance — budget merges must not
+    // eat cliff leaves the distance-based merge lock is protecting.
+    const int PlayMergeBudgetHysteresis = 12;
 
     void EnforceLeafBudget(SN.Vector3 cameraPos, int maxLeaves)
     {
         if (maxLeaves <= 0) return;
 
         float worldRadius = Config.EffectiveWorldRadius;
-        float playSafeDist = SceneService.PlayMode ? PlayMergeSafeDist : 0f;
+        float playSafeDist = SceneService.PlayMode ? FaceQuadtree.PlayMergeLockDistance : 0f;
         int mergeHysteresis = SceneService.PlayMode ? PlayMergeBudgetHysteresis : 0;
         for (int pass = 0; pass < 24; pass++)
         {
@@ -956,6 +1013,10 @@ public sealed class PlanetChunkManager
         ulong editStamp = (ulong)(_editStore?.SphereEditCount ?? 0)
             + (ulong)(_editStore?.BakedCellCount ?? 0) * 1000003UL
             + (ulong)(_surfaceCubemap?.Version ?? 0) * 10000019UL;
+#if XBOX_UWP
+        if (Config.CameraBelowCrust)
+            editStamp += 7919UL;
+#endif
         var cacheKey = new PlanetChunkMeshCache.Key(
             face, lodLevel, u0, v0, u1, v1, Config.Seed, Config.RecipeHash, editStamp);
 
@@ -1054,6 +1115,7 @@ public sealed class PlanetChunkManager
         GpuMeshReleaseQueue.Enqueue(node.GeneratedWaterMesh);
         GpuMeshReleaseQueue.Enqueue(node.GeneratedCaveMesh);
         node.GeneratedMesh = meshData.ToEngineMesh();
+        QuadNode.NoteVisibleChange(node);
         node.StandRadiusGrid = standGrid
             ?? QuadNode.BuildStandRadiusGrid(node.Face, node.U0, node.V0, node.U1, node.V1, meshData.Positions);
         QuadNode.EnsureStandRadiusGrid(node.StandRadiusGrid);
@@ -1220,11 +1282,19 @@ public sealed class PlanetChunkManager
 
     public List<QuadNode> GetRenderableLeaves()
     {
-        if (_renderableDirty)
+        // Play: rebuild every query so the underfoot visual lock tracks the camera
+        // (children may already be committed farther out).
+        bool rebuild = _renderableDirty || SceneService.PlayMode;
+        if (rebuild)
         {
             _renderableCache.Clear();
+            float worldR = Config.EffectiveWorldRadius;
+            var cam = _lastLocalCamera;
+            float lockDist = SceneService.PlayMode && !float.IsNaN(cam.X)
+                ? FaceQuadtree.PlaySplitLockDistance
+                : 0f;
             for (int f = 0; f < 6; f++)
-                Faces[f].CollectRenderableNodes(_renderableCache);
+                Faces[f].CollectRenderableNodes(_renderableCache, cam, worldR, lockDist);
             _renderableDirty = false;
         }
         return _renderableCache;

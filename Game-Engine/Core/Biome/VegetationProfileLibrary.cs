@@ -66,7 +66,14 @@ public static class VegetationProfileLibrary
         string root = proj?.RootPath ?? Environment.CurrentDirectory;
         string dir = Path.Combine(root, "Assets", "Biomes");
         if (!Directory.Exists(dir))
-            Directory.CreateDirectory(dir);
+        {
+            try { Directory.CreateDirectory(dir); }
+            catch
+            {
+                // A built player cannot create folders in its package. The profile is either
+                // already staged or the defaults are used.
+            }
+        }
         return Path.Combine(dir, "vegetation-profiles.json");
     }
 

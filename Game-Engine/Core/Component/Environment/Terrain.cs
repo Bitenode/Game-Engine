@@ -632,6 +632,7 @@ namespace Game_Engine.Core.Component
 
             // Create the file right away if missing (so the asset path exists immediately)
             var abs = ToAbsolutePath(TerrainAssetPath);
+#if !PLAYER
             var dir = Path.GetDirectoryName(abs);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
@@ -639,6 +640,10 @@ namespace Game_Engine.Core.Component
             if (!File.Exists(abs))
                 TrySaveToFile();   // saves a flat terrain .terrain.json on attach
             else
+#else
+            // A built player never authors terrain assets, and its package folder is read-only.
+            if (File.Exists(abs))
+#endif
             {
                 int need = ResX * ResZ;
                 bool heightsOk = Heights != null && Heights.Length == need && need >= 4;
@@ -697,16 +702,21 @@ namespace Game_Engine.Core.Component
             // --- runtime fallback (e.g., if added via code at runtime) ---
             EnsureTerrainAssetPath();
             var abs = ToAbsolutePath(TerrainAssetPath);
+            bool createdNew = false;
+#if !PLAYER
             var dir = Path.GetDirectoryName(abs);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            bool createdNew = false;
             if (!File.Exists(abs))
             {
                 TrySaveToFile();
                 createdNew = true;
             }
+#else
+            // A built player never authors terrain assets, and its package folder is read-only.
+            createdNew = !File.Exists(abs);
+#endif
 
             if (AutoLoadOnStart && !createdNew)
                 TryLoadFromFile();
@@ -921,6 +931,11 @@ namespace Game_Engine.Core.Component
 
         private void TrySaveToFile()
         {
+#if PLAYER
+            // A built player never writes terrain assets. Its Assets folder is read-only.
+            NeedsAssetSave = false;
+            return;
+#else
             EnsureTerrainAssetPath();
             try
             {
@@ -973,6 +988,7 @@ namespace Game_Engine.Core.Component
             {
                 LogError(ex, "Save");
             }
+#endif
         }
 
         private void TryLoadFromFile()
@@ -1464,7 +1480,19 @@ namespace Game_Engine.Core.Component
             if (proj == null) return Path.GetFullPath(projectRelative);
             var p = projectRelative?.Trim();
             if (string.IsNullOrWhiteSpace(p)) return Path.Combine(proj.AssetsPath, "Terrain");
-            if (Path.IsPathRooted(p)) return p; // allow absolute pass-through
+            if (Path.IsPathRooted(p))
+            {
+#if PLAYER
+                // The scene may name a terrain file on the machine that authored it. A built player
+                // only has the copy under its own Assets folder, and without it the layers are lost.
+                if (!File.Exists(p))
+                {
+                    var packed = AssetPathRemap.FindExisting(p);
+                    if (packed != null) return packed;
+                }
+#endif
+                return p; // allow absolute pass-through
+            }
             return Path.GetFullPath(Path.Combine(proj.RootPath, p));
         }
 

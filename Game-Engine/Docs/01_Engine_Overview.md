@@ -28,7 +28,7 @@ A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalon
 - **Target**: .NET 9.0, `WinExe` output type
 - **Conditional Defines**: `DEBUG` + `TRACE` + `WINDOWS` (Debug), `TRACE` + `WINDOWS` (Release), `PLAYER` (Engine.Player only). `WINDOWS` selects the NAudio playback path
 
-The solution contains two projects: **Game_Engine** (the editor) and **Engine.Player** (standalone game player with multi-platform publish support). See the [Build Settings](12_Build_Settings.md) document for full details on project configuration, dependencies, publishing, and ANGLE/OpenGL setup.
+The solution centers on **Game_Engine** (editor) and **Engine.Player** (Avalonia desktop player). Additional hosts ship the same `Core/` runtime: **Engine.Player.XboxUwp** (Dev Mode console), **Engine.Player.Gdk** (native GDK bootstrap), and **Engine.Player.Android**. Shared load/render entry points are `PlayerBootstrap` and `PlayerFrameRenderer`. See [Build Settings](12_Build_Settings.md) for configuration, Xbox UWP vs GDK staging, asset collection, and ANGLE/OpenGL setup.
 
 ---
 

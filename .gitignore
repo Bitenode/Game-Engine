@@ -27,3 +27,9 @@ Desktop.ini
 
 # ── Player build output ──
 publish/
+
+# ── UWP / MSIX (Visual Studio packaging) ──
+**/AppPackages/
+*.appx
+*.msix
+*.appxbundle

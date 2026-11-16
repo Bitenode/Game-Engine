@@ -115,8 +115,12 @@ public partial class PlayerRoot : UserControl
             {
                 try
                 {
+                    // GameScripts.dll is compiled against the editor assembly "Game_Engine". This player
+                    // compiles Core into its own assembly, so that name has to be pointed at it.
+                    PlayerBootstrap.RedirectEditorAssemblyToHost();
                     var alc = new AssemblyLoadContext("PlayerScripts", isCollectible: false);
-                    alc.LoadFromAssemblyPath(scriptsDll);
+                    var scripts = alc.LoadFromAssemblyPath(scriptsDll);
+                    ScriptTypeReload.NotePlayerScripts(scripts);
                     Log.Info("[Player] Loaded GameScripts.dll");
                 }
                 catch (Exception ex)

@@ -233,6 +233,12 @@ namespace Game_Engine.Core.Input
         /// </summary>
         public static void PollHardwareHeldKeys()
         {
+#if XBOX_UWP
+            // No OS key polling in a UWP app, but the pads still have to be read every frame.
+            // Without this the controller did nothing on the console.
+            PollGamepads();
+            return;
+#else
             if (!OperatingSystem.IsWindows()) return;
             SyncHardwareKey(0x57, KeyCode.W);
             SyncHardwareKey(0x41, KeyCode.A);
@@ -295,6 +301,7 @@ namespace Game_Engine.Core.Input
             SyncHardwareKey(0x68, KeyCode.NumPad8);
             SyncHardwareKey(0x69, KeyCode.NumPad9);
             PollGamepads();
+#endif
         }
 
         /// <summary>Read pads via the active input backend (XInput or SDL2).</summary>
@@ -369,6 +376,9 @@ namespace Game_Engine.Core.Input
         /// </summary>
         public static void PollPlayMouseButtons(bool cursorOverGameView)
         {
+#if XBOX_UWP
+            return;
+#else
             if (!OperatingSystem.IsWindows()) return;
             // Right-click is often stolen by Avalonia context menus, which also
             // makes IsPointerOver false — always poll RMB while Play is calling us.
@@ -376,19 +386,27 @@ namespace Game_Engine.Core.Input
             if (!cursorOverGameView) return;
             if ((GetAsyncKeyState(0x01) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Left);
             if ((GetAsyncKeyState(0x04) & 0x8000) != 0) FeedMouseButtonDown(MouseButton.Middle);
+#endif
         }
 
+#if XBOX_UWP
+        static short GetAsyncKeyState(int vKey) => 0;
+        static bool SetCursorPos(int x, int y) => false;
+#else
         [DllImport("user32.dll")]
         static extern short GetAsyncKeyState(int vKey);
 
         [DllImport("user32.dll")]
         static extern bool SetCursorPos(int X, int Y);
+#endif
 
         public static void WarpCursorScreen(int screenX, int screenY)
         {
             sIgnoreMouseDelta = 2;
+#if !XBOX_UWP
             if (OperatingSystem.IsWindows())
                 SetCursorPos(screenX, screenY);
+#endif
         }
 
         public static void FeedMouseButtonDown(MouseButton btn)

@@ -2,14 +2,15 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-#if WINDOWS
+#if WINDOWS && !XBOX_UWP
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 #endif
 
 namespace Game_Engine.Core
 {
-#if !WINDOWS
+#if XBOX_UWP
+#elif !WINDOWS
     /// <summary>OpenAL + PCM WAV backend for Linux/macOS/Android player builds.</summary>
     public static class AudioBackend
     {

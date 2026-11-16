@@ -324,8 +324,12 @@ namespace Game_Engine.Core.Rendering.UI
         {
             if (_vertices.Count == 0 || _batches.Count == 0) return;
 
-            // Upload vertex data
+            // Upload vertex data. Grass instancing can leave a divisor on attrib 2,
+            // which is this buffer's color. Force per-vertex fetch before drawing text.
             _gl.BindVertexArray(_vao);
+            _gl.VertexAttribDivisor(0, 0);
+            _gl.VertexAttribDivisor(1, 0);
+            _gl.VertexAttribDivisor(2, 0);
             _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
             unsafe
             {

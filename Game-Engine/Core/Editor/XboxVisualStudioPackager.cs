@@ -6,83 +6,91 @@ using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Xml.Linq;
-using SkiaSharp;
 
 namespace Game_Engine.Core.Editor;
 
 /// <summary>
-/// Generates a per-game Windows Application Packaging Project (.wapproj / .sln)
-/// around a published Engine.Player layout and builds a signed MSIX with Visual Studio MSBuild.
+/// Stages <c>Engine.Player.XboxUwp</c> (real UWP, no FullTrust) into Builds/Xbox for
+/// Visual Studio Remote Machine deploy to Xbox Dev Mode.
 /// </summary>
 public static class XboxVisualStudioPackager
 {
     private const string DevCertFileName = "XboxDev.pfx";
     private const string DevCertPublisherFileName = "XboxDev.publisher.txt";
     private const string DevCertPassword = "xboxdev";
-    private const string SdkBuildToolsVersion = "10.0.28000.2705";
+    private static readonly Guid UwpProjectGuid = new("B2C3D4E5-F6A7-8901-BCDE-F12345678901");
 
     public sealed record Options(
         string XboxOutDir,
-        string LayoutDir,
+        string DataDir,
         string ProjectRootPath,
         string ProductName,
         string Company,
         string Version,
-        string? PlayerAssetsDir,
+        string? IdentityName = null,
+        string? DisplayName = null,
+        string? PublisherDisplayName = null,
+        string? Description = null,
+        string? RemoteMachine = null,
+        string Configuration = "Release",
         IProgress<(int Percent, string Message)>? Progress = null);
 
     public sealed record Result(
         string SolutionPath,
-        string WapprojPath,
-        string MsixPath,
+        string ProjectPath,
+        string? MsixPath,
         string CertificatePath,
         string VisualStudioDir);
 
-    /// <summary>Write the Visual Studio packaging project and build the MSIX.</summary>
     public static Result GenerateAndBuild(Options options)
     {
         void Progress(int percent, string message) =>
             options.Progress?.Report((percent, message));
+
         if (!OperatingSystem.IsWindows())
             throw new InvalidOperationException("Xbox packaging must be run on Windows.");
 
-        if (!Directory.Exists(options.LayoutDir))
-            throw new DirectoryNotFoundException($"Xbox layout folder not found: {options.LayoutDir}");
-
-        var exe = Path.Combine(options.LayoutDir, "Engine.Player.exe");
-        if (!File.Exists(exe))
-            throw new FileNotFoundException(
-                "Xbox layout is missing Engine.Player.exe. Publish the player before packaging.", exe);
+        if (!Directory.Exists(options.DataDir))
+            throw new DirectoryNotFoundException($"Xbox Data folder not found: {options.DataDir}");
 
         var vsInstall = FindVisualStudioInstallPath()
             ?? throw new InvalidOperationException(
-                "Visual Studio 2022 with MSBuild was not found. Install Visual Studio 2022 and the " +
-                "\"MSIX Packaging Tools\" / Windows Application Packaging Project workload, then rebuild.");
-
-        var wapDir = Path.Combine(vsInstall, "MSBuild", "Microsoft", "DesktopBridge");
-        var desktopBridgeTargets = Path.Combine(wapDir, "Microsoft.DesktopBridge.targets");
-        if (!File.Exists(desktopBridgeTargets))
-            throw new InvalidOperationException(
-                "Microsoft.DesktopBridge.targets was not found. Install the Visual Studio \"MSIX Packaging Tools\" " +
-                "component (Windows Application Packaging Project), then rebuild.");
+                "Visual Studio 2022 with MSBuild was not found. Install VS 2022 with the UWP / Windows workload, then rebuild.");
 
         var msbuild = Path.Combine(vsInstall, "MSBuild", "Current", "Bin", "MSBuild.exe");
         if (!File.Exists(msbuild))
             throw new FileNotFoundException("MSBuild.exe was not found next to the Visual Studio install.", msbuild);
 
-        var packageName = SanitizePackageName(options.ProductName, options.ProjectRootPath);
+        var packageName = string.IsNullOrWhiteSpace(options.IdentityName)
+            ? SanitizePackageName(options.ProductName, options.ProjectRootPath)
+            : SanitizePackageName(options.IdentityName, options.ProjectRootPath);
         var publisher = FormatPublisher(options.Company);
         var version = PadPackageVersion(options.Version);
-        var displayName = string.IsNullOrWhiteSpace(options.ProductName)
-            ? Path.GetFileName(options.ProjectRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-            : options.ProductName.Trim();
-        var publisherDisplay = string.IsNullOrWhiteSpace(options.Company) ? "Game Engine" : options.Company.Trim();
+        var displayName = FirstNonEmpty(options.DisplayName, options.ProductName,
+            Path.GetFileName(options.ProjectRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
+        var publisherDisplay = FirstNonEmpty(options.PublisherDisplayName, options.Company, "Game Engine");
+        var description = FirstNonEmpty(options.Description,
+            "Xbox Dev Mode UWP host for Game Engine titles");
 
         var vsDir = Path.Combine(options.XboxOutDir, "VisualStudio");
-        var appPackagesDir = Path.Combine(options.XboxOutDir, "AppPackages");
-        Directory.CreateDirectory(vsDir);
-        Directory.CreateDirectory(appPackagesDir);
+        Progress(80, "Staging Engine.Player.XboxUwp (UWP, no FullTrust)...");
+        if (Directory.Exists(vsDir))
+        {
+            try { Directory.Delete(vsDir, recursive: true); }
+            catch (Exception ex)
+            {
+                Log.Warning($"[Build] Could not clear previous VisualStudio folder: {ex.Message}");
+            }
+        }
+
+        var template = FindXboxUwpTemplateRoot();
+        CopyDirectory(template, vsDir);
+
+        // Embed game Data into the UWP package (scenes, build.json, Assets.dll).
+        var stagedData = Path.Combine(vsDir, "Data");
+        if (Directory.Exists(stagedData))
+            Directory.Delete(stagedData, recursive: true);
+        CopyDirectory(options.DataDir, stagedData);
 
         var projectSettingsDir = Path.Combine(options.ProjectRootPath, "ProjectSettings");
         Directory.CreateDirectory(projectSettingsDir);
@@ -90,66 +98,61 @@ public static class XboxVisualStudioPackager
         var certInVsDir = Path.Combine(vsDir, DevCertFileName);
         File.Copy(certPath, certInVsDir, overwrite: true);
 
-        CopyPackageLogos(options.PlayerAssetsDir, Path.Combine(vsDir, "Assets"));
-
-        var projectGuid = Guid.NewGuid();
-        var wapprojPath = Path.Combine(vsDir, $"{packageName}.wapproj");
+        var csprojPath = Path.Combine(vsDir, "Engine.Player.XboxUwp.csproj");
         var solutionPath = Path.Combine(vsDir, $"{packageName}.sln");
         var manifestPath = Path.Combine(vsDir, "Package.appxmanifest");
 
-        Progress(82, "Writing Visual Studio packaging project...");
-        WriteAppxManifest(manifestPath, packageName, publisher, version, displayName, publisherDisplay);
-        WriteWapproj(wapprojPath, packageName, projectGuid, options.LayoutDir, DevCertFileName);
-        WriteSolution(solutionPath, packageName, projectGuid);
-        var buildJson = Path.Combine(options.LayoutDir, "Data", "build.json");
-        WriteWapprojUser(wapprojPath + ".user", buildJson);
+        WriteUwpAppxManifest(manifestPath, packageName, publisher, version, displayName, publisherDisplay, description);
+        var coreDir = Path.GetFullPath(Path.Combine(template, "..", "Game-Engine", "Core"));
+        PatchCsprojCoreDir(csprojPath, coreDir);
+        PatchCsprojSigning(csprojPath, DevCertFileName);
+        WriteLaunchSettings(Path.Combine(vsDir, "Properties", "launchSettings.json"), options.RemoteMachine);
+        WriteUwpSolution(solutionPath, packageName);
 
-        Log.Info($"[Build] Generated Visual Studio packaging project: {solutionPath}");
-        Log.Info("[Build] MSIX payload excludes layout/Data (keeps MakeAppx within normal RAM limits).");
-        Progress(88, "Running MSBuild packaging (MSIX, player only)...");
-        Log.Info($"[Build] Building MSIX with MSBuild ({vsInstall})...");
+        Progress(88, "Building UWP package with MSBuild...");
+        var configuration = string.Equals(options.Configuration, "Debug", StringComparison.OrdinalIgnoreCase)
+            ? "Debug"
+            : "Release";
+        RunMsBuildUwp(msbuild, csprojPath, configuration, certInVsDir);
 
-        RunMsBuild(msbuild, wapprojPath, wapDir, appPackagesDir);
         Progress(96, "Locating packaged MSIX...");
-
-        var msix = Directory.EnumerateFiles(appPackagesDir, "*.msix", SearchOption.AllDirectories)
+        var msix = Directory.EnumerateFiles(vsDir, "*.msix", SearchOption.AllDirectories)
             .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault()
-            ?? Directory.EnumerateFiles(appPackagesDir, "*.msixbundle", SearchOption.AllDirectories)
-                .OrderByDescending(File.GetLastWriteTimeUtc)
-                .FirstOrDefault();
+            .FirstOrDefault();
 
-        if (msix == null)
-            throw new Exception(
-                "MSBuild completed but no .msix was produced under AppPackages. " +
-                "Open the generated .sln in Visual Studio 2022 to inspect packaging errors.");
+        WriteXboxReadme(options.XboxOutDir, packageName, solutionPath, msix);
+        Log.Info($"[Build] Xbox UWP project ready: {solutionPath}");
+        if (msix != null)
+            Log.Info($"[Build] MSIX created: {msix}");
 
-        WriteXboxReadme(options.XboxOutDir, packageName, msix);
-        Log.Info($"[Build] MSIX created: {msix}");
-        return new Result(solutionPath, wapprojPath, msix, certPath, vsDir);
+        return new Result(solutionPath, csprojPath, msix, certPath, vsDir);
     }
 
-    private static void WriteXboxReadme(string xboxOutDir, string packageName, string msixPath)
+    private static void WriteXboxReadme(string xboxOutDir, string packageName, string solutionPath, string? msixPath)
     {
-        var readme = Path.Combine(xboxOutDir, "README.txt");
-        File.WriteAllText(readme,
-            "Xbox / MSIX build output\r\n" +
-            "========================\r\n\r\n" +
+        File.WriteAllText(Path.Combine(xboxOutDir, "README.txt"),
+            "Xbox Dev Mode UWP build\r\n" +
+            "=======================\r\n\r\n" +
             $"Package identity: {packageName}\r\n" +
-            $"MSIX: {msixPath}\r\n\r\n" +
-            "The .msix contains only Engine.Player + runtime dependencies.\r\n" +
-            "Game content stays in: layout\\Data\\ (Assets.dll, scenes, build.json).\r\n" +
-            "This split avoids MakeAppx out-of-memory failures on large projects.\r\n\r\n" +
-            "Build & Run sideloads the MSIX and launches:\r\n" +
-            "  Engine.Player.exe  <path-to-layout\\Data\\build.json>\r\n\r\n" +
-            "Visual Studio Local Machine:\r\n" +
-            "  Use Local Machine (not Remote). The .sln enables Deploy, and the\r\n" +
-            "  .wapproj.user passes layout\\Data\\build.json as the command-line arg.\r\n" +
-            "  If you still see \"needs to be deployed\", open Configuration Manager\r\n" +
-            "  and ensure Deploy is checked for this project on Debug|x64.\r\n");
+            $"Solution: {solutionPath}\r\n" +
+            (msixPath != null ? $"MSIX: {msixPath}\r\n" : "") +
+            "\r\n" +
+            "This is a real UWP app (EntryPoint = Engine.Player.XboxUwp.App).\r\n" +
+            "It does NOT use Windows.FullTrustApplication / runFullTrust — Xbox will launch it.\r\n\r\n" +
+            "Deploy to console:\r\n" +
+            "  1. Open the .sln in Visual Studio 2022\r\n" +
+            "  2. Platform x64\r\n" +
+            "  3. In the debug toolbar profile dropdown, select \"Remote Machine\"\r\n" +
+            "     (not the old Debug property page — this is a modern single-project MSIX UWP app)\r\n" +
+            "  4. Sign in a Microsoft account on the Xbox (Dev Home)\r\n" +
+            "  5. F5 / Start Debugging\r\n\r\n" +
+            "Set the Xbox IP in Build Settings → Remote Machine (Dev Home shows it).\r\n\r\n" +
+            "If something is missing in the game, read LocalState\\player.log. It lists every asset\r\n" +
+            "or script that failed to load. On the Xbox: Device Portal → File explorer → the app's\r\n" +
+            "LocalState. On this PC: %LOCALAPPDATA%\\Packages\\<package family>\\LocalState.\r\n" +
+            "The first launch compiles shaders and is slow; later launches reuse LocalCache\\Shaders.\r\n");
     }
 
-    /// <summary>Find an existing generated .sln under Builds/Xbox/VisualStudio.</summary>
     public static string? FindExistingSolution(string xboxOutDir)
     {
         var vsDir = Path.Combine(xboxOutDir, "VisualStudio");
@@ -162,6 +165,28 @@ public static class XboxVisualStudioPackager
         {
             return null;
         }
+    }
+
+    public static string FindXboxUwpTemplateRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        for (int i = 0; i < 10; i++)
+        {
+            var candidate = Path.Combine(dir, "Engine.Player.XboxUwp");
+            if (File.Exists(Path.Combine(candidate, "Engine.Player.XboxUwp.csproj")))
+                return candidate;
+            var sibling = Path.GetFullPath(Path.Combine(dir, "..", "Engine.Player.XboxUwp"));
+            if (File.Exists(Path.Combine(sibling, "Engine.Player.XboxUwp.csproj")))
+                return sibling;
+
+            var parent = Directory.GetParent(dir)?.FullName;
+            if (parent == null || parent == dir) break;
+            dir = parent;
+        }
+
+        throw new FileNotFoundException(
+            "Could not find Engine.Player.XboxUwp/ next to the editor. " +
+            "Ensure Engine.Player.XboxUwp ships with the solution.");
     }
 
     public static string? FindVisualStudioInstallPath()
@@ -217,7 +242,6 @@ public static class XboxVisualStudioPackager
         });
     }
 
-    /// <summary>Import the packaging certificate so Add-AppxPackage can sideload the MSIX.</summary>
     public static void TrustCertificate(string pfxPath)
     {
         if (!File.Exists(pfxPath)) return;
@@ -258,7 +282,6 @@ public static class XboxVisualStudioPackager
         if (string.IsNullOrEmpty(name))
             name = "GameEngine.Game";
 
-        // Identity Name must start with a letter.
         if (!char.IsLetter(name[0]))
             name = "App." + name;
 
@@ -273,7 +296,6 @@ public static class XboxVisualStudioPackager
     public static string FormatPublisher(string? company)
     {
         var cn = string.IsNullOrWhiteSpace(company) ? "GameEngine" : company.Trim();
-        // Keep certificate subject / Publisher attribute aligned and free of quotes.
         cn = cn.Replace("\"", "").Replace(",", " ");
         if (string.IsNullOrWhiteSpace(company))
             Log.Info("[Build] Company is empty — using Publisher CN=GameEngine for the Xbox package.");
@@ -288,8 +310,6 @@ public static class XboxVisualStudioPackager
         {
             if (i < parts.Length && int.TryParse(parts[i], out var n) && n >= 0)
                 nums[i] = n;
-            else if (i < parts.Length)
-                nums[i] = 0;
         }
         return $"{nums[0]}.{nums[1]}.{nums[2]}.{nums[3]}";
     }
@@ -315,7 +335,6 @@ public static class XboxVisualStudioPackager
 
     private static void CreateSelfSignedPfx(string pfxPath, string publisher)
     {
-        // Subject must match Package.appxmanifest Publisher exactly.
         var escapedPublisher = publisher.Replace("'", "''");
         var escapedPfx = pfxPath.Replace("'", "''");
         var script =
@@ -355,211 +374,171 @@ public static class XboxVisualStudioPackager
         }
     }
 
-    private static void CopyPackageLogos(string? playerAssetsDir, string destAssetsDir)
-    {
-        Directory.CreateDirectory(destAssetsDir);
-        (string Name, int Width, int Height)[] logos =
-        {
-            ("StoreLogo.png", 50, 50),
-            ("Square44x44Logo.png", 44, 44),
-            ("Square150x150Logo.png", 150, 150),
-            ("Wide310x150Logo.png", 310, 150)
-        };
-
-        foreach (var (name, width, height) in logos)
-        {
-            var dest = Path.Combine(destAssetsDir, name);
-            var src = playerAssetsDir != null ? Path.Combine(playerAssetsDir, name) : null;
-            if (src != null && File.Exists(src) && PngHasDimensions(src, width, height))
-            {
-                File.Copy(src, dest, overwrite: true);
-            }
-            else
-            {
-                // Appx packaging rejects wrong dimensions (player placeholders were 1x1).
-                WriteSolidPng(dest, width, height);
-            }
-        }
-    }
-
-    private static bool PngHasDimensions(string path, int width, int height)
-    {
-        try
-        {
-            using var stream = File.OpenRead(path);
-            using var codec = SKCodec.Create(stream);
-            return codec != null && codec.Info.Width == width && codec.Info.Height == height;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static void WriteSolidPng(string path, int width, int height)
-    {
-        using var bitmap = new SKBitmap(width, height);
-        bitmap.Erase(SKColors.Black);
-        using var image = SKImage.FromBitmap(bitmap);
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        File.WriteAllBytes(path, data.ToArray());
-    }
-
-    private static void WriteAppxManifest(
+    private static void WriteUwpAppxManifest(
         string path,
         string packageName,
         string publisher,
         string version,
         string displayName,
-        string publisherDisplay)
+        string publisherDisplay,
+        string description)
     {
+        var phoneId = Guid.NewGuid().ToString();
         var xml =
 $@"<?xml version=""1.0"" encoding=""utf-8""?>
-<Package xmlns=""http://schemas.microsoft.com/appx/manifest/foundation/windows10""
-         xmlns:uap=""http://schemas.microsoft.com/appx/manifest/uap/windows10""
-         xmlns:rescap=""http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities""
-         IgnorableNamespaces=""uap rescap"">
-  <Identity Name=""{EscapeXml(packageName)}""
-            Publisher=""{EscapeXml(publisher)}""
-            Version=""{EscapeXml(version)}"" />
+<Package
+  xmlns=""http://schemas.microsoft.com/appx/manifest/foundation/windows10""
+  xmlns:mp=""http://schemas.microsoft.com/appx/2014/phone/manifest""
+  xmlns:uap=""http://schemas.microsoft.com/appx/manifest/uap/windows10""
+  IgnorableNamespaces=""uap mp"">
+
+  <Identity
+    Name=""{EscapeXml(packageName)}""
+    Publisher=""{EscapeXml(publisher)}""
+    Version=""{EscapeXml(version)}"" />
+
+  <mp:PhoneIdentity PhoneProductId=""{phoneId}"" PhonePublisherId=""00000000-0000-0000-0000-000000000000""/>
+
   <Properties>
     <DisplayName>{EscapeXml(displayName)}</DisplayName>
     <PublisherDisplayName>{EscapeXml(publisherDisplay)}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
+
   <Dependencies>
-    <TargetDeviceFamily Name=""Windows.Desktop"" MinVersion=""10.0.17763.0"" MaxVersionTested=""10.0.22621.0"" />
-    <TargetDeviceFamily Name=""Windows.Xbox"" MinVersion=""10.0.22000.0"" MaxVersionTested=""10.0.22621.0"" />
+    <TargetDeviceFamily Name=""Windows.Universal"" MinVersion=""10.0.17763.0"" MaxVersionTested=""10.0.26100.0"" />
+    <TargetDeviceFamily Name=""Windows.Xbox"" MinVersion=""10.0.18362.0"" MaxVersionTested=""10.0.26100.0"" />
   </Dependencies>
+
   <Resources>
-    <Resource Language=""en-us"" />
+    <Resource Language=""en-us""/>
   </Resources>
+
   <Applications>
-    <Application Id=""App"" Executable=""Engine.Player.exe"" EntryPoint=""Windows.FullTrustApplication"">
+    <Application Id=""App""
+          Executable=""Engine.Player.XboxUwp.exe""
+      EntryPoint=""Engine.Player.XboxUwp.App"">
       <uap:VisualElements
         DisplayName=""{EscapeXml(displayName)}""
-        Description=""{EscapeXml(displayName)}""
         Square150x150Logo=""Assets\Square150x150Logo.png""
         Square44x44Logo=""Assets\Square44x44Logo.png""
+        Description=""{EscapeXml(description)}""
         BackgroundColor=""#000000"">
-        <uap:DefaultTile Wide310x150Logo=""Assets\Wide310x150Logo.png"" />
+        <uap:DefaultTile Wide310x150Logo=""Assets\Wide310x150Logo.png""/>
+        <uap:SplashScreen Image=""Assets\SplashScreen.png""/>
       </uap:VisualElements>
     </Application>
   </Applications>
+
   <Capabilities>
-    <rescap:Capability Name=""runFullTrust"" />
+    <Capability Name=""internetClient"" />
+    <uap:Capability Name=""userAccountInformation"" />
   </Capabilities>
 </Package>
 ";
         File.WriteAllText(path, xml.TrimStart() + Environment.NewLine);
     }
 
-    private static void WriteWapproj(
-        string path,
-        string packageName,
-        Guid projectGuid,
-        string layoutDir,
-        string certFileName)
+    private static void PatchCsprojCoreDir(string csprojPath, string coreDir)
     {
-        // EngineLayoutDir is absolute so MSBuild can find the publish output from any cwd.
-        var layoutFull = Path.GetFullPath(layoutDir);
-        var xml =
-$@"<?xml version=""1.0"" encoding=""utf-8""?>
-<Project ToolsVersion=""15.0"" DefaultTargets=""Build"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
-  <PropertyGroup Condition=""'$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '15.0'"">
-    <VisualStudioVersion>15.0</VisualStudioVersion>
-  </PropertyGroup>
+        if (!File.Exists(csprojPath)) return;
+        if (!Directory.Exists(coreDir))
+            throw new DirectoryNotFoundException("Engine Core folder not found for the staged Xbox project: " + coreDir);
 
-  <ItemGroup Label=""ProjectConfigurations"">
-    <ProjectConfiguration Include=""Debug|x64"">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include=""Release|x64"">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-  </ItemGroup>
+        var full = coreDir.TrimEnd('\\', '/') + "\\";
+        var uiDir = Path.GetFullPath(Path.Combine(coreDir, "..", "Standard Assets", "Code Examples", "UI")) + "\\";
+        var text = File.ReadAllText(csprojPath);
+        var element = $"<GameEngineCoreDir>{EscapeXml(full)}</GameEngineCoreDir>";
+        var uiElement = $"<GameEngineStdUiDir>{EscapeXml(uiDir)}</GameEngineStdUiDir>";
+        if (text.Contains("<GameEngineCoreDir>", StringComparison.Ordinal))
+        {
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text,
+                @"<GameEngineCoreDir[^>]*>.*?</GameEngineCoreDir>",
+                element,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+        }
+        else
+        {
+            text = text.Replace(
+                "<RootNamespace>",
+                element + "\r\n    <RootNamespace>",
+                StringComparison.Ordinal);
+        }
 
-  <PropertyGroup>
-    <WapProjPath Condition=""'$(WapProjPath)'==''"">$(MSBuildExtensionsPath)\Microsoft\DesktopBridge\</WapProjPath>
-  </PropertyGroup>
-
-  <Import Project=""$(WapProjPath)\Microsoft.DesktopBridge.props"" />
-
-  <PropertyGroup>
-    <ProjectGuid>{{{projectGuid.ToString().ToUpperInvariant()}}}</ProjectGuid>
-    <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-    <DefaultLanguage>en-US</DefaultLanguage>
-    <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
-    <PackageCertificateKeyFile>{EscapeXml(certFileName)}</PackageCertificateKeyFile>
-    <PackageCertificatePassword>{EscapeXml(DevCertPassword)}</PackageCertificatePassword>
-    <AppxBundle>Never</AppxBundle>
-    <AppxPackageName>{EscapeXml(packageName)}</AppxPackageName>
-    <!-- Required so Desktop Bridge packaging accepts a layout-only project (no ProjectReference). -->
-    <EntryPointExe>Engine.Player.exe</EntryPointExe>
-    <EngineLayoutDir>{EscapeXml(layoutFull)}</EngineLayoutDir>
-    <!-- Engine.Player is .NET (CoreCLR), not Desktop CLR / .NET Framework. -->
-    <DebuggerType>ManagedOnly</DebuggerType>
-    <BackgroundTaskDebugEngines>CoreClr</BackgroundTaskDebugEngines>
-    <NoWarn>$(NoWarn);NU1702</NoWarn>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <AppxManifest Include=""Package.appxmanifest"">
-      <SubType>Designer</SubType>
-    </AppxManifest>
-    <None Include=""{EscapeXml(certFileName)}"" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include=""Assets\StoreLogo.png"" />
-    <Content Include=""Assets\Square150x150Logo.png"" />
-    <Content Include=""Assets\Square44x44Logo.png"" />
-    <Content Include=""Assets\Wide310x150Logo.png"" />
-  </ItemGroup>
-
-  <!--
-    Package only the Engine.Player runtime (exe + deps).
-    Game Data/ (Assets.dll, scenes, scripts) is intentionally excluded — multi‑GB payloads
-    make MakeAppx fail with 0x8007000e (out of memory) even on 30GB machines.
-    Data stays in Builds/Xbox/layout/Data and is passed to the player at launch.
-  -->
-  <Target Name=""AddEngineLayoutToPayload"" AfterTargets=""_RemoveAllNonWapUWPItems"" BeforeTargets=""_WritePayloadFiles"">
-    <ItemGroup>
-      <_EngineLayoutFiles Include=""$(EngineLayoutDir)\**\*.*""
-                          Exclude=""$(EngineLayoutDir)\Assets\**\*.*;$(EngineLayoutDir)\Data\**\*.*"" />
-      <AppxPackagePayload Include=""@(_EngineLayoutFiles)"">
-        <TargetPath>%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
-      </AppxPackagePayload>
-    </ItemGroup>
-  </Target>
-
-  <Import Project=""$(WapProjPath)\Microsoft.DesktopBridge.targets"" />
-
-  <ItemGroup>
-    <PackageReference Include=""Microsoft.Windows.SDK.BuildTools"" Version=""{SdkBuildToolsVersion}"" PrivateAssets=""all"" />
-  </ItemGroup>
-</Project>
-";
-        File.WriteAllText(path, xml.TrimStart() + Environment.NewLine);
-
-        // Sanity: ensure the written project is well-formed XML.
-        XDocument.Load(path);
+        if (text.Contains("<GameEngineStdUiDir>", StringComparison.Ordinal))
+        {
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text,
+                @"<GameEngineStdUiDir[^>]*>.*?</GameEngineStdUiDir>",
+                uiElement,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+        }
+        else
+        {
+            text = text.Replace(
+                "<RootNamespace>",
+                uiElement + "\r\n    <RootNamespace>",
+                StringComparison.Ordinal);
+        }
+        File.WriteAllText(csprojPath, text);
     }
 
-    private static void WriteSolution(string path, string packageName, Guid projectGuid)
+    private static void PatchCsprojSigning(string csprojPath, string certFileName)
     {
-        var guidUpper = projectGuid.ToString().ToUpperInvariant();
-        var typeGuid = "C7167F0D-BC9F-4E6E-AFE1-012C56B48DB5";
-        var sln =
-$@"
-Microsoft Visual Studio Solution File, Format Version 12.00
+        if (!File.Exists(csprojPath)) return;
+        var text = File.ReadAllText(csprojPath);
+        if (!text.Contains("<PackageCertificateKeyFile>", StringComparison.Ordinal))
+        {
+            text = text.Replace(
+                "<AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>",
+                "<AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>\r\n" +
+                $"    <PackageCertificateKeyFile>{EscapeXml(certFileName)}</PackageCertificateKeyFile>\r\n" +
+                $"    <PackageCertificatePassword>{EscapeXml(DevCertPassword)}</PackageCertificatePassword>",
+                StringComparison.Ordinal);
+            File.WriteAllText(csprojPath, text);
+        }
+    }
+
+    private static void WriteLaunchSettings(string path, string? remoteMachine)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var machine = string.IsNullOrWhiteSpace(remoteMachine) ? "" : remoteMachine.Trim();
+        var remoteEnabled = machine.Length > 0 ? "true" : "false";
+        // Modern UseUwp + EnableMsixTooling uses launch profiles (not classic Debug → Target device).
+        var json =
+            "{\r\n" +
+            "  \"profiles\": {\r\n" +
+            "    \"Local Machine\": {\r\n" +
+            "      \"commandName\": \"MsixPackage\",\r\n" +
+            "      \"alwaysReinstallApp\": false,\r\n" +
+            "      \"nativeDebugging\": false\r\n" +
+            "    },\r\n" +
+            "    \"Remote Machine\": {\r\n" +
+            "      \"commandName\": \"MsixPackage\",\r\n" +
+            "      \"remoteDebugEnabled\": " + remoteEnabled + ",\r\n" +
+            "      \"remoteDebugMachine\": \"" + EscapeJson(machine) + "\",\r\n" +
+            "      \"authenticationMode\": \"Universal\",\r\n" +
+            "      \"alwaysReinstallApp\": false,\r\n" +
+            "      \"nativeDebugging\": false\r\n" +
+            "    }\r\n" +
+            "  }\r\n" +
+            "}\r\n";
+        File.WriteAllText(path, json);
+    }
+
+    private static string EscapeJson(string value) =>
+        value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    private static void WriteUwpSolution(string solutionPath, string packageName)
+    {
+        var guid = UwpProjectGuid.ToString().ToUpperInvariant();
+        File.WriteAllText(solutionPath,
+$@"Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project(""{{{typeGuid}}}"") = ""{packageName}"", ""{packageName}.wapproj"", ""{{{guidUpper}}}""
+Project(""{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}"") = ""{packageName}"", ""Engine.Player.XboxUwp.csproj"", ""{{{guid}}}""
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -567,62 +546,33 @@ Global
 		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{{{guidUpper}}}.Debug|x64.ActiveCfg = Debug|x64
-		{{{guidUpper}}}.Debug|x64.Build.0 = Debug|x64
-		{{{guidUpper}}}.Debug|x64.Deploy.0 = Debug|x64
-		{{{guidUpper}}}.Release|x64.ActiveCfg = Release|x64
-		{{{guidUpper}}}.Release|x64.Build.0 = Release|x64
-		{{{guidUpper}}}.Release|x64.Deploy.0 = Release|x64
+		{{{guid}}}.Debug|x64.ActiveCfg = Debug|x64
+		{{{guid}}}.Debug|x64.Build.0 = Debug|x64
+		{{{guid}}}.Debug|x64.Deploy.0 = Debug|x64
+		{{{guid}}}.Release|x64.ActiveCfg = Release|x64
+		{{{guid}}}.Release|x64.Build.0 = Release|x64
+		{{{guid}}}.Release|x64.Deploy.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 EndGlobal
-";
-        File.WriteAllText(path, sln.TrimStart() + Environment.NewLine);
+");
     }
 
-    /// <summary>
-    /// VS debug settings for Local Machine: deploy + pass external Data/build.json
-    /// (game content is outside the MSIX to avoid MakeAppx OOM).
-    /// </summary>
-    private static void WriteWapprojUser(string userPath, string buildJsonPath)
+    private static void RunMsBuildUwp(string msbuildPath, string csprojPath, string configuration, string pfxPath)
     {
-        var args = File.Exists(buildJsonPath)
-            ? "\"" + buildJsonPath.Replace("\"", "\\\"") + "\""
-            : "";
-        var xml =
-$@"<?xml version=""1.0"" encoding=""utf-8""?>
-<Project ToolsVersion=""Current"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
-  <PropertyGroup>
-    <DebuggerFlavor>AppHostLocalDebugger</DebuggerFlavor>
-    <DebuggerType>ManagedOnly</DebuggerType>
-    <BackgroundTaskDebugEngines>CoreClr</BackgroundTaskDebugEngines>
-    <_TargetImageClrType>Managed</_TargetImageClrType>
-    <CommandLineArguments>{EscapeXml(args)}</CommandLineArguments>
-    <!-- false: Local Machine can relaunch without reinstalling the package every F5 -->
-    <AlwaysReinstall>false</AlwaysReinstall>
-  </PropertyGroup>
-</Project>
-";
-        File.WriteAllText(userPath, xml.TrimStart() + Environment.NewLine);
-    }
-
-    private static void RunMsBuild(string msbuildPath, string wapprojPath, string wapDir, string appPackagesDir)
-    {
-        // Use forward slashes so a trailing separator cannot escape the closing quote
-        // on Windows (\" after \ swallows the rest of the command line).
-        var packageDir = appPackagesDir.TrimEnd('\\', '/').Replace('\\', '/') + "/";
-        var wapProjPath = wapDir.TrimEnd('\\', '/').Replace('\\', '/') + "/";
         var args =
-            $"\"{wapprojPath}\" " +
-            "/restore " +
-            "/p:Configuration=Release " +
+            $"\"{csprojPath}\" " +
+            "/t:Restore;Build " +
+            $"/p:Configuration={configuration} " +
             "/p:Platform=x64 " +
-            $"/p:AppxPackageDir=\"{packageDir}\" " +
-            "/p:UapAppxPackageBuildMode=SideloadOnly " +
-            "/p:AppxBundle=Never " +
-            $"/p:WapProjPath=\"{wapProjPath}\" " +
+            "/p:RuntimeIdentifier=win-x64 " +
+            "/p:SelfContained=true " +
+            "/p:AppxPackageSigningEnabled=true " +
+            $"/p:PackageCertificateKeyFile=\"{pfxPath}\" " +
+            $"/p:PackageCertificatePassword={DevCertPassword} " +
+            "/restore " +
             "/verbosity:minimal";
 
         var psi = new ProcessStartInfo
@@ -633,90 +583,69 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            WorkingDirectory = Path.GetDirectoryName(wapprojPath)!
+            WorkingDirectory = Path.GetDirectoryName(csprojPath)!
         };
 
         using var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
+        // Reading stdout to the end before stderr deadlocks once MSBuild fills the other pipe.
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        proc.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+        proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
         proc.WaitForExit();
 
         if (proc.ExitCode != 0)
         {
-            var combined = (stdout + "\n" + stderr).Trim();
+            var combined = (stdout.ToString() + "\n" + stderr.ToString()).Trim();
             var errorLines = combined.Split('\n')
-                .Where(l => l.Contains("error ", StringComparison.OrdinalIgnoreCase))
+                .Where(l => l.Contains("error", StringComparison.OrdinalIgnoreCase))
                 .Take(12);
-            var errorSummary = string.Join("\n", errorLines);
-            if (string.IsNullOrWhiteSpace(errorSummary))
-                errorSummary = combined.Length > 1200 ? combined[..1200] + "..." : combined;
-
-            if (combined.Contains("0x8007000e", StringComparison.OrdinalIgnoreCase)
-                || combined.Contains("Not enough memory", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new Exception(
-                    "MSBuild packaging failed: MakeAppx ran out of memory while creating the MSIX.\n" +
-                    "Game Data is supposed to stay outside the package (layout/Data). If this still happens, " +
-                    "close other apps and rebuild — the MSIX should only contain the player runtime.\n" +
-                    errorSummary);
-            }
-
-            throw new Exception($"MSBuild packaging failed (exit code {proc.ExitCode}):\n{errorSummary}");
+            var summary = string.Join("\n", errorLines);
+            if (string.IsNullOrWhiteSpace(summary))
+                summary = combined.Length > 1200 ? combined[..1200] + "..." : combined;
+            throw new Exception($"Xbox UWP MSBuild failed (exit {proc.ExitCode}):\n{summary}");
         }
 
-        Log.Info("[Build] MSBuild packaging completed successfully.");
+        Log.Info("[Build] Engine.Player.XboxUwp MSBuild completed.");
     }
 
-    /// <summary>
-    /// Sideload an MSIX, then start the installed Engine.Player with an external build.json
-    /// (game Data lives beside the build, not inside the package).
-    /// </summary>
-    public static void SideloadAndLaunch(string msixPath, string packageIdentityName, string buildJsonPath)
+    private static void CopyDirectory(string src, string dst)
     {
-        if (!File.Exists(msixPath))
-            throw new FileNotFoundException("MSIX not found.", msixPath);
-        if (!File.Exists(buildJsonPath))
-            throw new FileNotFoundException(
-                "Game Data build.json not found. Expected Builds/Xbox/layout/Data/build.json beside the package.",
-                buildJsonPath);
-
-        var escapedMsix = msixPath.Replace("'", "''");
-        var escapedJson = buildJsonPath.Replace("'", "''");
-        var escapedName = packageIdentityName.Replace("'", "''");
-        var script =
-            "$ErrorActionPreference = 'Stop'\r\n" +
-            $"Add-AppxPackage -Path '{escapedMsix}' -ForceUpdateFromAnyVersion -ForceApplicationShutdown\r\n" +
-            $"$pkg = Get-AppxPackage -Name '{escapedName}' | Sort-Object {{ [version]$_.Version }} -Descending | Select-Object -First 1\r\n" +
-            $"if (-not $pkg) {{ throw 'Installed package not found: {escapedName}' }}\r\n" +
-            "$exe = Join-Path $pkg.InstallLocation 'Engine.Player.exe'\r\n" +
-            "if (-not (Test-Path -LiteralPath $exe)) { throw \"Engine.Player.exe missing in $($pkg.InstallLocation)\" }\r\n" +
-            $"Start-Process -FilePath $exe -ArgumentList @('{escapedJson}')\r\n";
-
-        var scriptPath = Path.Combine(Path.GetTempPath(), "GameEngine_XboxLaunch_" + Guid.NewGuid().ToString("N") + ".ps1");
-        try
+        Directory.CreateDirectory(dst);
+        foreach (var file in Directory.GetFiles(src))
         {
-            File.WriteAllText(scriptPath, script);
-            var psi = new ProcessStartInfo
+            var name = Path.GetFileName(file);
+            if (name.Equals("README.txt", StringComparison.OrdinalIgnoreCase)) continue;
+            var destPath = Path.Combine(dst, name);
+            if (File.Exists(destPath))
             {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi)!;
-            var stdout = proc.StandardOutput.ReadToEnd();
-            var stderr = proc.StandardError.ReadToEnd();
-            proc.WaitForExit();
-            if (proc.ExitCode != 0)
-                throw new Exception($"Xbox sideload/launch failed:\n{(stderr + "\n" + stdout).Trim()}");
-            Log.Info($"[Build] Sideloaded {packageIdentityName} and launched with Data at {buildJsonPath}");
+                var attrs = File.GetAttributes(destPath);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(destPath, attrs & ~FileAttributes.ReadOnly);
+            }
+            File.Copy(file, destPath, overwrite: true);
+            var copied = File.GetAttributes(destPath);
+            if ((copied & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(destPath, copied & ~FileAttributes.ReadOnly);
         }
-        finally
+        foreach (var dir in Directory.GetDirectories(src))
         {
-            try { File.Delete(scriptPath); } catch { /* best-effort */ }
+            var name = Path.GetFileName(dir);
+            if (name is "bin" or "obj" or ".vs" or "AppPackages") continue;
+            CopyDirectory(dir, Path.Combine(dst, name));
         }
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+                return v.Trim();
+        }
+        return "";
     }
 
     private static string EscapeXml(string value) =>

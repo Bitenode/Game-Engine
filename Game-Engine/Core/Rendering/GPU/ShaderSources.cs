@@ -177,12 +177,12 @@ uniform vec4  uBaseColor;       // RGBA tint
 uniform float uRoughness;
 uniform float uMetallic;
 uniform float uAlphaCutoff;
-uniform bool  uTransparent;
-uniform bool  uDoubleSided;
+uniform int  uTransparent;
+uniform int  uDoubleSided;
 
 // Albedo texture
 uniform sampler2D uAlbedoTex;
-uniform bool      uHasAlbedoTex;
+uniform int      uHasAlbedoTex;
 
 uniform sampler2D uOpacityTex;
 uniform int       uHasOpacityTex;
@@ -224,13 +224,13 @@ uniform sampler2D uShadowMapC3;        // cascade 3
 uniform mat4      uShadowVPC[MAX_CASCADES];
 uniform float     uCascadeSplits[MAX_CASCADES];
 uniform int       uCascadeCount;
-uniform bool      uHasShadow;
+uniform int      uHasShadow;
 
 // Lighting
 uniform vec3  uLightDir;        // world-space direction TO the light (normalized)
 uniform vec3  uLightPos;
 uniform float uLightRange;
-uniform bool  uLightIsPoint;
+uniform int  uLightIsPoint;
 uniform float uDiffuseK;
 uniform float uAmbient;
 uniform int   uHasPlanetFill;
@@ -308,7 +308,7 @@ float SampleShadowMap(int cascade, vec2 uv, float compareDepth)
 
 float ShadowCalc(vec4 sc, vec3 N)
 {
-    if (!uHasShadow) return 1.0;
+    if (uHasShadow == 0) return 1.0;
 
     // Determine cascade index from fragment distance to camera
     float fragDist = length(vWorldPos - uCamPos);
@@ -350,7 +350,7 @@ float ShadowCalc(vec4 sc, vec3 N)
 void main()
 {
     vec3 N = normalize(vWorldNormal);
-    if (uDoubleSided && !gl_FrontFacing) N = -N;
+    if (uDoubleSided != 0 && !gl_FrontFacing) N = -N;
 
     // Save geometric normal for shadow bias (unaffected by normal map)
     vec3 geoN = N;
@@ -374,12 +374,17 @@ void main()
 
     // ── Albedo ──
     vec4 albedo = uBaseColor;
-    if (uHasAlbedoTex)
+    if (uHasAlbedoTex != 0)
         albedo *= texture(uAlbedoTex, vUV);
 
     float maskA = albedo.a;
     if (uHasOpacityTex != 0)
-        maskA *= texture(uOpacityTex, vUV).r;
+    {
+        // RGB block compression (BC1) has no alpha and reports it as 0. The opacity map is the
+        // alpha for that material; a zero albedo alpha must not erase it.
+        float albedoA = albedo.a < 0.001 ? 1.0 : albedo.a;
+        maskA = albedoA * texture(uOpacityTex, vUV).r;
+    }
 
     float luma = dot(albedo.rgb, vec3(0.299, 0.587, 0.114));
     float mx = max(albedo.r, max(albedo.g, albedo.b));
@@ -387,9 +392,9 @@ void main()
 
     // Alpha test + RGB-only sheet heuristic (many FBX leaf textures have no alpha, only dark backing RGB)
     bool clipAlpha = false;
-    if (uTransparent)
+    if (uTransparent != 0)
         clipAlpha = maskA < uAlphaCutoff;
-    else if (uHasAlbedoTex)
+    else if (uHasAlbedoTex != 0)
     {
         bool byMask = (uAlphaCutoff > 0.0005) && (maskA < uAlphaCutoff);
         clipAlpha = byMask || darkBackdrop;
@@ -418,7 +423,7 @@ void main()
     // uLightDir is FROM the light (shine direction). Negate for TOWARD the light.
     vec3 L;
     float atten = 1.0;
-    if (uLightIsPoint)
+    if (uLightIsPoint != 0)
     {
         vec3 toLight = uLightPos - vWorldPos;
         float dist = length(toLight);
@@ -509,7 +514,7 @@ void main()
 
     color = clamp(color, 0.0, 1.0);
 
-    float alpha = uTransparent ? maskA : 1.0;
+    float alpha = (uTransparent != 0) ? maskA : 1.0;
     FragColor = vec4(color, alpha);
 }
 ";
@@ -533,12 +538,12 @@ uniform vec4  uBaseColor;
 uniform float uRoughness;
 uniform float uMetallic;
 uniform float uAlphaCutoff;
-uniform bool  uTransparent;
-uniform bool  uDoubleSided;
+uniform int  uTransparent;
+uniform int  uDoubleSided;
 
 // Albedo texture
 uniform sampler2D uAlbedoTex;
-uniform bool      uHasAlbedoTex;
+uniform int      uHasAlbedoTex;
 
 uniform sampler2D uOpacityTex;
 uniform int       uHasOpacityTex;
@@ -599,7 +604,7 @@ mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
 void main()
 {
     vec3 N = normalize(vWorldNormal);
-    if (uDoubleSided && !gl_FrontFacing) N = -N;
+    if (uDoubleSided != 0 && !gl_FrontFacing) N = -N;
 
     vec3 geoN = N;
 
@@ -620,21 +625,26 @@ void main()
 
     // Albedo
     vec4 albedo = uBaseColor;
-    if (uHasAlbedoTex)
+    if (uHasAlbedoTex != 0)
         albedo *= texture(uAlbedoTex, vUV);
 
     float maskA = albedo.a;
     if (uHasOpacityTex != 0)
-        maskA *= texture(uOpacityTex, vUV).r;
+    {
+        // RGB block compression (BC1) has no alpha and reports it as 0. The opacity map is the
+        // alpha for that material; a zero albedo alpha must not erase it.
+        float albedoA = albedo.a < 0.001 ? 1.0 : albedo.a;
+        maskA = albedoA * texture(uOpacityTex, vUV).r;
+    }
 
     float luma = dot(albedo.rgb, vec3(0.299, 0.587, 0.114));
     float mx = max(albedo.r, max(albedo.g, albedo.b));
     bool darkBackdrop = (uLumaClip > 0.0) && (luma < uLumaClip) && (mx < 0.23);
 
     bool clipAlpha = false;
-    if (uTransparent)
+    if (uTransparent != 0)
         clipAlpha = maskA < uAlphaCutoff;
-    else if (uHasAlbedoTex)
+    else if (uHasAlbedoTex != 0)
     {
         bool byMask = (uAlphaCutoff > 0.0005) && (maskA < uAlphaCutoff);
         clipAlpha = byMask || darkBackdrop;
@@ -701,7 +711,7 @@ uniform sampler2D uShadowMapC3;        // cascade 3
 uniform mat4      uShadowVPC[MAX_CASCADES];
 uniform float     uCascadeSplits[MAX_CASCADES];
 uniform int       uCascadeCount;
-uniform bool      uHasShadow;
+uniform int      uHasShadow;
 uniform mat4      uShadowVP;           // backward compat (cascade 0)
 uniform float     uShadowBias;
 uniform vec3      uSunDir;
@@ -738,7 +748,7 @@ uniform vec3  uPlanetCenter;
 
 // SSAO (optional)
 uniform sampler2D uSSAOTex;
-uniform bool      uHasSSAO;
+uniform int      uHasSSAO;
 uniform float     uSSAOIntensity;
 
 out vec4 FragColor;
@@ -828,7 +838,7 @@ float SampleDeferredShadow(int cascade, vec2 uv, float compareDepth)
 
 float ShadowCalc(vec3 worldPos, vec3 N)
 {
-    if (!uHasShadow) return 1.0;
+    if (uHasShadow == 0) return 1.0;
 
     // Normal offset for shadow acne reduction
     float cosTheta = max(dot(N, -uSunDir), 0.0);
@@ -891,7 +901,7 @@ void main()
     float ao        = emissiveAO.a;
 
     // SSAO (intensity scales how much occlusion affects ambient)
-    if (uHasSSAO)
+    if (uHasSSAO != 0)
     {
         float ss = texture(uSSAOTex, vUV).r;
         ao *= mix(1.0, ss, clamp(uSSAOIntensity, 0.0, 1.0));
@@ -1053,10 +1063,11 @@ float halton(int index, int base)
 {
     float f = 1.0, r = 0.0;
     int i = index;
-    while (i > 0)
+    for (int n = 0; n < 16; n++)
     {
+        if (i <= 0) break;
         f /= float(base);
-        r += f * float(i % base);
+        r += f * float(i - (i / base) * base);
         i /= base;
     }
     return r;
@@ -1374,11 +1385,13 @@ uniform mat4  uInvVP;
 uniform vec3  uTopColor;
 uniform vec3  uBotColor;
 uniform vec3  uSunDir;
-uniform bool  uUseSun;
+uniform int  uUseSun;
 uniform sampler2D uSkyTex;
-uniform bool  uHasSkyTex;
+uniform int  uHasSkyTex;
 uniform float uSkyBlend;
 uniform float uSkyYaw;
+uniform int   uHasPlanetUp;
+uniform vec3  uPlanetUp;
 
 out vec4 FragColor;
 
@@ -1399,20 +1412,25 @@ void main()
     float c = cos(uSkyYaw);
     dir = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 
-    // Gradient based on world up
-    float t = clamp(0.5 + 0.5 * dir.y, 0.0, 1.0);
+    // On a planet, up is away from the center. World +Y smears the zenith
+    // across the horizon once you leave the pole.
+    vec3 skyUp = (uHasPlanetUp != 0 && dot(uPlanetUp, uPlanetUp) > 0.25)
+        ? normalize(uPlanetUp)
+        : vec3(0.0, 1.0, 0.0);
+    float t = clamp(0.5 + 0.5 * dot(dir, skyUp), 0.0, 1.0);
 
     // Optional sun glow
-    if (uUseSun)
+    if (uUseSun != 0)
     {
-        float sunGlow = pow(max(dot(dir, uSunDir), 0.0), 64.0);
+        float sunNd = max(dot(dir, uSunDir), 0.0);
+        float sunGlow = sunNd <= 0.0001 ? 0.0 : exp2(64.0 * log2(sunNd));
         t = clamp(t + sunGlow * 0.08, 0.0, 1.0);
     }
 
     vec3 gradColor = mix(uBotColor, uTopColor, t);
 
     // Equirectangular texture sampling
-    if (uHasSkyTex && uSkyBlend > 0.001)
+    if (uHasSkyTex != 0 && uSkyBlend > 0.001)
     {
         float u = 0.5 + atan(dir.x, -dir.z) / (2.0 * PI);
         float v = 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / PI;
@@ -1664,7 +1682,7 @@ uniform float uParallaxStrength;
 
 // Shadow
 uniform sampler2D uShadowMap;
-uniform bool      uHasShadow;
+uniform int      uHasShadow;
 uniform float     uShadowBias;
 uniform vec3      uSunDir;
 
@@ -1672,7 +1690,7 @@ uniform vec3      uSunDir;
 uniform vec3  uLightDir;
 uniform vec3  uLightPos;
 uniform float uLightRange;
-uniform bool  uLightIsPoint;
+uniform int  uLightIsPoint;
 uniform float uDiffuseK;
 uniform float uAmbient;
 
@@ -1686,7 +1704,7 @@ out vec4 FragColor;
 
 float ShadowCalc(vec4 sc, vec3 N)
 {
-    if (!uHasShadow) return 1.0;
+    if (uHasShadow == 0) return 1.0;
     vec3 proj = sc.xyz / sc.w;
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
@@ -1929,7 +1947,7 @@ void main()
 
     vec3 L;
     float atten = 1.0;
-    if (uLightIsPoint)
+    if (uLightIsPoint != 0)
     {
         vec3 toLight = uLightPos - vWorldPos;
         float dist = length(toLight);
@@ -2246,19 +2264,19 @@ uniform sampler2D uScene;
 uniform vec2 uTexelSize;     // 1.0 / resolution
 
 // Bloom
-uniform bool  uBloomEnabled;
+uniform int  uBloomEnabled;
 uniform float uBloomThreshold;
 uniform float uBloomIntensity;
 
 // Fog
-uniform bool  uFogEnabled;
+uniform int  uFogEnabled;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 uniform float uFogStart;
 uniform float uFogEnd;
 
 // Color Grading
-uniform bool  uColorGradingEnabled;
+uniform int  uColorGradingEnabled;
 uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
@@ -2266,15 +2284,15 @@ uniform float uExposure;
 uniform int   uToneMap;     // 0=None, 1=Reinhard, 2=ACES
 
 // Vignette
-uniform bool  uVignetteEnabled;
+uniform int  uVignetteEnabled;
 uniform float uVignetteIntensity;
 uniform float uVignetteSmoothness;
 
 // FXAA
-uniform bool  uFXAAEnabled;
+uniform int  uFXAAEnabled;
 
 // Underwater
-uniform bool  uUnderwaterEnabled;
+uniform int  uUnderwaterEnabled;
 uniform vec3  uUnderwaterTint;
 uniform float uUnderwaterFogDensity;
 uniform float uUnderwaterCausticStr;
@@ -2304,7 +2322,7 @@ void main()
     vec3 color = texture(uScene, vUV).rgb;
 
     // ── FXAA (simplified) ──
-    if (uFXAAEnabled)
+    if (uFXAAEnabled != 0)
     {
         vec3 rgbNW = texture(uScene, vUV + vec2(-1.0, -1.0) * uTexelSize).rgb;
         vec3 rgbNE = texture(uScene, vUV + vec2( 1.0, -1.0) * uTexelSize).rgb;
@@ -2345,7 +2363,7 @@ void main()
     }
 
     // ── Bloom (simplified bright pass + blur approximation) ──
-    if (uBloomEnabled)
+    if (uBloomEnabled != 0)
     {
         vec3 bright = max(color - vec3(uBloomThreshold), vec3(0.0));
         // Simple 5-tap blur for bloom approximation
@@ -2359,7 +2377,7 @@ void main()
     }
 
     // ── Fog ──
-    if (uFogEnabled)
+    if (uFogEnabled != 0)
     {
         // Distance-based fog using depth approximation from luminance (simplified)
         float depth = dot(color, vec3(0.299, 0.587, 0.114)); // rough depth proxy
@@ -2369,7 +2387,7 @@ void main()
     }
 
     // ── Color Grading ──
-    if (uColorGradingEnabled)
+    if (uColorGradingEnabled != 0)
     {
         // Exposure
         color *= uExposure;
@@ -2390,7 +2408,7 @@ void main()
     }
 
     // ── Vignette ──
-    if (uVignetteEnabled)
+    if (uVignetteEnabled != 0)
     {
         float dist = distance(vUV, vec2(0.5));
         float vig = smoothstep(0.5 - uVignetteSmoothness, 0.5, dist);
@@ -2398,7 +2416,7 @@ void main()
     }
 
     // ── Underwater effect ──
-    if (uUnderwaterEnabled)
+    if (uUnderwaterEnabled != 0)
     {
         // Screen-space distortion (wavy wobble)
         float wobbleX = sin(vUV.y * 25.0 + uUnderwaterTime * 2.3) * uUnderwaterDistortion;
@@ -2408,7 +2426,7 @@ void main()
         color = texture(uScene, distortedUV).rgb;
 
         // Re-apply tone mapping on distorted sample if color grading is active
-        if (uColorGradingEnabled)
+        if (uColorGradingEnabled != 0)
         {
             color *= uExposure;
             color += vec3(uBrightness);
@@ -2432,7 +2450,7 @@ void main()
         float c1 = sin(cUV.x * 3.0 + uUnderwaterTime * 1.1) * cos(cUV.y * 2.7 + uUnderwaterTime * 0.9);
         float c2 = sin(cUV.x * 2.1 - uUnderwaterTime * 0.7) * cos(cUV.y * 3.3 + uUnderwaterTime * 1.3);
         float caustic = (c1 + c2) * 0.5 + 0.5;
-        caustic = pow(caustic, 3.0);
+        caustic = caustic <= 0.0001 ? 0.0 : exp2(3.0 * log2(caustic));
         // Caustics are brighter near the surface
         float causticFade = clamp(1.0 - uUnderwaterDepth * 0.15, 0.1, 1.0);
         color += vec3(caustic) * uUnderwaterCausticStr * causticFade;
@@ -2449,6 +2467,8 @@ void main()
     }
 
     color = clamp(color, 0.0, 1.0);
+    // A NaN from an earlier pass (D3D pow/normalize) would survive clamp and present black.
+    color *= step(color, color);
     FragColor = vec4(color, 1.0);
 }
 ";
@@ -2525,7 +2545,7 @@ uniform float uReflectivity;
 uniform float uTransparency;
 
 // Foam
-uniform bool  uFoamEnabled;
+uniform int  uFoamEnabled;
 uniform float uFoamThreshold;
 uniform float uFoamIntensity;
 uniform vec3  uFoamColor;
@@ -2571,7 +2591,7 @@ void main()
     vec3 color = waterColor.rgb * lighting + reflColor * fresnel + vec3(spec) * min(uDiffuseK, 1.0);
 
     // Foam (based on wave height, simplified)
-    if (uFoamEnabled)
+    if (uFoamEnabled != 0)
     {
         float foam = smoothstep(uFoamThreshold, uFoamThreshold + 0.3, N.y);
         float foamPattern = fract(sin(dot(vWorldPos.xz * 3.0, vec2(12.9898, 78.233))) * 43758.5453);
@@ -2630,7 +2650,7 @@ uniform float uTime;
 // Shadow map for light occlusion during ray march
 uniform sampler2D uShadowMap;
 uniform mat4      uShadowVP;
-uniform bool      uHasShadow;
+uniform int      uHasShadow;
 
 out vec4 FragColor;
 
@@ -2665,8 +2685,8 @@ float noise3D(vec3 p)
 float phaseHG(float cosTheta, float g)
 {
     float g2 = g * g;
-    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
-    return (1.0 - g2) / (4.0 * 3.14159265 * pow(denom, 1.5));
+    float denom = max(1.0 + g2 - 2.0 * g * cosTheta, 0.0001);
+    return (1.0 - g2) / (4.0 * 3.14159265 * exp2(1.5 * log2(denom)));
 }
 
 vec3 WorldPosFromDepth(float depth, vec2 uv)
@@ -2679,7 +2699,7 @@ vec3 WorldPosFromDepth(float depth, vec2 uv)
 
 float ShadowCheck(vec3 worldPos)
 {
-    if (!uHasShadow) return 1.0;
+    if (uHasShadow == 0) return 1.0;
     vec4 sc = uShadowVP * vec4(worldPos, 1.0);
     vec3 proj = sc.xyz / sc.w * 0.5 + 0.5;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0)
@@ -2712,8 +2732,9 @@ void main()
     vec3 fogAccum = vec3(0.0);
     float transmittance = 1.0;
 
-    for (int i = 0; i < uFogSteps; i++)
+    for (int i = 0; i < 16; i++)
     {
+        if (i >= uFogSteps) break;
         float t = (float(i) + 0.5) * stepSize;
         vec3 samplePos = uCamPos + rayDir * t;
 
@@ -3048,25 +3069,16 @@ uniform float uWetness;
 uniform float uSnowCoverage;
 uniform float uWeatherEnabled;
 
-vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 ba, float t)
+vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 dir, float t)
 {
-    // Tile in meters: tiling 12 on a radius-1000 planet => ~83m repeats, not UV*worldPos sparkle.
+    // One cube face. Blending the other two stretched a second copy of the
+    // albedo across hillsides where no axis was dominant.
     float meters = max(uPlanetRadius, 1.0) / max(t, 0.25);
     vec3 p = (worldPos - uPlanetCenter) / meters;
-    // ba = surface-normal axes on cliffs, radial axes on flats (see main()).
-    vec3 w = pow(max(abs(ba), vec3(0.001)), vec3(5.0));
-    // Valley floors and hills use one cube face. Three taps only on cliffs,
-    // where the projections actually differ.
-    if (w.y > w.x * 8.0 && w.y > w.z * 8.0)
-        return texture(tex, p.xz).rgb;
-    if (w.x > w.y * 8.0 && w.x > w.z * 8.0)
-        return texture(tex, p.yz).rgb;
-    if (w.z > w.x * 8.0 && w.z > w.y * 8.0)
-        return texture(tex, p.xy).rgb;
-    w /= (w.x + w.y + w.z + 0.001);
-    return texture(tex, p.yz).rgb * w.x
-         + texture(tex, p.xz).rgb * w.y
-         + texture(tex, p.xy).rgb * w.z;
+    vec3 a = abs(dir);
+    if (a.x >= a.y && a.x >= a.z) return texture(tex, p.yz).rgb;
+    if (a.z >= a.y) return texture(tex, p.xy).rgb;
+    return texture(tex, p.xz).rgb;
 }
 
 vec3 sampleBiome(int idx, vec3 wp, vec3 ba, float t)
@@ -3214,6 +3226,18 @@ vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadi
     return mix(cliffCol, topCol, topW);
 }
 
+float atmoPow(float x, float e)
+{
+    // D3D pow(0, non-integer) is NaN. ANGLE on Xbox then blends that NaN over the sky.
+    return x <= 0.0001 ? 0.0 : exp2(e * log2(x));
+}
+
+vec3 atmoSun(vec3 dir)
+{
+    float len = length(dir);
+    return len > 0.0001 ? dir / len : vec3(0.0, 1.0, 0.0);
+}
+
 vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
 {
     if (uAtmoEnabled == 0) return vec3(0.0);
@@ -3226,11 +3250,12 @@ vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
     float atmoDepth = clamp(altitude / max(uAtmoHeight, 1.0), 0.0, 1.0);
     float density = exp(-atmoDepth * max(uAtmoDensityFalloff, 0.1));
 
-    float horizon = pow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8);
+    float horizon = atmoPow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8);
     horizon *= max(uAtmoHorizonBlend, 0.0);
 
-    float sunForward = pow(clamp(dot(viewDir, normalize(uAtmoSunDir)), 0.0, 1.0), 4.0);
-    float sunset = pow(1.0 - clamp(dot(radialDir, normalize(uAtmoSunDir)), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
+    vec3 sun = atmoSun(uAtmoSunDir);
+    float sunForward = atmoPow(clamp(dot(viewDir, sun), 0.0, 1.0), 4.0);
+    float sunset = atmoPow(1.0 - clamp(dot(radialDir, sun), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
 
     vec3 grad = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
     vec3 rayleigh = grad * (0.3 + horizon * 0.9) * max(uAtmoRayleigh, 0.0);
@@ -3287,17 +3312,10 @@ void main()
     float digDepth = sampleDigDepthMeters(radialDir);
     float digBlend = smoothstep(0.25, 2.0, digDepth);
 
-    vec3 radialAxes = abs(radialDir);
-    radialAxes = pow(radialAxes, vec3(3.0));
-    radialAxes = radialAxes / (radialAxes.x + radialAxes.y + radialAxes.z + 0.001);
-
-    vec3 normalAxes = abs(N);
-    normalAxes = pow(normalAxes, vec3(1.8));
-    normalAxes = normalAxes / (normalAxes.x + normalAxes.y + normalAxes.z + 0.001);
-
-    // Flat ground: radial projection (stable at cube-face poles). Steep slopes: surface normal
-    // so triplanar does not smear the albedo along cliff faces.
-    vec3 blendAxes = mix(normalAxes, radialAxes, slopeBlend * (1.0 - digBlend * 0.85));
+    // Flat ground and hills keep the radial cube face. Mixing that with the
+    // surface normal picked a grazing axis and smeared the albedo on the slope.
+    // Cliffs and digs use the surface normal so the texture runs with the face.
+    vec3 projDir = (slope > 0.55 && digBlend < 0.5) ? radialDir : N;
 
     vec3 finalColor = vec3(0.0);
     float totalWeight = 0.0;
@@ -3310,7 +3328,7 @@ void main()
         {
             float w = sw[i];
             if (w < 0.01) continue;
-            finalColor += evalBiome(i, vWorldPos, blendAxes, slopeBlend, nDotRadial, digBlend) * w;
+            finalColor += evalBiome(i, vWorldPos, projDir, slopeBlend, nDotRadial, digBlend) * w;
             totalWeight += w;
         }
     }
@@ -3324,7 +3342,7 @@ void main()
             float w = weights[i];
             if (w < 0.01) continue;
             int idx = clamp(indices[i], 0, 7);
-            finalColor += evalBiome(idx, vWorldPos, blendAxes, slopeBlend, nDotRadial, digBlend) * w;
+            finalColor += evalBiome(idx, vWorldPos, projDir, slopeBlend, nDotRadial, digBlend) * w;
             totalWeight += w;
         }
     }
@@ -3392,6 +3410,275 @@ void main()
 
     lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * groundFlat * mix(0.2, 0.5, nDetail));
 
+    FragColor = vec4(lit, 1.0);
+}
+";
+
+    /// <summary>
+    /// Same ground as <see cref="PlanetTerrainFrag"/>, written so ANGLE can link it.
+    /// The desktop shader picks a sampler inside a per-pixel branch. That link never
+    /// returns on the Xbox player, which is why the compiled build was painting a
+    /// stand-in instead of the editor terrain.
+    /// </summary>
+    public const string PlanetTerrainFragXbox = @"
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+in vec4 vShadowCoord;
+flat in ivec4 vBlendIdx;
+in vec4 vBlendWt;
+
+uniform vec3 uPlanetCenter;
+uniform vec3 uLightDir;
+uniform vec3 uCamPos;
+uniform float uAmbient;
+uniform float uDiffuseK;
+uniform int uAtmoEnabled;
+uniform float uAtmoBlend;
+uniform float uAtmoHeight;
+uniform vec3 uAtmoSunDir;
+uniform float uAtmoSunIntensity;
+uniform float uAtmoRayleigh;
+uniform float uAtmoMie;
+uniform float uAtmoDensityFalloff;
+uniform float uAtmoHorizonBlend;
+uniform float uAtmoSunsetBoost;
+uniform vec3 uAtmoZenithTint;
+uniform vec3 uAtmoHorizonTint;
+uniform vec3 uAtmoSkyTint;
+
+uniform sampler2D uBiomeTex0;
+uniform sampler2D uBiomeTex1;
+uniform sampler2D uBiomeTex2;
+uniform sampler2D uBiomeTex3;
+uniform sampler2D uBiomeTex4;
+uniform sampler2D uBiomeTex5;
+uniform sampler2D uBiomeTex6;
+uniform sampler2D uBiomeTex7;
+uniform sampler2D uBiomeUnderTex0;
+uniform sampler2D uBiomeUnderTex1;
+uniform sampler2D uBiomeUnderTex2;
+uniform sampler2D uBiomeUnderTex3;
+uniform float uBiomeHasUnder[8];
+uniform sampler2D uPlanetSplat0;
+uniform sampler2D uPlanetSplat1;
+uniform int uUsePlanetSplat;
+uniform float uBiomeTiling[8];
+uniform float uBiomeUnderTiling[8];
+uniform vec3 uBiomeBaseColor[8];
+uniform vec3 uBiomeUnderColor[8];
+uniform sampler2D uShadowMap;
+uniform int uHasShadow;
+uniform float uPlanetRadius;
+uniform float uWetness;
+uniform float uSnowCoverage;
+uniform float uWeatherEnabled;
+
+out vec4 FragColor;
+
+vec3 faceProject(sampler2D tex, vec3 p, vec3 dir)
+{
+    vec3 a = abs(dir);
+    if (a.x >= a.y && a.x >= a.z) return texture(tex, p.yz).rgb;
+    if (a.z >= a.y) return texture(tex, p.xy).rgb;
+    return texture(tex, p.xz).rgb;
+}
+
+vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 radial, vec3 vertexN, float t)
+{
+    float meters = max(uPlanetRadius, 1.0) / max(t, 0.25);
+    vec3 p = (worldPos - uPlanetCenter) / meters;
+    // Derivative normals stay on the light. They wobble the projection axis
+    // across a coarse triangle and that is the remaining smear.
+    float align = abs(dot(normalize(vertexN), normalize(radial)));
+    vec3 dir = align > 0.55 ? radial : vertexN;
+    return faceProject(tex, p, dir);
+}
+
+vec3 painted(vec3 texCol, vec3 baseCol)
+{
+    float lum = dot(texCol, vec3(0.299, 0.587, 0.114));
+    return lum > 0.98 ? baseCol : texCol;
+}
+
+vec2 faceUvToAtlas(int face, vec2 uv)
+{
+    int col = face % 3;
+    int row = face / 3;
+    vec2 atlasPixels = vec2(textureSize(uPlanetSplat0, 0));
+    vec2 facePixels = max(atlasPixels / vec2(3.0, 2.0), vec2(1.0));
+    vec2 inset = 0.5 / facePixels;
+    vec2 safeUv = clamp(uv, inset, vec2(1.0) - inset);
+    return vec2((float(col) + safeUv.x) / 3.0, (float(row) + safeUv.y) / 2.0);
+}
+
+void splatWeights(vec3 radialDir, out float w0, out float w1, out float w2, out float w3, out float w4, out float w5, out float w6, out float w7)
+{
+    vec3 d = normalize(radialDir);
+    vec3 a = abs(d);
+    int face = 0;
+    float aa, bb;
+    if (a.x >= a.y && a.x >= a.z)
+    {
+        float inv = 1.0 / max(a.x, 1e-8);
+        if (d.x > 0.0) { face = 0; aa = -d.z * inv; bb = d.y * inv; }
+        else { face = 1; aa = d.z * inv; bb = d.y * inv; }
+    }
+    else if (a.y >= a.x && a.y >= a.z)
+    {
+        float inv = 1.0 / max(a.y, 1e-8);
+        if (d.y > 0.0) { face = 2; aa = d.x * inv; bb = -d.z * inv; }
+        else { face = 3; aa = d.x * inv; bb = d.z * inv; }
+    }
+    else
+    {
+        float inv = 1.0 / max(a.z, 1e-8);
+        if (d.z > 0.0) { face = 4; aa = d.x * inv; bb = d.y * inv; }
+        else { face = 5; aa = -d.x * inv; bb = d.y * inv; }
+    }
+    vec2 atlasUv = faceUvToAtlas(face, vec2((aa + 1.0) * 0.5, (bb + 1.0) * 0.5));
+    vec4 s0 = texture(uPlanetSplat0, atlasUv);
+    vec4 s1 = texture(uPlanetSplat1, atlasUv);
+    float sum = max(s0.r, 0.0) + max(s0.g, 0.0) + max(s0.b, 0.0) + max(s0.a, 0.0)
+              + max(s1.r, 0.0) + max(s1.g, 0.0) + max(s1.b, 0.0) + max(s1.a, 0.0);
+    if (sum < 1e-4) { w0 = 1.0; w1 = 0.0; w2 = 0.0; w3 = 0.0; w4 = 0.0; w5 = 0.0; w6 = 0.0; w7 = 0.0; return; }
+    float invSum = 1.0 / sum;
+    w0 = max(s0.r, 0.0) * invSum; w1 = max(s0.g, 0.0) * invSum; w2 = max(s0.b, 0.0) * invSum; w3 = max(s0.a, 0.0) * invSum;
+    w4 = max(s1.r, 0.0) * invSum; w5 = max(s1.g, 0.0) * invSum; w6 = max(s1.b, 0.0) * invSum; w7 = max(s1.a, 0.0) * invSum;
+}
+
+float addSlot(int slot, int idx, float wt)
+{
+    // Mountains / Boreal / Ice sit above slot 7 in the graph. The editor clamps
+    // them into the last albedo; without that those hills paint empty.
+    int c = clamp(idx, 0, 7);
+    return c == slot ? max(wt, 0.0) : 0.0;
+}
+
+float atmoPow(float x, float e)
+{
+    return x <= 0.0001 ? 0.0 : exp2(e * log2(x));
+}
+
+vec3 atmoSun(vec3 dir)
+{
+    float len = length(dir);
+    return len > 0.0001 ? dir / len : vec3(0.0, 1.0, 0.0);
+}
+
+vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
+{
+    if (uAtmoEnabled == 0) return vec3(0.0);
+    float distFromCenter = length(worldPos - uPlanetCenter);
+    if (distFromCenter < uPlanetRadius) return vec3(0.0);
+
+    float altitude = max(distFromCenter - uPlanetRadius, 0.0);
+    float atmoDepth = clamp(altitude / max(uAtmoHeight, 1.0), 0.0, 1.0);
+    float density = exp(-atmoDepth * max(uAtmoDensityFalloff, 0.1));
+    float horizon = atmoPow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8);
+    horizon *= max(uAtmoHorizonBlend, 0.0);
+    vec3 sun = atmoSun(uAtmoSunDir);
+    float sunForward = atmoPow(clamp(dot(viewDir, sun), 0.0, 1.0), 4.0);
+    float sunset = atmoPow(1.0 - clamp(dot(radialDir, sun), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
+    vec3 grad = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 rayleigh = grad * (0.3 + horizon * 0.9) * max(uAtmoRayleigh, 0.0);
+    vec3 mie = vec3(1.0, 0.96, 0.90) * (sunForward * 0.7 + sunset * 0.35) * max(uAtmoMie, 0.0);
+    vec3 color = (rayleigh + mie + uAtmoSkyTint * 0.2) * density * max(uAtmoSunIntensity, 0.01);
+    return color * clamp(uAtmoBlend, 0.0, 1.5);
+}
+
+float shadowFactor(vec4 sc)
+{
+    if (uHasShadow == 0) return 1.0;
+    vec3 p = sc.xyz / sc.w;
+    p = p * 0.5 + 0.5;
+    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return 1.0;
+    return p.z - 0.004 > texture(uShadowMap, p.xy).r ? 0.55 : 1.0;
+}
+
+void main()
+{
+    vec3 vertexN = normalize(vWorldNormal);
+    vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
+    vec3 dpdx = dFdx(vWorldPos);
+    vec3 dpdy = dFdy(vWorldPos);
+    vec3 geoCross = cross(dpdx, dpdy);
+    float geoLen = length(geoCross);
+    vec3 N = vertexN;
+    if (geoLen > 1e-8)
+    {
+        vec3 geoN = geoCross / geoLen;
+        if (dot(geoN, radialDir) < 0.0) geoN = -geoN;
+        // Soft mix: pure derivative normals facet every coarse triangle.
+        N = normalize(mix(vertexN, geoN, 0.72));
+    }
+    float slope = abs(dot(N, radialDir));
+    float slopeBlend = smoothstep(0.18, 0.62, slope);
+
+    float w0, w1, w2, w3, w4, w5, w6, w7;
+    if (uUsePlanetSplat != 0)
+    {
+        splatWeights(radialDir, w0, w1, w2, w3, w4, w5, w6, w7);
+    }
+    else
+    {
+        w0 = addSlot(0, vBlendIdx.x, vBlendWt.x) + addSlot(0, vBlendIdx.y, vBlendWt.y) + addSlot(0, vBlendIdx.z, vBlendWt.z) + addSlot(0, vBlendIdx.w, vBlendWt.w);
+        w1 = addSlot(1, vBlendIdx.x, vBlendWt.x) + addSlot(1, vBlendIdx.y, vBlendWt.y) + addSlot(1, vBlendIdx.z, vBlendWt.z) + addSlot(1, vBlendIdx.w, vBlendWt.w);
+        w2 = addSlot(2, vBlendIdx.x, vBlendWt.x) + addSlot(2, vBlendIdx.y, vBlendWt.y) + addSlot(2, vBlendIdx.z, vBlendWt.z) + addSlot(2, vBlendIdx.w, vBlendWt.w);
+        w3 = addSlot(3, vBlendIdx.x, vBlendWt.x) + addSlot(3, vBlendIdx.y, vBlendWt.y) + addSlot(3, vBlendIdx.z, vBlendWt.z) + addSlot(3, vBlendIdx.w, vBlendWt.w);
+        w4 = addSlot(4, vBlendIdx.x, vBlendWt.x) + addSlot(4, vBlendIdx.y, vBlendWt.y) + addSlot(4, vBlendIdx.z, vBlendWt.z) + addSlot(4, vBlendIdx.w, vBlendWt.w);
+        w5 = addSlot(5, vBlendIdx.x, vBlendWt.x) + addSlot(5, vBlendIdx.y, vBlendWt.y) + addSlot(5, vBlendIdx.z, vBlendWt.z) + addSlot(5, vBlendIdx.w, vBlendWt.w);
+        w6 = addSlot(6, vBlendIdx.x, vBlendWt.x) + addSlot(6, vBlendIdx.y, vBlendWt.y) + addSlot(6, vBlendIdx.z, vBlendWt.z) + addSlot(6, vBlendIdx.w, vBlendWt.w);
+        w7 = addSlot(7, vBlendIdx.x, vBlendWt.x) + addSlot(7, vBlendIdx.y, vBlendWt.y) + addSlot(7, vBlendIdx.z, vBlendWt.z) + addSlot(7, vBlendIdx.w, vBlendWt.w);
+    }
+
+    vec3 t0 = painted(triplanar(uBiomeTex0, vWorldPos, radialDir, vertexN, uBiomeTiling[0]), uBiomeBaseColor[0]);
+    vec3 t1 = painted(triplanar(uBiomeTex1, vWorldPos, radialDir, vertexN, uBiomeTiling[1]), uBiomeBaseColor[1]);
+    vec3 t2 = painted(triplanar(uBiomeTex2, vWorldPos, radialDir, vertexN, uBiomeTiling[2]), uBiomeBaseColor[2]);
+    vec3 t3 = painted(triplanar(uBiomeTex3, vWorldPos, radialDir, vertexN, uBiomeTiling[3]), uBiomeBaseColor[3]);
+    vec3 t4 = painted(triplanar(uBiomeTex4, vWorldPos, radialDir, vertexN, uBiomeTiling[4]), uBiomeBaseColor[4]);
+    vec3 t5 = painted(triplanar(uBiomeTex5, vWorldPos, radialDir, vertexN, uBiomeTiling[5]), uBiomeBaseColor[5]);
+    vec3 t6 = painted(triplanar(uBiomeTex6, vWorldPos, radialDir, vertexN, uBiomeTiling[6]), uBiomeBaseColor[6]);
+    vec3 t7 = painted(triplanar(uBiomeTex7, vWorldPos, radialDir, vertexN, uBiomeTiling[7]), uBiomeBaseColor[7]);
+    vec3 topCol = t0 * w0 + t1 * w1 + t2 * w2 + t3 * w3 + t4 * w4 + t5 * w5 + t6 * w6 + t7 * w7;
+
+    vec3 u0 = painted(triplanar(uBiomeUnderTex0, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[0]), uBiomeUnderColor[0]);
+    vec3 u1 = painted(triplanar(uBiomeUnderTex1, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[1]), uBiomeUnderColor[1]);
+    vec3 u2 = painted(triplanar(uBiomeUnderTex2, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[2]), uBiomeUnderColor[2]);
+    vec3 u3 = painted(triplanar(uBiomeUnderTex3, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[3]), uBiomeUnderColor[3]);
+    vec3 underCol = u0 * w0 + u1 * w1 + u2 * w2 + u3 * w3
+        + uBiomeUnderColor[4] * w4 + uBiomeUnderColor[5] * w5
+        + uBiomeUnderColor[6] * w6 + uBiomeUnderColor[7] * w7;
+    float wSum = w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7;
+    if (wSum > 0.001) { topCol /= wSum; underCol /= wSum; }
+    else topCol = painted(triplanar(uBiomeTex0, vWorldPos, radialDir, vertexN, uBiomeTiling[0]), uBiomeBaseColor[0]);
+
+    vec3 cliffCol = mix(underCol, topCol * 0.62, 0.22);
+    vec3 finalColor = mix(cliffCol, topCol, slopeBlend);
+
+    float distFromCenter = length(vWorldPos - uPlanetCenter);
+    float outdoor = smoothstep(uPlanetRadius - 2.0, uPlanetRadius, distFromCenter);
+    float weatherOn = clamp(uWeatherEnabled, 0.0, 1.0) * outdoor;
+    float groundFlat = smoothstep(0.48, 0.82, slope);
+    float wetAmt = clamp(uWetness, 0.0, 1.0) * weatherOn;
+    float snowAmt = clamp(uSnowCoverage, 0.0, 1.0) * weatherOn;
+    finalColor *= mix(vec3(1.0), vec3(0.86, 0.90, 0.93), wetAmt * groundFlat * 0.28);
+
+    vec3 L = normalize(-uLightDir);
+    float diffuse = max(dot(N, L), 0.0) * uDiffuseK;
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
+    spec += pow(max(dot(N, H), 0.0), 28.0) * wetAmt * groundFlat * 0.18;
+    float shadow = shadowFactor(vShadowCoord);
+    float ao = mix(1.0, 0.35, clamp(-dot(N, radialDir), 0.0, 1.0));
+    vec3 lit = finalColor * (uAmbient + diffuse * shadow) * ao + vec3(spec) * shadow;
+
+    lit += evalAtmosphere(vWorldPos, V, radialDir);
+
+    lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * groundFlat * 0.35);
+    lit = lit / (lit + vec3(1.0));
     FragColor = vec4(lit, 1.0);
 }
 ";
@@ -3531,15 +3818,27 @@ vec3 sampleBiomeColor(int idx)
     return uBiomeBaseColor[7];
 }
 
+float atmoPow(float x, float e)
+{
+    return x <= 0.0001 ? 0.0 : exp2(e * log2(x));
+}
+
+vec3 atmoSun(vec3 dir)
+{
+    float len = length(dir);
+    return len > 0.0001 ? dir / len : vec3(0.0, 1.0, 0.0);
+}
+
 vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
 {
     if (uAtmoEnabled == 0) return vec3(0.0);
     float altitude = max(length(worldPos - uPlanetCenter) - uPlanetRadius, 0.0);
     float atmoDepth = clamp(altitude / max(uAtmoHeight, 1.0), 0.0, 1.0);
     float density = exp(-atmoDepth * max(uAtmoDensityFalloff, 0.1));
-    float horizon = pow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8) * max(uAtmoHorizonBlend, 0.0);
-    float sunForward = pow(clamp(dot(viewDir, normalize(uAtmoSunDir)), 0.0, 1.0), 4.0);
-    float sunset = pow(1.0 - clamp(dot(radialDir, normalize(uAtmoSunDir)), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
+    float horizon = atmoPow(clamp(1.0 - abs(dot(viewDir, radialDir)), 0.0, 1.0), 1.8) * max(uAtmoHorizonBlend, 0.0);
+    vec3 sun = atmoSun(uAtmoSunDir);
+    float sunForward = atmoPow(clamp(dot(viewDir, sun), 0.0, 1.0), 4.0);
+    float sunset = atmoPow(1.0 - clamp(dot(radialDir, sun), 0.0, 1.0), 2.0) * max(uAtmoSunsetBoost, 0.0);
     vec3 grad = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
     vec3 rayleigh = grad * (0.3 + horizon * 0.9) * max(uAtmoRayleigh, 0.0);
     vec3 mie = vec3(1.0, 0.96, 0.90) * (sunForward * 0.7 + sunset * 0.35) * max(uAtmoMie, 0.0);
@@ -3758,18 +4057,27 @@ uniform vec3 uHorizonTint;
 
 out vec4 FragColor;
 
+float atmoPow(float x, float e)
+{
+    // Xbox ANGLE compiles pow() to HLSL pow. pow(0, 2.1) is NaN there and blanks the sky.
+    return x <= 0.0001 ? 0.0 : exp2(e * log2(x));
+}
+
 void main()
 {
-    vec3 V = normalize(vWorldPos - uCamPos);
-    vec3 radialDir = normalize(vWorldPos - uPlanetCenter);
-    vec3 sunDir = normalize(uSunDir);
+    vec3 fromCam = vWorldPos - uCamPos;
+    vec3 fromCenter = vWorldPos - uPlanetCenter;
+    vec3 V = length(fromCam) > 0.0001 ? normalize(fromCam) : vec3(0.0, 1.0, 0.0);
+    vec3 radialDir = length(fromCenter) > 0.0001 ? normalize(fromCenter) : vec3(0.0, 1.0, 0.0);
+    float sunLen = length(uSunDir);
+    vec3 sunDir = sunLen > 0.0001 ? uSunDir / sunLen : vec3(0.0, 1.0, 0.0);
 
     float horizonBase = clamp(1.0 - abs(dot(V, radialDir)), 0.0, 1.0);
-    float horizon = pow(horizonBase, 2.1) * max(uHorizonBlend, 0.0);
-    float sunForward = pow(clamp(dot(V, sunDir), 0.0, 1.0), 10.0);
-    float sunset = pow(1.0 - clamp(dot(radialDir, sunDir), 0.0, 1.0), 2.4) * max(uSunsetBoost, 0.0);
+    float horizon = atmoPow(horizonBase, 2.1) * max(uHorizonBlend, 0.0);
+    float sunForward = atmoPow(clamp(dot(V, sunDir), 0.0, 1.0), 10.0);
+    float sunset = atmoPow(1.0 - clamp(dot(radialDir, sunDir), 0.0, 1.0), 2.4) * max(uSunsetBoost, 0.0);
     float heightFade = exp(-max(uDensityFalloff, 0.05));
-    float shellFade = clamp(pow(horizonBase, 1.6), 0.0, 1.0) * heightFade;
+    float shellFade = clamp(atmoPow(horizonBase, 1.6), 0.0, 1.0) * heightFade;
 
     vec3 grad = mix(uHorizonTint, uZenithTint, clamp(radialDir.y * 0.5 + 0.5, 0.0, 1.0));
     vec3 rayleigh = grad * (0.08 + horizon * 0.70) * max(uRayleighStrength, 0.0);
@@ -3779,6 +4087,8 @@ void main()
     float inside01 = clamp(((uPlanetRadius + uAtmosphereHeight) - camDist) / max(uAtmosphereHeight, 1.0), 0.0, 1.0);
     float insideHaze = inside01 * (0.025 + (1.0 - horizonBase) * 0.05);
     float alpha = clamp((horizon * 0.22) * max(uAtmoBlend, 0.0) + insideHaze * max(uAtmoBlend, 0.0), 0.0, 0.38) * shellFade;
+    col *= step(col, col);
+    alpha *= step(alpha, alpha);
     FragColor = vec4(col, alpha);
 }
 ";
@@ -3874,11 +4184,13 @@ void main()
     if (cloudAlpha < 0.01) discard;
 
     float sunFacing = clamp(dot(radialDir, L) * 0.5 + 0.5, 0.0, 1.0);
-    float silver = pow(clamp(1.0 - max(dot(V, L), 0.0), 0.0, 1.0), 6.0) * uCloudSilverLining;
+    float silverBase = clamp(1.0 - max(dot(V, L), 0.0), 0.0, 1.0);
+    float silver = (silverBase <= 0.0001 ? 0.0 : exp2(6.0 * log2(silverBase))) * uCloudSilverLining;
     float lightTerm = (0.25 + sunFacing * 0.75) * uCloudLightResponse;
     vec3 cloudColor = mix(uSkyTint * 0.75, vec3(0.92, 0.94, 0.98), lightTerm);
     cloudColor += vec3(1.0, 0.97, 0.92) * silver * 0.35 * uSunIntensity;
 
+    cloudColor *= step(cloudColor, cloudColor);
     FragColor = vec4(cloudColor, clamp(cloudAlpha, 0.0, 0.55));
 }
 ";

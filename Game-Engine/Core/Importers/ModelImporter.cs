@@ -260,7 +260,14 @@ namespace Game_Engine.Core.Importers
             if (string.IsNullOrWhiteSpace(stored)) return null;
             try
             {
-                if (Path.IsPathRooted(stored)) return stored;
+                if (Path.IsPathRooted(stored))
+                {
+#if PLAYER
+                    if (!File.Exists(stored))
+                        return AssetPathRemap.FindExisting(stored) ?? stored;
+#endif
+                    return stored;
+                }
                 var proj = ProjectService.Current;
                 if (proj == null) return stored;
                 return Path.Combine(proj.RootPath, stored);
@@ -1398,6 +1405,16 @@ namespace Game_Engine.Core.Importers
                 var absPath = ResolveProjectRelative(relPath);
                 if (absPath == null) return null;
 
+#if PLAYER
+                // A built player only reads assets. Use the material the editor saved for this part
+                // when it was packed, and never write into the (read-only) package.
+                {
+                    var suffixedRel = Path.Combine(matDir, $"{safeName}_{partIndex}.material");
+                    var suffixedAbs = ResolveProjectRelative(suffixedRel);
+                    if (suffixedAbs != null && File.Exists(suffixedAbs)) return suffixedRel;
+                    return File.Exists(absPath) ? relPath : null;
+                }
+#else
                 // A second mesh with the same name gets a suffix. An existing file that
                 // never received textures is rewritten in place once maps are found.
                 if (File.Exists(absPath) && !MaterialFileTexturesEmpty(absPath))
@@ -1449,6 +1466,7 @@ namespace Game_Engine.Core.Importers
 
                 Log.Info($"[ModelImporter] Saved material asset → {relPath}");
                 return relPath;
+#endif
             }
             catch (Exception ex)
             {
@@ -1821,15 +1839,22 @@ namespace Game_Engine.Core.Importers
                 if (clip.Tracks.Count > 0)
                 {
                     var relPath = Path.Combine(animDir, $"{clip.Name}.boneanim");
-                    try
+                    if (File.Exists(relPath))
                     {
-                        BoneAnimationClipAsset.Save(clip, relPath);
                         savedPaths.Add(relPath);
-                        Log.Info($"[ModelImporter] Saved bone animation '{clip.Name}' ({clip.Tracks.Count} tracks, {duration:F2}s) → {relPath}");
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Log.Warning($"[ModelImporter] Failed to save animation '{clip.Name}': {ex.Message}");
+                        try
+                        {
+                            BoneAnimationClipAsset.Save(clip, relPath);
+                            savedPaths.Add(relPath);
+                            Log.Info($"[ModelImporter] Saved bone animation '{clip.Name}' ({clip.Tracks.Count} tracks, {duration:F2}s) → {relPath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warning($"[ModelImporter] Failed to save animation '{clip.Name}': {ex.Message}");
+                        }
                     }
                 }
             }

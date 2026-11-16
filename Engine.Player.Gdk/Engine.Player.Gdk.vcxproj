@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Native GDK host for PC (XAudio2 / GameInput / XSAPI).
+  Uses stock x64 + the October 2026+ simplified GDK layout (GameDKCoreLatest\windows\...).
+  Console Scarlett still needs GDKX / Gaming.Xbox.Scarlett.x64 under a managed partner account.
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>EnginePlayerGdk</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <GameDKRoot Condition="'$(GameDKRoot)' == '' and '$(GameDK)' != ''">$(GameDK)</GameDKRoot>
+    <GameDKRoot Condition="'$(GameDKRoot)' == '' and Exists('C:\Program Files (x86)\Microsoft GDK\')">C:\Program Files (x86)\Microsoft GDK\</GameDKRoot>
+    <GameDKRoot Condition="'$(GameDKRoot)' == '' and Exists('C:\Program Files\Microsoft GDK\')">C:\Program Files\Microsoft GDK\</GameDKRoot>
+    <GDKCrossPlatformPath Condition="'$(GDKCrossPlatformPath)' == '' and '$(GameDKCoreLatest)' != ''">$(GameDKCoreLatest)</GDKCrossPlatformPath>
+    <GDKCrossPlatformPath Condition="'$(GDKCrossPlatformPath)' == '' and '$(GameDKRoot)' != '' and Exists('$(GameDKRoot)261000\')">$(GameDKRoot)261000\</GDKCrossPlatformPath>
+    <GDKCrossPlatformPath Condition="'$(GDKCrossPlatformPath)' == '' and '$(GameDKRoot)' != ''">$(GameDKRoot)</GDKCrossPlatformPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>Engine.Player.Gdk</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(ProjectDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>Engine.Player.Gdk</TargetName>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GDKCrossPlatformPath)' != ''">
+    <IncludePath>$(GDKCrossPlatformPath)windows\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(GDKCrossPlatformPath)windows\lib\x64;$(LibraryPath)</LibraryPath>
+    <ExecutablePath>$(GDKCrossPlatformPath)windows\bin\x64;$(ExecutablePath)</ExecutablePath>
+  </PropertyGroup>
+
+  <Target Name="EnsureGdkInstalled" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(GDKCrossPlatformPath)' == '' or !Exists('$(GDKCrossPlatformPath)windows\include\XGameRuntime.h')"
+           Text="Microsoft GDK not found (need GameDK / GameDKCoreLatest with windows\include). Install via: winget install Microsoft.Gaming.GDK — see Engine.Player.Gdk\README.md." />
+  </Target>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_GAMING_DESKTOP;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>xgameruntime.lib;xaudio2.lib;GameInput.lib;libHttpClient.lib;appnotify.lib;winhttp.lib;crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>Microsoft.Xbox.Services.143.C.Debug.lib;Microsoft.Xbox.Services.C.Thunks.Debug.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>Microsoft.Xbox.Services.143.C.lib;Microsoft.Xbox.Services.C.Thunks.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\AudioXAudio2.cpp" />
+    <ClCompile Include="src\InputGameInput.cpp" />
+    <ClCompile Include="src\XboxLiveXsapi.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\AudioXAudio2.h" />
+    <ClInclude Include="src\InputGameInput.h" />
+    <ClInclude Include="src\XboxLiveXsapi.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="MicrosoftGame.config" />
+    <None Include="README.md" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <Target Name="CopyGdkRuntimeDlls" AfterTargets="Build" Condition="'$(GDKCrossPlatformPath)' != ''">
+    <ItemGroup>
+      <GdkRuntimeDll Include="$(GDKCrossPlatformPath)windows\bin\x64\xgameruntime.dll" />
+      <GdkRuntimeDll Include="$(GDKCrossPlatformPath)windows\bin\x64\xgameruntime.thunks.dll" />
+      <GdkRuntimeDll Include="$(GDKCrossPlatformPath)windows\bin\x64\libHttpClient.dll" />
+      <GdkRuntimeDll Include="$(GDKCrossPlatformPath)windows\bin\x64\XCurl.dll" />
+      <GdkRuntimeDll Include="$(GDKCrossPlatformPath)windows\bin\x64\Microsoft.Xbox.Services.C.Thunks.dll" Condition="'$(Configuration)'=='Release'" />
+      <GdkRuntimeDll Include="$(GDKCrossPlatformPath)windows\bin\x64\Microsoft.Xbox.Services.C.Thunks.Debug.dll" Condition="'$(Configuration)'=='Debug'" />
+    </ItemGroup>
+    <Copy SourceFiles="@(GdkRuntimeDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="Exists('%(GdkRuntimeDll.Identity)')" />
+  </Target>
+</Project>

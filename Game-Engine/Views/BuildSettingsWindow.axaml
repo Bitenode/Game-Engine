@@ -171,6 +171,7 @@
                         SelectedIndex="0">
                 <ComboBoxItem Content="Windows"/>
                 <ComboBoxItem Content="Xbox"/>
+                <ComboBoxItem Content="Xbox GDK"/>
                 <ComboBoxItem Content="Linux"/>
                 <ComboBoxItem Content="macOS"/>
                 <ComboBoxItem Content="Android"/>
@@ -190,6 +191,85 @@
               <StackPanel Orientation="Horizontal" Spacing="14">
                 <RadioButton x:Name="CfgDebug"   Content="Debug"   GroupName="Cfg"/>
                 <RadioButton x:Name="CfgRelease" Content="Release" GroupName="Cfg" IsChecked="True"/>
+              </StackPanel>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <!-- ── Xbox MicrosoftGame.config ── -->
+        <Border x:Name="XboxGameConfigSection" Classes="section" IsVisible="False">
+          <StackPanel Spacing="2">
+            <TextBlock Classes="section-header" Text="Xbox Game Config"/>
+            <TextBlock Text="Maps to MicrosoftGame.config (Partner Center). Written on Xbox GDK builds; saved with build settings for Xbox / Xbox GDK."
+                       FontSize="11" Foreground="#6B7280" Margin="0,0,0,6" TextWrapping="Wrap"/>
+
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Identity Name"/>
+              <TextBox x:Name="GcIdentityNameBox" Width="260" Watermark="Studio.GameName"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Display Name"/>
+              <TextBox x:Name="GcDisplayNameBox" Width="260" Watermark="Uses Product Name if empty"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Publisher Display"/>
+              <TextBox x:Name="GcPublisherDisplayBox" Width="260" Watermark="Uses Company if empty"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Description"/>
+              <TextBox x:Name="GcDescriptionBox" Width="320" Watermark="Short store / shell description"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Title Id"/>
+              <TextBox x:Name="GdkTitleIdBox" Width="160" Watermark="AABBCCDD"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Store Id"/>
+              <TextBox x:Name="GcStoreIdBox" Width="160" Watermark="9NXXXXXXXXXX"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="MSA App Id"/>
+              <TextBox x:Name="GcMsaAppIdBox" Width="200" Watermark="0000000000000000"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Device Family"/>
+              <ComboBox x:Name="GcDeviceFamilyBox" Width="160" SelectedIndex="0">
+                <ComboBoxItem Content="PC"/>
+                <ComboBoxItem Content="Xbox"/>
+                <ComboBoxItem Content="XboxOne"/>
+                <ComboBoxItem Content="Scarlett"/>
+              </ComboBox>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Logo 150×150"/>
+              <TextBox x:Name="GcLogo150Box" Width="260" Watermark="Assets\StoreLogo.png"/>
+            </StackPanel>
+            <StackPanel Classes="form-row">
+              <TextBlock Classes="label" Text="Logo 44×44"/>
+              <TextBox x:Name="GcLogo44Box" Width="260" Watermark="Assets\StoreLogo.png"/>
+            </StackPanel>
+
+            <StackPanel x:Name="XboxUwpDeployFields" Spacing="2" IsVisible="False" Margin="0,8,0,0">
+              <TextBlock Classes="section-header" Text="Xbox Dev Mode deploy"/>
+              <TextBlock Text="IP from Dev Home. Written into the UWP launch profile (Remote Machine)."
+                         FontSize="11" Foreground="#6B7280" Margin="0,0,0,6" TextWrapping="Wrap"/>
+              <StackPanel Classes="form-row">
+                <TextBlock Classes="label" Text="Remote Machine"/>
+                <TextBox x:Name="GcRemoteMachineBox" Width="200" Watermark="192.168.1.5"/>
+              </StackPanel>
+            </StackPanel>
+
+            <StackPanel x:Name="XboxGdkLiveFields" Spacing="2" IsVisible="False" Margin="0,8,0,0">
+              <TextBlock Classes="section-header" Text="Xbox Live (GDK)"/>
+              <TextBlock Text="Requires Microsoft GDK. SCID is not packed into Assets.dll."
+                         FontSize="11" Foreground="#6B7280" Margin="0,0,0,6" TextWrapping="Wrap"/>
+              <StackPanel Classes="form-row">
+                <TextBlock Classes="label" Text="SCID"/>
+                <TextBox x:Name="GdkScidBox" Width="260" Watermark="00000000-0000-0000-0000-000000000000"/>
+              </StackPanel>
+              <StackPanel Classes="form-row">
+                <TextBlock Classes="label" Text="Sandbox"/>
+                <TextBox x:Name="GdkSandboxBox" Width="160" Text="XDKS.1" Watermark="XDKS.1"/>
               </StackPanel>
             </StackPanel>
           </StackPanel>
@@ -316,10 +396,10 @@
                   HorizontalAlignment="Right" Margin="0,6,0,0">
         <Button x:Name="BtnRunLocal"    Classes="secondary" Content="Run Local"
                 IsVisible="False" IsEnabled="False"
-                ToolTip.Tip="Launch unpackaged layout\\Engine.Player.exe with layout\\Data (no MSIX, no 10GB rebuild). Use this for quick PC tests."/>
+                ToolTip.Tip="Not used for Xbox UWP — deploy from Visual Studio Remote Machine instead."/>
         <Button x:Name="BtnOpenInVS"    Classes="secondary" Content="Open in Visual Studio"
                 IsVisible="False" IsEnabled="False"
-                ToolTip.Tip="Open the generated Xbox packaging .sln in Visual Studio 2022"/>
+                ToolTip.Tip="Open the generated Xbox UWP .sln in Visual Studio 2022 (Remote Machine → console)"/>
         <Button x:Name="BtnBuild"       Classes="primary"   Content="Build"/>
         <Button x:Name="BtnBuildAndRun" Classes="primary"   Content="Build &amp; Run"/>
         <Button x:Name="BtnCancel"      Classes="secondary" Content="Close"/>
