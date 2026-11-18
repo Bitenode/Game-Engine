@@ -21,20 +21,6 @@ public sealed class PlanetFloraSpawner : Behavior
     public int UniqueMeshCount => _uniqueMeshes.Count;
     public FloraLayerRecipe[] Recipes => _recipes;
 
-    public override void OnEnable()
-    {
-        base.OnEnable();
-        if (gameObject == null) return;
-        var behaviors = gameObject.Behaviors;
-        for (int i = 0; i < behaviors.Count; i++)
-        {
-            if (behaviors[i] is not PlanetFloraSpawner existing) continue;
-            if (ReferenceEquals(existing, this)) return;
-            gameObject.RemoveBehavior(this);
-            return;
-        }
-    }
-
     public void ApplyRecipes(FloraLayerRecipe[]? recipes)
     {
         _recipes = recipes ?? Array.Empty<FloraLayerRecipe>();

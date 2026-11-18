@@ -20,13 +20,6 @@ public static class ShaderSources
         glsl = glsl.TrimStart('\r', '\n', ' ', '\t');
 
         if (!isES) return glsl;
-        // 128 bone matrices are 512 vertex uniforms. GLES allows 256, so the palette
-        // does not fit and skinned animals collapse or twist. 48 leaves room for the
-        // other vertex uniforms. Indices past the array used to read garbage.
-        glsl = glsl.Replace("uniform mat4 uBones[128];", "uniform mat4 uBones[48];");
-        glsl = glsl.Replace(
-            "ivec4 ids = ivec4(aBoneIds);",
-            "ivec4 ids = clamp(ivec4(aBoneIds), 0, 47);");
         return glsl.Replace(
             "#version 330 core",
             "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;");

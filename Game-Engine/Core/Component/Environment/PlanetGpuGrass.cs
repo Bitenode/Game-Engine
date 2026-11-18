@@ -382,60 +382,22 @@ public static class PlanetGpuGrass
             gl.BindBuffer(BufferTargetARB.ArrayBuffer, buf.Vbo);
             UploadBatch(gl, batch, buf);
 
-            gl.EnableVertexAttribArray(2);
-            gl.EnableVertexAttribArray(3);
-            gl.VertexAttribDivisor(2, 1);
-            gl.VertexAttribDivisor(3, 1);
-
             gl.VertexAttribPointer(2, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)0);
             gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, FloatsPerInstance * sizeof(float), (void*)(4 * sizeof(float)));
-            uint indexCount = batch.SingleCard ? 6u : (uint)gpu.IndexCount;
-            int instances = batch.Slots * batch.Blades;
-#if XBOX_UWP
-            // One draw of the whole carpet is what stops the GPU after you walk far enough
-            // for it to fill. Same instances, several smaller draws.
-            const int group = 64;
-            int strideBytes = FloatsPerInstance * sizeof(float);
-            for (int start = 0; start < instances; start += group)
-            {
-                int count = Math.Min(group, instances - start);
-                int byteOff = start * strideBytes;
-                gl.VertexAttribPointer(2, 4, VertexAttribPointerType.Float, false, (uint)strideBytes, (void*)byteOff);
-                gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, (uint)strideBytes, (void*)(byteOff + 4 * sizeof(float)));
-                gl.DrawElementsInstanced(
-                    PrimitiveType.Triangles,
-                    indexCount,
-                    DrawElementsType.UnsignedInt,
-                    null,
-                    (uint)count);
-            }
-#else
             gl.DrawElementsInstanced(
                 PrimitiveType.Triangles,
-                indexCount,
+                batch.SingleCard ? 6u : (uint)gpu.IndexCount,
                 DrawElementsType.UnsignedInt,
                 null,
-                (uint)instances);
-#endif
+                (uint)(batch.Slots * batch.Blades));
         }
 
-#if !XBOX_UWP
         gl.BindVertexArray(0);
-#endif
         gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
-        // Divisor is stored on the VAO. Reset it there. Binding array 0 is illegal on
-        // GLES and the next mesh BindVertexArray crashes ANGLE.
-        if (gpu.Vao != 0)
-        {
-            gl.BindVertexArray(gpu.Vao);
-            gl.VertexAttribDivisor(2, 0);
-            gl.VertexAttribDivisor(3, 0);
-            gl.DisableVertexAttribArray(2);
-            gl.DisableVertexAttribArray(3);
-        }
-#if !XBOX_UWP
-        gl.BindVertexArray(0);
-#endif
+        // Divisor is not reliably stored per VAO. Leaving 2/3 instanced makes the
+        // next UI text draw read garbage and can crash a few frames later.
+        gl.VertexAttribDivisor(2, 0);
+        gl.VertexAttribDivisor(3, 0);
         gl.Disable(EnableCap.PolygonOffsetFill);
         gl.PolygonOffset(0f, 0f);
         gl.ActiveTexture(TextureUnit.Texture0);

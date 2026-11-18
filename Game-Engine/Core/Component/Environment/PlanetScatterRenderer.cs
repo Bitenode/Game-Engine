@@ -20,41 +20,8 @@ public sealed class PlanetScatterRenderer : Behavior
     ScatterLayerRecipe[] _recipes = Array.Empty<ScatterLayerRecipe>();
 
     public int InstanceCount => _instances.Count;
-    public bool HasRoom => Enabled && _instances.Count < InstanceLimit;
-
-    int InstanceLimit
-    {
-        get
-        {
-            int limit = Math.Max(1, MaxInstances);
-#if XBOX_UWP
-            // The scene stores 8192. That many rock objects stops the Xbox player.
-            limit = Math.Min(limit, 96);
-#endif
-            return limit;
-        }
-    }
     public IReadOnlyList<ScatterInstance> Instances => _instances;
     public ScatterLayerRecipe[] Recipes => _recipes;
-
-    public override void OnEnable()
-    {
-        base.OnEnable();
-        DropIfDuplicate();
-    }
-
-    void DropIfDuplicate()
-    {
-        if (gameObject == null) return;
-        var behaviors = gameObject.Behaviors;
-        for (int i = 0; i < behaviors.Count; i++)
-        {
-            if (behaviors[i] is not PlanetScatterRenderer existing) continue;
-            if (ReferenceEquals(existing, this)) return;
-            gameObject.RemoveBehavior(this);
-            return;
-        }
-    }
 
     public void ApplyRecipes(ScatterLayerRecipe[]? recipes)
     {
@@ -68,7 +35,7 @@ public sealed class PlanetScatterRenderer : Behavior
     public bool TryAddInstance(in ScatterInstance instance)
     {
         if (!Enabled) return false;
-        if (_instances.Count >= InstanceLimit) return false;
+        if (_instances.Count >= Math.Max(1, MaxInstances)) return false;
         _instances.Add(instance);
         return true;
     }

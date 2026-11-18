@@ -60,14 +60,6 @@ public sealed class QuadNode
 
     public bool NeedsMeshRebuild { get; set; } = true;
 
-    /// <summary>
-    /// The mesh is still the right shape but was built from a height source that has since
-    /// been replaced by an equivalent one. It is rebuilt when there is spare budget and
-    /// stays on screen until then. Unlike <see cref="NeedsMeshRebuild"/> this does not make
-    /// the node count as unfinished for split, prefetch or merge decisions.
-    /// </summary>
-    public bool RefreshPending { get; set; }
-
     /// <summary>A patch of one cube face whose visible shell changed (new mesh, split, or merge).</summary>
     public readonly record struct VisibleChange(int Epoch, int Face, float U0, float V0, float U1, float V1);
 
@@ -194,11 +186,7 @@ public sealed class QuadNode
             return MathF.Sqrt(MinSampleDistanceSq(cameraPos, worldRadius));
 
         var dir = cameraPos / camR;
-        // Node bounds are in generation UV, so the camera has to be placed in that same
-        // space. With the central projection the camera was ranked as if it stood up to
-        // ~6% of a face (100 m on a 1 km planet) nearer the face centre than it does, so
-        // the finest chunks formed beside the player instead of under them.
-        var (face, u, v) = CameraFaceUv(dir);
+        var (face, u, v) = CubeSphereMath.SphereToCube(dir);
         float innerR = worldRadius * 0.08f;
         float outerR = worldRadius * 1.06f;
         float sampleR = Math.Clamp(camR, innerR, outerR);
@@ -212,25 +200,6 @@ public sealed class QuadNode
         }
 
         return MathF.Sqrt(MinSampleDistanceSq(cameraPos, sampleR));
-    }
-
-    [ThreadStatic] static SN.Vector3 t_camUvDir;
-    [ThreadStatic] static (int Face, float U, float V) t_camUv;
-    [ThreadStatic] static bool t_camUvSet;
-
-    /// <summary>
-    /// Generation UV of the camera direction. Every node is ranked against the same
-    /// camera many times a frame, so the last answer is kept per thread.
-    /// </summary>
-    static (int Face, float U, float V) CameraFaceUv(SN.Vector3 dir)
-    {
-        if (t_camUvSet && dir == t_camUvDir)
-            return t_camUv;
-        var uv = CubeSphereMath.SphereToCubeExact(dir);
-        t_camUvDir = dir;
-        t_camUv = uv;
-        t_camUvSet = true;
-        return uv;
     }
 
     float MinSampleDistanceSq(SN.Vector3 cameraPos, float sampleRadius)
@@ -525,8 +494,7 @@ public sealed class QuadNode
             if (r < 1e-5f)
                 continue;
             var dir = p / r;
-            // The grid covers the node's bounds, which are in generation UV.
-            var (f, u, v) = CubeSphereMath.SphereToCubeExact(dir);
+            var (f, u, v) = CubeSphereMath.SphereToCube(dir);
             if (f != face)
                 continue;
             float tu = (u - u0) / du;
@@ -686,7 +654,7 @@ public sealed class QuadNode
         if (sphereDir.LengthSquared() < 1e-12f)
             return false;
 
-        var (face, u, v) = CubeSphereMath.SphereToCubeExact(SN.Vector3.Normalize(sphereDir));
+        var (face, u, v) = CubeSphereMath.SphereToCube(SN.Vector3.Normalize(sphereDir));
         if (face != Face)
             return false;
 

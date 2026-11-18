@@ -26,20 +26,6 @@ public sealed class PlanetLifeStreaming : Behavior
     public UnderwaterLifeRecipe[] UnderwaterLife => _underwater;
     public ResourceVeinRecipe[] ResourceVeins => _veins;
 
-    public override void OnEnable()
-    {
-        base.OnEnable();
-        if (gameObject == null) return;
-        var behaviors = gameObject.Behaviors;
-        for (int i = 0; i < behaviors.Count; i++)
-        {
-            if (behaviors[i] is not PlanetLifeStreaming existing) continue;
-            if (ReferenceEquals(existing, this)) return;
-            gameObject.RemoveBehavior(this);
-            return;
-        }
-    }
-
     public void BindRecipe(PlanetRecipe? recipe)
     {
         if (recipe == null)

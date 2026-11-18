@@ -200,7 +200,7 @@ namespace Game_Engine.Core
                 //  "textures": [ { "usage":"Albedo", "path":"Assets/..." }, ... ]
                 if (rootEl.TryGetProperty("textures", out var tx))
                 {
-                    MaterialLoadTrace("[MatTrace:MatLoad] textures found, kind=" + tx.ValueKind);
+                    System.Diagnostics.Debug.WriteLine("[MatTrace:MatLoad] textures found, kind=" + tx.ValueKind);
 
                     void AddSlot(string usage, string rawPath)
                     {
@@ -282,7 +282,7 @@ namespace Game_Engine.Core
                     if (!string.IsNullOrWhiteSpace(shaderVal))
                     {
                         m.ShaderAssetPath = shaderVal;
-                        MaterialLoadTrace($"[MatTrace:MatLoad] shader='{m.ShaderAssetPath}'");
+                        System.Diagnostics.Debug.WriteLine($"[MatTrace:MatLoad] shader='{m.ShaderAssetPath}'");
                     }
                 }
 

@@ -95,16 +95,9 @@ public sealed class PlanetDensitySampler
     };
 
     PlanetClimateAtlas? _climateAtlas;
-    // Last carved height, per thread, reused only for the very same direction in the same
-    // frame. It was one slot shared by all mesh jobs and reused for anything within about
-    // 20 m, so a fine chunk's water patch read one ground height for whole blocks of its
-    // grid: water and lava were placed against ground that was not there.
-    [ThreadStatic] static PlanetDensitySampler? t_carveSampler;
-    [ThreadStatic] static PlanetSurfaceCubemap? t_carveCube;
-    [ThreadStatic] static int t_carveFrame;
-    [ThreadStatic] static int t_carveVersion;
-    [ThreadStatic] static SN.Vector3 t_carveDir;
-    [ThreadStatic] static float t_carveHeight;
+    int _carveCacheFrame = -1;
+    SN.Vector3 _carveCacheDir;
+    float _carveCacheHeight;
 
     public void SetClimateAtlas(PlanetClimateAtlas? atlas) => _climateAtlas = atlas;
 
@@ -131,8 +124,6 @@ public sealed class PlanetDensitySampler
             return;
         _crustCaves = new CrustCaveSampler(_config, _biomeMap, _noise, _editStore);
         _crustCaves.SetSurfaceCubemap(_surfaceCubemap);
-        // One surface for the shell and the cave band, before and after the bake.
-        _crustCaves.AuthoredHeight = SampleAuthoredHeight;
     }
 
     float SampleLiveGraphHeight(SN.Vector3 sphereDir)
@@ -145,74 +136,6 @@ public sealed class PlanetDensitySampler
             _basinNoise,
             sphereDir);
 
-    /// <summary>Resolution the height bake will have. Texels worked out ahead of it use the same grid.</summary>
-#if XBOX_UWP
-    const int BakeResolution = PlanetSurfaceCubemap.MinResolution;
-#else
-    const int BakeResolution = PlanetSurfaceCubemap.DefaultResolution;
-#endif
-
-    const int TexelCacheBits = 14;
-    [ThreadStatic] static PlanetDensitySampler? t_texelOwner;
-    [ThreadStatic] static int t_texelEpoch;
-    [ThreadStatic] static long[]? t_texelKeys;
-    [ThreadStatic] static float[]? t_texelVals;
-
-    /// <summary>
-    /// Graph height of one texel of the height map that is still being baked: the same
-    /// number the bake will write there. Kept per thread, since neighbouring samples of a
-    /// chunk share texels, and dropped every few hundred frames in case the recipe was
-    /// edited under a sampler that is still alive.
-    /// </summary>
-    float GraphTexel(int face, int x, int y)
-    {
-        var keys = t_texelKeys;
-        var vals = t_texelVals;
-        int epoch = Time.frameCount >> 9;
-        if (keys == null || vals == null)
-        {
-            t_texelKeys = keys = new long[1 << TexelCacheBits];
-            t_texelVals = vals = new float[1 << TexelCacheBits];
-            Array.Fill(keys, -1L);
-            t_texelOwner = this;
-            t_texelEpoch = epoch;
-        }
-        else if (!ReferenceEquals(t_texelOwner, this) || t_texelEpoch != epoch)
-        {
-            Array.Fill(keys, -1L);
-            t_texelOwner = this;
-            t_texelEpoch = epoch;
-        }
-
-        long key = ((long)face << 40) | ((long)y << 20) | (uint)x;
-        int slot = (int)(((ulong)key * 0x9E3779B97F4A7C15UL) >> (64 - TexelCacheBits));
-        if (keys[slot] == key)
-            return vals[slot];
-
-        float height = SampleLiveGraphHeight(PlanetSurfaceCubemap.TexelDirection(BakeResolution, face, x, y));
-        keys[slot] = key;
-        vals[slot] = height;
-        return height;
-    }
-
-    /// <summary>
-    /// Graph height at a direction the way the baked map will return it: a bilinear blend
-    /// of the four texels around it. Chunks meshed before the bake is ready used the exact
-    /// graph height at each vertex instead. The baked map cannot hold that (a sheer cliff
-    /// becomes a ramp one texel wide), so those chunks changed shape along every cliff
-    /// when the bake landed and they were rebuilt. Built this way they do not change.
-    /// </summary>
-    float SampleGraphAsBaked(SN.Vector3 sphereDir)
-    {
-        PlanetSurfaceCubemap.ResolveBilerp(
-            BakeResolution, sphereDir,
-            out int face, out int x0, out int y0, out int x1, out int y1, out float tx, out float ty);
-        return PlanetSurfaceCubemap.Bilerp(
-            GraphTexel(face, x0, y0), GraphTexel(face, x1, y0),
-            GraphTexel(face, x0, y1), GraphTexel(face, x1, y1),
-            tx, ty);
-    }
-
     // Live graph noise is the expensive path (all biome FBMs + erosion/ridge/basin).
     // Only pay for it when no baked base height exists.
     float SampleAuthoredHeight(SN.Vector3 sphereDir)
@@ -220,21 +143,15 @@ public sealed class PlanetDensitySampler
         var cube = _surfaceCubemap;
         if (cube != null && cube.HasBaseHeights)
             return cube.SampleAuthoredHeight(sphereDir, 0f);
-        float live = SampleGraphAsBaked(sphereDir);
+        float live = SampleLiveGraphHeight(sphereDir);
         return cube != null ? cube.SampleAuthoredHeight(sphereDir, live) : live;
     }
 
     float SampleCarvedHeight(SN.Vector3 sphereDir)
     {
         int frame = Time.frameCount;
-        var cube = _surfaceCubemap;
-        int version = cube?.Version ?? -1;
-        if (ReferenceEquals(t_carveSampler, this)
-            && ReferenceEquals(t_carveCube, cube)
-            && frame == t_carveFrame
-            && version == t_carveVersion
-            && sphereDir == t_carveDir)
-            return t_carveHeight;
+        if (frame == _carveCacheFrame && SN.Vector3.Dot(sphereDir, _carveCacheDir) > 0.9998f)
+            return _carveCacheHeight;
 
         float height = SampleAuthoredHeight(sphereDir);
         var carve = CreateCarveContext();
@@ -246,12 +163,9 @@ public sealed class PlanetDensitySampler
             carve.RiverPrimary,
             carve.RiverMeander,
             carve.ClimateAtlas);
-        t_carveSampler = this;
-        t_carveCube = cube;
-        t_carveFrame = frame;
-        t_carveVersion = version;
-        t_carveDir = sphereDir;
-        t_carveHeight = height;
+        _carveCacheFrame = frame;
+        _carveCacheDir = sphereDir;
+        _carveCacheHeight = height;
         return height;
     }
 
@@ -278,62 +192,7 @@ public sealed class PlanetDensitySampler
             return 1f;
 
         var dir = localPos / len;
-        return SampleDensity(localPos, SampleEditedSurfaceRadius(dir));
-    }
-
-    /// <summary>
-    /// <see cref="SampleDensity(SN.Vector3)"/> for a caller that already has the surface
-    /// radius of this column. A voxel chunk asks for every radial step of each column,
-    /// and the surface under a column is the same for all of them.
-    /// </summary>
-    public float SampleDensity(SN.Vector3 localPos, float surfaceRadius)
-        => SampleDensity(localPos, surfaceRadius, hasColumn: false, default, 0f, 0f);
-
-    /// <summary>
-    /// What a voxel chunk needs once per column instead of once per voxel: the crust
-    /// surface, the roof of the cave band and the cave density of the biomes there.
-    /// </summary>
-    public readonly struct DensityColumn
-    {
-        public DensityColumn(SN.Vector3 dir, float surfaceRadius, float caveSurfaceRadius, float caveDensity)
-        {
-            Dir = dir;
-            SurfaceRadius = surfaceRadius;
-            CaveSurfaceRadius = caveSurfaceRadius;
-            CaveDensity = caveDensity;
-        }
-
-        public SN.Vector3 Dir { get; }
-        public float SurfaceRadius { get; }
-        public float CaveSurfaceRadius { get; }
-        public float CaveDensity { get; }
-    }
-
-    /// <summary>Column data for <see cref="SampleDensity(SN.Vector3, in DensityColumn)"/>. <paramref name="sphereDir"/> must be unit length.</summary>
-    public DensityColumn SampleColumn(SN.Vector3 sphereDir)
-    {
-        float surface = SampleEditedSurfaceRadius(sphereDir);
-        if (!_config.EnableCaves)
-            return new DensityColumn(sphereDir, surface, surface, 0f);
-        EnsureCrustCaves();
-        var caves = _crustCaves;
-        if (caves == null)
-            return new DensityColumn(sphereDir, surface, surface, 0f);
-        return new DensityColumn(
-            sphereDir, surface, caves.SampleSurfaceRadius(sphereDir), caves.SampleColumnCaveDensity(sphereDir));
-    }
-
-    /// <summary><see cref="SampleDensity(SN.Vector3)"/> for one point of a column sampled with <see cref="SampleColumn"/>.</summary>
-    public float SampleDensity(SN.Vector3 localPos, in DensityColumn column)
-        => SampleDensity(localPos, column.SurfaceRadius, hasColumn: true, column.Dir, column.CaveSurfaceRadius, column.CaveDensity);
-
-    float SampleDensity(
-        SN.Vector3 localPos, float surfaceRadius,
-        bool hasColumn, SN.Vector3 columnDir, float caveSurfaceRadius, float caveDensity)
-    {
-        float len = localPos.Length();
-        if (len < 1e-5f)
-            return 1f;
+        float surfaceRadius = SampleEditedSurfaceRadius(dir);
         float density = len - surfaceRadius;
 
         // Walking on / above the shell — no cave evaluation.
@@ -351,11 +210,7 @@ public sealed class PlanetDensitySampler
 
         EnsureCrustCaves();
         if (_crustCaves != null)
-        {
-            return hasColumn
-                ? _crustCaves.SampleOccupancy(localPos, columnDir, caveSurfaceRadius, caveDensity)
-                : _crustCaves.SampleOccupancy(localPos);
-        }
+            return _crustCaves.SampleOccupancy(localPos);
 
         density = ApplyCaveCarve(localPos, density);
         if (_editStore != null)
@@ -430,7 +285,7 @@ public sealed class PlanetDensitySampler
         var cube = _surfaceCubemap;
         float height = cube != null && cube.HasBaseHeights
             ? cube.SampleAuthoredBaseHeight(dir, 0f)
-            : SampleGraphAsBaked(dir);
+            : SampleLiveGraphHeight(dir);
 
         var carve = CreateCarveContext();
         height = PlanetWaterSampler.ApplyWaterCarving(

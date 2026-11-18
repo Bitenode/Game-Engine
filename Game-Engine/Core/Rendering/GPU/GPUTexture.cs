@@ -341,16 +341,43 @@ public sealed class GPUTexture : IDisposable
             if (faces[i] == null || faces[i].Length < pixelsPerFace)
                 return;
 
-#if XBOX_UWP
-        // Prefer EnsureRgba8AtlasStorage + UploadRgba8AtlasFace (one face per frame).
-        // Full-atlas path kept for callers that still batch all six faces at once.
-        EnsureRgba8AtlasStorage(faceResolution);
-        for (int face = 0; face < 6; face++)
-            UploadRgba8AtlasFace(faces[face], faceResolution, face);
-#else
         Width = faceResolution * 3;
         Height = faceResolution * 2;
         _gl.BindTexture(TextureTarget.Texture2D, Handle);
+#if XBOX_UWP
+        int atlasPixels = Width * Height * 4;
+        var bytes = new byte[atlasPixels];
+        for (int face = 0; face < 6; face++)
+        {
+            int x0 = (face % 3) * faceResolution;
+            int y0 = (face / 3) * faceResolution;
+            var src = faces[face];
+            for (int y = 0; y < faceResolution; y++)
+            {
+                int srcRow = y * faceResolution * 4;
+                int dstRow = ((y0 + y) * Width + x0) * 4;
+                for (int x = 0; x < faceResolution; x++)
+                {
+                    int si = srcRow + x * 4;
+                    int di = dstRow + x * 4;
+                    bytes[di] = Float01ToByte(src[si]);
+                    bytes[di + 1] = Float01ToByte(src[si + 1]);
+                    bytes[di + 2] = Float01ToByte(src[si + 2]);
+                    bytes[di + 3] = Float01ToByte(src[si + 3]);
+                }
+            }
+        }
+
+        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
+        fixed (byte* ptr = bytes)
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.Rgba8,
+                (uint)Width, (uint)Height, 0,
+                PixelFormat.Rgba, PixelType.UnsignedByte, ptr);
+        }
+        while (_gl.GetError() != GLEnum.NoError) { }
+#else
         _gl.TexImage2D(TextureTarget.Texture2D, 0,
             InternalFormat.Rgba16f,
             (uint)Width, (uint)Height, 0,
@@ -367,9 +394,9 @@ public sealed class GPUTexture : IDisposable
                     PixelFormat.Rgba, PixelType.Float, ptr);
             }
         }
+#endif
         SetLinearClamp();
         _gl.BindTexture(TextureTarget.Texture2D, 0);
-#endif
     }
 
 #if XBOX_UWP
@@ -378,53 +405,6 @@ public sealed class GPUTexture : IDisposable
         if (v <= 0f) return 0;
         if (v >= 1f) return 255;
         return (byte)(v * 255f + 0.5f);
-    }
-
-    /// <summary>Allocate an empty RGBA8 3x2 atlas for staggered face uploads.</summary>
-    public unsafe void EnsureRgba8AtlasStorage(int faceResolution)
-    {
-        if (faceResolution <= 0) return;
-        int w = faceResolution * 3;
-        int h = faceResolution * 2;
-        if (Width == w && Height == h)
-            return;
-        Width = w;
-        Height = h;
-        _gl.BindTexture(TextureTarget.Texture2D, Handle);
-        _gl.TexImage2D(TextureTarget.Texture2D, 0,
-            InternalFormat.Rgba8,
-            (uint)Width, (uint)Height, 0,
-            PixelFormat.Rgba, PixelType.UnsignedByte, null);
-        while (_gl.GetError() != GLEnum.NoError) { }
-        SetLinearClamp();
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
-    }
-
-    /// <summary>Pack and upload one cubemap face into the RGBA8 atlas (call once per frame on Xbox).</summary>
-    public unsafe void UploadRgba8AtlasFace(float[] face, int faceResolution, int faceIndex)
-    {
-        if (face == null || faceResolution <= 0 || faceIndex < 0 || faceIndex > 5)
-            return;
-        int need = faceResolution * faceResolution * 4;
-        if (face.Length < need) return;
-        EnsureRgba8AtlasStorage(faceResolution);
-
-        var bytes = new byte[need];
-        for (int i = 0; i < need; i++)
-            bytes[i] = Float01ToByte(face[i]);
-
-        int x = (faceIndex % 3) * faceResolution;
-        int y = (faceIndex / 3) * faceResolution;
-        _gl.BindTexture(TextureTarget.Texture2D, Handle);
-        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
-        fixed (byte* ptr = bytes)
-        {
-            _gl.TexSubImage2D(TextureTarget.Texture2D, 0, x, y,
-                (uint)faceResolution, (uint)faceResolution,
-                PixelFormat.Rgba, PixelType.UnsignedByte, ptr);
-        }
-        while (_gl.GetError() != GLEnum.NoError) { }
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
 #endif
 

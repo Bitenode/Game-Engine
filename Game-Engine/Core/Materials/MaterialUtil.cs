@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using Game_Engine.Core.Component;
 using System;
 using System.Collections.Generic;
@@ -298,10 +298,7 @@ public static class MaterialUtil
 
         if (m.AlphaCutoff > 0.0001f || m.LumaClip > 0.0001f) return;
 
-        // A leaf card has a transparent background and an opaque subject.
-        // Animal color maps keep a mid-range alpha on almost every pixel; a cutoff
-        // there discards the body and the animal is gone.
-        if (albedoTex != null && TextureIsCutoutMask(albedoTex))
+        if (albedoTex != null && TextureHasMeaningfulAlpha(albedoTex))
         {
             m.AlphaCutoff = 0.45f;
             return;
@@ -548,31 +545,5 @@ public static class MaterialUtil
             if (a < 250) return true; // allow minor noise
         }
         return false;
-    }
-
-    /// <summary>
-    /// True when the alpha channel is a silhouette: a real transparent background and a real opaque subject.
-    /// Mid-gray alpha on a color map (the animal textures) is not a mask.
-    /// </summary>
-    public static bool TextureIsCutoutMask(Texture2D? tex)
-    {
-        if (tex is null) return false;
-        var rgba = tex.Rgba;
-        if (rgba == null || rgba.Length < 4) return false;
-        int pixels = rgba.Length / 4;
-        if (pixels <= 0) return false;
-        int step = Math.Max(1, pixels / 1024);
-        int samples = 0, clear = 0, solid = 0;
-        for (int i = 0; i < pixels; i += step)
-        {
-            samples++;
-            int a = rgba[i * 4 + 3];
-            if (a < 32) clear++;
-            else if (a > 240) solid++;
-        }
-        if (samples == 0) return false;
-        float clearF = clear / (float)samples;
-        float solidF = solid / (float)samples;
-        return clearF >= 0.08f && solidF >= 0.15f;
     }
 }

@@ -72,11 +72,11 @@ Desktop Bridge / FullTrust Avalonia MSIX packages **do not run on Xbox** (consol
 
 **Deploy to console:** Open in Visual Studio → platform **x64** → Target device **Remote Machine** → Authentication **Universal** → sign in a user on the Xbox → Deploy / F5.
 
-**3D on console:** the host creates an ANGLE ES 3 context on a `SwapChainPanel`. Ship **release** ANGLE (`libEGL.dll` / `libGLESv2.dll` from `vcpkg install angle:x64-uwp-rel` with a release overlay triplet—see [`Engine.Player.XboxUwp/README.md`](../../Engine.Player.XboxUwp/README.md)) plus release `z.dll` and the MSVC UWP CRT DLLs in `native/x64`. In Dev Home set the package App type to **Game** (full GPU, ~5 GB). The first screen prints `GL_VERSION` and `GL_RENDERER`. 3D play continues only when that string is OpenGL ES 3.0 on a hardware Direct3D11 renderer.
+**3D on console:** the host creates an ANGLE ES 3 context on a `SwapChainPanel` (`libEGL.dll` / `libGLESv2.dll` from `vcpkg install angle:x64-uwp`, copied to `Engine.Player.XboxUwp/native/x64`). In Dev Home set the package App type to **Game** (full GPU, 5 GB). The first screen prints `GL_VERSION` and `GL_RENDERER`. 3D play continues only when that string is OpenGL ES 3.0 on a hardware Direct3D11 renderer.
 
 Assets are staged loose under `Data/Assets` (not a zip) by `Core/Editor/XboxContentStager.cs`. Build-time `.dds` sidecars are BC1/BC3 only and are made for material textures. Audio is WAV/MP3 via AudioGraph. Pads use `Windows.Gaming.Input`. Ogg is not decoded on the console.
 
-The player writes `LocalState\player.log` (engine log, failed asset and script loads, scene load times, and `FrameProfile` timing summaries). Check it first when a console build looks different from the editor. Linked shader binaries are cached in `LocalCache\Shaders` (keys include the ANGLE DLL stamp); only the first launch after a shader or ANGLE swap pays the full compile.
+The player writes `LocalState\player.log` (engine log, failed asset and script loads, scene load times, frame-rate samples). Check it first when a console build looks different from the editor. Linked shader binaries are cached in `LocalCache\Shaders`; only the first launch pays the ANGLE compile.
 
 **Limits:** Retail certification still needs ID@Xbox + GDKX. This path is a Dev Mode UWP title, not a GDK console package.
 

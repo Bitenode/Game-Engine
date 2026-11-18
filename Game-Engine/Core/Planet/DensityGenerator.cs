@@ -138,9 +138,6 @@ public sealed class DensityGenerator
 
         // One GetBiomes per UV column, reused across radial Z. Parallel over V rows.
         var columnBiome = new byte[n * n];
-        // The surface, cave roof and cave density under each column, worked out once for
-        // that column's own direction and reused down every radial step.
-        var columns = sampler != null ? new PlanetDensitySampler.DensityColumn[n * n] : null;
         System.Threading.Tasks.Parallel.For(0, n, y =>
         {
             float v = v0 + y * vStep;
@@ -148,20 +145,9 @@ public sealed class DensityGenerator
             {
                 float u = u0 + x * uStep;
                 SN.Vector3 sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
-                float surfaceH;
-                if (columns != null)
-                {
-                    columns[y * n + x] = sampler!.SampleColumn(sphereDir);
-                    // The same surface the shell is meshed from. The graph height asked for
-                    // here before was a full noise evaluation per column, only to pick a material.
-                    surfaceH = sampler.SampleMeshSurfaceRadius(sphereDir) - radius;
-                }
-                else
-                {
-                    surfaceH = PlanetSurfaceUtility.SampleHeight(
-                        _config, _biomeMap, _noise.BiomeNoises, _noise.ErosionNoise,
-                        _noise.RidgeNoise, _noise.BasinNoise, sphereDir);
-                }
+                float surfaceH = PlanetSurfaceUtility.SampleHeight(
+                    _config, _biomeMap, _noise.BiomeNoises, _noise.ErosionNoise,
+                    _noise.RidgeNoise, _noise.BasinNoise, sphereDir);
                 float alt = _biomeMap.NormalizeAltitude(surfaceH);
                 BiomeBlend[] blends = _biomeMap.GetBiomes(sphereDir, alt);
                 byte dominantMat = 0;
@@ -193,7 +179,7 @@ public sealed class DensityGenerator
                     SN.Vector3 sphereDir = CubeSphereMath.FaceUVToDirection(face, u, v);
                     SN.Vector3 localPos = sphereDir * rDist;
                     float density = sampler != null
-                        ? sampler.SampleDensity(localPos, in columns![y * n + x])
+                        ? sampler.SampleDensity(localPos)
                         : localPos.Length() - (radius + PlanetSurfaceUtility.SampleHeight(
                             _config,
                             _biomeMap,

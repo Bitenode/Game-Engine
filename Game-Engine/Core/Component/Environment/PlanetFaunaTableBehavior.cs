@@ -38,7 +38,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     float _playerSearchWait;
     /// <summary>Layer the next spawn pass starts on, so one layer with no room does not hold up the rest.</summary>
     int _nextLayer;
-    int _spawnPass;
 
     /// <summary>Spot searches run per spawn pass. Each is up to 16 biome and water samples.</summary>
     const int MaxSpotSearchesPerPass = 4;
@@ -69,9 +68,8 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         _dirFiles.Clear();
         ClearHerd();
 #if XBOX_UWP
-        // Biome streaming already holds the first frames. A long extra wait
-        // left the player standing in an empty biome.
-        _spawnWait = 1.5f;
+        // Assimp FBX imports during the first planet frames reboot Dev Mode. Wait for biomes/veg to settle.
+        _spawnWait = 18f;
 #else
         _spawnWait = 0f;
 #endif
@@ -164,7 +162,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         _spawnWait -= dt;
         if (_spawnWait > 0f) return;
 #if XBOX_UWP
-        _spawnWait = 0.45f;
+        _spawnWait = 1.75f;
 #else
         _spawnWait = 0.35f;
 #endif
@@ -184,23 +182,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         int searches = 0;
         int count = _layers.Length;
         if (_layerInfo.Length != count) return;
-#if XBOX_UWP
-        // A handful of skinned animals. Importing the whole table locks the player.
-        if (_herd.Count >= 4) return;
-#endif
-
-        // The search budget used to be spent on Deer while the player stood in the ocean,
-        // so nothing that lives there was reached. Most passes only try this biome.
-        BiomeDefinition? homeBiome = null;
-        var homeCenter = terrain.GetWorldCenter();
-        if (TryPlayerAnchor(terrain, homeCenter, out var homeAnchor))
-        {
-            var homeDir = homeAnchor - homeCenter;
-            if (homeDir.LengthSquared() > 1e-6f)
-                TryReadSurface(terrain, SN.Vector3.Normalize(homeDir), false, true, out homeBiome, out _, out _);
-        }
-        bool homeOnly = homeBiome != null && (_spawnPass++ % 3) != 2;
-
         for (int step = 0; step < count; step++)
         {
             int li = (_nextLayer + step) % count;
@@ -211,8 +192,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             if (species.Length == 0) continue;
             any = true;
             if (_missing.Contains(species)) continue;
-            if (homeOnly && !AllowsBiome(layer, info.Mask, homeBiome!))
-                continue;
 
             float fish = info.Aquatic ? AquaticFishScale(terrain) : 1f;
             if (fish <= 0.001f) continue;
@@ -294,21 +273,8 @@ public sealed class PlanetFaunaTableBehavior : Behavior
             // Import only species that have somewhere to stand near the player.
             if (rig == null)
             {
-#if XBOX_UWP
-                // One file at a time. Queuing the rest of the table is what froze the run.
-                if (System.Threading.Volatile.Read(ref s_importerRunning) != 0 || !s_pendingImports.IsEmpty)
-                {
-                    _nextLayer = li;
-                    return;
-                }
-#endif
                 RequestTemplate(assets, species);
-#if XBOX_UWP
-                _nextLayer = li;
-                return;
-#else
                 continue;
-#endif
             }
 
             if (!TrySpawn(terrain, layer, info, assets, rig, dir, pos))
@@ -369,8 +335,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         for (int attempt = 0; attempt < 16; attempt++)
         {
             float ang = (Hash01(species, _herd.Count * 17 + attempt * 13) * 2f - 1f) * MathF.PI;
-            // Far enough to leave the shore biome the player often starts in.
-            float reach = aquatic ? 90f : 70f;
+            float reach = aquatic ? 80f : 36f;
             float dist = attempt == 0 ? (aquatic ? 18f : 8f) : Math.Clamp(4f + Hash01(species, 90 + attempt) * reach, 4f, reach);
             var tangent = Tangent(camDir, ang);
             dir = SN.Vector3.Normalize(camDir + tangent * (dist / stand));
@@ -874,10 +839,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
                         AddMap(mat, ao, "AmbientOcclusion", proj.RootPath);
                     mat.BaseColor = Avalonia.Media.Color.FromArgb(255, 255, 255, 255);
                 }
-                // These color maps are not leaf cards. A cutoff discards the body.
-                mat.AlphaCutoff = 0f;
-                mat.LumaClip = 0f;
-                mat.Transparent = false;
                 mr.Material = mat;
                 // The saved .material often has only the normal. Reloading it
                 // replaces this color map and the deer draws white.
@@ -1001,27 +962,6 @@ public sealed class PlanetFaunaTableBehavior : Behavior
     /// </summary>
     void PrepareRig(RigTemplate rig, SpeciesAssets assets, string species)
     {
-#if XBOX_UWP
-        // The worker already imported this rig. Copying it through JSON on the
-        // game thread is a multi-second hitch for every species.
-        if (rig.Imported != null)
-        {
-            try
-            {
-                ApplySpeciesTextures(rig.Imported, assets);
-                rig.Prototype = rig.Imported;
-                rig.Imported = null;
-            }
-            catch (Exception ex)
-            {
-                Log.Warning($"[Fauna] {species} textures failed: {ex.Message}");
-                _missing.Add(species);
-                lock (s_templates)
-                    s_templates.Remove(assets.ModelPath);
-            }
-            return;
-        }
-#endif
         if (rig.Json.Length == 0)
         {
             try
@@ -1179,15 +1119,10 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         if (restored != null)
             return restored;
 
-#if XBOX_UWP
-        // Importing an FBX on the game thread is the freeze. Skip this species.
-        throw new InvalidOperationException("rig was not ready to copy");
-#else
         // The restore did not line up with the rig. Import it the slow way so the animal still appears.
         var imported = ModelImporter.ImportModel(modelPath);
         PruneEmptyRigNodes(imported);
         return imported;
-#endif
     }
 
     /// <summary>
@@ -1586,7 +1521,7 @@ public sealed class PlanetFaunaTableBehavior : Behavior
         /// <summary>The rig cannot be copied. Each animal is restored (or imported) on its own.</summary>
         public bool NoPrototype;
 
-        public bool Loaded => Imported != null || Prototype != null || Json.Length > 0 || NoPrototype;
+        public bool Loaded => Imported != null || Json.Length > 0 || NoPrototype;
         public bool Ready => Prototype != null || NoPrototype;
     }
 }

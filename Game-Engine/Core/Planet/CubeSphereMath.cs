@@ -145,29 +145,6 @@ public static class CubeSphereMath
         c2 = (float)Math.Clamp(cy, -1.0, 1.0);
     }
 
-    /// <summary>
-    /// The direction a cubemap texel at this face UV stands for: the exact inverse of
-    /// <see cref="SphereToCube"/>. The height, splat and climate maps are read with
-    /// <see cref="SphereToCube"/>, on the CPU and by <c>sphereToCube</c> in the terrain
-    /// shaders, so every texel has to be written for this direction. Writing them for
-    /// <see cref="FaceUVToDirection"/> (the chunk-grid mapping) put each baked height up
-    /// to about 6% of a face away from the place it was read back at, more than 100 m
-    /// on a 1 km planet, while everything placed from a direction (lava lakes, the sea,
-    /// meshes built before the bake) stayed where the graph put it.
-    /// </summary>
-    public static SN.Vector3 CubemapTexelDirection(int face, float u, float v)
-    {
-        var p = SnapCubePoint(FaceUVToCube(face, u, v));
-        float len = p.Length();
-        return len > 1e-8f ? p / len : SN.Vector3.UnitY;
-    }
-
-    /// <summary>
-    /// Central projection onto the cube: face and UV of the cube point this direction
-    /// passes through. This is the mapping of the height, splat and climate cubemaps
-    /// (see <see cref="CubemapTexelDirection"/>). It is not the mapping of chunk grids
-    /// and node bounds; those use <see cref="SphereToCubeExact"/>.
-    /// </summary>
     public static (int Face, float U, float V) SphereToCube(SN.Vector3 dir)
     {
         float ax = MathF.Abs(dir.X);

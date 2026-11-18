@@ -58,16 +58,11 @@ public sealed class FullscreenQuad : IDisposable
             _gl.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), (void*)(2 * sizeof(float)));
         }
 
-#if !XBOX_UWP
-        // Binding array 0 is illegal on the Xbox ANGLE context and the next
-        // DrawArrays of this triangle access-violates.
         _gl.BindVertexArray(0);
-#endif
     }
 
     public void Draw()
     {
-        if (VAO == 0) return;
         _gl.BindVertexArray(VAO);
         _gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
     }

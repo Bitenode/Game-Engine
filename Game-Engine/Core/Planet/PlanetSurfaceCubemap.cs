@@ -125,7 +125,7 @@ public sealed class PlanetSurfaceCubemap
                 float v = y * inv;
                 for (int x = 0; x < res; x++)
                 {
-                    var dir = CubeSphereMath.CubemapTexelDirection(f, x * inv, v);
+                    var dir = CubeSphereMath.FaceUVToDirection(f, x * inv, v);
                     dst[y * res + x] = other.SampleHeightDelta(dir);
                 }
             }
@@ -136,46 +136,8 @@ public sealed class PlanetSurfaceCubemap
     /// <summary>Bilinear sample of base height (no dig delta, no water carve).</summary>
     public float SampleBaseHeight(SN.Vector3 sphereDir)
     {
-        int res = Resolution;
-        ResolveBilerp(res, sphereDir, out int face, out int x0, out int y0, out int x1, out int y1, out float tx, out float ty);
-        var data = Height[face];
-        return Bilerp(data[y0 * res + x0], data[y0 * res + x1], data[y1 * res + x0], data[y1 * res + x1], tx, ty);
-    }
-
-    /// <summary>
-    /// The four texels a bilinear lookup of <paramref name="sphereDir"/> reads in a map of
-    /// <paramref name="res"/>, and the weights between them. The same arithmetic serves a
-    /// baked map and a map that does not exist yet (see <see cref="Bilerp"/>), so both
-    /// return the same number.
-    /// </summary>
-    public static void ResolveBilerp(
-        int res, SN.Vector3 sphereDir,
-        out int face, out int x0, out int y0, out int x1, out int y1, out float tx, out float ty)
-    {
-        ResolveFaceUV(sphereDir, out face, out float u, out float v);
-        float fx = u * (res - 1);
-        float fy = v * (res - 1);
-        x0 = (int)fx;
-        y0 = (int)fy;
-        x1 = Math.Min(x0 + 1, res - 1);
-        y1 = Math.Min(y0 + 1, res - 1);
-        tx = fx - x0;
-        ty = fy - y0;
-    }
-
-    /// <summary>Bilinear blend of the four texel values picked by <see cref="ResolveBilerp"/>.</summary>
-    public static float Bilerp(float v00, float v10, float v01, float v11, float tx, float ty)
-    {
-        float top = v00 + (v10 - v00) * tx;
-        float bot = v01 + (v11 - v01) * tx;
-        return top + (bot - top) * ty;
-    }
-
-    /// <summary>Direction the bake fills texel (<paramref name="x"/>, <paramref name="y"/>) of a face from.</summary>
-    public static SN.Vector3 TexelDirection(int res, int face, int x, int y)
-    {
-        float inv = 1f / MathF.Max(1, res - 1);
-        return CubeSphereMath.CubemapTexelDirection(face, x * inv, y * inv);
+        ResolveFaceUV(sphereDir, out int face, out float u, out float v);
+        return SampleFaceBilerp(Height[face], Resolution, u, v);
     }
 
     /// <summary>Bilinear sample of dig height delta.</summary>
@@ -303,7 +265,7 @@ public sealed class PlanetSurfaceCubemap
                 var w = CubeSphereMath.WrapFaceUV(face, u, v);
                 int ix = (int)MathF.Round(Math.Clamp(w.U, 0f, 1f) * (res - 1));
                 int iy = (int)MathF.Round(Math.Clamp(w.V, 0f, 1f) * (res - 1));
-                var sampleDir = CubeSphereMath.CubemapTexelDirection(w.Face, ix * inv, iy * inv);
+                var sampleDir = CubeSphereMath.FaceUVToDirection(w.Face, ix * inv, iy * inv);
                 float dot = SN.Vector3.Dot(sampleDir, centerDir);
                 if (dot < 0.2f)
                     continue;
@@ -424,7 +386,7 @@ public sealed class PlanetSurfaceCubemap
                 long key = ((long)w.Face << 32) | (uint)(iy * res + ix);
                 if (!seen.Add(key))
                     continue;
-                var dir = CubeSphereMath.CubemapTexelDirection(w.Face, ix * inv, iy * inv);
+                var dir = CubeSphereMath.FaceUVToDirection(w.Face, ix * inv, iy * inv);
                 float dot = SN.Vector3.Dot(dir, sphereDir);
                 if (dot < 0.2f)
                     continue;

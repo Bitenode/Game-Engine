@@ -113,11 +113,6 @@ namespace Engine.Player.XboxUwp
                 }
                 catch { }
                 XboxPlayerLog.Write("Info", "[Host] GL " + version + " detectedES=" + glCtx.IsES);
-                // What this run can be compared with: an unoptimised build under a debugger and
-                // a package the console treats as an app (1 GB, part of the GPU) are both slow
-                // for reasons that have nothing to do with the scene.
-                ReportPerf("[Host] " + BuildFlavor + " build" + (System.Diagnostics.Debugger.IsAttached ? ", debugger attached" : "")
-                    + "; " + DeviceFamily() + ", " + Environment.ProcessorCount + " logical processors, " + AppMemoryLine());
                 report("Preparing shaders…");
                 var res = new ViewRenderResources();
                 // This host is an ES 3 context. A desktop #version 330 shader makes ANGLE's
@@ -142,10 +137,8 @@ namespace Engine.Player.XboxUwp
                 var part = new System.Diagnostics.Stopwatch();
                 long perfFrames = 0, updateTicks = 0, fixedTicks = 0, renderTicks = 0, swapTicks = 0;
                 int perfReports = 0;
-                FrameProfile.StartWindow();
                 while (!_stop)
                 {
-                    FrameProfile.Enter(FrameProfile.Part.Other);
                     // The first frames after a scene load do the Awake/Start, collider and GPU upload work.
                     bool timed = frameIndex < 3 || SceneManager.HasPendingLoad;
                     if (timed) phase.Restart();
@@ -158,14 +151,11 @@ namespace Engine.Player.XboxUwp
                     if (SceneManager.HasPendingLoad)
                         report("Loading scene…");
                     part.Restart();
-                    FrameProfile.Enter(FrameProfile.Part.Scripts);
                     sim.TickUpdate(_width, _height, false);
                     updateTicks += part.ElapsedTicks;
                     part.Restart();
-                    FrameProfile.Enter(FrameProfile.Part.Physics);
                     sim.TickFixed();
                     fixedTicks += part.ElapsedTicks;
-                    FrameProfile.Enter(FrameProfile.Part.SceneUpkeep);
                     long simMs = timed ? phase.ElapsedMilliseconds : 0;
                     var sceneNow = SceneService.CurrentScenePath;
                     if (!string.Equals(sceneNow, lastScene, StringComparison.OrdinalIgnoreCase))
@@ -175,9 +165,7 @@ namespace Engine.Player.XboxUwp
                         frameIndex = 0;
                         perfReports = 0;
                         perfFrames = 0;
-                        updateTicks = fixedTicks = renderTicks = swapTicks = 0;
                         perf.Restart();
-                        FrameProfile.StartWindow();
                         sceneDirty = false;
                         report("Playing " + System.IO.Path.GetFileName(sceneNow ?? ""));
                         XboxPlayerLog.Write("Info", "[Host] Scene changed to " + System.IO.Path.GetFileName(sceneNow ?? ""));
@@ -198,45 +186,26 @@ namespace Engine.Player.XboxUwp
                     frame.WidthDip = _width;
                     frame.HeightDip = _height;
                     part.Restart();
-                    // Drop GPU buffers for chunk meshes a split replaced. Doing it here,
-                    // before any draw, keeps a deleted buffer off the post-process triangle.
-                    if (frame.Res.Cache != null)
-                        GpuMeshReleaseQueue.Drain(frame.Res.Cache, 48);
                     PlayerFrameRenderer.Render(glCtx.GL, frame, 0);
                     renderTicks += part.ElapsedTicks;
                     part.Restart();
-                    FrameProfile.Enter(FrameProfile.Part.Present);
                     egl.Swap();
                     swapTicks += part.ElapsedTicks;
-                    FrameProfile.EndFrame();
                     if (timed)
                         XboxPlayerLog.Write("Info", "[Host] Frame " + frameIndex + ": update " + simMs
                             + " ms, render " + (phase.ElapsedMilliseconds - simMs) + " ms");
                     frameIndex++;
                     perfFrames++;
-                    // Every 5 s for the first half minute after a scene load (a hitch or a slow
-                    // scene?), then every 30 s, so a game that slows down over time shows it too.
-                    if (perf.ElapsedMilliseconds >= (perfReports < 6 ? 5000 : 30000))
+                    // A few frame-rate samples after each scene load, enough to tell a hitch from a slow scene.
+                    if (perfReports < 6 && perf.ElapsedMilliseconds >= 5000)
                     {
                         double fps = perfFrames * 1000.0 / perf.ElapsedMilliseconds;
                         double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency / Math.Max(1, perfFrames);
-                        ReportPerf("[Host] " + fps.ToString("F1") + " fps at " + _width + "x" + _height
+                        XboxPlayerLog.Write("Info", "[Host] " + fps.ToString("F1") + " fps at " + _width + "x" + _height
                             + " — per frame: update " + (updateTicks * toMs).ToString("F1")
                             + " ms, physics " + (fixedTicks * toMs).ToString("F1")
                             + " ms, render " + (renderTicks * toMs).ToString("F1")
                             + " ms, present " + (swapTicks * toMs).ToString("F1") + " ms");
-                        // An exception here would end the game loop. A report is never worth that.
-                        try
-                        {
-                            foreach (var line in FrameProfile.TakeReport())
-                                ReportPerf("[Host]   " + line);
-                            ReportPerf("[Host]   " + AppMemoryLine());
-                        }
-                        catch (Exception ex)
-                        {
-                            XboxPlayerLog.Write("Warning", "[Host] Frame report failed: " + ex.GetType().Name + ": " + ex.Message);
-                            FrameProfile.StartWindow();
-                        }
                         perfReports++;
                         perfFrames = 0;
                         updateTicks = fixedTicks = renderTicks = swapTicks = 0;
@@ -258,48 +227,6 @@ namespace Engine.Player.XboxUwp
             {
                 _egl = null;
                 angle?.Dispose();
-            }
-        }
-
-        /// <summary>
-        /// A performance line goes to the player log and, with a debugger attached, to its output
-        /// window too: on the console the log file is only reachable through Device Portal.
-        /// </summary>
-        static void ReportPerf(string line)
-        {
-            XboxPlayerLog.Write("Info", line);
-            if (System.Diagnostics.Debugger.IsAttached)
-                System.Diagnostics.Debugger.Log(0, "perf", line + "\n");
-        }
-
-#if DEBUG
-        const string BuildFlavor = "Debug";
-#else
-        const string BuildFlavor = "Release";
-#endif
-
-        static string DeviceFamily()
-        {
-            try { return Windows.System.Profile.AnalyticsInfo.VersionInfo.DeviceFamily; }
-            catch { return "unknown device"; }
-        }
-
-        /// <summary>Memory the system counts against this app, and the most it allows.</summary>
-        static string AppMemoryLine()
-        {
-            try
-            {
-                double used = MemoryManager.AppMemoryUsage / 1048576.0;
-                double limit = MemoryManager.AppMemoryUsageLimit / 1048576.0;
-                // Dev Home "App" type is ~1–3 GB and ~45% GPU; "Game" is ~5 GB and full GPU.
-                string hint = limit < 4000
-                    ? " (Dev Home type looks like App — set package to Game for 5 GB / full GPU)"
-                    : "";
-                return "app memory " + used.ToString("F0") + " MB of " + limit.ToString("F0") + " MB allowed" + hint;
-            }
-            catch (Exception ex)
-            {
-                return "app memory unknown (" + ex.GetType().Name + ")";
             }
         }
 
