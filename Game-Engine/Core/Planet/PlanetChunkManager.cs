@@ -42,6 +42,7 @@ public sealed class PlanetChunkManager
     readonly List<QuadNode> _prefetchScratch = new(256);
     readonly List<QuadNode> _renderableCache = new(256);
     readonly List<QuadNode> _playRenderableScratch = new(64);
+    readonly List<QuadNode> _refreshScratch = new(64);
     readonly HashSet<QuadNode> _mergedParents = new();
     bool _renderableDirty = true;
 
@@ -200,8 +201,41 @@ public sealed class PlanetChunkManager
     }
 
     /// <summary>
+    /// The height source was swapped for one that describes the same land: the baked map
+    /// took over from the live graph it was baked from. Every shell is rebuilt in place,
+    /// nearest first and under the normal per-frame budget, and the mesh on screen stays
+    /// until its replacement lands. <see cref="RequestFullShellRebuild"/> throws every
+    /// mesh away at once, which blanked the planet and rebuilt all of it in one burst.
+    /// </summary>
+    public void RequestShellRefresh()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+        _meshCache.Clear();
+        for (int f = 0; f < Faces.Length; f++)
+            MarkShellStale(Faces[f].Root);
+        _renderableDirty = true;
+    }
+
+    static void MarkShellStale(QuadNode node)
+    {
+        // A job already running was started against the old source. It is left to land
+        // so there is no hole, and the node is rebuilt once more after it.
+        if (node.GeneratedMesh != null || node.IsGenerating)
+            node.RefreshPending = true;
+        if (node.Children == null)
+            return;
+        for (int i = 0; i < 4; i++)
+        {
+            var child = node.Children[i];
+            if (child != null)
+                MarkShellStale(child);
+        }
+    }
+
+    /// <summary>
     /// Drop every cached shell in the subtree. LOD parents kept for coverage must
-    /// not survive a heightfield bake — that old silhouette is what pops hills.
+    /// not survive a change of terrain recipe — that old silhouette is what pops hills.
     /// </summary>
     static void DiscardShellTree(QuadNode node)
     {
@@ -488,6 +522,37 @@ public sealed class PlanetChunkManager
         });
         for (int i = 0; i < leaves.Count; i++)
             TrySchedule(leaves[i]);
+
+        // Shells waiting on a refresh (see RequestShellRefresh) take whatever budget the
+        // real work above left over, nearest first. Only what is drawn is refreshed; a
+        // hidden shell keeps its flag until it is shown again.
+        if (scheduled < scheduleBudget && _activeJobs < MaxConcurrentJobs)
+        {
+            var drawn = SceneService.PlayMode ? _playRenderableScratch : leaves;
+            _refreshScratch.Clear();
+            for (int i = 0; i < drawn.Count; i++)
+            {
+                var node = drawn[i];
+                if (node.RefreshPending && !node.IsGenerating && node.GeneratedMesh != null)
+                    _refreshScratch.Add(node);
+            }
+            if (_refreshScratch.Count > 1)
+            {
+                _refreshScratch.Sort((a, b) =>
+                    a.CameraPriorityDistance(localCameraPos, worldRadius)
+                        .CompareTo(b.CameraPriorityDistance(localCameraPos, worldRadius)));
+            }
+            for (int i = 0; i < _refreshScratch.Count; i++)
+            {
+                if (scheduled >= scheduleBudget || _activeJobs >= MaxConcurrentJobs)
+                    break;
+                var node = _refreshScratch[i];
+                node.IsGenerating = true;
+                ScheduleGeneration(node);
+                scheduled++;
+            }
+            _refreshScratch.Clear();
+        }
     }
 
     public void UpdateNoLod(SN.Vector3 planetCenter)
@@ -1001,6 +1066,8 @@ public sealed class PlanetChunkManager
         }
 
         Interlocked.Increment(ref _activeJobs);
+        // This job reads the height source as it is now.
+        node.RefreshPending = false;
 
         int face = node.Face;
         float u0 = node.U0, v0 = node.V0, u1 = node.U1, v1 = node.V1;
@@ -1181,17 +1248,14 @@ public sealed class PlanetChunkManager
         var node = FindRenderableAtDirectionExact(sphereDir);
         if (node != null && node.TrySampleShellLocalRadius(sphereDir, Config.ChunkSize + 1, out float shellR))
             return shellR;
-        // Stand grid is binned with the approximate projection; look it up the same way.
-        node = FindRenderableAtDirection(sphereDir);
         if (node != null && node.TrySampleStandLocalRadius(sphereDir, out float r))
             return r;
         return 0f;
     }
 
     /// <summary>
-    /// Node lookup in generation UV (exact inverse of the cube→sphere warp). Node bounds
-    /// and vertex grids live in that space; <see cref="FindRenderableAtDirection"/> uses
-    /// the approximate projection the stand grid was binned with.
+    /// Node lookup in generation UV (exact inverse of the cube→sphere warp). Node bounds,
+    /// vertex grids and stand grids all live in that space.
     /// </summary>
     QuadNode? FindRenderableAtDirectionExact(SN.Vector3 sphereDir)
     {
@@ -1262,19 +1326,20 @@ public sealed class PlanetChunkManager
             sphereDir = SN.Vector3.UnitY;
         else
             sphereDir = SN.Vector3.Normalize(sphereDir);
-        var (face, u, v) = CubeSphereMath.SphereToCube(sphereDir);
-        if ((uint)face >= 6)
-            return null;
-        return Faces[face].Root.FindRenderableAtUv(Math.Clamp(u, 0f, 1f), Math.Clamp(v, 0f, 1f));
+        return FindRenderableAtDirectionExact(sphereDir);
     }
 
+    /// <summary>
+    /// The leaf whose bounds contain <paramref name="sphereDir"/>. Bounds are in generation
+    /// UV; the central projection returned a leaf up to 100 m (1 km planet) to the side.
+    /// </summary>
     public QuadNode? FindLeafAtDirection(SN.Vector3 sphereDir)
     {
         if (sphereDir.LengthSquared() < 1e-12f)
             sphereDir = SN.Vector3.UnitY;
         else
             sphereDir = SN.Vector3.Normalize(sphereDir);
-        var (face, u, v) = CubeSphereMath.SphereToCube(sphereDir);
+        var (face, u, v) = CubeSphereMath.SphereToCubeExact(sphereDir);
         if ((uint)face >= 6)
             return null;
         return Faces[face].FindLeafAtUv(Math.Clamp(u, 0f, 1f), Math.Clamp(v, 0f, 1f));

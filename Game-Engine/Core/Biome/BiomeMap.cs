@@ -42,10 +42,17 @@ public sealed class BiomeMap
     SimplexNoise? _riverMeander;
     FractalNoise? _ridgeNoise;
 
-    int _biomeCacheFrame = -1;
-    SN.Vector3 _biomeCacheDir;
-    float _biomeCacheAlt = float.NaN;
-    BiomeBlend[]? _biomeCache;
+    // The last answer, per thread, reused only for the very same question. It used to be
+    // one slot shared by every thread and reused for any point within about 24 m in the
+    // same frame. That made the answer depend on what was asked before it: the height
+    // bake walks neighbouring texels, so it smeared biome borders into steps, while a
+    // coarse chunk asking far-apart points got the true answer. The same ground then
+    // changed shape when it refined. Mesh jobs and the bake also raced on the one slot.
+    [ThreadStatic] static BiomeMap? t_cacheMap;
+    [ThreadStatic] static int t_cacheFrame;
+    [ThreadStatic] static SN.Vector3 t_cacheDir;
+    [ThreadStatic] static float t_cacheAlt;
+    [ThreadStatic] static BiomeBlend[]? t_cache;
 
     [ThreadStatic] static (BiomeDefinition biome, float dist)[]? t_candidates;
     static readonly Comparison<(BiomeDefinition biome, float dist)> s_byDistance =
@@ -115,11 +122,12 @@ public sealed class BiomeMap
     public BiomeBlend[] GetBiomes(SN.Vector3 sphereDir, float altitude)
     {
         int frame = Game_Engine.Core.Time.frameCount;
-        if (_biomeCache != null
-            && frame == _biomeCacheFrame
-            && MathF.Abs(altitude - _biomeCacheAlt) < 0.002f
-            && SN.Vector3.Dot(sphereDir, _biomeCacheDir) > 0.9997f)
-            return _biomeCache;
+        if (t_cache != null
+            && ReferenceEquals(t_cacheMap, this)
+            && frame == t_cacheFrame
+            && altitude == t_cacheAlt
+            && sphereDir == t_cacheDir)
+            return t_cache;
 
         float temperature = GetTemperature(sphereDir, altitude);
         float moisture = GetMoisture(sphereDir, altitude);
@@ -217,10 +225,11 @@ public sealed class BiomeMap
 
     BiomeBlend[] CacheBiomes(SN.Vector3 sphereDir, float altitude, BiomeBlend[] results)
     {
-        _biomeCacheFrame = Game_Engine.Core.Time.frameCount;
-        _biomeCacheDir = sphereDir;
-        _biomeCacheAlt = altitude;
-        _biomeCache = results;
+        t_cacheMap = this;
+        t_cacheFrame = Game_Engine.Core.Time.frameCount;
+        t_cacheDir = sphereDir;
+        t_cacheAlt = altitude;
+        t_cache = results;
         return results;
     }
 

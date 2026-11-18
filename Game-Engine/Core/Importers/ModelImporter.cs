@@ -38,6 +38,7 @@ namespace Game_Engine.Core.Importers
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
             if (!File.Exists(path)) throw new FileNotFoundException("Model not found", path);
+            Game_Engine.Core.Rendering.FrameProfile.CountModelImport();
 
             // Keep the original abs path and compute project-relative once
             var absModel = Path.GetFullPath(path);
@@ -446,8 +447,6 @@ namespace Game_Engine.Core.Importers
                     ? MakeProjectRelative(resolvedAbsPath)
                     : null
             });
-
-            System.Diagnostics.Debug.WriteLine($"[ModelImporter] +texture '{usageStr}' ({tex.Width}x{tex.Height}) for material '{m.Name}'");
         }
 
         // Try to choose a good usage from an Assimp type and/or the filename

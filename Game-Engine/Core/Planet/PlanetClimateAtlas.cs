@@ -84,7 +84,8 @@ public sealed class PlanetClimateAtlas
                 for (int x = 0; x < res; x++)
                 {
                     float u = x * inv;
-                    var dir = CubeSphereMath.FaceUVToDirection(face, u, v);
+                    // Sample() reads with SphereToCube, so bake for that mapping's direction.
+                    var dir = CubeSphereMath.CubemapTexelDirection(face, u, v);
                     int idx = y * res + x;
 
                     float height = 0f;

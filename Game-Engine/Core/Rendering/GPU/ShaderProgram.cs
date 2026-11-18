@@ -1,6 +1,8 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using Silk.NET.OpenGL;
 using SN = System.Numerics;
 
@@ -24,6 +26,7 @@ public sealed class ShaderProgram : IDisposable
     public static string? BinaryCacheDirectory { get; set; }
 
     static string? s_driverTag;
+    static string? s_angleStamp;
 
     public ShaderProgram(GL gl, string vertexSource, string fragmentSource)
     {
@@ -69,13 +72,42 @@ public sealed class ShaderProgram : IDisposable
         if (string.IsNullOrEmpty(dir)) return null;
         try
         {
-            // A binary is only valid for the driver that produced it.
+            // A binary is only valid for the driver that produced it. Debug and release
+            // ANGLE report the same GL_VERSION / RENDERER, so the on-disk libGLESv2
+            // stamp must be part of the key — otherwise a DLL swap reuses bad binaries
+            // and DrawElements can AV (ExecutionEngineException).
             s_driverTag ??= (_gl.GetStringS(StringName.Renderer) ?? "") + "|" + (_gl.GetStringS(StringName.Version) ?? "");
-            var bytes = System.Text.Encoding.UTF8.GetBytes(s_driverTag + "\0" + vertexSource + "\0" + fragmentSource);
+            s_angleStamp ??= AngleModuleStamp();
+            var bytes = System.Text.Encoding.UTF8.GetBytes(
+                s_driverTag + "\0" + s_angleStamp + "\0" + vertexSource + "\0" + fragmentSource);
             var hash = System.Security.Cryptography.SHA256.HashData(bytes);
-            return System.IO.Path.Combine(dir, Convert.ToHexString(hash, 0, 16) + ".glbin");
+            return Path.Combine(dir, Convert.ToHexString(hash, 0, 16) + ".glbin");
         }
         catch { return null; }
+    }
+
+    static string AngleModuleStamp()
+    {
+        try
+        {
+            foreach (ProcessModule module in Process.GetCurrentProcess().Modules)
+            {
+                if (!module.ModuleName.Equals("libGLESv2.dll", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                long length = 0;
+                long ticks = 0;
+                try
+                {
+                    var info = new FileInfo(module.FileName);
+                    length = info.Length;
+                    ticks = info.LastWriteTimeUtc.Ticks;
+                }
+                catch { }
+                return length.ToString() + "|" + ticks.ToString();
+            }
+        }
+        catch { }
+        return "unknown";
     }
 
     unsafe bool TryLoadBinary(string path, out uint program)

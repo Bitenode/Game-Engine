@@ -636,6 +636,14 @@ public sealed class PlanetTerrain : Behavior
         if (_surfaceCubemap != null && !ReferenceEquals(_surfaceCubemap, baked.Surface))
             baked.Surface.CopyHeightDeltasFrom(_surfaceCubemap);
 
+        // Until now the shells were built from the live graph (plus digs), sampled on the
+        // texel grid of the map being swapped in (PlanetDensitySampler.SampleGraphAsBaked),
+        // so the baked map gives the same heights the chunks on screen already have.
+        bool firstBake = _surfaceCubemap == null || !_surfaceCubemap.HasBaseHeights;
+        // Digs carried on a scratch map or waiting in the asset are re-applied below and
+        // may be resampled, so chunks are rebuilt when there were any.
+        bool digsCarried = _surfaceCubemap != null || _pendingHeightDeltaAsset != null;
+
         _surfaceCubemap = baked.Surface;
         _climateAtlas = baked.Climate;
         _densitySampler?.SetClimateAtlas(_climateAtlas);
@@ -654,21 +662,41 @@ public sealed class PlanetTerrain : Behavior
 
         if (remesh)
         {
-            _chunkManager?.ClearMeshCache();
-            _chunkManager?.InvalidateOverlappingGenerations();
-            _chunkManager?.RequestFullShellRebuild(16);
+            if (!firstBake)
+            {
+                // A rebake over an older map can be a different recipe: nothing on screen is valid.
+                _chunkManager?.ClearMeshCache();
+                _chunkManager?.InvalidateOverlappingGenerations();
+                _chunkManager?.RequestFullShellRebuild(16);
+            }
+            else if (digsCarried || BakeAddsFlowRivers())
+            {
+                // Same land, but water channels or digs may sit differently: rebuild the
+                // shells in place, a few a frame. Throwing them all away here blanked the
+                // planet and queued every chunk at once.
+                _chunkManager?.RequestShellRefresh();
+            }
+            // Otherwise the chunks on screen are already what the baked map describes.
         }
-        // Xbox applies bake with remesh:false — splat GPU upload alone paints biomes.
-        // RequestFullShellRebuild marks every leaf and was freezing Dev Mode on apply.
         SurfaceBakePending = false;
         SceneService.NotifyChanged(markDirty: false);
     }
 
+    /// <summary>
+    /// Flow-accumulation river channels exist only in the baked climate map, so water
+    /// patches built before the bake do not have them carved in yet.
+    /// </summary>
+    bool BakeAddsFlowRivers()
+        => _config is { UseFlowAccumulationRivers: true } && _climateAtlas is { HasFlowRivers: true };
+
+    // PlanetDensitySampler.BakeResolution has to be this same number: chunks meshed before
+    // the bake lands are built on the texel grid the bake will fill.
     static int ResolveSurfaceBakeResolution()
     {
 #if XBOX_UWP
-        // Match the editor splat density. RGBA8 staggered upload can take 512.
-        return PlanetSurfaceCubemap.DefaultResolution;
+        // 256 keeps the post-bake RGBA8 atlas small enough that Dev Mode survives the upload.
+        // Must stay in lockstep with PlanetDensitySampler.BakeResolution.
+        return PlanetSurfaceCubemap.MinResolution;
 #else
         return PlanetSurfaceCubemap.DefaultResolution;
 #endif
@@ -1120,10 +1148,17 @@ public sealed class PlanetTerrain : Behavior
     }
 
     /// <summary>
-    /// Vegetation anchor in planet-local space. Prefers the outermost generated chunk vertex
-    /// along <paramref name="sphereDir"/> so plants sit on the visible transvoxel/shell mesh,
-    /// not only the analytical heightfield sample (which can sit inside after cave meshing).
+    /// Vegetation anchor in planet-local space: the crust point straight along
+    /// <paramref name="sphereDir"/> (height map plus digs and water carve).
     /// </summary>
+    /// <remarks>
+    /// This used to prefer the highest vertex of the leaf mesh within about 7.5 m of the
+    /// direction. The leaf was looked up with the wrong projection, so over most of the
+    /// planet the lookup found nothing and the crust point was what plants got. Where it
+    /// did hit, the anchor jumped to a vertex beside and above the spot (metres off on a
+    /// slope) and the three anchors used for a surface normal could be one same vertex.
+    /// With the leaf lookup corrected that path would run everywhere, so it is gone.
+    /// </remarks>
     public SN.Vector3 SampleVegetationAnchorLocal(SN.Vector3 sphereDir)
     {
         int frame = Time.frameCount;
@@ -1141,17 +1176,6 @@ public sealed class PlanetTerrain : Behavior
             return cached;
 
         SN.Vector3 local = SampleLocalCrustPoint(sphereDir);
-        var leaf = _chunkManager?.FindLeafAtDirection(sphereDir);
-        if (leaf != null)
-        {
-            float bestR = 0f;
-            if (TrySampleRenderedCrustPointFromLeaf(sphereDir, leaf, ref local, ref bestR))
-            {
-                _vegCrustCache[key] = local;
-                return local;
-            }
-        }
-
         _vegCrustCache[key] = local;
         return local;
     }
@@ -2691,6 +2715,13 @@ public sealed class PlanetTerrain : Behavior
             }
         }
 
+        // Wetlands widen their biome's moisture range, which changes where every biome is
+        // classified and with it the terrain height. It has to be in place before the
+        // biome map is built and the height bake starts: applied afterwards (as it was),
+        // the bake held the land from before the change, or half of each when it ran on
+        // a worker while this thread was still editing the biomes.
+        ApplyWetlandFloraBoost(result);
+
         RecalcSeaLevel();
 
         _chunkManager?.Dispose();
@@ -2715,8 +2746,6 @@ public sealed class PlanetTerrain : Behavior
         var life = GetComponent<PlanetLifeStreaming>();
         life?.BindRecipe(result.Recipe);
 
-        ApplyWetlandFloraBoost(result);
-
         SceneRenderer.ResetBiomeTexDebug();
         // Never rewrite .planet during scene deserialize — that stalls the UI for no benefit.
         if (!SceneService.DeferPlanetVegetationImport)
@@ -2727,6 +2756,11 @@ public sealed class PlanetTerrain : Behavior
     void EnsureLifeCompanions(Biome.Graph.BiomeGraphResult result)
     {
         if (gameObject == null) return;
+        // Graph apply used to add a second copy before the saved component was restored.
+        DropExtraCompanions<PlanetFloraSpawner>();
+        DropExtraCompanions<PlanetScatterRenderer>();
+        DropExtraCompanions<PlanetLifeStreaming>();
+        DropExtraCompanions<PlanetFaunaTableBehavior>();
         bool needFlora = result.FloraLayers is { Length: > 0 };
         bool needScatter = result.ScatterLayers is { Length: > 0 };
         bool needLife = result.UnderwaterLife is { Length: > 0 }
@@ -2738,6 +2772,22 @@ public sealed class PlanetTerrain : Behavior
             gameObject.AddBehavior(new PlanetScatterRenderer());
         if (needLife && GetComponent<PlanetLifeStreaming>() == null)
             gameObject.AddBehavior(new PlanetLifeStreaming());
+    }
+
+    void DropExtraCompanions<T>() where T : Behavior
+    {
+        if (gameObject == null) return;
+        var behaviors = gameObject.Behaviors;
+        T? kept = null;
+        var extras = new List<T>();
+        for (int i = 0; i < behaviors.Count; i++)
+        {
+            if (behaviors[i] is not T found) continue;
+            if (kept == null) kept = found;
+            else extras.Add(found);
+        }
+        for (int i = 0; i < extras.Count; i++)
+            gameObject.RemoveBehavior(extras[i]);
     }
 
     static Biome.Graph.FaunaLayerRecipe[] ScaleFaunaLayers(Biome.Graph.FaunaLayerRecipe[]? src, float lifeScale)

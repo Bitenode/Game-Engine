@@ -21,6 +21,7 @@ namespace Game_Engine.Core.Rendering
             if (s.Res?.Standard == null || s.Res.Sky == null || s.Res.FsQuad == null || s.Res.Cache == null)
                 return;
 
+            FrameProfile.Enter(FrameProfile.Part.Sky);
             while (g.GetError() != GLEnum.NoError) { }
 
             s.FrameWatch.Restart();
@@ -146,6 +147,7 @@ namespace Game_Engine.Core.Rendering
             var res = s.Res!;
             Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
 
+            FrameProfile.Enter(FrameProfile.Part.Shadows);
             SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
             GPUFramebuffer? shadowFBO = null;
             if (res.Shadow != null && res.Depth != null)
@@ -165,6 +167,7 @@ namespace Game_Engine.Core.Rendering
                 shadowFBO = res.Shadow.FBO;
             }
 
+            FrameProfile.Enter(FrameProfile.Part.Other);
             var underwater = UnderwaterQuery.GetState(camPos);
             var postVolume = PostProcessVolume.GetActive();
             bool usePostFX = (postVolume != null || underwater != null) && res.PostProcess != null;
@@ -176,6 +179,7 @@ namespace Game_Engine.Core.Rendering
 
             GameRenderPipeline.UpdateLod(camPos);
 
+            FrameProfile.Enter(FrameProfile.Part.Scene);
             GPUTexture? finalSceneTex = null;
             if (useDeferred)
             {
@@ -213,6 +217,7 @@ namespace Game_Engine.Core.Rendering
                 finalSceneTex = usePostFX ? s.SceneFbo?.ColorTexture : null;
             }
 
+            FrameProfile.Enter(FrameProfile.Part.WorldUi);
             if (res.Canvas != null && res.Cache != null)
             {
                 var viewProj = view * proj;
@@ -223,6 +228,7 @@ namespace Game_Engine.Core.Rendering
                 }
             }
 
+            FrameProfile.Enter(FrameProfile.Part.Post);
             if (finalSceneTex != null && res.PostProcess != null)
             {
                 g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
@@ -236,6 +242,7 @@ namespace Game_Engine.Core.Rendering
                 g.Enable(EnableCap.DepthTest);
             }
 
+            FrameProfile.Enter(FrameProfile.Part.Particles);
             if (res.Particle != null && res.Cache != null)
             {
                 g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
@@ -243,11 +250,13 @@ namespace Game_Engine.Core.Rendering
                 SceneRenderer.RenderParticles(g, res.Particle, res.Cache, view, proj, W, H, overlayPass: true);
             }
 
+            FrameProfile.Enter(FrameProfile.Part.Ui);
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             g.Viewport(0, 0, (uint)W, (uint)H);
             if (res.Canvas != null && res.Cache != null)
                 res.Canvas.RenderOverlays(W, H, res.Cache);
 
+            FrameProfile.Enter(FrameProfile.Part.Finish);
             g.Flush();
             Cleanup(g, s, fb);
         }

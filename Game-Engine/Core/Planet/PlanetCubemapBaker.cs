@@ -47,22 +47,37 @@ public static class PlanetCubemapBaker
         var surface = new PlanetSurfaceCubemap(resolution, config.RecipeHash);
 
         int res = surface.Resolution;
-        float inv = 1f / MathF.Max(1, res - 1);
-        Span<float> weights = stackalloc float[8];
+
+        // Every texel is worked out from its own direction alone, so rows can be baked on
+        // several cores and the result is the same whatever order they finish in. Cores
+        // are left for the game thread and the chunk jobs that run while a bake is under way.
+        var options = new System.Threading.Tasks.ParallelOptions
+        {
+#if XBOX_UWP
+            // The console bakes during the first seconds of play, with chunk jobs
+            // and the frame itself competing for the same cores.
+            MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2 - 1)
+#else
+            MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 2)
+#endif
+        };
 
         for (int face = 0; face < 6; face++)
         {
+            int faceIndex = face;
             var fHeight = surface.Height[face];
             var fSplat0 = surface.Splat0[face];
             var fSplat1 = surface.Splat1[face];
 
-            for (int y = 0; y < res; y++)
+            System.Threading.Tasks.Parallel.For(0, res, options, y =>
             {
-                float v = y * inv;
+                Span<float> weights = stackalloc float[8];
                 for (int x = 0; x < res; x++)
                 {
-                    float u = x * inv;
-                    var dir = CubeSphereMath.FaceUVToDirection(face, u, v);
+                    // The direction this texel is read back for, not the chunk-grid direction.
+                    // PlanetDensitySampler works out the same texels on demand before the
+                    // bake is ready, so both must take the direction from this one place.
+                    var dir = PlanetSurfaceCubemap.TexelDirection(res, faceIndex, x, y);
                     int idx = y * res + x;
 
                     float height = 0f;
@@ -89,7 +104,7 @@ public static class PlanetCubemapBaker
                     fSplat1[s + 2] = weights[6];
                     fSplat1[s + 3] = weights[7];
                 }
-            }
+            });
         }
 
         if (preserveDeltasFrom != null)

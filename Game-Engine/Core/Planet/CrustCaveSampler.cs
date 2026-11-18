@@ -32,15 +32,56 @@ public sealed class CrustCaveSampler
 
     public void SetSurfaceCubemap(PlanetSurfaceCubemap? surface) => _surface = surface;
 
+    /// <summary>
+    /// Authored surface height (no water carve) from the density sampler that owns this
+    /// cave sampler, so the roof of the crust band is the same surface the shell is
+    /// meshed from, before the height bake lands as well as after.
+    /// </summary>
+    internal Func<SN.Vector3, float>? AuthoredHeight { get; set; }
+
     public float SampleSurfaceRadius(SN.Vector3 sphereDir)
     {
+        var authored = AuthoredHeight;
+        if (authored != null)
+            return MathF.Max(1f, _config.Radius + authored(sphereDir));
+
+        var surface = _surface;
+        // The graph height is only needed while there is no baked map to read. It used to
+        // be worked out for every sample regardless and then thrown away, which was most
+        // of the cost of building a cave chunk.
+        if (surface != null && surface.HasBaseHeights)
+            return MathF.Max(1f, _config.Radius + surface.SampleAuthoredHeight(sphereDir, 0f));
         float live = PlanetSurfaceUtility.SampleHeight(
             _config, _biomeMap,
             _noise.BiomeNoises, _noise.ErosionNoise,
             _noise.RidgeNoise, _noise.BasinNoise, sphereDir);
-        if (_surface != null)
-            return MathF.Max(1f, _config.Radius + _surface.SampleAuthoredHeight(sphereDir, live));
+        if (surface != null)
+            return MathF.Max(1f, _config.Radius + surface.SampleAuthoredHeight(sphereDir, live));
         return MathF.Max(1f, _config.Radius + live);
+    }
+
+    /// <summary>
+    /// Blended cave density of the biomes over this column: 0 when none of them has caves.
+    /// It is the same for every depth of a column, so a voxel chunk asks once per column.
+    /// </summary>
+    public float SampleColumnCaveDensity(SN.Vector3 sphereDir)
+    {
+        if (!_config.EnableCaves)
+            return 0f;
+        var blends = _biomeMap.GetBiomes(sphereDir);
+        float blended = 0f;
+        bool anyCaves = false;
+        for (int b = 0; b < blends.Length; b++)
+        {
+            var biome = blends[b].Biome;
+            float w = blends[b].Weight;
+            if (biome.CavesEnabled && biome.CaveDensity > 0.01f)
+            {
+                blended += biome.CaveDensity * w;
+                anyCaves = true;
+            }
+        }
+        return anyCaves ? blended : 0f;
     }
 
     /// <summary>
@@ -54,7 +95,24 @@ public sealed class CrustCaveSampler
             return 1f;
 
         var dir = localPos / len;
-        float surfaceR = SampleSurfaceRadius(dir);
+        return SampleOccupancy(localPos, len, dir, SampleSurfaceRadius(dir), float.NaN);
+    }
+
+    /// <summary>
+    /// <see cref="SampleOccupancy(SN.Vector3)"/> for a caller walking down one column that
+    /// already has the column's surface radius (<see cref="SampleSurfaceRadius"/>) and
+    /// cave density (<see cref="SampleColumnCaveDensity"/>).
+    /// </summary>
+    public float SampleOccupancy(SN.Vector3 localPos, SN.Vector3 columnDir, float columnSurfaceRadius, float columnCaveDensity)
+    {
+        float len = localPos.Length();
+        if (len < 1e-5f)
+            return 1f;
+        return SampleOccupancy(localPos, len, columnDir, columnSurfaceRadius, columnCaveDensity);
+    }
+
+    float SampleOccupancy(SN.Vector3 localPos, float len, SN.Vector3 dir, float surfaceR, float columnCaveDensity)
+    {
         float caveDepth = MathF.Max(8f, DensityGenerator.MaxCaveDepth(_config));
         float bandFloor = MathF.Max(16f, surfaceR - caveDepth);
 
@@ -68,7 +126,7 @@ public sealed class CrustCaveSampler
 
         // Inside band: start solid, carve caves
         float density = len - surfaceR; // negative (solid) under surface
-        density = ApplyCaveCarve(localPos, dir, surfaceR, density);
+        density = ApplyCaveCarve(localPos, dir, surfaceR, density, columnCaveDensity);
 
         if (_caveEdits != null)
             density += _caveEdits.SampleDensityDelta(localPos);
@@ -105,26 +163,16 @@ public sealed class CrustCaveSampler
         return SampleOccupancy(probe) > 0.05f;
     }
 
-    float ApplyCaveCarve(SN.Vector3 localPos, SN.Vector3 sphereDir, float surfaceRadius, float density)
+    /// <param name="columnCaveDensity">Cave density of the column if the caller has it, NaN to look it up here.</param>
+    float ApplyCaveCarve(SN.Vector3 localPos, SN.Vector3 sphereDir, float surfaceRadius, float density, float columnCaveDensity)
     {
         if (!_config.EnableCaves)
             return density;
 
-        var blends = _biomeMap.GetBiomes(sphereDir);
-        float blendedCaveDensity = 0f;
-        bool anyCaves = false;
-        for (int b = 0; b < blends.Length; b++)
-        {
-            var biome = blends[b].Biome;
-            float w = blends[b].Weight;
-            if (biome.CavesEnabled && biome.CaveDensity > 0.01f)
-            {
-                blendedCaveDensity += biome.CaveDensity * w;
-                anyCaves = true;
-            }
-        }
-
-        if (!anyCaves || blendedCaveDensity <= 0.01f)
+        float blendedCaveDensity = float.IsNaN(columnCaveDensity)
+            ? SampleColumnCaveDensity(sphereDir)
+            : columnCaveDensity;
+        if (blendedCaveDensity <= 0.01f)
             return density;
 
         float below = surfaceRadius - localPos.Length();

@@ -80,7 +80,11 @@ public sealed class ResourceCache : IDisposable
     // Mesh → GPU mesh, keyed by reference identity
     private readonly Dictionary<Mesh, GPUMeshEntry> _meshes = new(64);
     private readonly Dictionary<TexBindKey, GPUTexture> _textures = new(64);
-    private readonly ConcurrentQueue<Mesh> _pendingMeshReleases = new();
+    // Weak: every view's cache is told about every released mesh, and a view that is not
+    // drawing (a hidden editor tab) does not drain. Holding the meshes themselves kept
+    // every discarded chunk mesh alive for as long as that view stayed hidden. A mesh this
+    // cache has uploaded stays reachable through _meshes, so its entry still resolves.
+    private readonly ConcurrentQueue<WeakReference<Mesh>> _pendingMeshReleases = new();
 
     /// <summary>After BCn GPU upload fails, skip re-attempting compression every frame (use RGBA path).</summary>
     private readonly HashSet<(Texture2D Tex, MaterialTexture.TexUsage Usage)> _skipBcnCompress = new(64);
@@ -197,16 +201,20 @@ public sealed class ResourceCache : IDisposable
         {
             if (entry.Version != mesh.GeometryVersion)
             {
+                long changedAt = System.Diagnostics.Stopwatch.GetTimestamp();
                 entry.GPU.Upload(mesh);
                 entry.Version = mesh.GeometryVersion;
                 _meshes[mesh] = entry;
+                FrameProfile.CountMeshUpload(System.Diagnostics.Stopwatch.GetTimestamp() - changedAt);
             }
             return entry.GPU;
         }
 
+        long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         var gpuMesh = new GPUMesh(_gl);
         gpuMesh.Upload(mesh);
         _meshes[mesh] = new GPUMeshEntry { GPU = gpuMesh, Version = mesh.GeometryVersion };
+        FrameProfile.CountMeshUpload(System.Diagnostics.Stopwatch.GetTimestamp() - startedAt);
         return gpuMesh;
     }
 
@@ -233,14 +241,22 @@ public sealed class ResourceCache : IDisposable
         }
     }
 
-    internal void QueueMeshRelease(Mesh mesh) => _pendingMeshReleases.Enqueue(mesh);
+    internal void QueueMeshRelease(Mesh mesh) => _pendingMeshReleases.Enqueue(new WeakReference<Mesh>(mesh));
 
     internal int DrainMeshReleases(int maxPerFrame)
     {
+        int budget = Math.Max(1, maxPerFrame);
+        // Entries whose mesh is already gone cost nothing to skip, but a view that was
+        // hidden for a long time can have a great many of them.
+        int looked = 0, lookLimit = budget * 256;
         int released = 0;
-        while (released < Math.Max(1, maxPerFrame)
-               && _pendingMeshReleases.TryDequeue(out var mesh))
+        while (released < budget
+               && looked++ < lookLimit
+               && _pendingMeshReleases.TryDequeue(out var weak))
         {
+            // Collected means this cache never held it: _meshes keeps its meshes alive.
+            if (!weak.TryGetTarget(out var mesh))
+                continue;
             ReleaseMesh(mesh);
             released++;
         }
@@ -318,9 +334,11 @@ public sealed class ResourceCache : IDisposable
             if (_textures.TryGetValue(ckey, out var cachedC))
                 return cachedC;
 
+            long compressedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             if (TryCreateCompressedTexture(tex, materialSlot, out var gpuC, out bool skipBcn) && gpuC != null)
             {
                 _textures[ckey] = gpuC;
+                FrameProfile.CountTextureUpload(System.Diagnostics.Stopwatch.GetTimestamp() - compressedAt);
                 return gpuC;
             }
             if (skipBcn)
@@ -331,6 +349,7 @@ public sealed class ResourceCache : IDisposable
         if (_textures.TryGetValue(key, out var gpuTex))
             return gpuTex;
 
+        long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         gpuTex = new GPUTexture(_gl);
 #if XBOX_UWP
         // Mip chains average punch-through alpha toward grey. Leaf and grass cards then
@@ -343,6 +362,7 @@ public sealed class ResourceCache : IDisposable
         gpuTex.Upload(tex);
 #endif
         _textures[key] = gpuTex;
+        FrameProfile.CountTextureUpload(System.Diagnostics.Stopwatch.GetTimestamp() - startedAt);
         return gpuTex;
     }
 

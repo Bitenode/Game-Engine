@@ -49,6 +49,19 @@ public sealed class GPUMesh : IDisposable
         if (verts == null || tris == null) return;
 
         int vertCount = verts.Length;
+        if (vertCount <= 0 || tris.Length < 3) return;
+
+        // A LOD transition that indexes past the vertex buffer faults inside ANGLE.
+        // The exception usually surfaces on the next draw (the fullscreen post triangle).
+        for (int i = 0; i < tris.Length; i++)
+        {
+            if ((uint)tris[i] >= (uint)vertCount)
+            {
+                IndexCount = 0;
+                return;
+            }
+        }
+
         IndexCount = tris.Length;
         LineIndexCount = lines?.Length ?? 0;
         IsSkinned = mesh.HasBones;
@@ -60,7 +73,9 @@ public sealed class GPUMesh : IDisposable
         else
             UploadStatic(mesh, vertCount);
 
-        // Line EBO (for wireframe)
+        // Line EBO (for wireframe). The element-buffer binding belongs to the VAO that
+        // is still current on Xbox (binding array 0 is illegal there). Putting 0 in
+        // that slot makes DrawElements read client memory at address 0 and access-violate.
         if (lines != null && lines.Length > 0)
         {
             _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _lineEBO);
@@ -69,8 +84,8 @@ public sealed class GPUMesh : IDisposable
                 _gl.BufferData(BufferTargetARB.ElementArrayBuffer,
                     (nuint)(lines.Length * sizeof(int)), ptr, BufferUsageARB.DynamicDraw);
             }
-            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
         }
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, EBO);
     }
 
     /// <summary>Upload non-skinned mesh: [Pos3, Norm3, UV2] = 32 bytes/vert.</summary>
@@ -139,7 +154,9 @@ public sealed class GPUMesh : IDisposable
         _gl.DisableVertexAttribArray(3);
         _gl.DisableVertexAttribArray(4);
 
+#if !XBOX_UWP
         _gl.BindVertexArray(0);
+#endif
     }
 
     /// <summary>Upload skinned mesh: [Pos3, Norm3, UV2, BoneIdx4_as_float, BoneWeight4] = 64 bytes/vert.</summary>
@@ -229,7 +246,9 @@ public sealed class GPUMesh : IDisposable
         _gl.EnableVertexAttribArray(4);
         _gl.VertexAttribPointer(4, 4, VertexAttribPointerType.Float, false, stride, (void*)(12 * sizeof(float)));
 
+#if !XBOX_UWP
         _gl.BindVertexArray(0);
+#endif
     }
 
     /// <summary>True if the last upload used the planet vertex format.</summary>
@@ -315,17 +334,50 @@ public sealed class GPUMesh : IDisposable
         _gl.EnableVertexAttribArray(4);
         _gl.VertexAttribPointer(4, 4, VertexAttribPointerType.Float, false, stride, (void*)(12 * sizeof(float)));
 
+#if !XBOX_UWP
         _gl.BindVertexArray(0);
+#endif
     }
 
     /// <summary>Draw triangles.</summary>
     public unsafe void Draw()
     {
-        if (IndexCount <= 0) return;
+        if (IndexCount <= 0 || VAO == 0 || EBO == 0 || VBO == 0) return;
         _gl.BindVertexArray(VAO);
-        _gl.DrawElements(PrimitiveType.Triangles, (uint)IndexCount, DrawElementsType.UnsignedInt, null);
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, VBO);
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, EBO);
+        // Grass instancing enables extra attributes. If that state leaks, a mesh
+        // draw fetches past its vertex buffer and ANGLE access-violates here.
+        if (IsPlanet || IsSkinned)
+        {
+            const uint stride = 64;
+            _gl.EnableVertexAttribArray(0);
+            _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, (void*)0);
+            _gl.EnableVertexAttribArray(1);
+            _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, (void*)(3 * sizeof(float)));
+            _gl.EnableVertexAttribArray(2);
+            _gl.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, (void*)(6 * sizeof(float)));
+            _gl.EnableVertexAttribArray(3);
+            _gl.VertexAttribPointer(3, 4, VertexAttribPointerType.Float, false, stride, (void*)(8 * sizeof(float)));
+            _gl.EnableVertexAttribArray(4);
+            _gl.VertexAttribPointer(4, 4, VertexAttribPointerType.Float, false, stride, (void*)(12 * sizeof(float)));
+        }
+        else
+        {
+            const uint stride = 32;
+            _gl.EnableVertexAttribArray(0);
+            _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, (void*)0);
+            _gl.EnableVertexAttribArray(1);
+            _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, (void*)(3 * sizeof(float)));
+            _gl.EnableVertexAttribArray(2);
+            _gl.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, (void*)(6 * sizeof(float)));
+            _gl.DisableVertexAttribArray(3);
+            _gl.DisableVertexAttribArray(4);
+        }
+        _gl.DrawElements(PrimitiveType.Triangles, (uint)IndexCount, DrawElementsType.UnsignedInt, (void*)0);
         Profiler.CountDrawCall();
         Profiler.CountTriangles(IndexCount / 3);
+        Game_Engine.Core.Rendering.FrameProfile.CountDraw();
     }
 
     /// <summary>Draw wireframe lines.</summary>
@@ -347,5 +399,7 @@ public sealed class GPUMesh : IDisposable
         _gl.DeleteBuffer(EBO);
         _gl.DeleteBuffer(_lineEBO);
         VAO = VBO = EBO = 0;
+        IndexCount = 0;
+        LineIndexCount = 0;
     }
 }
