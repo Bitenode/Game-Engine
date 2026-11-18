@@ -1,8 +1,10 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Silk.NET.OpenGL;
 using Game_Engine.Core.Component;
@@ -79,6 +81,8 @@ namespace Game_Engine.Core
             /// <summary>Planet vegetation forward pass: imported trees get sun/weather/wind.</summary>
             public bool PlanetFoliagePass;
         }
+
+        static int BoneUniformLimit(bool isES) => isES ? 48 : SkeletonLimits.MaxBones;
 
         // ---------- Frustum culling ----------
         private struct Sphere { public SN.Vector3 Center; public float Radius; }
@@ -603,7 +607,7 @@ namespace Game_Engine.Core
                 postShader.SetInt("uUnderwaterEnabled", 0);
             }
 
-            // Draw fullscreen triangle (covers entire screen with a single triangle)
+            // Draw fullscreen triangle (covers entire screen with a single triangle).
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.Blend);
             gl.Disable(EnableCap.CullFace);
@@ -1308,7 +1312,7 @@ namespace Game_Engine.Core
             {
                 shader.SetInt("uHasBones", 1);
                 var bones = item.Skinned.BoneMatrices!;
-                int count = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
+                int count = System.Math.Min(bones.Length, BoneUniformLimit(ctx.IsES));
                 for (int bi = 0; bi < count; bi++)
                     shader.SetMatrix4($"uBones[{bi}]", bones[bi]);
             }
@@ -1749,7 +1753,7 @@ namespace Game_Engine.Core
             {
                 customShader.SetInt("uHasBones", 1);
                 var bones = item.Skinned.BoneMatrices!;
-                int boneCount = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
+                int boneCount = System.Math.Min(bones.Length, BoneUniformLimit(ctx.IsES));
                 for (int bi = 0; bi < boneCount; bi++)
                     customShader.SetMatrix4($"uBones[{bi}]", bones[bi]);
             }
@@ -1934,6 +1938,36 @@ namespace Game_Engine.Core
             catch { }
 
             return null;
+        }
+
+        private static readonly ConcurrentDictionary<string, Texture2D?> s_asyncBiomeTex = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, byte> s_asyncBiomeBusy = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Decode one ground texture off the render thread. The frame only picks up the pixels when they are ready.</summary>
+        static void RequestBiomeDecode(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            if (s_asyncBiomeTex.ContainsKey(path) || !s_asyncBiomeBusy.TryAdd(path, 1))
+                return;
+            Task.Run(() =>
+            {
+                Texture2D? tex = null;
+                try
+                {
+                    var abs = ResolveTexturePath(path);
+                    if (abs != null)
+                    {
+                        tex = Texture2D.FromFile(abs);
+                        if (tex != null && (tex.Width > BiomeCpuMaxEdge || tex.Height > BiomeCpuMaxEdge))
+                            tex = tex.DownscaleMaxEdge(BiomeCpuMaxEdge);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Info("[BiomeTex] decode failed: " + ex.Message);
+                }
+                s_asyncBiomeTex[path] = tex;
+            });
         }
 
         private static Texture2D? TryLoadLayerTexture(string path)
@@ -2803,7 +2837,11 @@ namespace Game_Engine.Core
                     {
                         depthShader.SetInt("uHasBones", 1);
                         var bones = skinned.BoneMatrices!;
+#if XBOX_UWP
+                        int boneCount = System.Math.Min(bones.Length, 48);
+#else
                         int boneCount = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
+#endif
                         for (int bi = 0; bi < boneCount; bi++)
                             depthShader.SetMatrix4($"uBones[{bi}]", bones[bi]);
                     }
@@ -3082,8 +3120,14 @@ namespace Game_Engine.Core
             bool isES = true,
             SN.Vector3 lightColor = default)
         {
+            // Instanced grass is not a scene mesh. The dedicated pass also draws tree
+            // meshes; with that pass off, trees still come from the main scene walk,
+            // but the carpet has to be drawn here or it never appears.
             if (!PlanetVegetationSystem.AnyUseDedicatedRenderPass)
+            {
+                RenderPlanetGpuGrassBatches(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, lightColor);
                 return;
+            }
 
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
@@ -3466,8 +3510,8 @@ namespace Game_Engine.Core
             }
 
 #if XBOX_UWP
-            // Dig stays off (R32F atlas). Splat is what paints rock versus dirt the way the
-            // editor does. One RGBA8 atlas per frame so the upload cannot stall the console.
+            // Dig stays off (R32F atlas). Splat paints rock versus dirt. One cubemap face
+            // per frame (12 frames total) so SwapBuffers survives Dev Mode App budgets.
             shader.SetInt("uUsePlanetDig", 0);
             if (!surface.HasBaseHeights || surface.Splat0 == null || surface.Splat1 == null)
             {
@@ -3484,11 +3528,31 @@ namespace Game_Engine.Core
             var (xboxSplat0, xboxSplat1, xboxNeedsUpload) = cache.GetPlanetSplatTextures(planet, xboxSplatVersion);
             if (xboxNeedsUpload)
             {
-                int res = surface.Resolution;
-                if (_planetSplatUploadPhase == 0)
+                if (_planetSplatUploadVersion != xboxSplatVersion)
                 {
-                    xboxSplat0.UploadRgba16FloatFaces(surface.Splat0, res);
-                    _planetSplatUploadPhase = 1;
+                    _planetSplatUploadVersion = xboxSplatVersion;
+                    _planetSplatUploadFace = 0;
+                    xboxSplat0.EnsureRgba8AtlasStorage(surface.Resolution);
+                    xboxSplat1.EnsureRgba8AtlasStorage(surface.Resolution);
+                }
+
+                int res = surface.Resolution;
+                int face = _planetSplatUploadFace;
+                if (face < 6)
+                    xboxSplat0.UploadRgba8AtlasFace(surface.Splat0[face], res, face);
+                else if (face < 12)
+                    xboxSplat1.UploadRgba8AtlasFace(surface.Splat1[face - 6], res, face - 6);
+
+                _planetSplatUploadFace = face + 1;
+                if (_planetSplatUploadFace >= 12)
+                {
+                    cache.SetPlanetSplatVersion(planet, xboxSplatVersion);
+                    _planetSplatUploadFace = 0;
+                    _planetSplatUploadPhase = 0;
+                    Log.Info($"[Planet] Xbox splat atlases uploaded {res}px (12 faces)");
+                }
+                else
+                {
                     var pendingWhite = cache.GetWhiteTexture();
                     pendingWhite.Bind(TextureUnit.Texture8);
                     shader.SetTexture("uPlanetSplat0", 8);
@@ -3497,11 +3561,6 @@ namespace Game_Engine.Core
                     shader.SetInt("uUsePlanetSplat", 0);
                     return;
                 }
-
-                xboxSplat1.UploadRgba16FloatFaces(surface.Splat1, res);
-                cache.SetPlanetSplatVersion(planet, xboxSplatVersion);
-                _planetSplatUploadPhase = 0;
-                Log.Info($"[Planet] Xbox splat atlases uploaded {res}px");
             }
 
             xboxSplat0.Bind(TextureUnit.Texture8);
@@ -3594,7 +3653,62 @@ namespace Game_Engine.Core
         private static bool _biomeMetaReady;
         private static int _biomeLoadCursor;
         private static int _biomeLoadFrame = -1;
-        private static int _planetSplatUploadPhase; // Xbox: 0 splat0, 1 splat1, 2 dig, 3 done
+        private static int _planetSplatUploadPhase; // Xbox legacy; face index uses _planetSplatUploadFace
+        private static int _planetSplatUploadFace; // Xbox: 0..11 (splat0 faces, then splat1)
+        private static int _planetSplatUploadVersion = int.MinValue;
+
+        static int _xboxVegUnlockFrame;
+
+        /// <summary>
+        /// Xbox: true while biome decode, height bake, or splat atlas faces are still landing.
+        /// </summary>
+        public static bool XboxHoldHeavyWork
+        {
+            get
+            {
+#if !XBOX_UWP
+                return false;
+#else
+                if (BiomeTexturesStreaming)
+                    return true;
+                if (_planetSplatUploadFace > 0)
+                    return true;
+                foreach (var planet in PlanetTerrain.ActivePlanets)
+                {
+                    if (planet?.Config == null) continue;
+                    if (planet.SurfaceBakePending)
+                        return true;
+                    var surface = planet.SurfaceCubemap;
+                    if (surface == null || !surface.HasBaseHeights)
+                        return true;
+                }
+                return false;
+#endif
+            }
+        }
+
+        /// <summary>
+        /// Xbox: hold plant spawn/draw through settle, then ~3s more so the first
+        /// vegetation wave cannot dump dozens of mesh/texture uploads in one SwapBuffers.
+        /// </summary>
+        public static bool XboxHoldVegetation
+        {
+            get
+            {
+#if !XBOX_UWP
+                return false;
+#else
+                if (XboxHoldHeavyWork)
+                {
+                    _xboxVegUnlockFrame = 0;
+                    return true;
+                }
+                if (_xboxVegUnlockFrame == 0)
+                    _xboxVegUnlockFrame = Time.frameCount + 90;
+                return Time.frameCount < _xboxVegUnlockFrame;
+#endif
+            }
+        }
         private static float[]? _cachedTiling;
         private static float[]? _cachedUnderTiling;
         private static SN.Vector3[]? _cachedBaseColor;
@@ -3710,40 +3824,30 @@ namespace Game_Engine.Core
                 if (_biomeLoadCursor < biomeCount && _biomeLoadFrame != Time.frameCount)
                 {
                     _biomeLoadFrame = Time.frameCount;
-                    int i = _biomeLoadCursor++;
+                    int i = _biomeLoadCursor;
                     var b = biomes[i];
-                    if (!string.IsNullOrWhiteSpace(b.TopTexturePath))
+                    string top = b.TopTexturePath ?? "";
+                    string under = i < MaxBoundUnderBiomes ? (b.UnderTexturePath ?? "") : "";
+                    bool topReady = top.Length == 0 || s_asyncBiomeTex.ContainsKey(top);
+                    bool underReady = under.Length == 0 || s_asyncBiomeTex.ContainsKey(under);
+                    if (!topReady) RequestBiomeDecode(top);
+                    else if (!underReady) RequestBiomeDecode(under);
+                    // Decoding a 1024 image on this thread is the 2 second planet-ground frame.
+                    if (topReady && underReady)
                     {
-                        try
+                        _biomeLoadCursor++;
+                        if (top.Length > 0 && s_asyncBiomeTex.TryGetValue(top, out var tex2d))
                         {
-                            var tex2d = TryLoadLayerTexture(b.TopTexturePath);
+                            _boundBiomeTex2D[i] = tex2d;
                             if (tex2d != null)
-                            {
-                                _boundBiomeTex2D[i] = tex2d;
                                 Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': {tex2d.Width}x{tex2d.Height} OK");
-                            }
                             else
-                                Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': file not found '{b.TopTexturePath}'");
+                                Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}': file not found '{top}'");
                         }
-                        catch (Exception ex)
+                        if (under.Length > 0 && s_asyncBiomeTex.TryGetValue(under, out var underTex) && underTex != null)
                         {
-                            Log.Info($"[BiomeTex] Biome[{i}] '{b.Name}' EXCEPTION: {ex.Message}");
-                        }
-                    }
-                    if (i < MaxBoundUnderBiomes && !string.IsNullOrWhiteSpace(b.UnderTexturePath))
-                    {
-                        try
-                        {
-                            var underTex = TryLoadLayerTexture(b.UnderTexturePath);
-                            if (underTex != null)
-                            {
-                                _boundBiomeUnderTex2D![i] = underTex;
-                                _cachedHasUnder![i] = 1;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Info($"[BiomeTex] Biome[{i}] under EXCEPTION: {ex.Message}");
+                            _boundBiomeUnderTex2D![i] = underTex;
+                            _cachedHasUnder![i] = 1;
                         }
                     }
                 }

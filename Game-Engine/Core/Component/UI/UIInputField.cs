@@ -245,6 +245,15 @@ namespace Game_Engine.Core.Component.UI
                 }
             }
 
+            for (int i = (int)Input.KeyCode.NumPad0; i <= (int)Input.KeyCode.NumPad9; i++)
+            {
+                if (Input.Input.GetKeyDown((Input.KeyCode)i))
+                {
+                    char ch = (char)('0' + (i - (int)Input.KeyCode.NumPad0));
+                    TryInsertChar(ch);
+                }
+            }
+
             if (Input.Input.GetKeyDown(Input.KeyCode.Space)) TryInsertChar(' ');
             if (Input.Input.GetKeyDown(Input.KeyCode.OemPeriod)) TryInsertChar('.');
             if (Input.Input.GetKeyDown(Input.KeyCode.OemComma)) TryInsertChar(',');
@@ -285,8 +294,10 @@ namespace Game_Engine.Core.Component.UI
 
         public override UIDrawData GetDrawData(in RectTransform.Rect rect)
         {
-            // Background + optional focus border (4) + cursor quad
-            if (_quadBuffer.Length < 8) _quadBuffer = new UIQuad[8];
+            string shown = string.IsNullOrEmpty(_text) ? Placeholder : _text;
+            bool placeholder = string.IsNullOrEmpty(_text);
+            int need = 16 + (shown?.Length ?? 0);
+            if (_quadBuffer.Length < need) _quadBuffer = new UIQuad[need];
 
             int qi = 0;
 
@@ -324,15 +335,25 @@ namespace Game_Engine.Core.Component.UI
                 PushQuad(rect.X + rect.Width - w, rect.Y, rect.X + rect.Width, rect.Y + rect.Height);
             }
 
-            // Text color indicator (shows text color as a small bar at the bottom to indicate active state)
+            var font = UIText.ResolveFont(FontPath);
+            float pad = 14f;
+            float left = rect.X + pad;
+            float right = rect.X + rect.Width - pad;
+            if (font != null && !string.IsNullOrEmpty(shown))
+            {
+                float lineH = FontSize;
+                float bottom = rect.Y + Math.Max(0f, (rect.Height - lineH) * 0.5f);
+                var ink = placeholder ? PlaceholderColor : TextColor;
+                qi = UIText.WriteLine(_quadBuffer, qi, font, shown, FontSize, left, bottom, right,
+                    ink.R / 255f, ink.G / 255f, ink.B / 255f, (ink.A / 255f) * Opacity);
+            }
+
             if (_isFocused && _cursorVisible)
             {
                 float cursorW = 2f;
-                float padding = 4f;
-                // Approximate cursor x position (without font metrics, place at proportional position)
-                float textWidth = rect.Width - padding * 2f;
-                float charWidth = _text.Length > 0 ? textWidth / _text.Length : FontSize * 0.5f;
-                float cx = rect.X + padding + _cursorPos * charWidth;
+                float padding = pad;
+                float typed = font != null ? UIText.MeasureLine(font, _text.Substring(0, Math.Clamp(_cursorPos, 0, _text.Length)), FontSize) : _cursorPos * FontSize * 0.55f;
+                float cx = left + typed;
                 cx = Math.Min(cx, rect.X + rect.Width - padding);
 
                 float curA = CursorColor.A / 255f * Opacity;

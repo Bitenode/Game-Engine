@@ -37,16 +37,17 @@ namespace Game_Engine.Core.Component.UI
 
         // ── Font caching ──
         private static readonly Dictionary<string, BitmapFont> s_fontCache = new();
-        private BitmapFont? _font;
-        private string _loadedFontPath = "";
 
         /// <summary>
         /// Load or return the cached BitmapFont for the current FontPath.
         /// Falls back to a built-in default font if the path is empty.
         /// </summary>
-        private BitmapFont? GetFont()
+        private BitmapFont? GetFont() => ResolveFont(FontPath);
+
+        /// <summary>Shared bitmap font lookup for text and input fields.</summary>
+        public static BitmapFont? ResolveFont(string fontPath)
         {
-            string path = FontPath;
+            string path = fontPath;
 
             // Try to resolve the default font if no path specified
             if (string.IsNullOrEmpty(path))
@@ -71,15 +72,8 @@ namespace Game_Engine.Core.Component.UI
                 else return null;
             }
 
-            if (_loadedFontPath == path && _font != null)
-                return _font;
-
             if (s_fontCache.TryGetValue(path, out var cached))
-            {
-                _font = cached;
-                _loadedFontPath = path;
-                return _font;
-            }
+                return cached;
 
             try
             {
@@ -93,18 +87,72 @@ namespace Game_Engine.Core.Component.UI
 
                 if (File.Exists(absPath))
                 {
-                    _font = BitmapFont.Load(absPath);
-                    s_fontCache[path] = _font;
-                    _loadedFontPath = path;
+                    var loaded = BitmapFont.Load(absPath);
+                    s_fontCache[path] = loaded;
+                    return loaded;
                 }
             }
             catch (Exception ex)
             {
                 Log.Warning($"[UIText] Failed to load font '{path}': {ex.Message}");
-                _font = null;
             }
 
-            return _font;
+            return null;
+        }
+
+        /// <summary>Write one line of glyphs. Returns the new quad index. Stops at <paramref name="right"/>.</summary>
+        public static int WriteLine(UIQuad[] buffer, int index, BitmapFont font, string text, float fontSize,
+            float left, float bottom, float right, float r, float g, float b, float a)
+        {
+            if (string.IsNullOrEmpty(text) || index >= buffer.Length) return index;
+            float scale = fontSize / Math.Max(1f, font.LineHeight);
+            float x = left;
+            foreach (char ch in text)
+            {
+                if (!font.Glyphs.TryGetValue(ch, out var glyph) && !font.Glyphs.TryGetValue('?', out glyph))
+                {
+                    x += fontSize * 0.45f;
+                    continue;
+                }
+                if (glyph == null) continue;
+                float gw = glyph.Width * scale;
+                float gh = glyph.Height * scale;
+                float gx = x + glyph.OffsetX * scale;
+                if (gx > right) break;
+                float gy = bottom + (font.LineHeight - glyph.OffsetY - glyph.Height) * scale;
+                if (index >= buffer.Length) break;
+                buffer[index++] = new UIQuad
+                {
+                    X0 = gx, Y0 = gy,
+                    X1 = gx + gw, Y1 = gy + gh,
+                    U0 = glyph.U0, V0 = glyph.V1,
+                    U1 = glyph.U1, V1 = glyph.V0,
+                    R = r, G = g, B = b, A = a,
+                    Texture = font.AtlasTexture,
+                    TextureHandle = 0,
+                    IsSDF = false
+                };
+                x += glyph.Advance * scale;
+            }
+            return index;
+        }
+
+        public static float MeasureLine(BitmapFont font, string text, float fontSize)
+        {
+            if (string.IsNullOrEmpty(text)) return 0f;
+            float scale = fontSize / Math.Max(1f, font.LineHeight);
+            float w = 0f;
+            foreach (char ch in text)
+            {
+                if (!font.Glyphs.TryGetValue(ch, out var glyph) && !font.Glyphs.TryGetValue('?', out glyph))
+                {
+                    w += fontSize * 0.45f;
+                    continue;
+                }
+                if (glyph == null) continue;
+                w += glyph.Advance * scale;
+            }
+            return w;
         }
 
         public override UIDrawData GetDrawData(in RectTransform.Rect rect)

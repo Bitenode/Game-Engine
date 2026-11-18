@@ -487,8 +487,14 @@ public sealed class PlanetVegetationSystem : Behavior
         EnsureRuntimeRoot();
         if (!_queuedProfileTemplates)
         {
-            QueueProfileTemplateLoads();
-            _queuedProfileTemplates = true;
+#if XBOX_UWP
+            // FBX imports during the ground-texture decode are what froze the first seconds.
+            if (!SceneRenderer.BiomeTexturesStreaming)
+#endif
+            {
+                QueueProfileTemplateLoads();
+                _queuedProfileTemplates = true;
+            }
         }
         PlanetGrassTextureCache.EnsureCatalog();
     }
@@ -533,6 +539,12 @@ public sealed class PlanetVegetationSystem : Behavior
         // Carpet must run every frame. The asset-stream interval (0.10s+)
         // is what made walking grass trickle in.
         TickLocalGpuGrassCarpet(cameraPos, dt);
+#if XBOX_UWP
+        // Trees, coral, and placed models are the imports that stacked on the
+        // ground-texture decode. Grass cards stay; the models wait one beat.
+        if (SceneRenderer.BiomeTexturesStreaming)
+            return;
+#endif
         TickLocalTrees(cameraPos, dt);
         ReseatQueuedAssets();
         TickUnderwaterCoral(cameraPos, dt);
@@ -3015,7 +3027,11 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_treeImportWaitSec >= 4f && Volatile.Read(ref s_templateLoaderRunning) == 0 && s_pendingTemplateLoads.IsEmpty)
         {
             _treeImportWaitSec = 0f;
+#if !XBOX_UWP
+            // Importing an FBX here runs on the game thread. On the Xbox player that
+            // call does not return and the frame stops after the background loads finish.
             TryForceLoadProfileTreesOnMainThread();
+#endif
         }
 
         // Profile has real FBXs - do not plant white procedural stand-ins.

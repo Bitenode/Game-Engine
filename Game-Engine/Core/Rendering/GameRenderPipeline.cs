@@ -20,13 +20,17 @@ public static class GameRenderPipeline
 
     public static void UpdateLod(SN.Vector3 camPos)
     {
+        FrameProfile.Enter(FrameProfile.Part.SceneLod);
         TerrainStreamer.SyncAll(camPos);
         foreach (var root in SceneService.Root) WalkTerrain(root, camPos);
         foreach (var root in SceneService.Root) WalkTree(root, camPos);
         foreach (var root in SceneService.Root) WalkMeshLod(root, camPos);
+        FrameProfile.Enter(FrameProfile.Part.PlanetLod);
         foreach (var planet in PlanetTerrain.ActivePlanets)
             planet?.RefreshLodAroundCamera(camPos);
+        FrameProfile.Enter(FrameProfile.Part.PlantStreaming);
         PlanetVegetationSystem.TickAllStreaming(camPos, Time.deltaTime);
+        FrameProfile.Enter(FrameProfile.Part.Other);
     }
 
     static void WalkTerrain(GameObject go, SN.Vector3 cam)
@@ -61,6 +65,7 @@ public static class GameRenderPipeline
         if (res.Cache == null) return;
         if (res.PlanetTerrain != null && res.Standard != null)
         {
+            FrameProfile.Enter(FrameProfile.Part.PlanetGround);
             foreach (var planet in PlanetTerrain.ActivePlanets)
             {
                 if (planet?.Config == null) continue;
@@ -70,14 +75,17 @@ public static class GameRenderPipeline
                 SceneRenderer.RenderPlanetTerrain(g, res.PlanetTerrain, res.Cache, view, proj, planet, atmo,
                     lightDir, diffuseK, camPos, pc, shadowFbo, shadowVP);
             }
+            FrameProfile.Enter(FrameProfile.Part.PlanetPlants);
             SceneRenderer.RenderPlanetVegetationAfterTerrain(g, res.Standard, res.Cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
                 shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor);
+            FrameProfile.Enter(FrameProfile.Part.SceneAfterPlanet);
             SceneRenderer.RenderForwardSceneOpaques(g, res.Standard, res.Cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
                 shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor);
         }
 
+        FrameProfile.Enter(FrameProfile.Part.Water);
         if (res.Water != null)
         {
             var skyC = sky != null
@@ -86,6 +94,7 @@ public static class GameRenderPipeline
             SceneRenderer.RenderWater(g, res.Water, res.Cache, view, proj, lightDir, ambient, diffuseK, camPos, skyC);
         }
 
+        FrameProfile.Enter(FrameProfile.Part.Atmosphere);
         if (res.PlanetAtmosphere != null)
         {
             foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -98,6 +107,7 @@ public static class GameRenderPipeline
             }
         }
 
+        FrameProfile.Enter(FrameProfile.Part.Clouds);
         if (res.PlanetCloud != null)
         {
             foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -110,6 +120,7 @@ public static class GameRenderPipeline
             }
         }
 
+        FrameProfile.Enter(FrameProfile.Part.PlanetWater);
         if (res.PlanetWater != null)
         {
             foreach (var planet in PlanetTerrain.ActivePlanets)
@@ -137,6 +148,7 @@ public static class GameRenderPipeline
         if (res.GBuffer == null || res.Cache == null || res.FsQuad == null || res.DeferredLight == null || res.Sky == null)
             return null;
 
+        FrameProfile.Enter(FrameProfile.Part.Scene);
         if (res.GBufferFbo == null) res.GBufferFbo = new GPUFramebuffer(g);
         if (res.GBufferW != W || res.GBufferH != H)
         {
@@ -240,6 +252,7 @@ public static class GameRenderPipeline
         SN.Vector3 lightColor, Light? light, Skybox? sky, SN.Vector3 fallbackSun)
     {
         if (res.Standard == null || res.Depth == null || res.Cache == null) return;
+        FrameProfile.Enter(FrameProfile.Part.Scene);
         SceneRenderer.RenderGPU(g, res.Standard, res.Depth, res.Cache,
             view, proj, SN.Vector3.Normalize(-L), diffuseK, ambient,
             lightIsPoint, lightPosW, lightRange,
