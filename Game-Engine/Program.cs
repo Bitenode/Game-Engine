@@ -1,9 +1,11 @@
 using Avalonia;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Game_Engine.Core;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Importers;
+using Game_Engine.Core.Rendering.GPU;
 
 namespace Game_Engine
 {
@@ -12,6 +14,16 @@ namespace Game_Engine
         [STAThread]
         public static void Main(string[] args)
         {
+            // Cache linked shader binaries on disk so ANGLE doesn't re-run HLSL compilation
+            // on every launch or when opening additional Scene/Game views.
+            try
+            {
+                ShaderProgram.BinaryCacheDirectory = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "GameEngine", "ShaderCache");
+            }
+            catch { }
+
             WireSceneSerialization();           // set the delegates once at startup
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }

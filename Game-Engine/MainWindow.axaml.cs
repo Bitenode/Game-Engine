@@ -486,30 +486,121 @@ public partial class MainWindow : Window
         return list;
     }
 
+    private Type? ResolveDockPanelType(string? typeName)
+    {
+        if (string.IsNullOrWhiteSpace(typeName)) return null;
+        var type = Type.GetType(typeName);
+        if (type == null)
+        {
+            var comma = typeName.IndexOf(',');
+            var simple = comma > 0 ? typeName[..comma].Trim() : typeName;
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    type = asm.GetType(simple, false);
+                    if (type != null) break;
+                }
+                catch { }
+            }
+        }
+        return type != null && _registry.ContainsKey(type) ? type : null;
+    }
+
     private void RestoreDockLayout(List<DockLayoutTabDto> tabs)
     {
-        ResetLayout(addDefaultPanels: false);
+        if (_dock is null) return;
+
+        // Group valid desired tabs by DockRegion.
+        var desiredByRegion = new Dictionary<DockRegion, List<(Type Type, DockLayoutTabDto Dto)>>();
+        int totalValid = 0;
         foreach (var t in tabs)
         {
             if (!Enum.TryParse<DockRegion>(t.Region, out var region)) continue;
-            var type = Type.GetType(t.TypeName);
-            if (type == null && !string.IsNullOrWhiteSpace(t.TypeName))
+            var type = ResolveDockPanelType(t.TypeName);
+            if (type == null) continue;
+            if (!desiredByRegion.TryGetValue(region, out var list))
             {
-                var comma = t.TypeName.IndexOf(',');
-                var simple = comma > 0 ? t.TypeName[..comma].Trim() : t.TypeName;
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                list = new List<(Type, DockLayoutTabDto)>();
+                desiredByRegion[region] = list;
+            }
+            list.Add((type, t));
+            totalValid++;
+        }
+
+        if (totalValid == 0) return;
+
+        // Reconcile each region in-place so existing tabs (especially ScenePanel/GamePanel
+        // with OpenGL contexts and compiled shaders) stay attached and are not torn down
+        // and recreated when opening a project or loading a layout preset.
+        foreach (DockRegion region in Enum.GetValues<DockRegion>())
+        {
+            var tc = HostOf(region);
+            desiredByRegion.TryGetValue(region, out var desired);
+            desired ??= new List<(Type, DockLayoutTabDto)>();
+
+            var existing = new List<(TabItem Tab, Control Content, Type Type)>();
+            foreach (var obj in tc.Items)
+            {
+                if (obj is TabItem tab && tab.Content is Control c)
+                    existing.Add((tab, c, c.GetType()));
+            }
+
+            var keptExisting = new bool[existing.Count];
+            var matchedDesired = new bool[desired.Count];
+
+            // Match desired tabs 1-to-1 against already-open tabs in this same region.
+            for (int d = 0; d < desired.Count; d++)
+            {
+                var desiredType = desired[d].Type;
+                for (int e = 0; e < existing.Count; e++)
                 {
-                    try
+                    if (!keptExisting[e] && existing[e].Type == desiredType)
                     {
-                        type = asm.GetType(simple, false);
-                        if (type != null) break;
+                        keptExisting[e] = true;
+                        matchedDesired[d] = true;
+                        break;
                     }
-                    catch { }
                 }
             }
-            if (type == null || !_registry.ContainsKey(type)) continue;
-            AddPanel(type, region);
-            TrySelectRestoredTab(t);
+
+            // Close tabs that are no longer in this region.
+            for (int e = 0; e < existing.Count; e++)
+            {
+                if (!keptExisting[e])
+                    _dock.Close(existing[e].Content);
+            }
+
+            // Add only the tabs that were not already present in this region.
+            for (int d = 0; d < desired.Count; d++)
+            {
+                if (!matchedDesired[d])
+                    AddPanel(desired[d].Type, region);
+            }
+
+            // Restore active tab selection for this region.
+            foreach (var (_, dto) in desired)
+            {
+                if (dto.IsActive)
+                {
+                    TrySelectRestoredTab(dto);
+                    break;
+                }
+            }
+        }
+
+        // Re-sync tab title counters with currently open tabs.
+        _counts.Clear();
+        foreach (DockRegion region in Enum.GetValues<DockRegion>())
+        {
+            foreach (var obj in HostOf(region).Items)
+            {
+                if (obj is TabItem { Content: Control c } && _registry.TryGetValue(c.GetType(), out var info))
+                {
+                    _counts.TryGetValue(info.Base, out var n);
+                    _counts[info.Base] = n + 1;
+                }
+            }
         }
     }
 
@@ -519,17 +610,26 @@ public partial class MainWindow : Window
         if (!Enum.TryParse<DockRegion>(dto.Region, out var region)) return;
         var tc = TabControlForRegion(region);
         if (tc == null) return;
+
+        // First try exact type + header match.
+        TabItem? typeFallback = null;
+        var resolvedType = ResolveDockPanelType(dto.TypeName);
         foreach (var obj in tc.Items)
         {
             if (obj is not TabItem tab || tab.Content is not Control c) continue;
             var tn = c.GetType().AssemblyQualifiedName ?? c.GetType().FullName ?? "";
-            if (string.Equals(tn, dto.TypeName, StringComparison.Ordinal) &&
-                string.Equals(tab.Header?.ToString() ?? "", dto.Header ?? "", StringComparison.Ordinal))
+            bool typeMatches = string.Equals(tn, dto.TypeName, StringComparison.Ordinal)
+                || (resolvedType != null && c.GetType() == resolvedType);
+            if (!typeMatches) continue;
+            if (string.Equals(tab.Header?.ToString() ?? "", dto.Header ?? "", StringComparison.Ordinal))
             {
                 tc.SelectedItem = obj;
                 return;
             }
+            typeFallback ??= tab;
         }
+        if (typeFallback != null)
+            tc.SelectedItem = typeFallback;
     }
 
     private TabControl? TabControlForRegion(DockRegion region) => region switch

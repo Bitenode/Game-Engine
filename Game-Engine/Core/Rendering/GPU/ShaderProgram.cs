@@ -144,6 +144,7 @@ public sealed class ShaderProgram : IDisposable
     {
         try
         {
+            while (_gl.GetError() != GLEnum.NoError) { }
             _gl.GetProgram(Handle, (ProgramPropertyARB)0x8741 /* GL_PROGRAM_BINARY_LENGTH */, out int length);
             if (length <= 0) return;
             var data = new byte[length + 4];
