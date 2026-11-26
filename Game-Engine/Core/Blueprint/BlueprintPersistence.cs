@@ -50,15 +50,12 @@ namespace Game_Engine.Core.Blueprint
             doc.Variables ??= new();
             doc.Functions ??= new();
             var json = JsonSerializer.Serialize(doc, JsonOptions);
-            var dir = Path.GetDirectoryName(filePathAbs);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-            File.WriteAllText(filePathAbs, json);
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(filePathAbs, json);
         }
 
         public static BlueprintDocument LoadDocument(string filePathAbs)
         {
-            var text = File.ReadAllText(filePathAbs);
+            var text = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(filePathAbs);
             var doc = JsonSerializer.Deserialize<BlueprintDocument>(text, JsonOptions);
             if (doc?.Graph == null)
                 throw new InvalidDataException("Invalid blueprint file.");

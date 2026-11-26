@@ -53,6 +53,22 @@ void main()
         return;
     }
 
+    // Coarse frustum cull on canopy center so off-screen trees never rasterize.
+    vec3 worldCenter = worldRoot + worldUp * (scale * 0.5);
+    vec4 clipCenter = uProj * uView * vec4(worldCenter, 1.0);
+    float margin = max(scale * 1.6, 12.0);
+    if (clipCenter.w < -margin
+        || abs(clipCenter.x) > clipCenter.w + margin
+        || abs(clipCenter.y) > clipCenter.w + margin)
+    {
+        vWorldPos = vec3(0.0);
+        vWorldNormal = worldUp;
+        vTint = vec3(0.0);
+        vMeta = vec2(0.0);
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+
     // Tier 1 <-> Tier 2 smooth crossfade around the near-ring anchor.
     if (uCrossfadeRange.y > 0.0)
     {

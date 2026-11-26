@@ -30,13 +30,12 @@ namespace Game_Engine
 
         static void WireSceneSerialization()
         {
-            // Same as b09ed5c: fresh ImportModel per resolve + DFS mesh list (matches saved ModelPartIndex).
+            // Uses binary disk cache (MeshImportCache) when available; falls back to Assimp ImportModel + DFS mesh list.
             SceneSerialization.ResolveMeshesFromModelPath = absPath =>
             {
                 try
                 {
-                    var root = ModelImporter.ImportModel(absPath);
-                    return CollectMeshes(root);
+                    return ModelImporter.LoadModelMeshParts(absPath);
                 }
                 catch
                 {
@@ -48,8 +47,7 @@ namespace Game_Engine
             {
                 try
                 {
-                    var root = ModelImporter.ImportModel(absPath);
-                    var list = CollectMeshes(root);
+                    var list = ModelImporter.LoadModelMeshParts(absPath);
                     return list.Count > 0 ? list[0] : null;
                 }
                 catch

@@ -95,13 +95,13 @@ public static class PlanetAssetIO
         try
         {
             string abs = ToAbsolutePath(planetAssetPath);
-            if (!File.Exists(abs))
+            if (!File.Exists(abs) && !File.Exists(abs + ".bak"))
             {
                 error = $"Planet asset not found: {planetAssetPath}";
                 return false;
             }
 
-            var json = File.ReadAllText(abs);
+            var json = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(abs);
             data = JsonSerializer.Deserialize<PlanetAssetData>(json, _json);
             if (data == null)
             {
@@ -167,7 +167,7 @@ public static class PlanetAssetIO
             }
 
             var json = JsonSerializer.Serialize(data, _json);
-            File.WriteAllText(abs, json);
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(abs, json);
             return true;
         }
         catch (Exception ex)
@@ -205,13 +205,13 @@ public static class PlanetAssetIO
         try
         {
             string abs = ResolveVoxelEditsAbsolutePath(planetAssetPath, voxelEditsPath);
-            if (!File.Exists(abs))
+            if (!File.Exists(abs) && !File.Exists(abs + ".bak"))
             {
                 data = null;
                 return true;
             }
 
-            var json = File.ReadAllText(abs);
+            var json = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(abs);
             data = JsonSerializer.Deserialize<PlanetVoxelEditAsset>(json, _voxelJson);
             if (data == null)
             {
@@ -257,7 +257,7 @@ public static class PlanetAssetIO
                 Directory.CreateDirectory(dir);
 
             var json = JsonSerializer.Serialize(data, _voxelJson);
-            File.WriteAllText(abs, json);
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(abs, json);
             return true;
         }
         catch (Exception ex)

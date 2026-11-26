@@ -33,14 +33,14 @@ namespace Game_Engine.Core.Rendering
 
         public static ShaderAsset Load(string absPath)
         {
-            var json = File.ReadAllText(absPath);
+            var json = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(absPath);
             return JsonSerializer.Deserialize<ShaderAsset>(json);
         }
 
         public static void Save(string absPath, ShaderAsset sa)
         {
             var json = JsonSerializer.Serialize(sa, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(absPath, json);
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(absPath, json);
         }
     }
 }

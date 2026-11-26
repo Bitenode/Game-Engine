@@ -14,6 +14,52 @@ namespace Game_Engine.Core.Importers
 {
     public static class ModelImporter
     {
+        internal const PostProcessSteps DefaultPostProcessSteps =
+            PostProcessSteps.Triangulate
+            | PostProcessSteps.JoinIdenticalVertices
+            | PostProcessSteps.GenerateSmoothNormals
+            | PostProcessSteps.ImproveCacheLocality
+            | PostProcessSteps.RemoveRedundantMaterials
+            | PostProcessSteps.LimitBoneWeights;
+
+        static readonly string DefaultImportFlagsKey = ((int)DefaultPostProcessSteps).ToString("X");
+
+        /// <summary>
+        /// Loads just the ordered mesh parts (DFS order matching <see cref="MeshFilter.ModelPartIndex"/>)
+        /// for a model file, using the binary disk cache (<see cref="MeshImportCache"/>) when up to date
+        /// so scene reloads skip Assimp completely.
+        /// </summary>
+        public static List<Mesh> LoadModelMeshParts(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
+            if (!File.Exists(path)) throw new FileNotFoundException("Model not found", path);
+
+            var absModel = Path.GetFullPath(path);
+            if (MeshImportCache.TryLoad(absModel, DefaultImportFlagsKey, out var cached))
+                return cached;
+
+            System.Diagnostics.Debug.WriteLine($"[MeshImportCache] MISS '{Path.GetFileName(absModel)}'; importing via Assimp.");
+            var root = ImportModel(absModel);
+            return CollectMeshesDepthFirst(root);
+        }
+
+        static List<Mesh> CollectMeshesDepthFirst(GameObject go)
+        {
+            var result = new List<Mesh>();
+            void Walk(GameObject n)
+            {
+                foreach (var b in n.Behaviors)
+                {
+                    if (b is MeshFilter mf && mf.Mesh != null)
+                        result.Add(mf.Mesh);
+                }
+                foreach (var c in n.Children)
+                    Walk(c);
+            }
+            Walk(go);
+            return result;
+        }
+
         /// <summary>Holds mesh data for skinned meshes that need to be flattened to root level.</summary>
         private struct PendingSkinnedMesh
         {
@@ -47,14 +93,7 @@ namespace Game_Engine.Core.Importers
 
             var ctx = new AssimpContext();
 
-            var pp = PostProcessSteps.Triangulate
-                   | PostProcessSteps.JoinIdenticalVertices
-                   | PostProcessSteps.GenerateSmoothNormals
-                   | PostProcessSteps.ImproveCacheLocality
-                   | PostProcessSteps.RemoveRedundantMaterials
-                   | PostProcessSteps.LimitBoneWeights;
-
-            var scene = ctx.ImportFile(absModel, pp);
+            var scene = ctx.ImportFile(absModel, DefaultPostProcessSteps);
             if (scene is null || !scene.HasMeshes)
             {
                 var ext = Path.GetExtension(absModel);
@@ -232,6 +271,18 @@ namespace Game_Engine.Core.Importers
                     Log.Info($"[ModelImporter] Auto-created Animator with {animPaths.Count} animation state(s), default='{defaultStateName}'");
                 }
             }
+
+            // Warm the binary mesh cache on Assimp import so subsequent scene loads skip Assimp.
+            try
+            {
+                if (!MeshImportCache.HasValidCache(absModel, DefaultImportFlagsKey))
+                {
+                    var parts = CollectMeshesDepthFirst(root);
+                    if (parts.Count > 0)
+                        MeshImportCache.Save(absModel, DefaultImportFlagsKey, parts);
+                }
+            }
+            catch { /* best-effort cache population */ }
 
             return root;
         }
@@ -1428,13 +1479,20 @@ namespace Game_Engine.Core.Importers
                     return File.Exists(absPath) ? relPath : null;
                 }
 #else
-                // A second mesh with the same name gets a suffix. An existing file that
+                // Reuse an already-saved material that has textures rather than overwriting and spamming logs
+                // on repeated runtime model loads (e.g. planet vegetation / coral templates).
+                // A second mesh part with the same name gets a _partIndex suffix; an existing file that
                 // never received textures is rewritten in place once maps are found.
                 if (File.Exists(absPath) && !MaterialFileTexturesEmpty(absPath))
                 {
+                    if (partIndex <= 0)
+                        return relPath;
+
                     relPath = Path.Combine(matDir, $"{safeName}_{partIndex}.material");
                     absPath = ResolveProjectRelative(relPath);
                     if (absPath == null) return null;
+                    if (File.Exists(absPath) && !MaterialFileTexturesEmpty(absPath))
+                        return relPath;
                 }
 
                 var dir = Path.GetDirectoryName(absPath);
@@ -1475,7 +1533,16 @@ namespace Game_Engine.Core.Importers
                 };
 
                 var json = System.Text.Json.JsonSerializer.Serialize(jsonObj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(absPath, json);
+                if (File.Exists(absPath))
+                {
+                    try
+                    {
+                        if (string.Equals(File.ReadAllText(absPath), json, StringComparison.Ordinal))
+                            return relPath;
+                    }
+                    catch { }
+                }
+                Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(absPath, json, keepBackup: false);
 
                 Log.Info($"[ModelImporter] Saved material asset → {relPath}");
                 return relPath;

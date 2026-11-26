@@ -1348,13 +1348,13 @@ public sealed class BiomeGraph
         }
         root["connections"] = connsArr;
 
-        File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
     public static BiomeGraph LoadFromFile(string path)
     {
         var g = new BiomeGraph();
-        var text = File.ReadAllText(path);
+        var text = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(path);
         var root = JsonNode.Parse(text);
         if (root == null) return g;
 

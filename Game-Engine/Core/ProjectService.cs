@@ -283,21 +283,7 @@ namespace Game_Engine.Core
         static void WriteManifest(Project proj)
         {
             var json = JsonSerializer.Serialize(proj, _json);
-            var path = proj.ManifestPath;
-            var tmp = path + ".tmp";
-            File.WriteAllText(tmp, json);
-            try
-            {
-                if (File.Exists(path))
-                    File.Replace(tmp, path, null);
-                else
-                    File.Move(tmp, path);
-            }
-            catch
-            {
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* ignore */ }
-                throw;
-            }
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(proj.ManifestPath, json, keepBackup: true);
         }
 
         static Project? TryReadManifest(string text)

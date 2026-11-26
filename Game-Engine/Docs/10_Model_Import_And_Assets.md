@@ -66,6 +66,9 @@ Scene Graph (ready to use)
 | `RemoveRedundantMaterials` | Eliminate unused materials |
 | `LimitBoneWeights` | Clamp to 4 bones per vertex (GPU skinning limit) |
 
+### Binary Mesh Import Cache (`MeshImportCache`)
+To make scene reloads fast without re-running Assimp on every launch, `ModelImporter.LoadModelMeshParts()` checks a versioned binary cache (`GEMC` v1) stored in `<ProjectRoot>/Library/Cache/Meshes/` (or `%LOCALAPPDATA%/GameEngine/MeshCache/` when no project is open). Each cache entry is keyed by a SHA-256 hash of the normalized model path, file size, UTC last-write timestamp, Assimp post-processing flags, and cache format version, and stores all mesh geometry buffers (vertices, normals, UV0/UV2, triangle/line indices, bone weights/indices, and optional shared skeleton). Corrupt or stale cache files are automatically deleted and regenerated from Assimp.
+
 ---
 
 ## Resulting Hierarchy

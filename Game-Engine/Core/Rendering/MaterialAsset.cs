@@ -25,14 +25,14 @@ namespace Game_Engine.Core.Rendering
 
         public static MaterialAsset Load(string absPath)
         {
-            var json = File.ReadAllText(absPath);
+            var json = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(absPath);
             return JsonSerializer.Deserialize<MaterialAsset>(json);
         }
 
         public static void Save(string absPath, MaterialAsset m)
         {
             var json = JsonSerializer.Serialize(m, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(absPath, json);
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(absPath, json);
         }
     }
 }

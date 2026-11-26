@@ -1189,7 +1189,7 @@ namespace Game_Engine.Core
         /// <summary>
         /// Bind either all 4 CSM cascades (units 7..10) or a single shadow map (unit 7) to <paramref name="shader"/>.
         /// </summary>
-        private static void BindShadowMapsToShader(
+        internal static void BindShadowMapsToShader(
             ShaderProgram shader,
             GPUFramebuffer? shadowFBO,
             CascadedShadowMap? csm,

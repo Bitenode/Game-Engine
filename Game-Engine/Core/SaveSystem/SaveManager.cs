@@ -43,11 +43,7 @@ namespace Game_Engine.Core.SaveSystem
 
                 var json = JsonSerializer.Serialize(saveData, _jsonOpts);
                 var path = GetSlotPath(slotId);
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-
-                File.WriteAllText(path, json);
+                Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(path, json);
                 Log.Info($"[SaveManager] Game saved to slot {slotId}");
                 return true;
             }
@@ -67,13 +63,13 @@ namespace Game_Engine.Core.SaveSystem
             try
             {
                 var path = GetSlotPath(slotId);
-                if (!File.Exists(path))
+                if (!File.Exists(path) && !File.Exists(path + ".bak"))
                 {
                     Log.Warning($"[SaveManager] Save slot {slotId} not found");
                     return false;
                 }
 
-                var json = File.ReadAllText(path);
+                var json = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(path);
                 var saveData = JsonSerializer.Deserialize<SaveData>(json, _jsonOpts);
                 if (saveData == null) return false;
 

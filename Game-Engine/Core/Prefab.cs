@@ -58,12 +58,8 @@ namespace Game_Engine.Core
             if (proj != null && !Path.IsPathRooted(FilePath))
                 abs = Path.GetFullPath(Path.Combine(proj.RootPath, FilePath));
 
-            var dir = Path.GetDirectoryName(abs);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-
             var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(abs, json);
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(abs, json);
 
             _cache[abs] = this;
             Log.Info($"[Prefab] Saved: {Name} → {abs}");

@@ -26,18 +26,30 @@ public static class PlanetWholePlanetForest
     public const int StrideBytes = FloatsPerInstance * sizeof(float); // 48 bytes
 
 #if XBOX_UWP
-    const int MaxInstances = 16000;
-    const int CellsPerFace = 68;
+    const int MaxInstances = 12000;
+    const int CellsPerFace = 58;
 #else
-    const int MaxInstances = 48000;
-    const int CellsPerFace = 116;
+    const int MaxInstances = 24000;
+    const int CellsPerFace = 82;
 #endif
+
+    static readonly SN.Vector3[] s_faceCenters =
+    {
+        CubeSphereMath.CubemapTexelDirection(0, 0.5f, 0.5f),
+        CubeSphereMath.CubemapTexelDirection(1, 0.5f, 0.5f),
+        CubeSphereMath.CubemapTexelDirection(2, 0.5f, 0.5f),
+        CubeSphereMath.CubemapTexelDirection(3, 0.5f, 0.5f),
+        CubeSphereMath.CubemapTexelDirection(4, 0.5f, 0.5f),
+        CubeSphereMath.CubemapTexelDirection(5, 0.5f, 0.5f),
+    };
 
     sealed class PlanetForestState
     {
         public readonly object Lock = new();
         public float[] Instances = Array.Empty<float>();
         public int InstanceCount;
+        public readonly int[] FaceStart = new int[6];
+        public readonly int[] FaceCount = new int[6];
         public int BakedHeightVersion = -1;
         public int BakedSplatVersion = -1;
         public ulong BakedRecipeHash;
@@ -268,9 +280,12 @@ public static class PlanetWholePlanetForest
 
         int grid = CellsPerFace;
         float invGrid = 1f / grid;
+        var faceStart = new int[6];
+        var faceCount = new int[6];
 
         for (int face = 0; face < 6 && count < MaxInstances; face++)
         {
+            faceStart[face] = count;
             var hArr = heightFaces[face];
             var dArr = deltaFaces[face];
             var s0Arr = splat0Faces[face];
@@ -388,6 +403,7 @@ public static class PlanetWholePlanetForest
                     count++;
                 }
             }
+            faceCount[face] = count - faceStart[face];
         }
 
         if (count < MaxInstances)
@@ -397,6 +413,8 @@ public static class PlanetWholePlanetForest
         {
             state.Instances = packed;
             state.InstanceCount = count;
+            Array.Copy(faceStart, state.FaceStart, 6);
+            Array.Copy(faceCount, state.FaceCount, 6);
             state.BakedHeightVersion = heightVersion;
             state.BakedSplatVersion = splatVersion;
             state.BakedRecipeHash = recipeHash;
@@ -520,6 +538,8 @@ public static class PlanetWholePlanetForest
             return;
 
         int instanceCount;
+        Span<int> faceStart = stackalloc int[6];
+        Span<int> faceCount = stackalloc int[6];
         if (!gpu.Bufs.TryGetValue(terrain, out var buf))
         {
             buf = new ForestBuf { Vbo = gl.GenBuffer() };
@@ -531,6 +551,11 @@ public static class PlanetWholePlanetForest
             instanceCount = state.InstanceCount;
             if (instanceCount <= 0 || state.Instances.Length < instanceCount * FloatsPerInstance)
                 return;
+            for (int f = 0; f < 6; f++)
+            {
+                faceStart[f] = state.FaceStart[f];
+                faceCount[f] = state.FaceCount[f];
+            }
 
             int totalFloats = instanceCount * FloatsPerInstance;
             if (buf.UploadedFullRev != state.FullRevision)
@@ -629,14 +654,50 @@ public static class PlanetWholePlanetForest
         gl.VertexAttribDivisor(6, 1);
         gl.VertexAttribDivisor(7, 1);
 
+        // Determine planet-local camera direction so back-hemisphere cube faces can be skipped on CPU.
+        bool hasCamLocalDir = false;
+        SN.Vector3 camLocalDir = SN.Vector3.UnitY;
+        if (SN.Matrix4x4.Invert(planetWorld, out var invPlanet))
+        {
+            var camL = SN.Vector3.Transform(camPos, invPlanet);
+            if (camL.LengthSquared() > 1e-6f)
+            {
+                camLocalDir = SN.Vector3.Normalize(camL);
+                hasCamLocalDir = true;
+            }
+        }
+
         try
         {
-#if XBOX_UWP
-            const int group = 256;
-            for (int start = 0; start < instanceCount; start += group)
+            int drawnInstances = 0;
+            for (int f = 0; f < 6; f++)
             {
-                int batchCount = Math.Min(group, instanceCount - start);
-                int byteOff = start * StrideBytes;
+                int fCount = faceCount[f];
+                if (fCount <= 0)
+                    continue;
+                // Each cube face spans +-45 deg around its center; faces whose center dot < -0.58 are wholly behind the horizon.
+                if (hasCamLocalDir && SN.Vector3.Dot(s_faceCenters[f], camLocalDir) < -0.58f)
+                    continue;
+
+                int fStart = faceStart[f];
+#if XBOX_UWP
+                const int group = 256;
+                for (int start = 0; start < fCount; start += group)
+                {
+                    int batchCount = Math.Min(group, fCount - start);
+                    int byteOff = (fStart + start) * StrideBytes;
+                    gl.VertexAttribPointer(5, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)byteOff);
+                    gl.VertexAttribPointer(6, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)(byteOff + 16));
+                    gl.VertexAttribPointer(7, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)(byteOff + 32));
+                    gl.DrawElementsInstanced(
+                        PrimitiveType.Triangles,
+                        (uint)gpu.IndexCount,
+                        DrawElementsType.UnsignedInt,
+                        (void*)0,
+                        (uint)batchCount);
+                }
+#else
+                int byteOff = fStart * StrideBytes;
                 gl.VertexAttribPointer(5, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)byteOff);
                 gl.VertexAttribPointer(6, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)(byteOff + 16));
                 gl.VertexAttribPointer(7, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)(byteOff + 32));
@@ -645,22 +706,14 @@ public static class PlanetWholePlanetForest
                     (uint)gpu.IndexCount,
                     DrawElementsType.UnsignedInt,
                     (void*)0,
-                    (uint)batchCount);
-            }
-#else
-            gl.VertexAttribPointer(5, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)0);
-            gl.VertexAttribPointer(6, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)16);
-            gl.VertexAttribPointer(7, 4, VertexAttribPointerType.Float, false, StrideBytes, (void*)32);
-            gl.DrawElementsInstanced(
-                PrimitiveType.Triangles,
-                (uint)gpu.IndexCount,
-                DrawElementsType.UnsignedInt,
-                (void*)0,
-                (uint)instanceCount);
+                    (uint)fCount);
 #endif
-            Profiler.CountDrawCall();
-            Profiler.CountTriangles((gpu.IndexCount / 3) * instanceCount);
-            FrameProfile.CountDraw();
+                drawnInstances += fCount;
+                Profiler.CountDrawCall();
+                FrameProfile.CountDraw();
+            }
+            if (drawnInstances > 0)
+                Profiler.CountTriangles((gpu.IndexCount / 3) * drawnInstances);
         }
         finally
         {
@@ -790,11 +843,11 @@ public static class PlanetWholePlanetForest
             iList.Add(b0); iList.Add(t0); iList.Add(t1);
         }
 
-        // 2) Lower canopy cone: 6 sides (6 side tris + 4 cap tris)
-        AddCanopyCone(vList, iList, sides: 6, baseY: 0.26f, apexY: 0.78f, radius: 0.46f, rotOffset: 0f, baseCrownY: 0.18f, apexCrownY: 0.76f, addBottomCap: true);
+        // 2) Lower canopy cone: 5 sides (5 side tris; no invisible underside cap for distant canopies)
+        AddCanopyCone(vList, iList, sides: 5, baseY: 0.26f, apexY: 0.78f, radius: 0.46f, rotOffset: 0f, baseCrownY: 0.18f, apexCrownY: 0.76f, addBottomCap: false);
 
-        // 3) Upper canopy cone: 6 sides (6 side tris), rotated 30 deg for layered organic silhouette
-        AddCanopyCone(vList, iList, sides: 6, baseY: 0.52f, apexY: 1.00f, radius: 0.34f, rotOffset: MathF.PI / 6f, baseCrownY: 0.55f, apexCrownY: 1.00f, addBottomCap: false);
+        // 3) Upper canopy cone: 5 sides (5 side tris), rotated 36 deg for layered organic silhouette
+        AddCanopyCone(vList, iList, sides: 5, baseY: 0.52f, apexY: 1.00f, radius: 0.34f, rotOffset: MathF.PI / 5f, baseCrownY: 0.55f, apexCrownY: 1.00f, addBottomCap: false);
 
         verts = vList.ToArray();
         indices = iList.ToArray();

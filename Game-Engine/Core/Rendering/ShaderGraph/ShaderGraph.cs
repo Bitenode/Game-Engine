@@ -170,13 +170,13 @@ namespace Game_Engine.Core.Rendering.ShaderGraph
             };
 
             var opts = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(path, root.ToJsonString(opts));
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(path, root.ToJsonString(opts));
         }
 
         /// <summary>Load a shader graph from a JSON file.</summary>
         public static ShaderGraph LoadFromFile(string path)
         {
-            var json = File.ReadAllText(path);
+            var json = Game_Engine.Core.IO.AtomicFile.ReadAllTextWithBackupFallback(path);
             return LoadFromJson(json);
         }
 

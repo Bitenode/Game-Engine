@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Importers;
+using Game_Engine.Core.IO;
 using Game_Engine.Core.Timeline;
 using SN = System.Numerics;
 
@@ -68,8 +69,7 @@ namespace Game_Engine.Core
                 List<Mesh> list;
                 try
                 {
-                    var root = ModelImporter.ImportModel(absPath);
-                    list = CollectMeshesDepthFirst(root);
+                    list = ModelImporter.LoadModelMeshParts(absPath);
                 }
                 catch
                 {
@@ -165,14 +165,12 @@ namespace Game_Engine.Core
                 Root = root.Select(ToDTO).ToList()
             };
 
-            var dir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(path, JsonSerializer.Serialize(dto, _json));
+            AtomicFile.WriteAllTextAtomic(path, JsonSerializer.Serialize(dto, _json));
         }
 
         public static List<GameObject> LoadScene(string path)
         {
-            var json = File.ReadAllText(path);
+            var json = AtomicFile.ReadAllTextWithBackupFallback(path);
             var dto = JsonSerializer.Deserialize<SceneDTO>(json, _json);
             if (dto == null) throw new InvalidDataException("Scene file is empty or invalid.");
 

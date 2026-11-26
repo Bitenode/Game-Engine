@@ -189,10 +189,10 @@ The `SceneSerialization` class handles conversion between live `GameObject` hier
 2. Creates DTOs for each GameObject (name, enabled, **tag**, **layer** when not defaults, transform, children)
 3. Creates DTOs for each Behavior (type name, persisted properties)
 4. Resolves file paths to project-relative format
-5. Writes to JSON file
+5. Writes atomically via `AtomicFile.WriteAllTextAtomic` (writes to a temp file, flushes to disk, rotates the previous file to `.bak`, and atomically replaces the target so a crash never leaves a 0-byte or half-written file). Project manifests (`project.json`), materials (`.material`), shaders (`.shader`), planets (`.planet`/`.planetvox`), biome graphs (`.biome`), shader graphs (`.shadergraph`), blueprints (`.blueprint`), prefabs (`.prefab`), and runtime saves also use atomic writes.
 
 **Deserialize (Load):**
-1. Reads JSON and creates DTO objects
+1. Reads JSON via `AtomicFile.ReadAllTextWithBackupFallback` (automatically recovers from `.bak` with a warning if the primary file is missing or 0 bytes) and creates DTO objects
 2. Creates `GameObject` instances with names
 3. Instantiates `Behavior` components by type name (supports both built-in and scripted types)
 4. Sets all `[Persist]` properties from the DTO data
@@ -201,8 +201,8 @@ The `SceneSerialization` class handles conversion between live `GameObject` hier
 7. Calls `PostDeserialize()` on all components
 8. Rebuilds the hierarchy (parent-child relationships)
 
-**Registered resolvers (from `Program.cs`):**
-- `ResolveMeshesFromModelPath` — multi-mesh resolver using `ModelImporter.ImportModel()`
+**Registered resolvers (from `Program.cs` / `PlayerBootstrap.cs`):**
+- `ResolveMeshesFromModelPath` — multi-mesh resolver using `ModelImporter.LoadModelMeshParts()` (binary disk cache with Assimp fallback)
 - `ResolveMeshFromModelPath` — single-mesh fallback (returns first mesh)
 - `ResolveMaterialFromPath` — material resolver via `ProjectService.MaterialsLoad()`
 

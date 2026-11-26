@@ -207,17 +207,20 @@ public sealed class PlanetVegetationSystem : Behavior
         float camLen = camLocal.Length();
         if (camLen < 1e-5f) return;
         var camDir = camLocal / camLen;
-        float radius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
-        float altLocal = camLen - radius;
+        // PlanetWholePlanetForest positions live in planet-local space (radius = Config.Radius).
+        float localRadius = Math.Max(1f, _terrain.Config.Radius);
+        float worldRadius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+        float altLocal = camLen - localRadius;
         if (altLocal > _terrain.WorldToLocalLength(550f))
             return;
 
-        float outer = ConsoleTight
-            ? Math.Clamp(radius * 0.16f, 110f, 150f)
-            : Math.Clamp(radius * 0.24f, 175f, 240f);
-        nearAnchorLocal = camDir * radius;
-        innerLocal = outer * 0.68f;
-        outerLocal = outer * 0.98f;
+        float outerWorld = ConsoleTight
+            ? Math.Clamp(worldRadius * 0.16f, 100f, 140f)
+            : Math.Clamp(worldRadius * 0.20f, 130f, 180f);
+        float outerLocalDist = _terrain.WorldToLocalLength(outerWorld);
+        nearAnchorLocal = camDir * localRadius;
+        innerLocal = outerLocalDist * 0.68f;
+        outerLocal = outerLocalDist * 0.98f;
     }
 
     public int ActiveLeafGroups => _leafEntries.Count;
@@ -476,7 +479,7 @@ public sealed class PlanetVegetationSystem : Behavior
 
     static readonly Dictionary<string, ImportedTreeTemplate> s_treeTemplateCache = new(StringComparer.OrdinalIgnoreCase);
     static readonly object s_treeTemplateLock = new();
-    const int MaxTreeTemplateCacheEntries = 32;
+    const int MaxTreeTemplateCacheEntries = 128;
     /// <summary>Suffix so template cache invalidates when import/spawn pipeline changes.</summary>
     const string TreeTemplateCacheKeySuffix = "|hier_v30_pine002";
     const string DefaultPlanetGrassTexturePath = "Assets/Standard Assets/Planet Vegetation/Simple Grass_01.psd";
@@ -2904,8 +2907,8 @@ public sealed class PlanetVegetationSystem : Behavior
             return;
         }
         float outer = ConsoleTight
-            ? Math.Clamp(radius * (UseGpuInstancedTrees ? 0.16f : 0.14f), UseGpuInstancedTrees ? 110f : 90f, UseGpuInstancedTrees ? 150f : 130f)
-            : Math.Clamp(radius * (UseGpuInstancedTrees ? 0.24f : 0.22f), UseGpuInstancedTrees ? 175f : 160f, 240f);
+            ? Math.Clamp(radius * (UseGpuInstancedTrees ? 0.16f : 0.14f), UseGpuInstancedTrees ? 100f : 90f, UseGpuInstancedTrees ? 140f : 130f)
+            : Math.Clamp(radius * (UseGpuInstancedTrees ? 0.20f : 0.22f), UseGpuInstancedTrees ? 130f : 160f, UseGpuInstancedTrees ? 180f : 240f);
         var prevDir = float.IsNaN(_treeCamDir.X) ? camDir : _treeCamDir;
         var step = camDir - prevDir;
         float stepM = step.Length() * radius;
@@ -2931,12 +2934,12 @@ public sealed class PlanetVegetationSystem : Behavior
             _treeSettled = false;
 
         int cap = UseGpuInstancedTrees
-            ? (ConsoleTight ? 48 : (PlayPerfLimited ? 480 : 640))
+            ? (ConsoleTight ? 36 : (PlayPerfLimited ? 140 : 200))
             : (ConsoleTight ? 14 : (PlayPerfLimited ? 56 : 80));
         // Instanced trees write 48 bytes into a batch buffer (no GameObject allocation),
         // so we can fill far more trees per tick while staying within the 2 ms budget.
         int perTick = UseGpuInstancedTrees
-            ? (ConsoleTight ? 4 : (moving ? 14 : 10))
+            ? (ConsoleTight ? 4 : (moving ? 10 : 8))
             : (ConsoleTight ? 1 : (moving ? 3 : 2));
         long treeDeadline = System.Diagnostics.Stopwatch.GetTimestamp()
             + (long)(System.Diagnostics.Stopwatch.Frequency * 0.002);
@@ -2970,8 +2973,8 @@ public sealed class PlanetVegetationSystem : Behavior
         }
 
         CarpetTangentBasis(fillDir, out var t, out var b);
-        // Planet-fixed cells: tighter spacing when GPU-instanced so near-ring forests feel dense.
-        float spacing = UseGpuInstancedTrees ? 16f : 22f;
+        // Planet-fixed cells: balanced spacing when GPU-instanced so near-ring forests stay dense and fast.
+        float spacing = UseGpuInstancedTrees ? 18f : 22f;
         float probe = spacing * 0.7f;
         int cells = CarpetCellsPerEdge(radius, spacing);
         int n = Math.Clamp((int)MathF.Ceiling(outer / probe) + 1, 4, 48);
@@ -3990,10 +3993,17 @@ public sealed class PlanetVegetationSystem : Behavior
         return true;
     }
 
+    static bool IsColliderOrProxyName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        return name.Contains("collider", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("collision", StringComparison.OrdinalIgnoreCase);
+    }
+
     static void CollectSubmeshPartsRecursive(GameObject node, List<PlanetGpuTrees.SubmeshPart> dst, ref Mesh? trunkMesh)
     {
-        if (node == null) return;
-        if (!string.IsNullOrEmpty(node.Name) && node.Name.Contains("collider", StringComparison.OrdinalIgnoreCase))
+        if (node == null || !node.Enabled) return;
+        if (IsColliderOrProxyName(node.Name))
             return;
 
         MeshFilter? pendingMf = null;
@@ -4006,18 +4016,45 @@ public sealed class PlanetVegetationSystem : Behavior
             }
             if (b is MeshRenderer r && pendingMf?.Mesh != null)
             {
-                dst.Add(new PlanetGpuTrees.SubmeshPart(pendingMf.Mesh, r.Material, true));
-                if (trunkMesh == null && (
-                    (node.Name?.Contains("trunk", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (node.Name?.Contains("bark", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (pendingMf.SourceNodeName?.Contains("trunk", StringComparison.OrdinalIgnoreCase) ?? false)))
+                bool skip = !r.Enabled
+                    || IsColliderOrProxyName(pendingMf.SourceNodeName)
+                    || IsColliderOrProxyName(r.Material?.Name);
+                if (!skip && r.MaterialPaths != null)
                 {
-                    trunkMesh = pendingMf.Mesh;
+                    for (int mp = 0; mp < r.MaterialPaths.Count; mp++)
+                    {
+                        if (IsColliderOrProxyName(r.MaterialPaths[mp]))
+                        {
+                            skip = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!skip)
+                {
+                    var mat = r.Material;
+                    if (mat == null && r.MaterialPaths != null && r.MaterialPaths.Count > 0)
+                    {
+                        try { mat = ProjectService.MaterialsLoad(r.MaterialPaths[0]); } catch { }
+                    }
+                    if (mat != null)
+                    {
+                        try { MaterialUtil.EnsureOpaqueFoliageCutout(mat); } catch { }
+                    }
+                    dst.Add(new PlanetGpuTrees.SubmeshPart(pendingMf.Mesh, mat, true));
+                    if (trunkMesh == null && (
+                        (node.Name?.Contains("trunk", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                        (node.Name?.Contains("bark", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                        (pendingMf.SourceNodeName?.Contains("trunk", StringComparison.OrdinalIgnoreCase) ?? false)))
+                    {
+                        trunkMesh = pendingMf.Mesh;
+                    }
                 }
                 pendingMf = null;
             }
         }
-        if (pendingMf?.Mesh != null)
+        if (pendingMf?.Mesh != null && !IsColliderOrProxyName(pendingMf.SourceNodeName))
             dst.Add(new PlanetGpuTrees.SubmeshPart(pendingMf.Mesh, null, true));
 
         for (int i = 0; i < node.Children.Count; i++)

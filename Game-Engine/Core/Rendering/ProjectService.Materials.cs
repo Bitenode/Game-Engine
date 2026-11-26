@@ -482,7 +482,7 @@ namespace Game_Engine.Core
                 jw.Flush();
             }
 
-            File.WriteAllText(absPath, System.Text.Encoding.UTF8.GetString(ms.ToArray()));
+            Game_Engine.Core.IO.AtomicFile.WriteAllTextAtomic(absPath, System.Text.Encoding.UTF8.GetString(ms.ToArray()));
             InvalidateCachedMaterial(absPath);
             TouchModified();
         }

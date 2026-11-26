@@ -60,7 +60,7 @@ namespace Game_Engine.Core
 
             SceneSerialization.ResolveMeshesFromModelPath = absPath =>
             {
-                try { return CollectMeshes(Importers.ModelImporter.ImportModel(absPath)); }
+                try { return Importers.ModelImporter.LoadModelMeshParts(absPath); }
                 catch (Exception ex)
                 {
                     Log.Warning($"[Player] Model import failed for '{Path.GetFileName(absPath)}': {ex.Message}");
@@ -72,7 +72,7 @@ namespace Game_Engine.Core
             {
                 try
                 {
-                    var list = CollectMeshes(Importers.ModelImporter.ImportModel(absPath));
+                    var list = Importers.ModelImporter.LoadModelMeshParts(absPath);
                     return list.Count > 0 ? list[0] : null;
                 }
                 catch (Exception ex)
