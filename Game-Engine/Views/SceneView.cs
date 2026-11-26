@@ -263,6 +263,10 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         AvaloniaProperty.Register<SceneView, bool>(nameof(Supersample2x), false);
     public bool Supersample2x { get => GetValue(Supersample2xProperty); set => SetValue(Supersample2xProperty, value); }
 
+    public static readonly StyledProperty<RenderDebugMode> DebugViewModeProperty =
+        AvaloniaProperty.Register<SceneView, RenderDebugMode>(nameof(DebugViewMode), RenderDebugMode.Lit);
+    public RenderDebugMode DebugViewMode { get => GetValue(DebugViewModeProperty); set => SetValue(DebugViewModeProperty, value); }
+
     public static readonly StyledProperty<bool> GizmoLocalProperty =
         AvaloniaProperty.Register<SceneView, bool>(nameof(GizmoLocal), true);
     public bool GizmoLocal { get => GetValue(GizmoLocalProperty); set => SetValue(GizmoLocalProperty, value); }
@@ -413,6 +417,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         ShowShadowsProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
         ShowSelectionOutlineProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
         ShowStatsOverlayProperty.Changed.AddClassHandler<SceneView>((s, _) => { s.RequestNextFrameRendering(); s.SaveViewSettings(); });
+        DebugViewModeProperty.Changed.AddClassHandler<SceneView>((s, _) => s.RequestNextFrameRendering());
     }
     #endregion
 
@@ -1937,15 +1942,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         // --- POST-PROCESSING FBO setup (global + local volume blending) ---
         var postSettings = PostProcessVolume.SampleBlended(camPos);
-        bool usePostFX = (postSettings != null || underwater != null) && res.PostProcess != null && !ShowWire;
+        bool usePostFX = (postSettings != null || underwater != null || DebugViewMode == RenderDebugMode.ToneMapCompare) && res.PostProcess != null && !ShowWire;
 
         if (usePostFX)
         {
-            // Create / resize the scene FBO as needed
+            // Create / resize the scene FBO as needed (HDR RGBA16F with RGBA8 fallback)
             if (res.SceneFbo == null) res.SceneFbo = new GPUFramebuffer(g);
             if (res.SceneW != pxW || res.SceneH != pxH)
             {
-                res.SceneFbo.SetupColorDepth(pxW, pxH);
+                res.SceneFbo.SetupHdrColorDepth(pxW, pxH);
                 res.SceneW = pxW; res.SceneH = pxH;
             }
 
@@ -1958,6 +1963,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw, planetSkyUp);
         }
 
+        bool prevSceneHdr = SceneRenderer.HdrOutputActive;
+        var prevSceneDebug = SceneRenderer.DebugViewMode;
+        SceneRenderer.HdrOutputActive = usePostFX && res.SceneFbo?.IsHdr == true;
+        SceneRenderer.DebugViewMode = DebugViewMode;
+        try
+        {
         // --- SCENE PASS (GPU draw calls) ---
         if (!ShowWire)
         {
@@ -1989,6 +2000,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, camPos, sunSD,
                 terrainShader: res.Terrain,
+                isES: res.IsES,
                 lightColor: lightColorNorm,
                 cascadedShadow: activeCsm);
 
@@ -2087,6 +2099,12 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 }
             }
         }
+        }
+        finally
+        {
+            SceneRenderer.HdrOutputActive = prevSceneHdr;
+            SceneRenderer.DebugViewMode = prevSceneDebug;
+        }
 
         // --- VOLUMETRIC FOG PASS ---
         GPUTexture? postInputTex = res.SceneFbo?.ColorTexture;
@@ -2119,9 +2137,19 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // --- DEPTH OF FIELD + POST-PROCESSING BLIT ---
         if (usePostFX && postInputTex != null)
         {
-            GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, pxW, pxH,
-                in view, in proj, camPos, postInputTex, postDepthTex,
-                postSettings, underwater, (float)Core.Time.time);
+            var prevDbgPost = SceneRenderer.DebugViewMode;
+            SceneRenderer.DebugViewMode = DebugViewMode;
+            try
+            {
+                GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, pxW, pxH,
+                    in view, in proj, camPos, postInputTex, postDepthTex,
+                    postSettings, underwater, (float)Core.Time.time,
+                    hdrInput: res.SceneFbo?.IsHdr == true);
+            }
+            finally
+            {
+                SceneRenderer.DebugViewMode = prevDbgPost;
+            }
 
             // Blit depth from scene FBO so gizmos occlude correctly
             g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, res.SceneFbo!.Handle);
@@ -3614,7 +3642,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     {
         if (_wireShader == null || _cache == null) return;
 
-        bool globalWire = ShowWire;
+        bool globalWire = ShowWire || (DebugViewMode == RenderDebugMode.Wireframe && (_res?.IsES ?? true));
 
         _wireShader.Use();
         g.Disable(EnableCap.DepthTest);

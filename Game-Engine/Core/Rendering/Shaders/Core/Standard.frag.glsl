@@ -73,6 +73,10 @@ uniform float uWetness;
 uniform float uSnow;
 uniform float uCloudiness;
 
+// HDR output & rendering debug view
+uniform int   uHdrOutput;       // 0 = apply Reinhard in-shader (LDR target), 1 = linear HDR output
+uniform int   uDebugViewMode;   // 0=Lit, 1=Wireframe, 2=Albedo, 3=Normals, 4=Roughness, 5=Metallic, 6=Depth, 7=SSAO, 8=CsmCascades
+
 out vec4 FragColor;
 
 float ShadowCalc(vec4 sc, vec3 N)
@@ -273,9 +277,57 @@ void main()
         emissive *= texture(uEmissiveTex, vUV).rgb;
     color += emissive;
 
-    // Reinhard tone mapping (matches DeferredLighting.frag.glsl)
-    color = color / (color + vec3(1.0));
-
     float alpha = (uTransparent != 0) ? maskA : 1.0;
+
+    // Debug view overrides (2..8)
+    if (uDebugViewMode == 2)
+    {
+        FragColor = vec4(albedo.rgb, alpha);
+        return;
+    }
+    else if (uDebugViewMode == 3)
+    {
+        FragColor = vec4(N * 0.5 + 0.5, alpha);
+        return;
+    }
+    else if (uDebugViewMode == 4)
+    {
+        FragColor = vec4(vec3(roughness), alpha);
+        return;
+    }
+    else if (uDebugViewMode == 5)
+    {
+        FragColor = vec4(vec3(metallic), alpha);
+        return;
+    }
+    else if (uDebugViewMode == 6)
+    {
+        float viewDist = length(uCamPos - vWorldPos);
+        float dVis = 1.0 - clamp(viewDist / 100.0, 0.0, 1.0);
+        FragColor = vec4(vec3(dVis), alpha);
+        return;
+    }
+    else if (uDebugViewMode == 7)
+    {
+        // Forward pass has no SSAO buffer — output white
+        FragColor = vec4(vec3(1.0), alpha);
+        return;
+    }
+    else if (uDebugViewMode == 8)
+    {
+        float viewDepth = max(-(uView * vec4(vWorldPos, 1.0)).z, 0.0);
+        int cIdx = SelectShadowCascade(viewDepth);
+        vec3 cCol = (cIdx == 0) ? vec3(0.2, 0.9, 0.2)
+                  : (cIdx == 1) ? vec3(0.95, 0.9, 0.2)
+                  : (cIdx == 2) ? vec3(1.0, 0.5, 0.15)
+                                : vec3(0.95, 0.2, 0.2);
+        color = mix(color, cCol, 0.45);
+    }
+
+    // Apply in-shader Reinhard only for LDR targets (preview, cubemaps, RGBA8 fallback);
+    // HDR SceneFbo outputs linear radiance for single-pass tone mapping in PostProcess.
+    if (uHdrOutput == 0)
+        color = color / (color + vec3(1.0));
+
     FragColor = vec4(color, alpha);
 }

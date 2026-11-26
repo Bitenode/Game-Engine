@@ -39,6 +39,7 @@ public partial class ProfilerPanel : UserControl
         {
             FpsLabel.Text = "FPS: --";
             FrameTimeLabel.Text = "Frame: -- ms";
+            GcStatsLabel.Text = "Alloc: -- KB/f | Heap: -- MB | GC: --/--/--";
             return;
         }
 
@@ -72,6 +73,7 @@ public partial class ProfilerPanel : UserControl
         PlanetChunksLabel.Text = $"Planet Chunks: {latest.PlanetChunkCount}";
         PlanetJobsLabel.Text = $"Planet Jobs: {latest.PlanetActiveJobs}/{latest.PlanetPendingJobs}";
         PlanetMsLabel.Text = $"Planet LOD/Render: {latest.PlanetLodMs:F2}/{latest.PlanetRenderMs:F2} ms";
+        GcStatsLabel.Text = $"Alloc: {latest.AllocKbSmoothed:F1} KB/f ({latest.AllocKbThisFrame:F1}) | Heap: {latest.ManagedHeapMb:F1} MB | GC: {latest.GcGen0}/{latest.GcGen1}/{latest.GcGen2}";
 
         DrawGraph();
     }

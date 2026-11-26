@@ -59,6 +59,12 @@ namespace Game_Engine.Core
             public int PlanetPendingJobs;
             public long TextureMemoryBytes;
             public long MeshMemoryBytes;
+            public double AllocKbThisFrame;
+            public double AllocKbSmoothed;
+            public double ManagedHeapMb;
+            public int GcGen0;
+            public int GcGen1;
+            public int GcGen2;
             public List<ProfileSample> Samples;
         }
 
@@ -99,6 +105,8 @@ namespace Game_Engine.Core
         private static int _planetPendingJobs;
         private static double _planetLodMs;
         private static double _planetRenderMs;
+        private static long _lastAllocatedBytes;
+        private static double _smoothedAllocKb;
 
         /// <summary>Latest completed frame stats.</summary>
         public static FrameStats Latest => _historyCount > 0
@@ -137,6 +145,8 @@ namespace Game_Engine.Core
             _planetPendingJobs = 0;
             _planetLodMs = 0;
             _planetRenderMs = 0;
+            if (_lastAllocatedBytes == 0)
+                _lastAllocatedBytes = GC.GetTotalAllocatedBytes(false);
         }
 
         /// <summary>Call at the end of each frame to finalize stats.</summary>
@@ -162,6 +172,16 @@ namespace Game_Engine.Core
                 }
             }
 
+            long nowAlloc = GC.GetTotalAllocatedBytes(false);
+            long deltaBytes = _lastAllocatedBytes > 0 ? Math.Max(0L, nowAlloc - _lastAllocatedBytes) : 0L;
+            _lastAllocatedBytes = nowAlloc;
+            double allocKb = deltaBytes / 1024.0;
+            _smoothedAllocKb = _smoothedAllocKb <= 0.0 ? allocKb : (_smoothedAllocKb * 0.85 + allocKb * 0.15);
+            double heapMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+            int gc0 = GC.CollectionCount(0);
+            int gc1 = GC.CollectionCount(1);
+            int gc2 = GC.CollectionCount(2);
+
             var stats = new FrameStats
             {
                 TotalFrameMs = _frameStopwatch.Elapsed.TotalMilliseconds,
@@ -183,6 +203,12 @@ namespace Game_Engine.Core
                 PlanetPendingJobs = _planetPendingJobs,
                 TextureMemoryBytes = 0,
                 MeshMemoryBytes = 0,
+                AllocKbThisFrame = allocKb,
+                AllocKbSmoothed = _smoothedAllocKb,
+                ManagedHeapMb = heapMb,
+                GcGen0 = gc0,
+                GcGen1 = gc1,
+                GcGen2 = gc2,
                 Samples = new List<ProfileSample>(_currentSamples)
             };
 

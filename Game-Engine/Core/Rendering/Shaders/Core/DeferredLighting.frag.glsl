@@ -51,6 +51,10 @@ uniform sampler2D uSSAOTex;
 uniform int       uHasSSAO;
 uniform float     uSSAOIntensity;
 
+// HDR output & rendering debug view
+uniform int       uHdrOutput;     // 0 = apply Reinhard in-shader (LDR target), 1 = linear HDR output
+uniform int       uDebugViewMode; // 0=Lit, 1=Wireframe, 2=Albedo, 3=Normals, 4=Roughness, 5=Metallic, 6=Depth, 7=SSAO, 8=CsmCascades
+
 out vec4 FragColor;
 
 // Reconstruct world position from depth
@@ -87,14 +91,30 @@ void main()
     float ao        = emissiveAO.a;
 
     // SSAO (intensity scales how much occlusion affects ambient)
+    float ssaoVal = 1.0;
     if (uHasSSAO != 0)
     {
-        float ss = texture(uSSAOTex, vUV).r;
-        ao *= mix(1.0, ss, clamp(uSSAOIntensity, 0.0, 1.0));
+        ssaoVal = texture(uSSAOTex, vUV).r;
+        ao *= mix(1.0, ssaoVal, clamp(uSSAOIntensity, 0.0, 1.0));
     }
 
     // Reconstruct world position
     vec3 worldPos = WorldPosFromDepth(depth, vUV);
+
+    // Non-lit G-buffer / diagnostic debug views (early out before lighting)
+    if (uDebugViewMode == 2) { FragColor = vec4(albedo, 1.0); return; }
+    if (uDebugViewMode == 3) { FragColor = vec4(N * 0.5 + 0.5, 1.0); return; }
+    if (uDebugViewMode == 4) { FragColor = vec4(vec3(roughness), 1.0); return; }
+    if (uDebugViewMode == 5) { FragColor = vec4(vec3(metallic), 1.0); return; }
+    if (uDebugViewMode == 6)
+    {
+        float viewDist = length(uCamPos - worldPos);
+        float dVis = 1.0 - clamp(viewDist / 100.0, 0.0, 1.0);
+        FragColor = vec4(vec3(dVis), 1.0);
+        return;
+    }
+    if (uDebugViewMode == 7) { FragColor = vec4(vec3(ssaoVal), 1.0); return; }
+
     vec3 V = normalize(uCamPos - worldPos);
 
     // PBR: base reflectivity
@@ -192,8 +212,22 @@ void main()
 
     vec3 color = ambient + Lo + emissive;
 
-    // Reinhard tone mapping (compresses HDR from multiple lights into LDR range)
-    color = color / (color + vec3(1.0));
+    // CSM cascade boundary visualization
+    if (uDebugViewMode == 8)
+    {
+        float viewDepth = max(-(uView * vec4(worldPos, 1.0)).z, 0.0);
+        int cIdx = SelectShadowCascade(viewDepth);
+        vec3 cCol = (cIdx == 0) ? vec3(0.2, 0.9, 0.2)
+                  : (cIdx == 1) ? vec3(0.95, 0.9, 0.2)
+                  : (cIdx == 2) ? vec3(1.0, 0.5, 0.15)
+                                : vec3(0.95, 0.2, 0.2);
+        color = mix(color, cCol, 0.45);
+    }
+
+    // Apply in-shader Reinhard only for LDR targets; HDR SceneFbo outputs linear radiance
+    // for single-pass tone mapping in PostProcess.
+    if (uHdrOutput == 0)
+        color = color / (color + vec3(1.0));
 
     FragColor = vec4(color, 1.0);
 }

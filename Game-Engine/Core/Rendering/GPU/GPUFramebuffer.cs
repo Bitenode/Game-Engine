@@ -18,6 +18,9 @@ public sealed class GPUFramebuffer : IDisposable
     public GPUTexture? DepthTexture { get; private set; }
     public GPUTexture? ColorTexture { get; private set; }
 
+    /// <summary>True when this FBO's color attachment is an HDR floating-point format (RGBA16F).</summary>
+    public bool IsHdr { get; private set; }
+
     /// <summary>Multiple color attachments for MRT (G-buffer). Null when not using MRT.</summary>
     public GPUTexture[]? ColorTextures { get; private set; }
 
@@ -71,6 +74,7 @@ public sealed class GPUFramebuffer : IDisposable
     {
         Width = width;
         Height = height;
+        IsHdr = false;
 
         // Color texture (RGBA8)
         ColorTexture?.Dispose();
@@ -115,6 +119,68 @@ public sealed class GPUFramebuffer : IDisposable
 
         // Don't unbind to FB 0 — in Avalonia's shared GL context, FB 0 is NOT the
         // screen.  The caller should bind the correct target after setup.
+    }
+
+    /// <summary>
+    /// Configure as an HDR RGBA16F color+depth FBO for linear HDR scene rendering.
+    /// Automatically checks framebuffer completeness and falls back cleanly to RGBA8
+    /// (<see cref="SetupColorDepth"/>) on ES drivers without float color buffer support.
+    /// </summary>
+    public void SetupHdrColorDepth(int width, int height)
+    {
+        Width = width;
+        Height = height;
+        IsHdr = false;
+
+        while (_gl.GetError() != GLEnum.NoError) { }
+
+        ColorTexture?.Dispose();
+        ColorTexture = new GPUTexture(_gl);
+        ColorTexture.CreateColorRgba16f(width, height);
+
+        DepthTexture?.Dispose();
+        DepthTexture = new GPUTexture(_gl);
+        DepthTexture.CreateDepthStencil24(width, height);
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, ColorTexture.Handle, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.DepthStencilAttachment,
+            TextureTarget.Texture2D, DepthTexture.Handle, 0);
+
+        unsafe
+        {
+            DrawBufferMode color0 = DrawBufferMode.ColorAttachment0;
+            _gl.DrawBuffers(1, &color0);
+        }
+
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (status != GLEnum.FramebufferComplete)
+        {
+            // Retry with depth-only attachment before giving up on RGBA16F
+            DepthTexture.Dispose();
+            DepthTexture = new GPUTexture(_gl);
+            DepthTexture.CreateDepth(width, height);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+                FramebufferAttachment.DepthStencilAttachment,
+                TextureTarget.Texture2D, 0, 0);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+                FramebufferAttachment.DepthAttachment,
+                TextureTarget.Texture2D, DepthTexture.Handle, 0);
+            status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        }
+
+        if (status != GLEnum.FramebufferComplete)
+        {
+            System.Diagnostics.Debug.WriteLine($"[GPUFramebuffer] HDR RGBA16F FBO incomplete ({status}); falling back to RGBA8");
+            while (_gl.GetError() != GLEnum.NoError) { }
+            SetupColorDepth(width, height);
+            return;
+        }
+
+        IsHdr = true;
     }
 
     /// <summary>

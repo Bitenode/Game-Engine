@@ -22,7 +22,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Water Rendering** — Gerstner wave displacement, Fresnel-based transparency, foam, and underwater post-processing effects
 - **Particle System** — Billboard, streak, and flame particle looks with emission shapes (Sphere, Cone, Box), sub-emitters, and presets (Fire, Smoke, Sparks, Rain, Snow, Dust)
 - **Decal Projection** — Runtime decal rendering on surfaces with lifetime, fade-out, and projection modes (Forward, Up, Down)
-- **Post-Processing** — Bloom, SSAO, Fog, Color Grading, Tone Mapping (Reinhard/ACES), Vignette, FXAA, TAA, SSR, Depth of Field, and underwater effects
+- **Post-Processing** — Linear HDR scene color (`RGBA16F` `SceneFbo` with RGBA8 fallback), bloom, SSAO, Fog, Color Grading, Tone Mapping (Reinhard/ACES), Scene View **Debug View** modes (including ToneMap Compare), Vignette, FXAA, TAA, SSR, Depth of Field, and underwater effects
 - **Vegetation System** — GPU-instanced grass, rocks, and debris with chunked rendering, distance culling, and terrain-aware placement
 
 ### World Building
@@ -47,7 +47,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Networking** — Static `NetworkManager` API (server/client, RPCs, UDP transport with keepalive and idle disconnect) plus Inspector components NetworkIdentity, NetworkTransform (interpolated sync), and NetworkAnimator (state sync); Standard Assets include sample menu/server UI (`MainMenuController`, `ServerHostController` / `Main Menu.scene`, `Server.scene`). The game loop invokes `NetworkManager.Update` automatically in Game View and Engine.Player.
 
 ### Tools & Profiling
-- **Profiler** — Real-time FPS, frame time, draw call, triangle/chunk counts, and per-script timing (Game View HUD + Profiler panel)
+- **Profiler** — Real-time FPS, frame time, draw call, triangle/chunk counts, managed allocation/heap/GC gen stats, and per-script timing (Game View HUD + Profiler panel)
 - **Build Settings** — Package games for Windows, macOS, Linux (x64/ARM64), Android, **Xbox Dev Mode** (UWP + ANGLE), and **Xbox GDK** (native XAudio2 / GameInput / XSAPI scaffold); scene- and script-aware asset collection with Xbox loose `Data/Assets` staging
 - **Wind System** — Global wind parameters driving tree and vegetation animation
 

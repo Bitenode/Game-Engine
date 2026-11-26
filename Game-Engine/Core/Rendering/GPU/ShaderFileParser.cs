@@ -399,6 +399,9 @@ uniform int         uHasEnvMap;
 uniform float       uEnvIntensity;
 uniform float       uEnvMaxMip;
 
+// HDR output toggle (0 = Reinhard in-shader for LDR targets, 1 = linear HDR for PostProcess)
+uniform int         uHdrOutput;
+
 {propUniforms}
 
 #include ""Common/NormalMapping.glsl""
@@ -534,7 +537,7 @@ struct SurfaceOutput
             sb.AppendLine("    float amb = uAmbient < 0.01 ? 0.15 : uAmbient;");
             sb.AppendLine("    vec3 kD = (vec3(1.0) - Fenv) * (1.0 - metallic);");
             sb.AppendLine("    vec3 color = (kD * vec3(amb) * OUT.Albedo + envSpec) * OUT.AO + Lo + OUT.Emission;");
-            sb.AppendLine("    color = color / (color + vec3(1.0));");
+            sb.AppendLine("    if (uHdrOutput == 0) color = color / (color + vec3(1.0));");
         }
         sb.AppendLine("    FragColor = vec4(color, OUT.Alpha);");
         sb.AppendLine("}");

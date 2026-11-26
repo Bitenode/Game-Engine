@@ -66,6 +66,7 @@ uniform float uPlanetRadius;
 uniform float uWetness;
 uniform float uSnowCoverage;
 uniform float uWeatherEnabled;
+uniform int   uHdrOutput;
 
 out vec4 FragColor;
 
@@ -291,7 +292,8 @@ void main()
     lit += evalAtmosphere(vWorldPos, V, radialDir);
 
     lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * groundFlat * 0.35);
-    lit = lit / (lit + vec3(1.0));
+    if (uHdrOutput == 0)
+        lit = lit / (lit + vec3(1.0));
     FragColor = vec4(lit, 1.0);
 }
 
@@ -554,9 +556,9 @@ void main()
     lit += vec3(spec + fres) * shadow * ao;
     lit += skyRefCol * skyRef * shadow * ao;
     lit += evalAtmosphere(vWorldPos, V, radialDir);
-    lit = lit / (lit + vec3(1.0));
-
     lit = mix(lit, lit * 0.45 + vec3(0.86, 0.90, 0.94) * 0.55, snowAmt * groundFlat * mix(0.2, 0.5, nDetail));
+    if (uHdrOutput == 0)
+        lit = lit / (lit + vec3(1.0));
 
     FragColor = vec4(lit, 1.0);
 }

@@ -499,12 +499,16 @@ Rendered when `PostProcessVolume.VolumetricFogEnabled` is `true`. Uses a dedicat
 - **Feedback safety:** Disables probe cubemap sampling while capturing so a probe never samples itself
 - **Fallback:** When no probe cubemap is available, both Forward (`Standard.frag.glsl`) and Deferred (`DeferredLighting.frag.glsl`) fall back to `ProceduralSkyIBL`
 
-### Post-Processing Pass
-1. The scene is rendered to an off-screen framebuffer (color + depth); `PostProcessVolume.SampleBlended(...)` resolves blended global + oriented-box local settings
-2. Optional pre-composite passes run in order (Deferred pipeline in both Editor `GameView` and standalone `PlayerFrameRenderer` via `GameRenderPipeline`): **SSAO** → **SSR** → **Volumetric Fog** → **TAA** → **2-pass separable bokeh Depth of Field** (`DepthOfField.frag.glsl`)
-3. Bind the PostProcess shader (`PostProcess.frag.glsl`) with scene color and `uDepthTex`
-4. Apply enabled effects in order: FXAA → Bloom → World-Position Distance & Height Fog → Color Grading → Tone Mapping → Vignette → Underwater
-5. Blit the final result to the screen
+### Post-Processing Pass (True HDR `RGBA16F` & Single-Pass Tone Mapping)
+1. `SceneFbo` is allocated via `GPUFramebuffer.SetupHdrColorDepth` (`RGBA16F` linear color + depth, `IsHdr = true`). If a driver/ES context lacks float color-buffer renderability, `SetupHdrColorDepth` detects FBO incompleteness and falls back automatically to `RGBA8` (`IsHdr = false`).
+2. When rendering into an HDR `SceneFbo`, `SceneRenderer.HdrOutputActive` sets `uHdrOutput = 1` on `Standard.frag.glsl`, `DeferredLighting.frag.glsl`, `PlanetTerrain.frag.glsl`, and Surface Forward shaders so they output linear HDR radiance without premature Reinhard compression. LDR targets (ReflectionProbe cubemaps, previews, and `RGBA8` fallback) keep `uHdrOutput = 0`.
+3. `PostProcessVolume.SampleBlended(...)` resolves blended global + oriented-box local settings. Optional pre-composite passes run in order (Deferred pipeline in both Editor `GameView` and standalone `PlayerFrameRenderer` via `GameRenderPipeline`): **SSAO** → **SSR** → **Volumetric Fog** → **TAA** → **2-pass separable bokeh Depth of Field** (`DepthOfField.frag.glsl`). These intermediate FBOs still use `GPUFramebuffer.SetupColorDepth` (`RGBA8`); when `SceneFbo.IsHdr` is true, bright highlights can clamp when a pass reads HDR scene color and writes back through an LDR target (full HDR is preserved through the final `PostProcess.frag.glsl` composite from the HDR `SceneFbo` when effects are off or the chain ends on linear input).
+4. Bind `PostProcess.frag.glsl` with scene color and `uDepthTex`, applying: FXAA → Linear HDR 9-tap Bloom (`> uBloomThreshold`) → World-Position Distance & Height Fog → Exposure + Single-Pass Tone Mapping (Reinhard / ACES) → Display-Space Color Grading (Brightness, Contrast, Saturation) → Vignette → Underwater. ACES uses the Narkowicz fit with `x *= 0.6` pre-exposure inside `ACESFilm()` before the rational polynomial so default exposure does not blow out typical PBR highlights.
+5. When `SceneFbo.IsHdr` is true and no `PostProcessVolume` (or color grading) is active, `ApplyPostProcessing` automatically applies default single-pass ACES tone mapping (`Exposure = 1.0`) so linear HDR never clips.
+
+### Rendering Debug Views (`RenderDebugMode`)
+`SceneRenderer.DebugViewMode` (exposed as a compact **Debug View** dropdown in the Scene View toolbar, shared with Game View) supports 10 live diagnostic modes via `uDebugViewMode` in `Standard.frag.glsl` / `DeferredLighting.frag.glsl` and `uToneMapCompare` in `PostProcess.frag.glsl`:
+- `Lit`, `Wireframe` (Desktop `glPolygonMode(FrontAndBack, Line)`; ES/ANGLE falls back to `RenderWireframeGL` without `GL_INVALID_ENUM`), `Albedo`, `Normals`, `Roughness`, `Metallic`, `Depth`, `SSAO`, `CsmCascades` (4-color view-depth tint for CSM split inspection), and `ToneMapCompare` (3-way vertical split in the same frame: Left = None, Middle = Reinhard, Right = ACES).
 
 ### Frustum Culling
 Each mesh has a bounding sphere computed from its vertices. Before drawing, the sphere (transformed to world space) is tested against the 6 frustum planes extracted from the view-projection matrix. Meshes outside the frustum are skipped entirely.

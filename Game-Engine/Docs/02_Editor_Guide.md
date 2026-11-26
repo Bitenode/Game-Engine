@@ -96,9 +96,12 @@ The Scene View is the primary 3D editing viewport. It renders the scene using th
 | **Rotate** | Rotate selected object around axes                |
 | **Scale**  | Scale selected object along axes                  |
 | **AA**     | Anti-aliasing toggle (FXAA post-processing)       |
+| **Debug View** | `ComboBox` between **AA** and **View ▾** — live `RenderDebugMode` (`Lit`, `Wireframe`, `Albedo`, `Normals`, `Roughness`, `Metallic`, `Depth`, `SSAO`, `CsmCascades`, `ToneMapCompare`) |
 | **View**   | View options menu (grid, wireframe, etc.)         |
 | **Gizmo**  | Toggle collider gizmo wireframe visibility        |
 | **FPS**    | Frames-per-second display                         |
+
+**Debug View** sets `SceneRenderer.DebugViewMode` for Scene View and Game View. Modes map to `uDebugViewMode` in lit passes and `uToneMapCompare` in post. **ToneMap Compare** forces the post stack and shows three horizontal bands in one frame (left = no tone map, middle = Reinhard, right = ACES) with thin vertical dividers. See [04 — Rendering Pipeline](04_Rendering_Pipeline.md#rendering-debug-views-renderdebugmode).
 
 ### Transform Gizmos
 When an object is selected, colored axis gizmos appear in Scene View (including Hand mode for quick orientation). Transform editing still requires Move/Rotate/Scale tools.
@@ -816,6 +819,7 @@ The Profiler panel and Game View HUD display real-time performance metrics:
 | **Triangles** | Total triangle count rendered (on-screen pass only — shadow cascades are excluded so CSM does not inflate the count) |
 | **Planet Chunks** | Active planet quadtree leaves with meshes (Game View HUD when playing) |
 | **Script costs** | Per-behavior Update ms when sampling is enabled (Game View HUD + Profiler) |
+| **GC / allocation** | Managed allocation rate (smoothed KB/frame, raw this-frame in parentheses), managed heap MB, and cumulative Gen0 / Gen1 / Gen2 collection counts |
 
 Access the full Profiler panel via **Window > Profiler**.
 

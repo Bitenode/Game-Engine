@@ -233,7 +233,7 @@ namespace Game_Engine.Core.Rendering
                     if (s.SceneFbo == null) s.SceneFbo = new GPUFramebuffer(g);
                     if (s.SceneW != W || s.SceneH != H)
                     {
-                        s.SceneFbo.SetupColorDepth(W, H);
+                        s.SceneFbo.SetupHdrColorDepth(W, H);
                         s.SceneW = W;
                         s.SceneH = H;
                     }
@@ -243,10 +243,19 @@ namespace Game_Engine.Core.Rendering
                     Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
                 }
 
-                GameRenderPipeline.RenderForwardWorld(g, res,
-                    view, proj, camPos, L, diffuseK, ambient,
-                    lightIsPoint, lightPosW, lightRange,
-                    shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky, fallbackPlanetSunDir, activeCsm);
+                bool prevHdrP = SceneRenderer.HdrOutputActive;
+                SceneRenderer.HdrOutputActive = usePostFX && s.SceneFbo?.IsHdr == true;
+                try
+                {
+                    GameRenderPipeline.RenderForwardWorld(g, res,
+                        view, proj, camPos, L, diffuseK, ambient,
+                        lightIsPoint, lightPosW, lightRange,
+                        shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky, fallbackPlanetSunDir, activeCsm);
+                }
+                finally
+                {
+                    SceneRenderer.HdrOutputActive = prevHdrP;
+                }
 
                 FrameProfile.Enter(FrameProfile.Part.WorldUi);
                 if (res.Canvas != null && res.Cache != null)
@@ -267,10 +276,11 @@ namespace Game_Engine.Core.Rendering
             FrameProfile.Enter(FrameProfile.Part.Post);
             if (finalSceneTex != null && res.PostProcess != null)
             {
+                bool hdrInput = (useDeferred ? res.SceneFbo?.IsHdr : s.SceneFbo?.IsHdr) == true;
                 GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, W, H,
                     in view, in proj, camPos, finalSceneTex, sceneDepthTex,
                     usePostFX ? postSettings : null, usePostFX ? underwater : null,
-                    usePostFX ? (float)Time.time : 0f);
+                    usePostFX ? (float)Time.time : 0f, hdrInput: hdrInput);
             }
 
             FrameProfile.Enter(FrameProfile.Part.Particles);

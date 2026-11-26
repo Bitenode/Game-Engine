@@ -55,6 +55,25 @@ namespace Game_Engine.Core
         [ThreadStatic] public static bool SkipPlanetLeafShadows;
         [ThreadStatic] private static bool s_suppressEnvMap;
 
+        /// <summary>
+        /// When true, forward/deferred lighting shaders output linear HDR radiance
+        /// (skipping in-shader Reinhard) for single-pass Bloom + Tone Mapping in PostProcess.
+        /// Defaults to false so LDR targets (cubemaps, previews, RGBA8 fallback) tone-map safely.
+        /// </summary>
+        public static bool HdrOutputActive { get; set; }
+
+        /// <summary>Active rendering debug view mode (Lit, Wireframe, Albedo, Normals, etc.).</summary>
+        public static RenderDebugMode DebugViewMode { get; set; } = RenderDebugMode.Lit;
+
+        /// <summary>True when DebugViewMode outputs raw [0,1] diagnostic data that should bypass HDR tone mapping.</summary>
+        public static bool IsDiagnosticDebugView =>
+            DebugViewMode is RenderDebugMode.Albedo
+                or RenderDebugMode.Normals
+                or RenderDebugMode.Roughness
+                or RenderDebugMode.Metallic
+                or RenderDebugMode.Depth
+                or RenderDebugMode.SSAO;
+
         public static bool TryBeginViewRender()
             => Interlocked.CompareExchange(ref s_viewRenderActive, 1, 0) == 0;
 
@@ -537,7 +556,8 @@ namespace Game_Engine.Core
             PostProcessSettings? settings = null,
             UnderwaterState? underwater = null,
             float underwaterTime = 0f,
-            GPUTexture? depthTexture = null)
+            GPUTexture? depthTexture = null,
+            bool hdrInput = false)
         {
             // Always bind the post-process shader, even for passthrough —
             // rendering without a shader causes a black screen.
@@ -561,21 +581,26 @@ namespace Game_Engine.Core
                 postShader.SetInt("uHasDepthTex", 0);
             }
 
+            bool toneMapCompare = DebugViewMode == RenderDebugMode.ToneMapCompare;
+            postShader.SetInt("uToneMapCompare", toneMapCompare ? 1 : 0);
+
+            bool needDefaultHdrToneMap = (hdrInput || toneMapCompare) && !IsDiagnosticDebugView;
+
             if (settings == null)
             {
-                // Pass-through: disable all effects so the shader just copies the texture
+                // Pass-through for LDR, or single-pass ACES tone map for linear HDR SceneFbo
                 postShader.SetInt("uBloomEnabled", 0);
                 postShader.SetInt("uFogEnabled", 0);
                 postShader.SetInt("uFogHeightBased", 0);
                 postShader.SetFloat("uFogHeightFalloff", 0.1f);
-                postShader.SetInt("uColorGradingEnabled", 0);
+                postShader.SetInt("uColorGradingEnabled", needDefaultHdrToneMap ? 1 : 0);
                 postShader.SetInt("uVignetteEnabled", 0);
                 postShader.SetInt("uFXAAEnabled", 0);
                 postShader.SetFloat("uExposure", 1f);
                 postShader.SetFloat("uContrast", 1f);
                 postShader.SetFloat("uSaturation", 1f);
                 postShader.SetFloat("uBrightness", 0f);
-                postShader.SetInt("uToneMap", 0);
+                postShader.SetInt("uToneMap", needDefaultHdrToneMap ? (int)ToneMapping.ACES : 0);
                 postShader.SetFloat("uBloomThreshold", 1f);
                 postShader.SetFloat("uBloomIntensity", 0f);
             }
@@ -595,13 +620,34 @@ namespace Game_Engine.Core
                 postShader.SetInt("uFogHeightBased", settings.FogHeightBased ? 1 : 0);
                 postShader.SetFloat("uFogHeightFalloff", settings.FogHeightFalloff);
 
-                // Color Grading
-                postShader.SetInt("uColorGradingEnabled", settings.ColorGradingEnabled ? 1 : 0);
-                postShader.SetFloat("uBrightness", settings.Brightness);
-                postShader.SetFloat("uContrast", settings.Contrast);
-                postShader.SetFloat("uSaturation", settings.Saturation);
-                postShader.SetFloat("uExposure", settings.Exposure);
-                postShader.SetInt("uToneMap", (int)settings.ToneMap);
+                // Color Grading (guarantee single-pass tone mapping when presenting linear HDR)
+                if (settings.ColorGradingEnabled)
+                {
+                    postShader.SetInt("uColorGradingEnabled", 1);
+                    postShader.SetFloat("uBrightness", settings.Brightness);
+                    postShader.SetFloat("uContrast", settings.Contrast);
+                    postShader.SetFloat("uSaturation", settings.Saturation);
+                    postShader.SetFloat("uExposure", settings.Exposure);
+                    postShader.SetInt("uToneMap", (int)settings.ToneMap);
+                }
+                else if (needDefaultHdrToneMap)
+                {
+                    postShader.SetInt("uColorGradingEnabled", 1);
+                    postShader.SetFloat("uBrightness", 0f);
+                    postShader.SetFloat("uContrast", 1f);
+                    postShader.SetFloat("uSaturation", 1f);
+                    postShader.SetFloat("uExposure", 1f);
+                    postShader.SetInt("uToneMap", (int)ToneMapping.ACES);
+                }
+                else
+                {
+                    postShader.SetInt("uColorGradingEnabled", 0);
+                    postShader.SetFloat("uBrightness", 0f);
+                    postShader.SetFloat("uContrast", 1f);
+                    postShader.SetFloat("uSaturation", 1f);
+                    postShader.SetFloat("uExposure", 1f);
+                    postShader.SetInt("uToneMap", 0);
+                }
 
                 // Vignette
                 postShader.SetInt("uVignetteEnabled", settings.VignetteEnabled ? 1 : 0);
@@ -800,6 +846,8 @@ namespace Game_Engine.Core
             BindNearestPointLights(globals, camPos);
 
             standardShader.Use();
+            standardShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
+            standardShader.SetInt("uDebugViewMode", (int)DebugViewMode);
 
             if (hasShadow)
             {
@@ -808,6 +856,12 @@ namespace Game_Engine.Core
                 BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
             BindEnvMapToShader(gl, standardShader, camPos, 12);
+
+            bool desktopWireframe = DebugViewMode == RenderDebugMode.Wireframe && !isES;
+            if (desktopWireframe)
+                gl.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Line);
+            try
+            {
 
             // Build render context for custom shader support
             var renderCtx = new RenderContext
@@ -920,6 +974,12 @@ namespace Game_Engine.Core
                 gl.PolygonOffset(0f, 0f);
                 gl.DepthMask(true);
                 gl.Disable(EnableCap.Blend);
+            }
+            }
+            finally
+            {
+                if (desktopWireframe)
+                    gl.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Fill);
             }
 
             // --- WORLD-SPACE UI CANVASES (rendered as transparent overlays in 3D) ---
@@ -1312,7 +1372,11 @@ namespace Game_Engine.Core
             var faceProj = SN.Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI * 0.5f, 1f, 0.1f, 500f);
 
             bool prevSuppress = s_suppressEnvMap;
+            bool prevHdr = HdrOutputActive;
+            var prevDebug = DebugViewMode;
             s_suppressEnvMap = true;
+            HdrOutputActive = false;
+            DebugViewMode = RenderDebugMode.Lit;
 
             try
             {
@@ -1379,6 +1443,8 @@ namespace Game_Engine.Core
             finally
             {
                 s_suppressEnvMap = prevSuppress;
+                HdrOutputActive = prevHdr;
+                DebugViewMode = prevDebug;
 
                 // Restore caller framebuffer, draw buffers, viewport, and FrameGlobals UBO
                 gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)prevFb);
@@ -2259,6 +2325,7 @@ namespace Game_Engine.Core
 
             // ReflectionProbe cubemap IBL → unit 15 (disjoint from MaterialBinder units 3,5,6,11..14)
             BindEnvMapToShader(gl, customShader, ctx.CamPos, 15);
+            customShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
 
             // Dynamic Material.Properties overrides + schema defaults (safe units 3, 5, 6, 11..14)
             MaterialBinder.BindProperties(customShader, mat, schema, cache);
@@ -2597,6 +2664,11 @@ namespace Game_Engine.Core
                 ForceStandardShader = true
             };
 
+            bool desktopWireframe = DebugViewMode == RenderDebugMode.Wireframe && !isES;
+            if (desktopWireframe)
+                gl.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Line);
+            try
+            {
             foreach (var item in opaqueItems)
             {
                 // Skip terrain (forward-rendered with splatmap shader)
@@ -2616,6 +2688,12 @@ namespace Game_Engine.Core
 
                 // Standard items (and legacy non-Surface custom shaders as depth/fallback proxy)
                 DrawMeshItem(gl, gbufferShader, cache, item, in renderCtx);
+            }
+            }
+            finally
+            {
+                if (desktopWireframe)
+                    gl.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Fill);
             }
         }
 
@@ -2658,6 +2736,8 @@ namespace Game_Engine.Core
                 cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f));
 
             deferredShader.Use();
+            deferredShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
+            deferredShader.SetInt("uDebugViewMode", (int)DebugViewMode);
 
             // Texture unit map (0..14 — zero collisions, GLES 3.0 safe):
             // 0..2: G-buffer MRT | 3: gDepth | 4: uSSAOTex | 7..10: CSM shadows | 11..13: Tiled lights | 14: uEnvMap
@@ -2999,6 +3079,8 @@ namespace Game_Engine.Core
                 gl.PolygonOffset(-2f, -2f);
 
                 standardShader.Use();
+                standardShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
+                standardShader.SetInt("uDebugViewMode", (int)DebugViewMode);
                 if (hasShadow)
                     BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
                 BindEnvMapToShader(gl, standardShader, camPos, 12);
@@ -3856,6 +3938,8 @@ namespace Game_Engine.Core
             BindNearestPointLights(renderCtx.Globals, camPos);
 
             standardShader.Use();
+            standardShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
+            standardShader.SetInt("uDebugViewMode", (int)DebugViewMode);
             if (hasShadow)
             {
                 standardShader.SetFloat("uShadowBias", 0.008f);
@@ -3990,6 +4074,8 @@ namespace Game_Engine.Core
             BindNearestPointLights(globals, camPos);
 
             standardShader.Use();
+            standardShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
+            standardShader.SetInt("uDebugViewMode", (int)DebugViewMode);
 
             if (hasShadow)
             {
@@ -4062,6 +4148,7 @@ namespace Game_Engine.Core
             BindNearestPointLights(globals, camPos);
 
             planetShader.Use();
+            planetShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
             planetShader.SetVector3("uPlanetCenter", planetCenter);
             float radiusWorld = MathF.Max(1f, planet.Config.EffectiveWorldRadius);
             if (radiusWorld < 2f)

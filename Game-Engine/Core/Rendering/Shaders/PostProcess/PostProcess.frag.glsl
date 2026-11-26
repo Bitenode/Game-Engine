@@ -29,7 +29,8 @@ uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
 uniform float uExposure;
-uniform int   uToneMap;     // 0=None, 1=Reinhard, 2=ACES
+uniform int   uToneMap;        // 0=None, 1=Reinhard, 2=ACES
+uniform int   uToneMapCompare; // 1=3-way split: Left=None, Mid=Reinhard, Right=ACES
 
 // Vignette
 uniform int   uVignetteEnabled;
@@ -52,6 +53,7 @@ out vec4 FragColor;
 
 vec3 ACESFilm(vec3 x)
 {
+    x *= 0.6;
     float a = 2.51;
     float b = 0.03;
     float c = 2.43;
@@ -63,6 +65,23 @@ vec3 ACESFilm(vec3 x)
 vec3 ReinhardTonemap(vec3 color)
 {
     return color / (color + vec3(1.0));
+}
+
+vec3 ApplyToneMap(vec3 color)
+{
+    if (uToneMapCompare != 0)
+    {
+        if (vUV.x < (1.0 / 3.0))
+            return clamp(color, 0.0, 1.0);
+        else if (vUV.x < (2.0 / 3.0))
+            return ReinhardTonemap(color);
+        else
+            return ACESFilm(color);
+    }
+
+    if (uToneMap == 1) return ReinhardTonemap(color);
+    if (uToneMap == 2) return ACESFilm(color);
+    return color;
 }
 
 void main()
@@ -110,17 +129,20 @@ void main()
         }
     }
 
-    // Bloom (simplified bright pass + blur approximation)
+    // Bloom (linear HDR bright-pass extraction + 9-tap gather BEFORE tone mapping)
     if (uBloomEnabled != 0)
     {
-        vec3 bright = max(color - vec3(uBloomThreshold), vec3(0.0));
-        // Simple 5-tap blur for bloom approximation
-        vec3 bloom = bright;
-        bloom += max(texture(uScene, vUV + vec2( 2.0, 0.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
-        bloom += max(texture(uScene, vUV + vec2(-2.0, 0.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
-        bloom += max(texture(uScene, vUV + vec2(0.0,  2.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
-        bloom += max(texture(uScene, vUV + vec2(0.0, -2.0) * uTexelSize).rgb - vec3(uBloomThreshold), vec3(0.0));
-        bloom *= 0.2;
+        vec3 thresh = vec3(max(uBloomThreshold, 0.0));
+        vec3 bloom = max(color - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2( 2.0,  0.0) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2(-2.0,  0.0) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2( 0.0,  2.0) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2( 0.0, -2.0) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2( 1.5,  1.5) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2(-1.5,  1.5) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2( 1.5, -1.5) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom += max(texture(uScene, vUV + vec2(-1.5, -1.5) * uTexelSize).rgb - thresh, vec3(0.0));
+        bloom *= (1.0 / 9.0);
         color += bloom * uBloomIntensity;
     }
 
@@ -167,11 +189,14 @@ void main()
         }
     }
 
-    // Color Grading
+    // Exposure + Single-Pass Tone Mapping (HDR -> LDR) + Display-Space Color Grading
     if (uColorGradingEnabled != 0)
     {
-        // Exposure
-        color *= uExposure;
+        // Exposure in linear HDR space
+        color = max(color, vec3(0.0)) * uExposure;
+
+        // Single-pass tone mapping
+        color = ApplyToneMap(color);
 
         // Brightness
         color += vec3(uBrightness);
@@ -182,10 +207,6 @@ void main()
         // Saturation
         float gray = dot(color, vec3(0.299, 0.587, 0.114));
         color = mix(vec3(gray), color, uSaturation);
-
-        // Tone mapping
-        if (uToneMap == 1) color = ReinhardTonemap(color);
-        else if (uToneMap == 2) color = ACESFilm(color);
     }
 
     // Vignette
@@ -206,16 +227,15 @@ void main()
         distortedUV = clamp(distortedUV, 0.001, 0.999);
         color = texture(uScene, distortedUV).rgb;
 
-        // Re-apply tone mapping on distorted sample if color grading is active
+        // Re-apply exposure, tone mapping, and color grading on distorted sample
         if (uColorGradingEnabled != 0)
         {
-            color *= uExposure;
+            color = max(color, vec3(0.0)) * uExposure;
+            color = ApplyToneMap(color);
             color += vec3(uBrightness);
             color = ((color - 0.5) * uContrast) + 0.5;
             float grayUW = dot(color, vec3(0.299, 0.587, 0.114));
             color = mix(vec3(grayUW), color, uSaturation);
-            if (uToneMap == 1) color = ReinhardTonemap(color);
-            else if (uToneMap == 2) color = ACESFilm(color);
         }
 
         // Underwater fog (depth-based tinting — stronger further below surface)
@@ -263,5 +283,14 @@ void main()
     color = clamp(color, 0.0, 1.0);
     // A NaN from an earlier pass (D3D pow/normalize) would survive clamp and present black.
     color *= step(color, color);
+
+    // 1px dark vertical dividers at x = 1/3 and x = 2/3 in ToneMapCompare mode
+    if (uToneMapCompare != 0)
+    {
+        float halfPx = max(uTexelSize.x * 0.55, 0.0005);
+        if (abs(vUV.x - (1.0 / 3.0)) < halfPx || abs(vUV.x - (2.0 / 3.0)) < halfPx)
+            color = vec3(0.05);
+    }
+
     FragColor = vec4(color, 1.0);
 }

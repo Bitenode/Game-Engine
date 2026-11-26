@@ -618,7 +618,7 @@ namespace Game_Engine.Views
 
             // --- POST-PROCESSING setup (global + local volume blending) ---
             var postSettings = PostProcessVolume.SampleBlended(camPos);
-            bool usePostFX = (postSettings != null || underwater != null) && res.PostProcess != null;
+            bool usePostFX = (postSettings != null || underwater != null || SceneRenderer.DebugViewMode == RenderDebugMode.ToneMapCompare) && res.PostProcess != null;
             double planetLodMs = 0.0;
 
             bool shouldUpdateLod = false;
@@ -741,7 +741,7 @@ namespace Game_Engine.Views
                     if (res.SceneFbo == null) res.SceneFbo = new GPUFramebuffer(g);
                     if (res.SceneW != W || res.SceneH != H)
                     {
-                        res.SceneFbo.SetupColorDepth(W, H);
+                        res.SceneFbo.SetupHdrColorDepth(W, H);
                         res.SceneW = W; res.SceneH = H;
                     }
                     res.SceneFbo.Bind();
@@ -751,11 +751,20 @@ namespace Game_Engine.Views
                         skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
                 }
 
+                bool prevHdrF = SceneRenderer.HdrOutputActive;
+                SceneRenderer.HdrOutputActive = usePostFX && res.PostProcess != null && res.SceneFbo?.IsHdr == true;
                 var planetRenderSwF = Stopwatch.StartNew();
-                GameRenderPipeline.RenderForwardWorld(g, res,
-                    view, proj, camPos, L, DiffuseK, Ambient,
-                    lightIsPoint, lightPosW, lightRange,
-                    shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky, fallbackPlanetSunDir, activeCsm);
+                try
+                {
+                    GameRenderPipeline.RenderForwardWorld(g, res,
+                        view, proj, camPos, L, DiffuseK, Ambient,
+                        lightIsPoint, lightPosW, lightRange,
+                        shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky, fallbackPlanetSunDir, activeCsm);
+                }
+                finally
+                {
+                    SceneRenderer.HdrOutputActive = prevHdrF;
+                }
                 planetRenderSwF.Stop();
                 planetRenderMs = planetRenderSwF.Elapsed.TotalMilliseconds;
 
@@ -812,10 +821,11 @@ namespace Game_Engine.Views
             // DEPTH OF FIELD + POST-PROCESSING → Avalonia framebuffer
             if (finalSceneTex != null)
             {
+                bool hdrInput = res.SceneFbo?.IsHdr == true;
                 GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, W, H,
                     in view, in proj, camPos, finalSceneTex, sceneDepthTex,
                     usePostFX ? postSettings : null, usePostFX ? underwater : null,
-                    usePostFX ? (float)Core.Time.time : 0f);
+                    usePostFX ? (float)Core.Time.time : 0f, hdrInput: hdrInput);
             }
 
             // PARTICLES — full-screen overlay (SSAO/shadow passes leave a half-width viewport).

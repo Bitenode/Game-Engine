@@ -312,6 +312,34 @@ public sealed class GPUTexture : IDisposable
     }
 
     /// <summary>
+    /// Create a linear-filtered RGBA16F HDR color texture for off-screen scene rendering
+    /// (compatible with Desktop OpenGL 3.3 Core and OpenGL ES 3.0 with float color buffer support).
+    /// </summary>
+    public unsafe void CreateColorRgba16f(int width, int height)
+    {
+        Width = width;
+        Height = height;
+
+        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+
+        _gl.TexImage2D(TextureTarget.Texture2D, 0,
+            InternalFormat.Rgba16f,
+            (uint)width, (uint)height, 0,
+            PixelFormat.Rgba, PixelType.HalfFloat, null);
+
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    /// <summary>
     /// Upload RGBA float data to GPU (for splatmap textures).
     /// Data length must be width * height * 4 floats.
     /// </summary>

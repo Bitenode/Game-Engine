@@ -324,10 +324,14 @@ public static class GameRenderPipeline
         if (res.SceneFbo == null) res.SceneFbo = new GPUFramebuffer(g);
         if (res.SceneW != W || res.SceneH != H)
         {
-            res.SceneFbo.SetupColorDepth(W, H);
+            res.SceneFbo.SetupHdrColorDepth(W, H);
             res.SceneW = W; res.SceneH = H;
         }
 
+        bool prevHdr = SceneRenderer.HdrOutputActive;
+        SceneRenderer.HdrOutputActive = res.SceneFbo.IsHdr;
+        try
+        {
         res.SceneFbo.Bind();
         g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
         g.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
@@ -371,6 +375,11 @@ public static class GameRenderPipeline
         RenderPlanetStack(g, res, view, proj, camPos, SN.Vector3.Normalize(-L), diffuseK, ambient,
             lightIsPoint, lightPosW, lightRange, shadowFbo, shadowVP, sunSD, lightColor, light, sky, fallbackSun,
             cascadedShadow: cascadedShadow);
+        }
+        finally
+        {
+            SceneRenderer.HdrOutputActive = prevHdr;
+        }
 
         return res.SceneFbo.ColorTexture;
     }
@@ -504,7 +513,8 @@ public static class GameRenderPipeline
         GL g, ViewRenderResources res, uint targetFb, int W, int H,
         in SN.Matrix4x4 view, in SN.Matrix4x4 proj, SN.Vector3 camPos,
         GPUTexture? finalSceneTex, GPUTexture? sceneDepthTex,
-        PostProcessSettings? postSettings, UnderwaterState? underwater, float time)
+        PostProcessSettings? postSettings, UnderwaterState? underwater, float time,
+        bool hdrInput = false)
     {
         if (finalSceneTex == null || res.PostProcess == null || res.FsQuad == null)
             return;
@@ -538,7 +548,7 @@ public static class GameRenderPipeline
         g.Clear(ClearBufferMask.ColorBufferBit);
         g.BindVertexArray(res.FsQuad.VAO);
         SceneRenderer.ApplyPostProcessing(g, res.PostProcess, finalSceneTex, W, H,
-            postSettings, underwater, time, sceneDepthTex);
+            postSettings, underwater, time, sceneDepthTex, hdrInput: hdrInput);
         g.BindVertexArray(0);
         g.Enable(EnableCap.DepthTest);
     }

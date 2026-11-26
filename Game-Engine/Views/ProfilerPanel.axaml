@@ -15,7 +15,7 @@
 		<Grid Margin="6" RowDefinitions="Auto,Auto,*">
 			<!-- Stats summary -->
 			<Border Grid.Row="0" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
-				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto,Auto">
+				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
 					<TextBlock Grid.Row="0" Grid.Column="0" x:Name="RenderLabel" Text="Render: -- ms" Margin="4,2" />
 					<TextBlock Grid.Row="0" Grid.Column="1" x:Name="PhysicsLabel" Text="Physics: -- ms" Margin="4,2" />
 					<TextBlock Grid.Row="0" Grid.Column="2" x:Name="ScriptsLabel" Text="Scripts: -- ms" Margin="4,2" />
@@ -35,6 +35,9 @@
 					<TextBlock Grid.Row="3" Grid.Column="1" x:Name="PlanetChunksLabel" Text="Planet Chunks: --" Margin="4,2" />
 					<TextBlock Grid.Row="3" Grid.Column="2" x:Name="PlanetJobsLabel" Text="Planet Jobs: --/--" Margin="4,2" />
 					<TextBlock Grid.Row="3" Grid.Column="3" x:Name="PlanetMsLabel" Text="Planet LOD/Render: --/-- ms" Margin="4,2" />
+
+					<TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4" x:Name="GcStatsLabel"
+					           Text="Alloc: -- KB/f | Heap: -- MB | GC: --/--/--" Margin="4,2" />
 				</Grid>
 			</Border>
 

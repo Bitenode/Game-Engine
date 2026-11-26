@@ -43,6 +43,17 @@
 
 				<TextBlock Text="  " />
 
+				<!-- Render Debug View mode -->
+				<ComboBox x:Name="DebugViewCombo"
+						  Width="128"
+						  Height="26"
+						  FontSize="11"
+						  VerticalAlignment="Center"
+						  ToolTip.Tip="Rendering debug view (Lit, Wireframe, Albedo, Normals, Roughness, Metallic, Depth, SSAO, CSM Cascades, ToneMap Compare)"
+						  SelectedIndex="0" />
+
+				<TextBlock Text="  " />
+
 				<!-- View toggles -> dropdown with actual CheckBoxes -->
 				<Button Content="View ▾" Foreground="#DCE0E6">
 					<Button.Flyout>
