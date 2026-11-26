@@ -432,6 +432,7 @@ namespace Game_Engine.Core.Component
             _capsule ??= GetComponent<CapsuleCollider>();
 
             var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var movedFrom = pos;
 
             var up = pos - center;
             if (up.LengthSquared() < 1e-8f) up = planetUp;
@@ -609,6 +610,8 @@ namespace Game_Engine.Core.Component
             else
                 ResetStandEase();
 
+            pos = SweepAgainstWorld(movedFrom, pos, center, radius, capsuleH);
+
             var tan = wish.LengthSquared() > 1e-8f ? wish * speed : SN.Vector3.Zero;
             if (_rb != null)
             {
@@ -713,6 +716,7 @@ namespace Game_Engine.Core.Component
             IsPlanetSwimming = true;
 
             var pos = new SN.Vector3((float)Transform.Position.X, (float)Transform.Position.Y, (float)Transform.Position.Z);
+            var movedFrom = pos;
 
             float capsuleH = 1f;
             float radius = 0.4f;
@@ -871,6 +875,8 @@ namespace Game_Engine.Core.Component
             else
                 ApplyPlanetSwimPose(up, fwd, underwaterBody ? up : -up);
 
+            pos = SweepAgainstWorld(movedFrom, pos, center, radius, capsuleH);
+
             if (_rb != null)
             {
                 var vel = _swimPlanarVel + up * _swimRadialVel;
@@ -879,6 +885,58 @@ namespace Game_Engine.Core.Component
             }
 
             Transform.Position = new Vector3(pos.X, pos.Y, pos.Z);
+        }
+
+        /// <summary>
+        /// Planet motion writes the transform and returns before the rigidbody collider pass.
+        /// Sweep the body with the same capsule cast the rest of the world uses.
+        /// </summary>
+        SN.Vector3 SweepAgainstWorld(SN.Vector3 from, SN.Vector3 to, SN.Vector3 center, float radius, float capsuleH)
+        {
+            var remain = to - from;
+            float len = remain.Length();
+            if (len < 1e-5f)
+                return to;
+
+            float bodyR = MathF.Max(0.05f, radius);
+            float half = MathF.Max(0f, capsuleH - bodyR);
+            const float skin = 0.08f;
+            var pos = from;
+            var up = to - center;
+            up = up.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(up) : SN.Vector3.UnitY;
+
+            for (int iter = 0; iter < 2; iter++)
+            {
+                float step = remain.Length();
+                if (step < 1e-5f)
+                    break;
+                var dir = remain / step;
+                var a = pos + up * half;
+                var b = pos - up * half;
+                if (!CollisionWorld.CapsuleCast(a, b, bodyR, dir, step + skin, out var hit, ignore: _capsule))
+                {
+                    pos += remain;
+                    break;
+                }
+
+                float advance = hit.Distance - skin;
+                if (advance < 0f) advance = 0f;
+                if (advance > step) advance = step;
+                pos += dir * advance;
+                RefreshRadialUp(pos, center, ref up);
+
+                var left = remain - dir * advance;
+                var n = hit.Normal - up * SN.Vector3.Dot(hit.Normal, up);
+                if (n.LengthSquared() < 1e-8f)
+                    break;
+                n = SN.Vector3.Normalize(n);
+                float into = SN.Vector3.Dot(left, n);
+                if (into < 0f)
+                    left -= n * into;
+                remain = left;
+            }
+
+            return pos;
         }
 
         float SampleCollisionRadiusCached(PlanetTerrain planet, SN.Vector3 dir)

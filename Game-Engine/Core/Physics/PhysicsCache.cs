@@ -91,8 +91,11 @@ namespace Game_Engine.Core.Physics
 
                 if (c is MeshCollider mc)
                 {
-                    // Skip MeshColliders on terrain / planet GameObjects — use heightfield instead
-                    if (mc.gameObject != null && IsUnderTerrain(mc.gameObject)) continue;
+                    // Planet chunk meshes use the heightfield. Tree trunks under the planet
+                    // root are real props and must stay in the mesh list.
+                    if (mc.gameObject != null && IsUnderTerrain(mc.gameObject)
+                        && !TreeTrunk.IsOn(mc.gameObject))
+                        continue;
                     _meshColliders.Add(mc);
                 }
                 else if (c is PlanetCollider)

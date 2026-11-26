@@ -83,6 +83,8 @@ Uses the actual mesh geometry for precise triangle-based collision detection.
 
 **Fallback:** If no targets are specified, uses all `MeshFilter` components on the same GameObject.
 
+**Planet exception:** `MeshCollider` instances under a `PlanetTerrain` ancestor are **omitted** from the physics broadphase (the planet heightfield / crust APIs own grounding). The exception is hosts marked with **`TreeTrunk`** — streamed tree trunks keep mesh collision so players can walk into bark.
+
 **Use cases:** Complex static geometry (buildings, terrain, irregular shapes, level architecture).
 
 ### PlanetCollider
@@ -329,6 +331,7 @@ The `RayAABB()` method uses the **slab method** for ray-box intersection:
 Each `GameObject` has **`Layer`** (0–31), editable in the Inspector next to **Tag**. For physics:
 
 - **`Physics.Raycast`**, **`RaycastAll`**, **`SphereCast`**, **`CapsuleCast`**, **`OverlapSphere`**, and **`CollisionWorld.QueryAABB`** accept an optional **`layerMask`** (`int`) and **`QueryTriggerInteraction`**. Set bit `1 << layer` to include that layer; **`-1`** means all layers (default). Use `PhysicsLayerMask.Includes(mask, layer)` if you build masks in code.
+- **`CollisionWorld.CapsuleCast`** also accepts optional **`ignore: Collider?`** to skip one collider (for example the caster's own `CapsuleCollider` during planet locomotion sweeps).
 - Broadphase uses a **BVH** rebuilt once per frame (`CollisionWorld.RebuildBroadphaseIfNeeded`). Narrow phase: **mesh colliders** run Möller–Trumbore triangle tests; other colliders use AABB. **`PlanetCollider`** is skipped — use `PlanetTerrain` density casts.
 - **`Rigidbody.CollisionLayerMask`** and **`CharacterController.CollisionLayerMask`** (default **`-1`**) restrict which layers that body collides against when resolving overlaps, mesh tests, and triggers.
 
@@ -453,7 +456,7 @@ An alternative to `PlayerMovement` that uses Rigidbody physics for a momentum-ba
 - **Swimming physics** — automatic 3D movement when in a water column (land caves stay dry). On planets, **`SwimOnPlanet()`** runs from `TryGetWaterColumn`: surface float on the waterline, tangent WASD, **Space** up, **Ctrl** dive (look-down + W is not dive). Releasing Ctrl hovers at depth
 - **Jump impulse** — physics-driven jumping with buffered input
 - **Natural push interactions** — momentum transfer between objects
-- **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing
+- **Planet movement** — tangent-plane walk, jump along `LocalUp`, camera `WorldUp` smoothing. Walking uses **`SweepAgainstWorld`**: one or two **`CollisionWorld.CapsuleCast`** slides along the tangent move, ignoring the player capsule, instead of a separate per-triangle trunk solver
 - **Cave-aware grounding** — short `SpherecastGameplay` / `RaycastDensityGameplay` probe along `-LocalUp` after penetration resolve (32 steps / 4 refine). Outer crust uses **surface mode** + `SampleStandWorldRadius` (height cubemap + dig deltas)
 - **Heightfield dig walls** — `ResolveDigWallCapsule` probes world points around the capsule (feet/waist/head) via `HeightfieldGap` and shoves laterally until neighbor columns no longer pierce the body. Smooth uphill slopes use a **fitted gradient** so natural hills are not mistaken for dig walls (only excess above the local slope plane is corrected). **Stand easing** smooths chunk LOD / seam jumps on the visible shell mesh. `InvalidateCollisionCache()` clears the stand-radius cache (call after digs; `PlanetTool` does this automatically)
 - **First-person eye clearance** — `ResolveHeightfieldEyeClearance` keeps the near plane above dig rims and crater walls using the same heightfield gap tests (not volumetric `ResolveDensityPenetration`, which only pushes radially)

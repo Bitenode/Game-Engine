@@ -262,6 +262,8 @@ Attach to campfires, buildings, or placed props to keep grass and streamed trees
 
 `PlanetVegetationSystem` tracks active zones via `VegetationClearZone.Active` and skips spawning inside each disc. Existing vegetation inside a zone is removed when the zone is enabled or resized (`Version` bump).
 
+**Tree trunks vs planet mesh skip:** imported/streamed trees stamp a trunk `MeshCollider` (inflated copy of the trunk mesh) and a `TreeTrunk` marker on the tree root so `RigidbodyPlayer` capsule sweeps hit bark. Planet `MeshCollider` broadphase otherwise ignores meshes under the planet (heightfield owns the shell). Foliage leaf cards disable shadow casting so cutout needles do not self-shadow into black blocks.
+
 ### Flora grass scale (Biome Graph)
 
 `FloraLayer` nodes expose **Grass Min Scale** and **Grass Max Scale** (0 = keep biome preset). Compile writes `GrassMinScale` / `GrassMaxScale` onto target biome layers; `PlanetVegetationSystem` and GPU grass use them for clump height variation.

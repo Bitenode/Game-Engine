@@ -17,7 +17,7 @@ Components are assigned to categories using the `[ComponentCategory("Name")]` at
 | **Animation** | Animator, IKConstraint | `Core/Component/Animation/` |
 | **Audio** | AudioSource, AudioListener, ReverbZone | `Core/Component/Audio/` |
 | **Effects** | Decal, ParticleEmitter, PostProcessVolume | `Core/Component/Effects/` |
-| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, PlanetVeinDeposit, VegetationClearZone, Tree, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
+| **Environment** | Skybox, Terrain, TerrainStreamer, PlanetTerrain, PlanetAtmosphere, PlanetVegetationSystem, PlanetWeatherController, PlanetLifeStreaming, PlanetFloraSpawner, PlanetScatterRenderer, PlanetFaunaTableBehavior, PlanetVeinDeposit, VegetationClearZone, Tree, TreeTrunk, TreeLOD, VegetationPainter, Water | `Core/Component/Environment/` |
 | **Gameplay** | PlanetPlayerSpawner, PlanetTool | `Core/Component/Gameplay/` (PlanetTool ships in Standard Assets) |
 | **Navigation** | NavMeshAgent | `Core/Component/Navigation/` |
 | **Networking** | NetworkIdentity, NetworkTransform, NetworkAnimator | `Core/Component/Networking/` |
@@ -121,6 +121,7 @@ Holds a reference to mesh geometry data. Paired with `MeshRenderer` for renderin
 | `Mesh`           | `Mesh`   | `null`  | Runtime mesh data (vertices, normals, UVs, triangles) |
 | `ModelPath`      | `string` | `""`    | Project-relative path to the source 3D model file |
 | `ModelPartIndex` | `string` | `""`    | Which part of a multi-mesh model (0, 1, 2...) |
+| `SourceNodeName` | `string` | `""`    | Original FBX/Assimp node name at import (not saved in scenes). Planet vegetation uses this to separate trunk vs foliage meshes when the GameObject was collapsed to a single renderer |
 | `TargetPaths`    | `List<string>` | — | Target paths for mesh references       |
 
 When a Behavior with `[Require(typeof(MeshFilter))]` is added, a default cube mesh is created if `Mesh` is null.
@@ -669,6 +670,20 @@ Procedural or imported tree/vegetation component with wind animation support and
 **Wind animation:** Trees marked `IsVegetation = true` receive vertex-based wind displacement in the standard shader, using time-based sine waves modulated by vertex height.
 
 **Requires:** MeshFilter, MeshRenderer, TreeLOD (auto-added via `[Require]`)
+
+---
+
+## TreeTrunk
+
+Marker on streamed/imported planet trees that carry a **trunk** `MeshCollider`.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Health` | `float` | `36` | Chopping / harvest durability |
+
+**Planet physics:** `PhysicsCache` and `CollisionWorld` normally skip `MeshCollider` components parented under `PlanetTerrain` (heightfield owns the ground). `TreeTrunk` opts the host out of that skip so trunk meshes block `RigidbodyPlayer` planet walks.
+
+**Spawn path:** `PlanetVegetationSystem.StampTrunkCollider` picks the best trunk `MeshFilter` (node/material name heuristics), assigns a `MeshCollider` mesh that is an **inflated copy** of that trunk geometry (~0.34 m world padding in XZ for capsule clearance), and adds `TreeTrunk` on the tree root.
 
 ---
 
@@ -2120,6 +2135,10 @@ Root sinking uses trunk-up **and** radial passes so tilted trees don’t “pick
 **Play performance:** procedural spawn caps ~**24** trees / **~32** grass batches, ~**220 m** activation; `RefreshVegetation` ~**4 ms**/frame budget in play; deferred spawn until imported template is ready.
 
 **Streaming keys:** vegetation groups use a fixed **18×18 face/UV cell** (`face:iu:iv`), not quadtree leaf IDs, so LOD split/merge does not pop plants. Despawn radius uses ~**1.45×** spawn radius hysteresis. With `BatchGrassPerLeaf`, up to **4** profile grass types can share one leaf as separate patches.
+
+**Streaming stability (play):** when multiple cameras sample vegetation (Game View, LOD pipeline, Scene View), play mode prefers the **play camera** if a sample is farther than ~80 m from the resolved player view. Carpet clear from very high cameras is debounced (~0.45 s). Tree keep radius stays at the outer spawn ring (**1.25×**); movement hysteresis requires both **>1.5 m** step and **>3.5 m/s** before treating the camera as “moving” for shrink logic. Failed carpet spawns bail out before allocating throwaway GameObjects.
+
+**Imported tree colliders + shadows:** spawned trees get trunk `MeshCollider` + `TreeTrunk` (see above). Foliage / alpha-cutout leaf cards set `CastShadows = false` so the shadow pass does not draw solid quads. `MeshFilter.SourceNodeName` helps classify trunk vs foliage after import collapse.
 
 **Surface sculpting:** `NotifySurfaceEdit(worldCenter, worldRadius)` removes GPU carpet patches, carpet trees, asset instances, and procedural leaf entries in an angular cone around the brush. Called from `PlanetTerrain` after height/cave edits via `NotifyVegetationSurfaceEdit`.
 

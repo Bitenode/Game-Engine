@@ -301,7 +301,7 @@ public static class MaterialUtil
         // A leaf card has a transparent background and an opaque subject.
         // Animal color maps keep a mid-range alpha on almost every pixel; a cutoff
         // there discards the body and the animal is gone.
-        if (albedoTex != null && TextureIsCutoutMask(albedoTex))
+        if (albedoTex != null && TextureIsCutoutMask(albedoTex) && !IsInventoryIconPath(albedoRelPath))
         {
             m.AlphaCutoff = 0.45f;
             return;
@@ -310,6 +310,14 @@ public static class MaterialUtil
         // No automatic LumaClip: bark/trunk PBR textures also have dark creases + highlights and
         // matched the old heuristic, discarding the whole mesh. Use *_Alpha siblings, real
         // albedo alpha, or set LumaClip manually in .material when needed.
+    }
+
+    static bool IsInventoryIconPath(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        var norm = path.Replace('/', '\\');
+        return norm.Contains("\\Icons\\", StringComparison.OrdinalIgnoreCase)
+            || norm.Contains("\\Icon\\", StringComparison.OrdinalIgnoreCase);
     }
 
     /// Decide if this renderer should be drawn in the transparent pass.

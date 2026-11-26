@@ -397,6 +397,35 @@ namespace Game_Engine.Core.Component
                     if (IsOwnedCollider(other.gameObject)) continue;
                     if (!PhysicsLayerMask.Includes(CollisionLayerMask, other.gameObject.Layer)) continue;
 
+                    // Trunks are capsules tilted with the planet. Their world AABB is a large box,
+                    // so a tree beside you would shove you from metres away. Test the capsule itself.
+                    if (other is CapsuleCollider trunkCap && myCollider is CapsuleCollider bodyCap)
+                    {
+                        bodyCap.GetWorldCapsule(out var ba, out var bb, out var br);
+                        trunkCap.GetWorldCapsule(out var ta, out var tb, out var tr);
+                        ba += delta;
+                        bb += delta;
+                        if (ColliderQueries.TrySeparateCapsules(ba, bb, br, ta, tb, tr, out var push))
+                        {
+                            newPos += push;
+                            float pushLen = push.Length();
+                            if (pushLen > 1e-6f)
+                            {
+                                var normal = push / pushLen;
+                                float vDotN = SN.Vector3.Dot(Velocity, normal);
+                                if (vDotN < 0f)
+                                    Velocity -= (1f + Bounciness) * vDotN * normal;
+                                if (normal.Y > 0.5f)
+                                {
+                                    IsGrounded = true;
+                                    GroundNormal = normal;
+                                }
+                                OnCollisionEnter?.Invoke(other, normal);
+                            }
+                        }
+                        continue;
+                    }
+
                     var otherAABB = other.GetWorldAABB();
                     var testMin = myAABB.Min + delta;
                     var testMax = myAABB.Max + delta;

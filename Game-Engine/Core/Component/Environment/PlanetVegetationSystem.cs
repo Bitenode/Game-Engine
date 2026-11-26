@@ -240,6 +240,10 @@ public sealed class PlanetVegetationSystem : Behavior
     readonly List<int> _carpetDrifted = new();
     /// <summary>Grid cells that failed the dry-land/slope test. Skipped without re-sampling until cleared.</summary>
     readonly HashSet<int> _carpetRejected = new();
+    /// <summary>Chopped asset placements and carpet cells. A full vegetation clear puts them back.</summary>
+    readonly HashSet<int> _felledAssets = new();
+    readonly HashSet<int> _felledCarpet = new();
+    readonly List<SN.Vector3> _felledDirs = new();
     const int MaxCarpetRejected = 60000;
     int _carpetSeq;
     SN.Vector3 _carpetCamDir = new(float.NaN);
@@ -314,8 +318,10 @@ public sealed class PlanetVegetationSystem : Behavior
     int _carpetTexStamp = -1;
     /// <summary>Last walking direction (planet-local), so recycling frees grass behind the player first.</summary>
     SN.Vector3 _carpetMoveDir = new(float.NaN);
-    bool _treeSettled;
-    SN.Vector3 _treeSettledDir = new(float.NaN);
+        bool _treeSettled;
+        SN.Vector3 _treeSettledDir = new(float.NaN);
+        float _highCamSeconds;
+        int _highCamFrame = -1;
     int _carpetReseatCursor;
     /// <summary>Last <see cref="QuadNode.VisibleEpoch"/> this system looked at.</summary>
     int _vegSurfaceEpoch = -1;
@@ -516,6 +522,14 @@ public sealed class PlanetVegetationSystem : Behavior
     public void TickStreaming(SN.Vector3 cameraPos, float deltaSeconds)
     {
         if (!AutoSpawn) return;
+        // The game view and the scene view both call this. A far orbit camera
+        // must not wipe the forest the player camera just planted.
+        if (SceneService.PlayMode)
+        {
+            var play = ResolveCameraPosition();
+            if ((cameraPos - play).LengthSquared() > 80f * 80f)
+                cameraPos = play;
+        }
         EnsureInitialized();
         HonorFreshWorld();
         if (_terrain == null || _terrain.gameObject == null || _terrain.Config == null) return;
@@ -656,7 +670,7 @@ public sealed class PlanetVegetationSystem : Behavior
             if (old.IsGrass)
                 PlanetGpuGrass.RemovePatch(this, old.GpuGrassToken != 0 ? old.GpuGrassToken : idx);
             else
-                old.GameObject?.RemoveFromParent();
+                ReleaseSpawned(old.GameObject);
             _assetActive.Remove(idx);
         }
 
@@ -674,7 +688,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 if (e.IsGrass && e.GpuGrassToken != 0)
                     PlanetGpuGrass.RemovePatch(this, e.GpuGrassToken);
                 ForgetScatterRock(e);
-                e.GameObject?.RemoveFromParent();
+                ReleaseSpawned(e.GameObject);
                 group.RemoveAt(i);
             }
         }
@@ -689,7 +703,7 @@ public sealed class PlanetVegetationSystem : Behavior
         GetComponent<PlanetScatterRenderer>()?.ClearInstances();
         foreach (var group in _leafEntries.Values)
             for (int i = 0; i < group.Count; i++)
-                group[i].GameObject.RemoveFromParent();
+                ReleaseSpawned(group[i].GameObject);
         _leafEntries.Clear();
         _runtimeRoot?.RemoveFromParent();
         _runtimeRoot = null;
@@ -879,14 +893,22 @@ public sealed class PlanetVegetationSystem : Behavior
 
         if (clearExisting)
         {
+            _felledAssets.Clear();
+            _felledCarpet.Clear();
+            _felledDirs.Clear();
             foreach (var group in _leafEntries.Values)
                 for (int i = 0; i < group.Count; i++)
-                    group[i].GameObject.RemoveFromParent();
+                    ReleaseSpawned(group[i].GameObject);
             _leafEntries.Clear();
             _assetSpawnCursor = 0;
             ClearLocalCarpetTrees();
             ClearCarpetBookkeeping();
             PlanetGpuGrass.ClearOwner(this);
+            foreach (var kv in _assetActive)
+            {
+                if (!kv.Value.IsGrass)
+                    ReleaseSpawned(kv.Value.GameObject);
+            }
             ClearAssetActive();
             _assetPlacements.Clear();
             _prunedWetPlacements = false;
@@ -1097,14 +1119,22 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_terrain?.Config == null) return;
         if (clearExisting)
         {
+            _felledAssets.Clear();
+            _felledCarpet.Clear();
+            _felledDirs.Clear();
             foreach (var group in _leafEntries.Values)
                 for (int i = 0; i < group.Count; i++)
-                    group[i].GameObject.RemoveFromParent();
+                    ReleaseSpawned(group[i].GameObject);
             _leafEntries.Clear();
             _assetSpawnCursor = 0;
             ClearLocalCarpetTrees();
             ClearCarpetBookkeeping();
             PlanetGpuGrass.ClearOwner(this);
+            foreach (var kv in _assetActive)
+            {
+                if (!kv.Value.IsGrass)
+                    ReleaseSpawned(kv.Value.GameObject);
+            }
             ClearAssetActive();
         }
 
@@ -1161,9 +1191,21 @@ public sealed class PlanetVegetationSystem : Behavior
             _wantedAssetSet.Add(_nearestTrees[i]);
 
         _staleAssetIndices.Clear();
+        var camLocal = _terrain.WorldToLocal(camPos);
+        var camDir = camLocal.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(camLocal) : SN.Vector3.UnitY;
+        float despawnM = maxDist * 1.45f;
         foreach (var kv in _assetActive)
-            if (!_wantedAssetSet.Contains(kv.Key))
-                _staleAssetIndices.Add(kv.Key);
+        {
+            if (_wantedAssetSet.Contains(kv.Key))
+                continue;
+            var dir = kv.Value.SurfaceDir.LengthSquared() > 1e-8f
+                ? SN.Vector3.Normalize(kv.Value.SurfaceDir)
+                : SN.Vector3.UnitY;
+            float awayM = (dir - camDir).Length() * worldRadius;
+            if (awayM < despawnM)
+                continue;
+            _staleAssetIndices.Add(kv.Key);
+        }
         int despawnCap = ResolveDespawnCap();
         for (int i = 0; i < _staleAssetIndices.Count && LastDespawnedThisUpdate < despawnCap; i++)
         {
@@ -1172,10 +1214,10 @@ public sealed class PlanetVegetationSystem : Behavior
             {
                 if (old.IsGrass)
                     PlanetGpuGrass.RemovePatch(this, idx);
-                else
-                    old.GameObject?.RemoveFromParent();
-                _assetActive.Remove(idx);
-                LastDespawnedThisUpdate++;
+            else
+                ReleaseSpawned(old.GameObject);
+            _assetActive.Remove(idx);
+            LastDespawnedThisUpdate++;
             }
         }
 
@@ -1203,7 +1245,7 @@ public sealed class PlanetVegetationSystem : Behavior
             if (budget <= 0 || attempts >= attemptCap) break;
             if (System.Diagnostics.Stopwatch.GetTimestamp() - spawnStart >= spawnBudgetTicks)
                 break;
-            if (_assetActive.ContainsKey(idx)) continue;
+            if (_assetActive.ContainsKey(idx) || _felledAssets.Contains(idx)) continue;
             if (idx < 0 || idx >= _assetPlacements.Count) continue;
             attempts++;
             var p = _assetPlacements[idx];
@@ -2227,7 +2269,7 @@ public sealed class PlanetVegetationSystem : Behavior
             if (old.IsGrass)
                 PlanetGpuGrass.RemovePatch(this, old.GpuGrassToken != 0 ? old.GpuGrassToken : idx);
             else
-                old.GameObject?.RemoveFromParent();
+                ReleaseSpawned(old.GameObject);
         }
     }
 
@@ -2275,7 +2317,18 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_terrain == null) return true;
         float crustUnderCam = CarpetCrust(camDir);
         float altLocal = camLocal.Length() - MathF.Max(1f, crustUnderCam);
-        return altLocal > _terrain.WorldToLocalLength(CarpetMaxCameraAltitudeM);
+        bool high = altLocal > _terrain.WorldToLocalLength(CarpetMaxCameraAltitudeM);
+        int frame = Time.frameCount;
+        if (frame != _highCamFrame)
+        {
+            _highCamFrame = frame;
+            if (high)
+                _highCamSeconds += Math.Max(Time.deltaTime, 1f / 60f);
+            else
+                _highCamSeconds = 0f;
+        }
+        // One bad camera sample used to delete every tree, then the next tick planted them again.
+        return _highCamSeconds > 0.45f;
     }
 
     /// <summary>Remove only the carpet's GPU patches (asset-placement patches belong to the stream).</summary>
@@ -2747,13 +2800,15 @@ public sealed class PlanetVegetationSystem : Behavior
         var prevDir = float.IsNaN(_treeCamDir.X) ? camDir : _treeCamDir;
         var step = camDir - prevDir;
         float stepM = step.Length() * radius;
-        bool moving = stepM > 0.05f && stepM / Math.Max(dt, 1e-3f) > 1.5f;
+        // Collision correction and camera bob are not travel. Treating them as
+        // movement deleted the outer trees and planted them again every tick.
+        bool moving = stepM > 1.5f && stepM / Math.Max(dt, 1e-3f) > 3.5f;
         var fillDir = moving
             ? SafeNormalize(camDir + SafeNormalize(step, camDir) * (40f / radius), camDir)
             : camDir;
         _treeCamDir = camDir;
 
-        float keep = moving ? outer * 1.05f : outer * 1.25f;
+        float keep = outer * 1.25f;
         float maxDirDeltaSq = (keep / radius) * (keep / radius);
         _carpetStale.Clear();
         foreach (var kv in _carpetTreeDirs)
@@ -2823,7 +2878,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     continue;
                 var probeDir = SafeNormalize(origin + t * px + b * py, fillDir);
                 int token = CarpetCellToken(TreeCellBand, probeDir, cells, out int face, out int iu, out int iv);
-                if (_carpetTrees.ContainsKey(token) || _carpetRejected.Contains(token))
+                if (_carpetTrees.ContainsKey(token) || _carpetRejected.Contains(token) || _felledCarpet.Contains(token))
                     continue;
                 var dir = CarpetCellDir(token, face, iu, iv, cells);
                 float dc2 = (dir - camDir).LengthSquared();
@@ -2837,9 +2892,11 @@ public sealed class PlanetVegetationSystem : Behavior
                 }
                 if (!TrySpawnLocalCarpetTree(token, dir))
                 {
-                    // Usually "model still importing": keep walking next frame.
+                    // Usually "model still importing". Stop this tick instead of
+                    // allocating and deleting an object for every remaining cell.
                     spawnFailed++;
-                    continue;
+                    samplesLeft = 0;
+                    break;
                 }
                 added++;
                 if (System.Diagnostics.Stopwatch.GetTimestamp() > treeDeadline)
@@ -2884,7 +2941,7 @@ public sealed class PlanetVegetationSystem : Behavior
     void ClearLocalCarpetTrees()
     {
         foreach (var go in _carpetTrees.Values)
-            go?.RemoveFromParent();
+            ReleaseSpawned(go);
         _carpetTrees.Clear();
         _carpetTreeDirs.Clear();
         _carpetProceduralTreeTokens.Clear();
@@ -2904,11 +2961,416 @@ public sealed class PlanetVegetationSystem : Behavior
     void RemoveLocalCarpetTree(int token)
     {
         if (_carpetTrees.TryGetValue(token, out var go))
-            go?.RemoveFromParent();
+            ReleaseSpawned(go);
         _carpetTrees.Remove(token);
         _carpetTreeDirs.Remove(token);
         _carpetProceduralTreeTokens.Remove(token);
         _treeShellR.Remove(token);
+    }
+
+    /// <summary>Remove a chopped tree and keep that spot empty until vegetation is cleared.</summary>
+    public static bool FellSpawnedTree(GameObject? go)
+    {
+        if (go == null) return false;
+        for (int i = 0; i < s_activeSystems.Count; i++)
+        {
+            var sys = s_activeSystems[i];
+            if (sys != null && sys.TryFellSpawnedTree(go))
+                return true;
+        }
+        ReleaseSpawned(go);
+        return true;
+    }
+
+    bool TryFellSpawnedTree(GameObject start)
+    {
+        for (var n = start; n != null; n = n.Parent)
+        {
+            int assetKey = 0;
+            bool foundAsset = false;
+            foreach (var kv in _assetActive)
+            {
+                if (kv.Value.IsGrass || !ReferenceEquals(kv.Value.GameObject, n))
+                    continue;
+                assetKey = kv.Key;
+                foundAsset = true;
+                break;
+            }
+            if (foundAsset)
+            {
+                RememberFelledDir(_assetActive[assetKey].SurfaceDir);
+                _felledAssets.Add(assetKey);
+                _assetActive.Remove(assetKey);
+                ReleaseSpawned(n);
+                return true;
+            }
+
+            int carpetToken = 0;
+            bool foundCarpet = false;
+            foreach (var kv in _carpetTrees)
+            {
+                if (!ReferenceEquals(kv.Value, n)) continue;
+                carpetToken = kv.Key;
+                foundCarpet = true;
+                break;
+            }
+            if (foundCarpet)
+            {
+                if (_carpetTreeDirs.TryGetValue(carpetToken, out var dir))
+                    RememberFelledDir(dir);
+                _felledCarpet.Add(carpetToken);
+                RemoveLocalCarpetTree(carpetToken);
+                return true;
+            }
+
+            foreach (var group in _leafEntries.Values)
+            {
+                for (int i = group.Count - 1; i >= 0; i--)
+                {
+                    var e = group[i];
+                    if (e.IsGrass || !ReferenceEquals(e.GameObject, n)) continue;
+                    RememberFelledDir(e.SurfaceDir);
+                    group.RemoveAt(i);
+                    ReleaseSpawned(n);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void RememberFelledDir(SN.Vector3 dir)
+    {
+        if (dir.LengthSquared() < 1e-8f) return;
+        dir = SN.Vector3.Normalize(dir);
+        if (IsFelledNear(dir)) return;
+        _felledDirs.Add(dir);
+    }
+
+    bool IsFelledNear(SN.Vector3 dir)
+    {
+        if (_felledDirs.Count == 0 || dir.LengthSquared() < 1e-8f) return false;
+        dir = SN.Vector3.Normalize(dir);
+        for (int i = 0; i < _felledDirs.Count; i++)
+        {
+            if (SN.Vector3.Dot(dir, _felledDirs[i]) > 0.9992f)
+                return true;
+        }
+        return false;
+    }
+
+    static void ReleaseSpawned(GameObject? go)
+    {
+        if (go == null) return;
+        ReleaseColliders(go);
+        try { go.RemoveFromParent(); } catch { }
+    }
+
+    static void ReleaseColliders(GameObject go)
+    {
+        foreach (var b in go.Behaviors)
+        {
+            if (b is not Collider col) continue;
+            try { col.__OnDestroy(); } catch { }
+        }
+        for (int i = 0; i < go.Children.Count; i++)
+            ReleaseColliders(go.Children[i]);
+    }
+
+    /// <summary>
+    /// Mesh collider on the trunk mesh that the model already has.
+    /// Leaf meshes are not colliders. No generated stand-in shape.
+    /// </summary>
+    void StampTrunkCollider(GameObject go)
+    {
+        if (go == null) return;
+        StripOldTrunkColliders(go);
+        if (!TryFindTrunkMeshFilter(go, out var host, out var mf) || mf.Mesh == null)
+            return;
+
+        var mc = host.AddBehavior<MeshCollider>();
+        mc.ClearTargets();
+        mc.Mesh = InflateTrunkMesh(mf.Mesh, TrunkColliderWorldPad(host));
+        mc.BindToTargetTransform = true;
+        mc.IsTrigger = false;
+        if (!TreeTrunk.IsOn(host))
+            host.AddBehavior<TreeTrunk>();
+    }
+
+    /// <summary>
+    /// World metres to push the trunk collider out past the visible bark.
+    /// The camera near-plane and the body capsule both need that gap, or the
+    /// player rests in the wood and the view goes through it.
+    /// </summary>
+    const float TrunkColliderPadMeters = 0.34f;
+
+    static float TrunkColliderWorldPad(GameObject host)
+    {
+        var w = SceneGraphUtil.AccumulateWorld(host);
+        float sx = new SN.Vector3(w.M11, w.M12, w.M13).Length();
+        float sy = new SN.Vector3(w.M21, w.M22, w.M23).Length();
+        float sz = new SN.Vector3(w.M31, w.M32, w.M33).Length();
+        float scale = MathF.Max(0.05f, (sx + sy + sz) / 3f);
+        return TrunkColliderPadMeters / scale;
+    }
+
+    /// <summary>
+    /// Copy of the trunk mesh, expanded sideways from its centre. The drawn mesh is left alone.
+    /// </summary>
+    static Mesh InflateTrunkMesh(Mesh source, float localPad)
+    {
+        var src = source.Vertices;
+        var dst = new SN.Vector3[src.Length];
+        double sx = 0, sz = 0;
+        int n = 0;
+        int stride = Math.Max(1, src.Length / 600);
+        for (int i = 0; i < src.Length; i += stride)
+        {
+            sx += src[i].X;
+            sz += src[i].Z;
+            n++;
+        }
+        float cx = n > 0 ? (float)(sx / n) : 0f;
+        float cz = n > 0 ? (float)(sz / n) : 0f;
+        float pad = MathF.Max(0.01f, localPad);
+        for (int i = 0; i < src.Length; i++)
+        {
+            var p = src[i];
+            float dx = p.X - cx;
+            float dz = p.Z - cz;
+            float len = MathF.Sqrt(dx * dx + dz * dz);
+            if (len > 1e-4f)
+            {
+                float k = pad / len;
+                p.X += dx * k;
+                p.Z += dz * k;
+            }
+            dst[i] = p;
+        }
+
+        var tris = source.TriIndices ?? Array.Empty<int>();
+        var copy = new int[tris.Length];
+        Array.Copy(tris, copy, tris.Length);
+        return new Mesh(dst, Array.Empty<int>(), copy);
+    }
+
+    static bool TryFindTrunkMeshFilter(GameObject root, out GameObject host, out MeshFilter filter)
+    {
+        GameObject? bestHost = null;
+        MeshFilter? best = null;
+        float bestScore = float.NegativeInfinity;
+
+        void Consider(GameObject n, MeshFilter mf, MeshRenderer? mr)
+        {
+            var mesh = mf.Mesh;
+            if (mesh?.Vertices == null || mesh.Vertices.Length < 8 || mesh.TriIndices == null)
+                return;
+            bool named = IsTrunkLabel(n.Name) || IsTrunkLabel(mf.SourceNodeName) || IsTrunkLabel(mr?.Material?.Name);
+            if (!named && mr != null)
+            {
+                for (int i = 0; i < mr.MaterialPaths.Count; i++)
+                {
+                    if (IsTrunkLabel(mr.MaterialPaths[i]))
+                    {
+                        named = true;
+                        break;
+                    }
+                }
+            }
+            bool foliage = !named && (IsFoliageName(n.Name) || IsFoliageName(mr?.Material?.Name));
+            if (!foliage && !named && mr != null)
+            {
+                for (int i = 0; i < mr.MaterialPaths.Count; i++)
+                {
+                    if (IsFoliageName(mr.MaterialPaths[i]))
+                    {
+                        foliage = true;
+                        break;
+                    }
+                }
+            }
+            if (foliage)
+                return;
+
+            MeshExtents(mesh, out float ex, out float ey, out float ez);
+            float horiz = MathF.Max(ex, ez);
+            float thin = ey / MathF.Max(0.02f, horiz);
+            float score = (named ? 10000f : 0f) + thin;
+            if (score <= bestScore)
+                return;
+            bestScore = score;
+            bestHost = n;
+            best = mf;
+        }
+
+        void Walk(GameObject n)
+        {
+            var behaviors = n.Behaviors;
+            int filterIndex = 0;
+            for (int i = 0; i < behaviors.Count; i++)
+            {
+                if (behaviors[i] is not MeshFilter mf)
+                    continue;
+                MeshRenderer? mr = null;
+                int seen = 0;
+                for (int j = 0; j < behaviors.Count; j++)
+                {
+                    if (behaviors[j] is not MeshRenderer r)
+                        continue;
+                    if (seen == filterIndex)
+                    {
+                        mr = r;
+                        break;
+                    }
+                    seen++;
+                }
+                Consider(n, mf, mr);
+                filterIndex++;
+            }
+            for (int c = 0; c < n.Children.Count; c++)
+                Walk(n.Children[c]);
+        }
+
+        Walk(root);
+        host = bestHost!;
+        filter = best!;
+        return best != null;
+    }
+
+    static bool IsTrunkLabel(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        return IsTrunkName(name);
+    }
+
+    static void StripOldTrunkColliders(GameObject root)
+    {
+        var removeNodes = new List<GameObject>();
+        var strip = new List<Behavior>();
+        void Walk(GameObject n)
+        {
+            if (!ReferenceEquals(n, root) && string.Equals(n.Name, "TrunkCollider", StringComparison.Ordinal))
+            {
+                removeNodes.Add(n);
+                return;
+            }
+            foreach (var b in n.Behaviors)
+            {
+                if (b is TreeTrunk || b is CapsuleCollider || b is MeshCollider)
+                    strip.Add(b);
+            }
+            for (int i = 0; i < n.Children.Count; i++)
+                Walk(n.Children[i]);
+        }
+        Walk(root);
+        for (int i = 0; i < strip.Count; i++)
+        {
+            var owner = strip[i].gameObject;
+            if (owner != null)
+                owner.RemoveBehavior(strip[i]);
+        }
+        for (int i = 0; i < removeNodes.Count; i++)
+            ReleaseSpawned(removeNodes[i]);
+    }
+
+    static bool TryFindTrunkMesh(GameObject root, out GameObject host, out Mesh mesh)
+    {
+        GameObject foundHost = null!;
+        Mesh foundMesh = null!;
+        float best = -1f;
+        void Consider(GameObject n, MeshFilter mf, float nameBias)
+        {
+            var m = mf.Mesh;
+            if (m?.Vertices == null || m.Vertices.Length < 8) return;
+            MeshExtents(m, out float ex, out float ey, out float ez);
+            float longest = MathF.Max(ex, MathF.Max(ey, ez));
+            float thick = longest <= ex + 1e-6f ? MathF.Max(ey, ez)
+                : longest <= ey + 1e-6f ? MathF.Max(ex, ez)
+                : MathF.Max(ex, ey);
+            float aspect = longest / MathF.Max(0.02f, thick);
+            float score = nameBias + aspect;
+            if (score <= best) return;
+            best = score;
+            foundHost = n;
+            foundMesh = m;
+        }
+        void Walk(GameObject n)
+        {
+            bool trunk = IsTrunkName(n.Name);
+            bool foliage = !trunk && IsFoliageName(n.Name);
+            if (!foliage)
+            {
+                foreach (var b in n.Behaviors)
+                {
+                    if (b is MeshFilter mf)
+                        Consider(n, mf, trunk ? 1000f : 0f);
+                }
+            }
+            for (int i = 0; i < n.Children.Count; i++)
+                Walk(n.Children[i]);
+        }
+        Walk(root);
+        if (foundMesh != null)
+        {
+            host = foundHost;
+            mesh = foundMesh;
+            return true;
+        }
+        void WalkAny(GameObject n)
+        {
+            foreach (var b in n.Behaviors)
+            {
+                if (b is MeshFilter mf)
+                    Consider(n, mf, 0f);
+            }
+            for (int i = 0; i < n.Children.Count; i++)
+                WalkAny(n.Children[i]);
+        }
+        WalkAny(root);
+        host = foundHost;
+        mesh = foundMesh;
+        return foundMesh != null;
+    }
+
+    static void MeshExtents(Mesh mesh, out float ex, out float ey, out float ez)
+    {
+        var v = mesh.Vertices;
+        float minX = v[0].X, maxX = v[0].X, minY = v[0].Y, maxY = v[0].Y, minZ = v[0].Z, maxZ = v[0].Z;
+        int stride = Math.Max(1, v.Length / 400);
+        for (int i = 0; i < v.Length; i += stride)
+        {
+            var p = v[i];
+            if (p.X < minX) minX = p.X;
+            if (p.X > maxX) maxX = p.X;
+            if (p.Y < minY) minY = p.Y;
+            if (p.Y > maxY) maxY = p.Y;
+            if (p.Z < minZ) minZ = p.Z;
+            if (p.Z > maxZ) maxZ = p.Z;
+        }
+        ex = maxX - minX;
+        ey = maxY - minY;
+        ez = maxZ - minZ;
+    }
+
+    static bool IsTrunkName(string? name)
+    {
+        if (string.IsNullOrEmpty(name) || IsFoliageName(name)) return false;
+        return name.Contains("trunk", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("bark", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("stem", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("stump", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool IsFoliageName(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        return name.Contains("leaf", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("foliage", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("canopy", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("needle", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("branch", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("twig", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("frond", StringComparison.OrdinalIgnoreCase);
     }
 
     void EnsureLocalTreeModels()
@@ -3100,6 +3562,10 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_terrain?.gameObject == null || _terrain.Config == null)
             return false;
         dir = SafeNormalize(dir, SN.Vector3.UnitY);
+        string? model = PickReadyLocalTreeModel(token);
+        bool procedural = string.IsNullOrWhiteSpace(model) && _localTreeModels.Count == 0;
+        if (string.IsNullOrWhiteSpace(model) && !procedural)
+            return false;
         var planetW = GetPlanetWorldMatrix();
         // Integer hash: Fract(token * 0.127f) on a ~1e9 token has no fractional bits, so
         // every tree got the same scale and faced the same way.
@@ -3115,7 +3581,6 @@ public sealed class PlanetVegetationSystem : Behavior
         AttachSpawnedInstance(go);
         SetLocalCrustPosition(go, dir, treePad);
 
-        string? model = PickReadyLocalTreeModel(token);
         bool spawned = false;
         if (!string.IsNullOrWhiteSpace(model))
             spawned = TrySpawnImportedVegetationMesh(go, model, isGrass: false, scale, surface, radialW, placeUp, yaw);
@@ -3339,7 +3804,10 @@ public sealed class PlanetVegetationSystem : Behavior
         go.Transform.Scale = new Vector3(s, s, s);
         SetSurfaceAlignedRotation(go, placeUp, yawDeg);
         SinkTreeRootsToSurface(go, surface, radialW, placeUp, s);
-        return go.Behaviors.OfType<MeshFilter>().Any(mf => mf.Mesh != null);
+        if (!go.Behaviors.OfType<MeshFilter>().Any(mf => mf.Mesh != null))
+            return false;
+        StampTrunkCollider(go);
+        return true;
     }
 
     bool IsCheapDryLandForCarpet(SN.Vector3 dir)
@@ -3685,6 +4153,12 @@ public sealed class PlanetVegetationSystem : Behavior
                 (float)go.Transform.Position.X,
                 (float)go.Transform.Position.Y,
                 (float)go.Transform.Position.Z));
+            if (IsFelledNear(dir))
+            {
+                ReleaseSpawned(go);
+                treeCount++;
+                continue;
+            }
             entries.Add(new Entry
             {
                 GameObject = go,
@@ -4227,7 +4701,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 if (e.IsGrass)
                     PlanetGpuGrass.RemovePatch(this, e.GpuGrassToken);
                 ForgetScatterRock(e);
-                e.GameObject.RemoveFromParent();
+                ReleaseSpawned(e.GameObject);
                 entries.RemoveAt(i);
                 LastDespawnedThisUpdate++;
             }
@@ -4242,7 +4716,7 @@ public sealed class PlanetVegetationSystem : Behavior
             if (entries[i].IsGrass)
                 PlanetGpuGrass.RemovePatch(this, entries[i].GpuGrassToken);
             ForgetScatterRock(entries[i]);
-            entries[i].GameObject.RemoveFromParent();
+            ReleaseSpawned(entries[i].GameObject);
         }
         LastDespawnedThisUpdate += entries.Count;
         _leafEntries.Remove(key);
@@ -4312,6 +4786,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 {
                     SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                     SinkTreeRootsToSurface(inst, surfaceTree, radialW, placeUp, s);
+                    StampTrunkCollider(inst);
                 }
                 if (p.IsGrass)
                     SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
@@ -4418,6 +4893,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 {
                     SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
                     SinkTreeRootsToSurface(inst, surfaceTree, radialW, placeUp, prefScale);
+                    StampTrunkCollider(inst);
                 }
                 if (isGrass)
                     SetSurfaceAlignedRotation(inst, placeUp, yawDeg);
@@ -4635,6 +5111,8 @@ public sealed class PlanetVegetationSystem : Behavior
         if (isGrass)
             SetSurfaceAlignedRotation(go, placeUp, yawDeg);
         ApplyImportedTreeMeshEulerCorrection(go);
+        if (!isGrass)
+            StampTrunkCollider(go);
         return true;
     }
 
@@ -4775,6 +5253,7 @@ public sealed class PlanetVegetationSystem : Behavior
             var newMf = dest.AddBehavior<MeshFilter>();
             newMf.Mesh = pendingMf.Mesh;
             newMf.ModelPath = "";
+            newMf.SourceNodeName = pendingMf.SourceNodeName ?? "";
             var newMr = dest.AddBehavior<MeshRenderer>();
             newMr.DoubleSided = true;
             newMr.CastShadows = r.CastShadows;
@@ -4791,6 +5270,7 @@ public sealed class PlanetVegetationSystem : Behavior
         var loneMf = dest.AddBehavior<MeshFilter>();
         loneMf.Mesh = pendingMf.Mesh;
         loneMf.ModelPath = "";
+        loneMf.SourceNodeName = pendingMf.SourceNodeName ?? "";
         var loneMr = dest.AddBehavior<MeshRenderer>();
         loneMr.DoubleSided = true;
     }
@@ -5060,10 +5540,33 @@ public sealed class PlanetVegetationSystem : Behavior
 
     static void ApplyImportedTreeRenderSettingsRecursive(GameObject g)
     {
+        MeshFilter? mf = null;
         foreach (var b in g.Behaviors)
         {
-            if (b is MeshRenderer mr)
-                mr.DoubleSided = true;
+            if (b is MeshFilter f)
+                mf = f;
+            if (b is not MeshRenderer mr)
+                continue;
+            mr.DoubleSided = true;
+            // Needle cards are a big quad with a cutout. The shadow pass draws the
+            // whole quad, so the canopy becomes a solid black block.
+            bool cutout = mr.Material != null && (mr.Material.AlphaCutoff > 0.05f || mr.Material.LumaClip > 0.05f);
+            bool foliage = IsFoliageName(g.Name)
+                || IsFoliageName(mf?.SourceNodeName)
+                || IsFoliageName(mr.Material?.Name);
+            if (!foliage && mr.MaterialPaths != null)
+            {
+                for (int i = 0; i < mr.MaterialPaths.Count; i++)
+                {
+                    if (IsFoliageName(mr.MaterialPaths[i]))
+                    {
+                        foliage = true;
+                        break;
+                    }
+                }
+            }
+            if (cutout || foliage)
+                mr.CastShadows = false;
         }
         foreach (var c in g.Children)
             ApplyImportedTreeRenderSettingsRecursive(c);
@@ -5922,7 +6425,7 @@ public sealed class PlanetVegetationSystem : Behavior
     /// </summary>
     static void CollapseImportedTreeToRoot(GameObject root)
     {
-        var parts = new List<(Mesh mesh, MeshRenderer? srcMr)>();
+        var parts = new List<(Mesh mesh, MeshRenderer? srcMr, string nodeName)>();
 
         void Collect(GameObject node)
         {
@@ -5938,7 +6441,10 @@ public sealed class PlanetVegetationSystem : Behavior
                     else if (b is MeshRenderer r) mr = r;
                 }
                 if (mf?.Mesh != null)
-                    parts.Add((mf.Mesh, mr));
+                {
+                    string nodeName = !string.IsNullOrEmpty(mf.SourceNodeName) ? mf.SourceNodeName : node.Name;
+                    parts.Add((mf.Mesh, mr, nodeName));
+                }
             }
 
             var ch = node.Children;
@@ -5961,16 +6467,15 @@ public sealed class PlanetVegetationSystem : Behavior
 
         for (int i = 0; i < parts.Count; i++)
         {
-            var (mesh, srcMr) = parts[i];
-            var mf = new MeshFilter { Mesh = mesh, ModelPath = "" };
+            var (mesh, srcMr, nodeName) = parts[i];
+            var mf = new MeshFilter { Mesh = mesh, ModelPath = "", SourceNodeName = nodeName ?? "" };
             var mr = new MeshRenderer { DoubleSided = srcMr?.DoubleSided ?? true };
             if (srcMr?.Material != null)
                 mr.Material = srcMr.Material;
-            else if (srcMr != null && srcMr.MaterialPaths.Count > 0)
+            if (srcMr != null)
             {
-                foreach (var p in srcMr.MaterialPaths)
-                    mr.MaterialPaths.Add(p);
-                try { mr.ResolveMaterials(); } catch { }
+                for (int p = 0; p < srcMr.MaterialPaths.Count; p++)
+                    mr.MaterialPaths.Add(srcMr.MaterialPaths[p]);
             }
             root.AddBehavior(mf);
             root.AddBehavior(mr);

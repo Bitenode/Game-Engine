@@ -667,7 +667,8 @@ namespace Game_Engine.Core.Importers
                     if (hits.Count > 0)
                     {
                         hits.Sort(ComparePathDepthShallowFirst);
-                        return Path.GetFullPath(hits[0]);
+                        var picked = hits.FirstOrDefault(h => !IsUiIconPath(h)) ?? hits[0];
+                        return Path.GetFullPath(picked);
                     }
                 }
                 catch { }
@@ -681,7 +682,8 @@ namespace Game_Engine.Core.Importers
                     if (hits.Count > 0)
                     {
                         hits.Sort(ComparePathDepthShallowFirst);
-                        return Path.GetFullPath(hits[0]);
+                        var picked = hits.FirstOrDefault(h => !IsUiIconPath(h)) ?? hits[0];
+                        return Path.GetFullPath(picked);
                     }
                 }
                 catch { }
@@ -717,6 +719,9 @@ namespace Game_Engine.Core.Importers
                 {
                     var n = Path.GetFileNameWithoutExtension(file);
                     if (!TextureStemMatches(n, stem)) continue;
+                    // Inventory icons share the model name and have a transparent
+                    // background. Using one as albedo punches the tool mesh away.
+                    if (IsUiIconPath(file)) continue;
                     int depth = file.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length;
                     if (best == null || depth < bestDepth)
                     {
@@ -727,6 +732,13 @@ namespace Game_Engine.Core.Importers
                 if (best != null) break;
             }
             return best == null ? null : Path.GetFullPath(best);
+        }
+
+        static bool IsUiIconPath(string path)
+        {
+            var norm = path.Replace('/', '\\');
+            return norm.Contains("\\Icons\\", StringComparison.OrdinalIgnoreCase)
+                || norm.Contains("\\Icon\\", StringComparison.OrdinalIgnoreCase);
         }
 
         static bool TextureStemMatches(string candidate, string stem)
@@ -921,7 +933,7 @@ namespace Game_Engine.Core.Importers
                 if (verts == null) continue;
                 for (int i = 0; i < verts.Length; i++)
                 {
-                    float rr = MathF.Sqrt(verts[i].X * verts[i].X + verts[i].Z * verts[i].Z);
+                    float rr = verts[i].Length();
                     if (rr > radius) radius = rr;
                 }
             }
@@ -1213,7 +1225,9 @@ namespace Game_Engine.Core.Importers
             {
                 if (p.Y < minY) minY = p.Y;
                 if (p.Y > maxY) maxY = p.Y;
-                float rr = (float)Math.Sqrt(p.X * p.X + p.Z * p.Z);
+                // Full distance, not the ground footprint. A tool that stands on Y
+                // is thin in XZ, and sizing from that footprint stretches it into spikes.
+                float rr = (float)Math.Sqrt(p.X * p.X + p.Y * p.Y + p.Z * p.Z);
                 if (rr > r) r = rr;
             }
             return (r, maxY - minY);

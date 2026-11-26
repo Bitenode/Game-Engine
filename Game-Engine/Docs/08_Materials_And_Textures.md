@@ -251,6 +251,10 @@ Runs for **several frames** after scene changes:
 4. Retries loading deferred textures that weren't ready on initial load
 5. Ensures all materials have valid GPU textures before rendering
 
+**Gameplay imports:** runtime code that attaches a single model (hand tools, pickups) should call `MeshRenderer.ResolveMaterials()` **only on that hierarchy**. Avoid `MaterialRebind.MarkDirty()` / `RepairScene()` there — a full-scene pass re-resolves every renderer and can stomp planet vegetation materials that were configured at spawn (alpha-cutout foliage, bound albedo, `CastShadows` overrides).
+
+`MaterialUtil.EnsureOpaqueFoliageCutout` also skips applying a foliage alpha cutoff when the albedo path is an inventory icon under `Icons/` or `Icon/`.
+
 This system handles:
 - **Async texture loading** — textures may not be decoded on the first frame
 - **Scene transitions** — materials may be invalidated when switching scenes

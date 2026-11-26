@@ -71,7 +71,9 @@ namespace Game_Engine.Core.Physics
                 var c = _colliders[i];
                 if (!c.IsActiveAndEnabled) continue;
                 if (c is Component.PlanetCollider) continue;
-                if (c is Component.MeshCollider && PhysicsCache.IsTerrainAssociated(c.gameObject))
+                if (c is Component.MeshCollider
+                    && PhysicsCache.IsTerrainAssociated(c.gameObject)
+                    && !Component.TreeTrunk.IsOn(c.gameObject))
                     continue;
                 _bvhBuild.Add(c);
             }
@@ -174,7 +176,8 @@ namespace Game_Engine.Core.Physics
 
         public static bool CapsuleCast(SN.Vector3 point1, SN.Vector3 point2, float radius, SN.Vector3 direction, float maxDist,
             out RaycastHit hit, int layerMask = -1,
-            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore)
+            QueryTriggerInteraction queryTriggers = QueryTriggerInteraction.Ignore,
+            Component.Collider? ignore = null)
         {
             hit = default;
             direction = SN.Vector3.Normalize(direction);
@@ -186,6 +189,8 @@ namespace Game_Engine.Core.Physics
             for (int i = 0; i < _queryScratch.Count; i++)
             {
                 var c = _queryScratch[i];
+                if (ignore != null && (ReferenceEquals(c, ignore) || ReferenceEquals(c.gameObject, ignore.gameObject)))
+                    continue;
                 if (!IncludeCollider(c, layerMask, queryTriggers)) continue;
                 if (!ColliderQueries.CapsuleCast(c, point1, point2, radius, direction, best, out var n)) continue;
                 best = n.Distance;

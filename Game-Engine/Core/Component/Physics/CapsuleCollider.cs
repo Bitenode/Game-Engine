@@ -78,5 +78,28 @@ namespace Game_Engine.Core.Component
 
             return new AABB(min, max);
         }
+
+        /// <summary>World-space capsule segment and radius. Radius follows the scale on the axes perpendicular to the capsule.</summary>
+        public void GetWorldCapsule(out SN.Vector3 a, out SN.Vector3 b, out float worldRadius)
+        {
+            GetLocalCapsule(out var la, out var lb, out var r);
+            var W = SceneGraphUtil.AccumulateWorld(gameObject);
+            a = SN.Vector3.Transform(la, W);
+            b = SN.Vector3.Transform(lb, W);
+
+            var ex = new SN.Vector3(W.M11, W.M12, W.M13);
+            var ey = new SN.Vector3(W.M21, W.M22, W.M23);
+            var ez = new SN.Vector3(W.M31, W.M32, W.M33);
+            float sx = ex.Length();
+            float sy = ey.Length();
+            float sz = ez.Length();
+            float radial = Direction switch
+            {
+                Axis.X => MathF.Max(sy, sz),
+                Axis.Z => MathF.Max(sx, sy),
+                _ => MathF.Max(sx, sz)
+            };
+            worldRadius = r * MathF.Max(1e-4f, radial);
+        }
     }
 }

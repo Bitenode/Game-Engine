@@ -124,7 +124,7 @@ The importer tries multiple paths to find texture files:
 1. **Relative to model** — path as stored in the model file
 2. **Filename search** — search the model folder (and parent) for an exact filename match
 3. **Stem fallback** — if the FBX points at `name.tga` but disk has `name_col_unity.tga`, match files that start with the same stem plus `_`, `-`, or `.`
-4. **Assets folder** — search in the project's `Assets/` directory
+4. **Assets folder** — search in the project's `Assets/` directory (paths under `Icons/` or `Icon/` are deprioritized so UI inventory art is not bound as 3D albedo)
 5. **Embedded textures** — extract from the model file and save to disk as separate images
 
 ### Filename Pattern Guessing
@@ -221,7 +221,7 @@ After import, preview clips in the **Animation** panel (Scene View) or press **P
 
 ### Static meshes (no skeleton)
 
-1. The importer finds the largest horizontal (XZ) extent across all meshes.
+1. The importer finds the largest **3D** extent (length from origin: √(x²+y²+z²)) across all meshes — not XZ-only — so thin Y-up props (tools, handles) are not stretched into spikes.
 2. Vertices are scaled by `1 / maxRadius` so the model fits roughly inside a ~1 unit radius.
 3. Materials and colliders use the scaled vertex data.
 
@@ -233,7 +233,7 @@ Static normalization is **not** applied during vertex conversion. Instead:
 2. **`NormalizeSkinnedBind`** runs once per import:
    - Skinned vertices are baked through `OffsetMatrix × bindWorld` (bind-pose model positions).
    - Rigid sub-meshes (no weights) are baked with their mesh-node transform.
-   - The combined bounds are scaled to ~1 unit horizontal radius.
+   - The combined bounds are scaled to ~1 unit **3D** radius (same rule as static meshes).
    - Bind-pose `LocalBindTransform` and `OffsetMatrix` are rebuilt in that fitted space.
 3. Loose animation clips reuse the same fit factor on **world translations** before local keys are written.
 
