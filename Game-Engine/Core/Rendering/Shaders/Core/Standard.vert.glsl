@@ -3,6 +3,9 @@
 layout(location = 0) in vec3 aPosition;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUV;
+layout(location = 5) in vec4 aInstPosScale;
+layout(location = 6) in vec4 aInstUpYaw;
+layout(location = 7) in vec4 aInstTint;
 
 #include "Common/FrameGlobals.glsl"
 #include "Common/LightingGlobals.glsl"
@@ -10,6 +13,7 @@ layout(location = 2) in vec2 aUV;
 
 uniform mat4 uModel;
 uniform mat4 uNormalMatrix;   // transpose(inverse(model))
+uniform int  uInstanced;      // 1 = planet-aligned GPU instanced draw (uModel = planetWorld)
 
 // Wind / vegetation animation
 uniform float uWindStrength;
@@ -27,6 +31,37 @@ void main()
     vec3 localNorm = aNormal;
 
     ApplySkinning(localPos, localNorm);
+
+    if (uInstanced == 1)
+    {
+        float instScale = aInstPosScale.w;
+        if (instScale <= 0.0001)
+        {
+            vWorldPos = vec3(0.0);
+            vWorldNormal = vec3(0.0, 1.0, 0.0);
+            vUV = aUV;
+            vShadowCoord = vec4(0.0);
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+        vec3 up = normalize(aInstUpYaw.xyz);
+        vec3 seed = abs(up.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+        vec3 side = normalize(cross(seed, up));
+        vec3 fwd = normalize(cross(up, side));
+        float cy = cos(aInstUpYaw.w);
+        float sy = sin(aInstUpYaw.w);
+        vec3 xAxis = side * cy + fwd * sy;
+        vec3 zAxis = -side * sy + fwd * cy;
+
+        localPos = aInstPosScale.xyz
+            + xAxis * (localPos.x * instScale)
+            + up    * (localPos.y * instScale)
+            + zAxis * (localPos.z * instScale);
+        localNorm = normalize(
+            xAxis * localNorm.x
+            + up  * localNorm.y
+            + zAxis * localNorm.z);
+    }
 
     vec4 worldPos = uModel * vec4(localPos, 1.0);
 

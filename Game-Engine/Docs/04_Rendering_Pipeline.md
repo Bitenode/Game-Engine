@@ -382,7 +382,7 @@ Manages VAO (Vertex Array Object), VBO (Vertex Buffer Object), and EBO (Element 
 - Triangle EBO — `GL_TRIANGLES` for filled rendering
 - Line EBO — `GL_LINES` for wireframe rendering
 
-The `Upload()` method auto-detects whether the mesh has bone data and selects the appropriate layout.
+The `Upload()` method auto-detects whether the mesh has bone data and selects the appropriate layout. `DrawInstanced(instanceVbo, instanceCount, strideBytes, byteOffset)` binds per-instance `vec4` attributes at locations `5` (`aInstPosScale`), `6` (`aInstUpYaw`), and `7` (`aInstTint`) with `VertexAttribDivisor = 1` (chunked on `XBOX_UWP`), and resets divisors to `0` + disables locations `5–7` in a `finally` block (as does `Draw()`) so ANGLE/Xbox never leak instanced divisor state onto non-instanced draws.
 
 ### GPUTexture
 Supports multiple upload modes for different texture types:
@@ -647,6 +647,7 @@ Planet atmosphere rendering is now an isolated path and does not depend on `Skyb
 - **Prop lighting fill:** when the camera is inside a planet atmosphere shell, Standard and deferred shaders set `uHasPlanetFill` / `uPlanetCenter` so placed props get the same radial sky-fill Lambert term as terrain (fixes props and campfires reading nearly black beside the ground)
 - **Planet point lights:** terrain pass binds up to four nearest enabled point lights (`BindNearestPointLights`) for campfires and local lamps on the crust
 - **Forward scene opaques:** after planet terrain (and optional dedicated vegetation pass), `SceneRenderer.RenderForwardSceneOpaques` redraws opaque scene meshes (cubes, pickups, props) so they are not buried by the planet pass depth. This runs only when `PlanetTerrain.ActivePlanets.Count > 0`; scenes without planets skip it so deferred shading is not overwritten by a second forward pass.
+- **2-Tier GPU-instanced planet forests & grass:** `SceneRenderer.RenderPlanetVegetationAfterTerrain` renders `PlanetWholePlanetForest` (`PlanetForestCanopy.vert/frag.glsl`, 1 static-VBO draw call per planet at all camera altitudes with smooth Tier 1 ↔ Tier 2 crossfade), `PlanetGpuTrees` (`Standard.vert.glsl` `uInstanced = 1` + `GPUMesh.DrawInstanced`, 1 draw call per unique tree mesh/material batch), and `PlanetGpuGrass` (`PlanetGpuGrass.vert/frag.glsl` with smooth `uAltitudeFade` transition band). All three key their GPU VAOs/VBOs per `ResourceCache` for multi-GL-context safety (`SceneView` vs `GameView`) and release them in `ResourceCache.FlushAll()` / `Dispose()`.
 
 `Skybox` still controls only the world background sky pass. Changing `Skybox` values should not change planet terrain/water/cloud shading.
 

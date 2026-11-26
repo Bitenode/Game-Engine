@@ -154,6 +154,8 @@ public sealed class ResourceCache : IDisposable
     public void FlushAll()
     {
         PlanetGpuGrass.ReleaseGpuFor(this);
+        PlanetWholePlanetForest.ReleaseGpuFor(this);
+        PlanetGpuTrees.ReleaseGpuFor(this);
         SceneRenderer.ClearMeshMetadata();
 
         foreach (var kv in _meshes)
@@ -560,6 +562,8 @@ public sealed class ResourceCache : IDisposable
     {
         GpuMeshReleaseQueue.Unregister(this);
         PlanetGpuGrass.ReleaseGpuFor(this);
+        PlanetWholePlanetForest.ReleaseGpuFor(this);
+        PlanetGpuTrees.ReleaseGpuFor(this);
         foreach (var kv in _meshes)
             kv.Value.GPU.Dispose();
         _meshes.Clear();

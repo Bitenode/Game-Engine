@@ -355,6 +355,7 @@ public static class PlanetGpuGrass
         shader.SetFloat("uCloudiness", cloudiness);
         shader.SetFloat("uWindStrength", Math.Clamp(wind * 3.0f, 0.02f, 0.36f));
         shader.SetFloat("uCardWidth", Math.Clamp(owner.GrassWidthScale, 0.25f, 4f));
+        shader.SetFloat("uAltitudeFade", owner.GetGpuGrassAltitudeFade(camPos));
         shader.SetTexture("uAlbedoTex", 0);
 
         gl.BindVertexArray(gpu.Vao);

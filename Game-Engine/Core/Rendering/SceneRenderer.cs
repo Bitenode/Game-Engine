@@ -3830,12 +3830,18 @@ namespace Game_Engine.Core
             SN.Vector3 lightColor = default,
             CascadedShadowMap? cascadedShadow = null)
         {
-            // Instanced grass is not a scene mesh. The dedicated pass also draws tree
-            // meshes; with that pass off, trees still come from the main scene walk,
-            // but the carpet has to be drawn here or it never appears.
+            // Instanced grass, near-ring GPU trees, and whole-planet canopies are not scene meshes.
+            // The dedicated pass also draws GameObject tree meshes; with that pass off, GameObject
+            // trees still come from the main scene walk, but instanced layers must draw here at all altitudes.
             if (!PlanetVegetationSystem.AnyUseDedicatedRenderPass)
             {
-                RenderPlanetGpuGrassBatches(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, lightColor);
+                var effLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
+                RenderPlanetWholePlanetForest(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, effLightColor);
+                RenderPlanetGpuTreeBatches(
+                    gl, standardShader, cache, view, proj, camPos,
+                    lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                    shadowFBO, shadowVP, sunShineDir, effLightColor, cascadedShadow);
+                RenderPlanetGpuGrassBatches(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, effLightColor);
                 return;
             }
 
@@ -3980,7 +3986,89 @@ namespace Game_Engine.Core
             }
             }
 
+            RenderPlanetWholePlanetForest(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, renderCtx.LightColor);
+            RenderPlanetGpuTreeBatches(
+                gl, standardShader, cache, view, proj, camPos,
+                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunShineDir, renderCtx.LightColor, renderCtx.CascadedShadow);
             RenderPlanetGpuGrassBatches(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, renderCtx.LightColor);
+        }
+
+        static void RenderPlanetWholePlanetForest(
+            GL gl,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float ambient,
+            float diffuseK,
+            SN.Vector3 lightColor)
+        {
+            var planets = PlanetTerrain.ActivePlanets;
+            if (planets.Count == 0) return;
+
+            var systems = PlanetVegetationSystem.ActiveSystems;
+            for (int p = 0; p < planets.Count; p++)
+            {
+                var terrain = planets[p];
+                if (terrain?.gameObject == null || !terrain.IsActiveAndEnabled || !terrain.HasBakedStandSurface)
+                    continue;
+
+                PlanetVegetationSystem? veg = null;
+                for (int s = 0; s < systems.Count; s++)
+                {
+                    if (ReferenceEquals(systems[s]?.TerrainGameObject, terrain.gameObject))
+                    {
+                        veg = systems[s];
+                        break;
+                    }
+                }
+
+                var planetWorld = TransformUtil.WorldFromTransform(terrain.gameObject.Transform);
+                SN.Vector3 nearAnchorLocal = SN.Vector3.Zero;
+                float crossInner = 0f, crossOuter = 0f;
+                veg?.GetNearForestCrossfade(camPos, out nearAnchorLocal, out crossInner, out crossOuter);
+
+                PlanetWholePlanetForest.Render(
+                    gl, cache, terrain, veg, planetWorld, view, proj, camPos,
+                    lightDir, ambient, diffuseK, lightColor,
+                    nearAnchorLocal, crossInner, crossOuter, HdrOutputActive);
+            }
+        }
+
+        static void RenderPlanetGpuTreeBatches(
+            GL gl,
+            ShaderProgram standardShader,
+            ResourceCache cache,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            float diffuseK,
+            float ambient,
+            bool lightIsPoint,
+            SN.Vector3 lightPosW,
+            float lightRange,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunShineDir,
+            SN.Vector3 lightColor,
+            CascadedShadowMap? cascadedShadow)
+        {
+            var systems = PlanetVegetationSystem.ActiveSystems;
+            for (int s = 0; s < systems.Count; s++)
+            {
+                var sys = systems[s];
+                if (sys?.TerrainGameObject == null || !sys.IsActiveAndEnabled)
+                    continue;
+                var planetWorld = TransformUtil.WorldFromTransform(sys.TerrainGameObject.Transform);
+                PlanetGpuTrees.Render(
+                    gl, standardShader, cache, sys, planetWorld, view, proj, camPos,
+                    lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                    shadowFBO, shadowVP, sunShineDir, lightColor, cascadedShadow,
+                    HdrOutputActive, (int)DebugViewMode);
+            }
         }
 
         static void RenderPlanetGpuGrassBatches(

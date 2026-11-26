@@ -17,7 +17,7 @@ public sealed class ViewRenderResources : IDisposable
     public GlobalUniforms? Globals { get; private set; }
 
     public ShaderProgram? Standard, Depth, Sky, Terrain, Particle, Water;
-    public ShaderProgram? PlanetTerrain, PlanetWater, PlanetAtmosphere, PlanetCloud, PostProcess, DepthOfField;
+    public ShaderProgram? PlanetTerrain, PlanetWater, PlanetAtmosphere, PlanetCloud, PlanetForestCanopy, PostProcess, DepthOfField;
     public ShaderProgram? GBuffer, DeferredLight, Ssao, SsaoBlur, Ssr, VolFog, TaaResolve, DepthCopy;
     public ShaderProgram? Grid, Wireframe;
 
@@ -157,6 +157,9 @@ public sealed class ViewRenderResources : IDisposable
         if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-cloud");
         PlanetCloud = lib.GetBuiltin(ShaderSources.Paths.PlanetCloudsVert, ShaderSources.Paths.PlanetCloudsFrag);
 
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-forest-canopy");
+        PlanetForestCanopy = lib.GetBuiltin(ShaderSources.Paths.PlanetForestCanopyVert, ShaderSources.Paths.PlanetForestCanopyFrag, throwOnInitialError: false);
+
         if (logProgress) Game_Engine.Core.Log.Info("[Shader] post");
         PostProcess = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.PostProcessFrag);
 
@@ -242,7 +245,7 @@ public sealed class ViewRenderResources : IDisposable
         Shaders = null;
 
         Standard = Depth = Sky = Terrain = Particle = Water = null;
-        PlanetTerrain = PlanetWater = PlanetAtmosphere = PlanetCloud = PostProcess = DepthOfField = null;
+        PlanetTerrain = PlanetWater = PlanetAtmosphere = PlanetCloud = PlanetForestCanopy = PostProcess = DepthOfField = null;
         GBuffer = DeferredLight = Ssao = SsaoBlur = Ssr = VolFog = TaaResolve = DepthCopy = null;
         Grid = Wireframe = null;
     }

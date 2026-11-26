@@ -119,6 +119,13 @@ public sealed class PlanetVegetationSystem : Behavior
     [Persist] public bool UseDedicatedRenderPass { get; set; } = true;
 
     /// <summary>
+    /// Render near-ring local trees via GPU instancing (<see cref="PlanetGpuTrees"/>) with a small
+    /// pooled trunk-collider ring around the player in Play Mode. Dramatically reduces draw calls
+    /// and GameObject overhead compared to spawning one GameObject per tree.
+    /// </summary>
+    [Persist] public bool UseGpuInstancedTrees { get; set; } = true;
+
+    /// <summary>
     /// Merge all grass in a terrain leaf into one mesh (one draw call per leaf).
     /// </summary>
     [Persist] public bool BatchGrassPerLeaf { get; set; } = true;
@@ -143,7 +150,7 @@ public sealed class PlanetVegetationSystem : Behavior
     public GameObject? TerrainGameObject => _terrain?.gameObject;
 
     /// <summary>
-    /// GPU grass is first-person scale. Orbit / universe cameras must not draw it
+    /// GPU grass is first-person / low-altitude scale. Orbit / universe cameras must not draw it
     /// or unit cards without a valid instance buffer fill the skybox.
     /// </summary>
     public bool ShouldDrawGpuGrass(SN.Vector3 worldCam)
@@ -151,7 +158,66 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_terrain?.Config == null) return false;
         float r = Math.Max(1f, _terrain.Config.EffectiveWorldRadius) * Math.Max(0.0001f, _terrain.GetWorldRadiusScale());
         float dist = (worldCam - _terrain.GetWorldCenter()).Length();
-        return dist <= r + 320f;
+        return dist <= r + 550f;
+    }
+
+    /// <summary>
+    /// Smooth altitude fade (1 at/below 300 m above mean surface, 0 at 550 m) so swooping down
+    /// in Scene View transitions smoothly from terrain splat into GPU grass.
+    /// </summary>
+    public float GetGpuGrassAltitudeFade(SN.Vector3 worldCam)
+    {
+        if (_terrain?.Config == null) return 0f;
+        float r = Math.Max(1f, _terrain.Config.EffectiveWorldRadius) * Math.Max(0.0001f, _terrain.GetWorldRadiusScale());
+        float alt = (worldCam - _terrain.GetWorldCenter()).Length() - r;
+        if (alt <= 300f) return 1f;
+        if (alt >= 550f) return 0f;
+        float t = 1f - (alt - 300f) / 250f;
+        return t * t * (3f - 2f * t);
+    }
+
+    /// <summary>
+    /// Compute the planet-local anchor and inner/outer crossfade radii for Tier 2 whole-planet
+    /// canopies so they scale down smoothly inside the Tier 1 near-ring 3D tree radius, and
+    /// return <c>outerLocal = 0</c> in orbit so 100% of the planet has canopies with zero bald spot.
+    /// </summary>
+    public void GetNearForestCrossfade(
+        SN.Vector3 worldCam,
+        out SN.Vector3 nearAnchorLocal,
+        out float innerLocal,
+        out float outerLocal)
+    {
+        nearAnchorLocal = SN.Vector3.Zero;
+        innerLocal = 0f;
+        outerLocal = 0f;
+        if (_terrain?.Config == null) return;
+        if (_carpetTreeDirs.Count == 0 && PlanetGpuTrees.TreeCount(this) == 0)
+            return;
+
+        // In Play Mode, anchor crossfade to the player camera if the Scene View camera is far away.
+        var anchorWorld = worldCam;
+        if (SceneService.PlayMode)
+        {
+            var play = ResolveCameraPosition();
+            if ((worldCam - play).LengthSquared() > 80f * 80f)
+                anchorWorld = play;
+        }
+
+        var camLocal = _terrain.WorldToLocal(anchorWorld);
+        float camLen = camLocal.Length();
+        if (camLen < 1e-5f) return;
+        var camDir = camLocal / camLen;
+        float radius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+        float altLocal = camLen - radius;
+        if (altLocal > _terrain.WorldToLocalLength(550f))
+            return;
+
+        float outer = ConsoleTight
+            ? Math.Clamp(radius * 0.16f, 110f, 150f)
+            : Math.Clamp(radius * 0.24f, 175f, 240f);
+        nearAnchorLocal = camDir * radius;
+        innerLocal = outer * 0.68f;
+        outerLocal = outer * 0.98f;
     }
 
     public int ActiveLeafGroups => _leafEntries.Count;
@@ -220,12 +286,31 @@ public sealed class PlanetVegetationSystem : Behavior
     float _treeImportWaitSec;
     int _nextGpuGrassToken = -1;
     int _lastStreamFrame = int.MinValue;
+    int _streamTick;
+    long _lastStreamWallTicks;
+    float _lastStreamDt = 1f / 60f;
     SN.Vector3 _cachedNearestCamDir = new(float.NaN);
     int _cachedNearestGrassCap;
     int _cachedNearestTreeCap;
     readonly Dictionary<int, SN.Vector3> _carpetDirs = new();
     readonly Dictionary<int, GameObject> _carpetTrees = new();
     readonly Dictionary<int, SN.Vector3> _carpetTreeDirs = new();
+
+    readonly record struct GpuTreeRecord(
+        SN.Vector3 Dir,
+        SN.Vector3 LocalPos,
+        SN.Vector3 LocalUp,
+        float Scale,
+        float YawRad,
+        float BaseScale,
+        string? ModelPath,
+        float TrunkPad);
+    readonly Dictionary<int, GpuTreeRecord> _gpuCarpetTrees = new();
+    readonly Dictionary<int, GameObject> _pooledTreeColliders = new();
+    readonly Dictionary<GameObject, int> _colliderTokenByGo = new();
+    int _colliderPoolTick;
+    static readonly Dictionary<string, (List<PlanetGpuTrees.SubmeshPart> Parts, float MeshExtent, Mesh? TrunkMesh)> s_gpuTreeTemplateParts = new(StringComparer.OrdinalIgnoreCase);
+    static List<PlanetGpuTrees.SubmeshPart>? s_proceduralGpuTreeParts;
     readonly List<string> _localTreeModels = new();
     readonly List<string> _coralModels = new();
     readonly Dictionary<int, GameObject> _coralPatches = new();
@@ -321,7 +406,7 @@ public sealed class PlanetVegetationSystem : Behavior
         bool _treeSettled;
         SN.Vector3 _treeSettledDir = new(float.NaN);
         float _highCamSeconds;
-        int _highCamFrame = -1;
+        int _highCamTick = -1;
     int _carpetReseatCursor;
     /// <summary>Last <see cref="QuadNode.VisibleEpoch"/> this system looked at.</summary>
     int _vegSurfaceEpoch = -1;
@@ -337,7 +422,7 @@ public sealed class PlanetVegetationSystem : Behavior
     SN.Vector3 _carpetRecycleDir = new(float.NaN);
     /// <summary>Where and when patches outside their band were last swept out.</summary>
     SN.Vector3 _carpetDropDir = new(float.NaN);
-    int _carpetDropFrame;
+    int _carpetDropTick;
     Camera? _playCam;
     bool _playCamIsMain;
     float _playCamFoundAt = float.NegativeInfinity;
@@ -417,6 +502,8 @@ public sealed class PlanetVegetationSystem : Behavior
         while (s_pendingTemplateLoads.TryDequeue(out _)) { }
         s_treeFileSeen.Clear();
         s_treeTemplateKeys.Clear();
+        lock (s_gpuTreeTemplateParts)
+            s_gpuTreeTemplateParts.Clear();
         PlanetGrassTextureCache.Clear();
     }
 
@@ -540,13 +627,25 @@ public sealed class PlanetVegetationSystem : Behavior
         bool waitingForPlanetFile = _terrain.AsyncVegetationHydrationPending;
         bool usingAssets = UsePlanetAssetPlacements && _assetPlacements.Count > 0;
 
+        // Avoid double-ticking on the exact same Play Mode frame, while still advancing
+        // smoothly in Scene View when Game View is paused (Time.frameCount frozen).
+        long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        double wallElapsedSec = _lastStreamWallTicks == 0
+            ? 1.0 / 60.0
+            : (nowTicks - _lastStreamWallTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
         int frame = Time.frameCount;
-        if (frame == _lastStreamFrame)
+        if (frame == _lastStreamFrame && wallElapsedSec < 0.010)
             return;
         _lastStreamFrame = frame;
+        _lastStreamWallTicks = nowTicks;
+        _streamTick++;
 
         float dt = Math.Max(0f, deltaSeconds);
-        if (dt <= 1e-6f) dt = 1f / 60f;
+        if (dt <= 1e-6f)
+            dt = (float)Math.Clamp(wallElapsedSec, 1.0 / 120.0, 0.1);
+        _lastStreamDt = dt;
+
+        PlanetWholePlanetForest.EnsureBaked(_terrain, this);
 
         RefreshClearZones(dt, Math.Max(1.7f, ResolveGpuGrassHeight(1f) * 0.38f));
         NoteSurfaceEpoch();
@@ -651,6 +750,9 @@ public sealed class PlanetVegetationSystem : Behavior
         for (int i = 0; i < _carpetStale.Count; i++)
             RemoveLocalCarpetTree(_carpetStale[i]);
 
+        // Clear Tier 2 whole-planet canopies in the excavated cone immediately.
+        PlanetWholePlanetForest.RemoveInCone(_terrain, hitDir, minDot);
+
         _staleAssetIndices.Clear();
         foreach (var kv in _assetActive)
         {
@@ -700,6 +802,8 @@ public sealed class PlanetVegetationSystem : Behavior
         ClearLocalCarpetTrees();
         ClearCarpetBookkeeping();
         PlanetGpuGrass.ClearOwner(this);
+        PlanetGpuTrees.ClearOwner(this);
+        PlanetWholePlanetForest.ClearPlanet(_terrain);
         GetComponent<PlanetScatterRenderer>()?.ClearInstances();
         foreach (var group in _leafEntries.Values)
             for (int i = 0; i < group.Count; i++)
@@ -1655,15 +1759,15 @@ public sealed class PlanetVegetationSystem : Behavior
         float patchR = Math.Max(1.7f, h * 0.38f);
         // The sweep visits every patch. Each band keeps a margin of six metres and more
         // past its range, so it only has to run once the player has moved a step.
-        int frameNow = Time.frameCount;
+        int tickNow = _streamTick;
         float sinceDropM = float.IsNaN(_carpetDropDir.X)
             ? float.MaxValue
             : (camDir - _carpetDropDir).Length() * radius;
-        if (sinceDropM >= 1f || frameNow - _carpetDropFrame >= 30 || frameNow < _carpetDropFrame)
+        if (sinceDropM >= 1f || tickNow - _carpetDropTick >= 30 || tickNow < _carpetDropTick)
         {
             DropCarpetOutsideBands(camDir, radius);
             _carpetDropDir = camDir;
-            _carpetDropFrame = frameNow;
+            _carpetDropTick = tickNow;
         }
 
         // Grass planted on a coarse LOD floats once that chunk becomes a hill. Patches on
@@ -2318,16 +2422,17 @@ public sealed class PlanetVegetationSystem : Behavior
         float crustUnderCam = CarpetCrust(camDir);
         float altLocal = camLocal.Length() - MathF.Max(1f, crustUnderCam);
         bool high = altLocal > _terrain.WorldToLocalLength(CarpetMaxCameraAltitudeM);
-        int frame = Time.frameCount;
-        if (frame != _highCamFrame)
+        int tick = _streamTick;
+        if (tick != _highCamTick)
         {
-            _highCamFrame = frame;
+            _highCamTick = tick;
             if (high)
-                _highCamSeconds += Math.Max(Time.deltaTime, 1f / 60f);
+                _highCamSeconds += Math.Max(_lastStreamDt, 1f / 60f);
             else
                 _highCamSeconds = 0f;
         }
         // One bad camera sample used to delete every tree, then the next tick planted them again.
+        // Note: this only gates the near-surface carpet/local trees; Tier 2 whole-planet canopies stay active.
         return _highCamSeconds > 0.45f;
     }
 
@@ -2491,8 +2596,12 @@ public sealed class PlanetVegetationSystem : Behavior
         foreach (var kv in _carpetTreeDirs)
         {
             var (face, u, v) = CubeSphereMath.SphereToCubeExact(kv.Value);
-            if (CellChanged(face, u, v) && _carpetTrees.TryGetValue(kv.Key, out var go))
+            if (!CellChanged(face, u, v))
+                continue;
+            if (_carpetTrees.TryGetValue(kv.Key, out var go))
                 SlideOntoVisibleGround(go, kv.Value, kv.Key, _treeShellR);
+            else if (_gpuCarpetTrees.TryGetValue(kv.Key, out var rec))
+                ReseatGpuCarpetTree(kv.Key, rec);
         }
 
         foreach (var kv in _assetActive)
@@ -2795,8 +2904,8 @@ public sealed class PlanetVegetationSystem : Behavior
             return;
         }
         float outer = ConsoleTight
-            ? Math.Clamp(radius * 0.14f, 90f, 130f)
-            : Math.Clamp(radius * 0.22f, 160f, 240f);
+            ? Math.Clamp(radius * (UseGpuInstancedTrees ? 0.16f : 0.14f), UseGpuInstancedTrees ? 110f : 90f, UseGpuInstancedTrees ? 150f : 130f)
+            : Math.Clamp(radius * (UseGpuInstancedTrees ? 0.24f : 0.22f), UseGpuInstancedTrees ? 175f : 160f, 240f);
         var prevDir = float.IsNaN(_treeCamDir.X) ? camDir : _treeCamDir;
         var step = camDir - prevDir;
         float stepM = step.Length() * radius;
@@ -2821,26 +2930,33 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_carpetStale.Count > 0 || moving)
             _treeSettled = false;
 
-        int cap = ConsoleTight ? 14 : (PlayPerfLimited ? 56 : 80);
-        // Each tree is a cloned model plus surface sampling. Five to eight a frame stalled
-        // the walk; the cap is unchanged so the forest fills in over a second or two.
-        int perTick = ConsoleTight ? 1 : (moving ? 3 : 2);
+        int cap = UseGpuInstancedTrees
+            ? (ConsoleTight ? 48 : (PlayPerfLimited ? 480 : 640))
+            : (ConsoleTight ? 14 : (PlayPerfLimited ? 56 : 80));
+        // Instanced trees write 48 bytes into a batch buffer (no GameObject allocation),
+        // so we can fill far more trees per tick while staying within the 2 ms budget.
+        int perTick = UseGpuInstancedTrees
+            ? (ConsoleTight ? 4 : (moving ? 14 : 10))
+            : (ConsoleTight ? 1 : (moving ? 3 : 2));
         long treeDeadline = System.Diagnostics.Stopwatch.GetTimestamp()
             + (long)(System.Diagnostics.Stopwatch.Frequency * 0.002);
 
         // Free trees behind the player before the hard cap fills.
+        int liveTrees = _carpetTreeDirs.Count;
         int softCap = ConsoleTight ? Math.Max(8, (int)(cap * 0.7f)) : cap - perTick;
-        int slack = cap - _carpetTrees.Count;
+        int slack = cap - liveTrees;
         float sinceRecycleM = float.IsNaN(_treeRecycleDir.X)
             ? float.MaxValue
             : (camDir - _treeRecycleDir).Length() * radius;
-        if (_carpetTrees.Count > softCap || (slack < perTick && sinceRecycleM > (ConsoleTight ? 8f : 15f)))
+        if (liveTrees > softCap || (slack < perTick && sinceRecycleM > (ConsoleTight ? 8f : 15f)))
         {
-            int need = Math.Max(perTick, _carpetTrees.Count - softCap);
+            int need = Math.Max(perTick, liveTrees - softCap);
             RecycleFarTrees(camDir, radius, need, minKeepM: ConsoleTight ? 55f : 90f);
             _treeRecycleDir = camDir;
-            slack = cap - _carpetTrees.Count;
+            slack = cap - _carpetTreeDirs.Count;
         }
+        if (UseGpuInstancedTrees && SceneService.PlayMode)
+            UpdatePooledTreeColliders(camDir, radius);
         if (slack <= 0) return;
         int want = Math.Min(slack, perTick);
 
@@ -2854,12 +2970,11 @@ public sealed class PlanetVegetationSystem : Behavior
         }
 
         CarpetTangentBasis(fillDir, out var t, out var b);
-        // Planet-fixed 22 m cells, same as the grass: a camera-relative lattice re-planted
-        // a second tree a metre from each existing one every time the player moved.
-        const float spacing = 22f;
+        // Planet-fixed cells: tighter spacing when GPU-instanced so near-ring forests feel dense.
+        float spacing = UseGpuInstancedTrees ? 16f : 22f;
         float probe = spacing * 0.7f;
         int cells = CarpetCellsPerEdge(radius, spacing);
-        int n = Math.Clamp((int)MathF.Ceiling(outer / probe) + 1, 4, 40);
+        int n = Math.Clamp((int)MathF.Ceiling(outer / probe) + 1, 4, 48);
         float keepOut = 16f / radius;
         float reach = outer / radius;
         int added = 0;
@@ -2878,7 +2993,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     continue;
                 var probeDir = SafeNormalize(origin + t * px + b * py, fillDir);
                 int token = CarpetCellToken(TreeCellBand, probeDir, cells, out int face, out int iu, out int iv);
-                if (_carpetTrees.ContainsKey(token) || _carpetRejected.Contains(token) || _felledCarpet.Contains(token))
+                if (_carpetTreeDirs.ContainsKey(token) || _carpetRejected.Contains(token) || _felledCarpet.Contains(token))
                     continue;
                 var dir = CarpetCellDir(token, face, iu, iv, cells);
                 float dc2 = (dir - camDir).LengthSquared();
@@ -2943,10 +3058,21 @@ public sealed class PlanetVegetationSystem : Behavior
         foreach (var go in _carpetTrees.Values)
             ReleaseSpawned(go);
         _carpetTrees.Clear();
+        ClearPooledTreeColliders();
+        _gpuCarpetTrees.Clear();
+        PlanetGpuTrees.ClearOwner(this);
         _carpetTreeDirs.Clear();
         _carpetProceduralTreeTokens.Clear();
         _treeShellR.Clear();
         _carpetUsedFallbackTrees = false;
+    }
+
+    void ClearPooledTreeColliders()
+    {
+        foreach (var go in _pooledTreeColliders.Values)
+            ReleaseSpawned(go);
+        _pooledTreeColliders.Clear();
+        _colliderTokenByGo.Clear();
     }
 
     void RemoveProceduralCarpetTrees()
@@ -2963,6 +3089,13 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_carpetTrees.TryGetValue(token, out var go))
             ReleaseSpawned(go);
         _carpetTrees.Remove(token);
+        if (_gpuCarpetTrees.Remove(token))
+            PlanetGpuTrees.RemoveTree(this, token);
+        if (_pooledTreeColliders.Remove(token, out var colGo))
+        {
+            _colliderTokenByGo.Remove(colGo);
+            ReleaseSpawned(colGo);
+        }
         _carpetTreeDirs.Remove(token);
         _carpetProceduralTreeTokens.Remove(token);
         _treeShellR.Remove(token);
@@ -2986,6 +3119,15 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         for (var n = start; n != null; n = n.Parent)
         {
+            if (_colliderTokenByGo.TryGetValue(n, out int gpuToken))
+            {
+                if (_carpetTreeDirs.TryGetValue(gpuToken, out var gpuDir))
+                    RememberFelledDir(gpuDir);
+                _felledCarpet.Add(gpuToken);
+                RemoveLocalCarpetTree(gpuToken);
+                return true;
+            }
+
             int assetKey = 0;
             bool foundAsset = false;
             foreach (var kv in _assetActive)
@@ -3043,6 +3185,13 @@ public sealed class PlanetVegetationSystem : Behavior
     {
         if (dir.LengthSquared() < 1e-8f) return;
         dir = SN.Vector3.Normalize(dir);
+        if (_terrain?.Config != null)
+        {
+            float planetR = MathF.Max(1f, _terrain.Config.EffectiveWorldRadius);
+            float clearLocal = _terrain.WorldToLocalLength(9f);
+            float minDot = MathF.Cos(Math.Clamp(clearLocal / planetR, 0.001f, 0.15f));
+            PlanetWholePlanetForest.RemoveInCone(_terrain, dir, minDot);
+        }
         if (IsFelledNear(dir)) return;
         _felledDirs.Add(dir);
     }
@@ -3577,6 +3726,9 @@ public sealed class PlanetVegetationSystem : Behavior
         var placeUp = ResolvePlanetTreeWorldUp(radialW, surfN);
         float yaw = CarpetCellYaw(token);
 
+        if (UseGpuInstancedTrees && TrySpawnGpuInstancedCarpetTree(token, dir, model, procedural, scale, treePad, placeUp, yaw))
+            return true;
+
         var go = new GameObject($"LocalTree_{token:X8}");
         AttachSpawnedInstance(go);
         SetLocalCrustPosition(go, dir, treePad);
@@ -3603,6 +3755,300 @@ public sealed class PlanetVegetationSystem : Behavior
         _carpetTreeDirs[token] = dir;
         RememberTreeGround(token, dir, _treeShellR);
         return true;
+    }
+
+    bool TrySpawnGpuInstancedCarpetTree(
+        int token,
+        SN.Vector3 dir,
+        string? modelPath,
+        bool allowProcedural,
+        float baseScale,
+        float treePad,
+        SN.Vector3 placeUpWorld,
+        float yawDeg)
+    {
+        if (_terrain?.Config == null) return false;
+        List<PlanetGpuTrees.SubmeshPart>? parts = null;
+        float meshExtent = 1f;
+
+        if (!string.IsNullOrWhiteSpace(modelPath))
+        {
+            string? abs = ResolveTreeModelAbsPath(modelPath);
+            if (string.IsNullOrWhiteSpace(abs) || !TryGetGpuTreeTemplateParts(abs, out parts, out meshExtent, out _))
+            {
+                if (!string.IsNullOrWhiteSpace(abs))
+                    RequestTreeTemplateLoad(abs);
+                return false;
+            }
+        }
+        else if (allowProcedural)
+        {
+            parts = GetOrCreateProceduralGpuTreeParts(out meshExtent);
+            _carpetUsedFallbackTrees = true;
+            _carpetProceduralTreeTokens.Add(token);
+        }
+        else
+        {
+            return false;
+        }
+
+        if (parts == null || parts.Count == 0)
+            return false;
+
+        float grassWorldH = Math.Clamp(Math.Max(GrassBaseHeight, 4.5f), 4.5f, 7.2f);
+        float desiredHeight = Math.Max(16f, Math.Max(TreeBaseHeight * 2.2f, grassWorldH * 2.5f));
+        float worldScale = Math.Max(0.01f, baseScale);
+        if (meshExtent > 1e-4f)
+        {
+            float fit = desiredHeight / meshExtent;
+            worldScale *= Math.Clamp(fit, 0.12f, 200f);
+            float projected = meshExtent * worldScale;
+            if (projected < desiredHeight * 0.5f)
+                worldScale = (desiredHeight * 0.92f) / meshExtent;
+        }
+        worldScale = Math.Clamp(worldScale, 0.35f, 240f);
+        float localScale = _terrain.WorldToLocalLength(worldScale);
+
+        // Seat flush onto visible ground (slightly sunk so roots never hover on slopes).
+        var localPos = _terrain.SampleVegetationAnchorLocal(dir);
+        float sinkLocal = _terrain.WorldToLocalLength(0.28f);
+        localPos += dir * (_terrain.WorldToLocalLength(treePad) - sinkLocal);
+
+        var planetW = GetPlanetWorldMatrix();
+        SN.Vector3 localUp = dir;
+        if (SN.Matrix4x4.Invert(planetW, out var invPlanet))
+        {
+            var upL = SN.Vector3.TransformNormal(placeUpWorld, invPlanet);
+            if (upL.LengthSquared() > 1e-6f)
+                localUp = SN.Vector3.Normalize(upL);
+        }
+
+        float yawRad = yawDeg * (MathF.PI / 180f);
+        PlanetGpuTrees.AddOrUpdateTree(this, token, parts, localPos, localUp, localScale, yawRad, SN.Vector3.One);
+        _gpuCarpetTrees[token] = new GpuTreeRecord(dir, localPos, localUp, localScale, yawRad, baseScale, modelPath, treePad);
+        _carpetTreeDirs[token] = dir;
+        RememberTreeGround(token, dir, _treeShellR);
+        return true;
+    }
+
+    void ReseatGpuCarpetTree(int token, GpuTreeRecord rec)
+    {
+        if (_terrain == null) return;
+        var localPos = _terrain.SampleVegetationAnchorLocal(rec.Dir);
+        float sinkLocal = _terrain.WorldToLocalLength(0.28f);
+        localPos += rec.Dir * (_terrain.WorldToLocalLength(rec.TrunkPad) - sinkLocal);
+        PlanetGpuTrees.UpdateTreeTransform(this, token, localPos, rec.LocalUp, rec.Scale, rec.YawRad);
+        _gpuCarpetTrees[token] = rec with { LocalPos = localPos };
+        if (_pooledTreeColliders.TryGetValue(token, out var colGo))
+            colGo.Transform.Position = new Vector3(localPos.X, localPos.Y, localPos.Z);
+    }
+
+    /// <summary>
+    /// Maintain a lightweight pool of up to 20 invisible trunk-collider GameObjects around the
+    /// player in Play Mode so trunk collision and tree chopping still work with GPU-instanced trees.
+    /// </summary>
+    void UpdatePooledTreeColliders(SN.Vector3 camDir, float radius)
+    {
+        if (_terrain == null || _gpuCarpetTrees.Count == 0)
+        {
+            if (_pooledTreeColliders.Count > 0)
+                ClearPooledTreeColliders();
+            return;
+        }
+
+        // Update every few stream ticks to keep overhead near zero.
+        if (++_colliderPoolTick % 4 != 0 && _pooledTreeColliders.Count > 0)
+            return;
+
+        const int maxColliders = 20;
+        const float colliderRangeM = 36f;
+        float rangeDir = colliderRangeM / MathF.Max(1f, radius);
+        float rangeDirSq = rangeDir * rangeDir;
+
+        // Collect nearby GPU trees sorted by distance.
+        var near = new List<(int Token, float DistSq)>(32);
+        foreach (var kv in _gpuCarpetTrees)
+        {
+            float d2 = (kv.Value.Dir - camDir).LengthSquared();
+            if (d2 <= rangeDirSq)
+                near.Add((kv.Key, d2));
+        }
+
+        if (near.Count > maxColliders)
+        {
+            near.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
+            near.RemoveRange(maxColliders, near.Count - maxColliders);
+        }
+
+        var wanted = new HashSet<int>(near.Count);
+        for (int i = 0; i < near.Count; i++)
+            wanted.Add(near[i].Token);
+
+        // Release colliders that moved out of the near pool.
+        _carpetStale.Clear();
+        foreach (var token in _pooledTreeColliders.Keys)
+        {
+            if (!wanted.Contains(token))
+                _carpetStale.Add(token);
+        }
+        for (int i = 0; i < _carpetStale.Count; i++)
+        {
+            int tok = _carpetStale[i];
+            if (_pooledTreeColliders.Remove(tok, out var old))
+            {
+                _colliderTokenByGo.Remove(old);
+                ReleaseSpawned(old);
+            }
+        }
+
+        // Spawn missing pooled trunk colliders (no MeshRenderer, only MeshCollider + TreeTrunk).
+        for (int i = 0; i < near.Count; i++)
+        {
+            int tok = near[i].Token;
+            if (_pooledTreeColliders.ContainsKey(tok))
+                continue;
+            if (!_gpuCarpetTrees.TryGetValue(tok, out var rec))
+                continue;
+
+            Mesh? trunkMesh = null;
+            if (!string.IsNullOrWhiteSpace(rec.ModelPath))
+            {
+                string? abs = ResolveTreeModelAbsPath(rec.ModelPath);
+                if (!string.IsNullOrWhiteSpace(abs) && TryGetGpuTreeTemplateParts(abs, out _, out _, out var tm))
+                    trunkMesh = tm;
+            }
+            if (trunkMesh == null)
+            {
+                var proc = GetOrCreateProceduralGpuTreeParts(out _);
+                if (proc.Count > 0) trunkMesh = proc[0].Mesh;
+            }
+            if (trunkMesh == null) continue;
+
+            var colGo = new GameObject($"TreeCollider_{tok:X8}");
+            AttachSpawnedInstance(colGo);
+            colGo.Transform.Position = new Vector3(rec.LocalPos.X, rec.LocalPos.Y, rec.LocalPos.Z);
+            colGo.Transform.Scale = new Vector3(rec.Scale, rec.Scale, rec.Scale);
+            var planetW = GetPlanetWorldMatrix();
+            var upW = LocalDirectionToWorld(planetW, rec.LocalUp);
+            SetSurfaceAlignedRotation(colGo, upW, rec.YawRad * (180f / MathF.PI));
+
+            var mc = colGo.AddBehavior<MeshCollider>();
+            mc.ClearTargets();
+            mc.Mesh = InflateTrunkMesh(trunkMesh, TrunkColliderWorldPad(colGo));
+            mc.BindToTargetTransform = true;
+            mc.IsTrigger = false;
+            colGo.AddBehavior<TreeTrunk>();
+
+            _pooledTreeColliders[tok] = colGo;
+            _colliderTokenByGo[colGo] = tok;
+        }
+    }
+
+    static bool TryGetGpuTreeTemplateParts(
+        string absModelPath,
+        out List<PlanetGpuTrees.SubmeshPart> parts,
+        out float meshExtent,
+        out Mesh? trunkMesh)
+    {
+        parts = null!;
+        meshExtent = 1f;
+        trunkMesh = null;
+        if (!TryGetReadyTreeTemplate(absModelPath, out var tpl))
+            return false;
+
+        string key = TreeTemplateKeyFor(absModelPath).Key;
+        lock (s_gpuTreeTemplateParts)
+        {
+            if (s_gpuTreeTemplateParts.TryGetValue(key, out var cached) && cached.Parts.Count > 0)
+            {
+                parts = cached.Parts;
+                meshExtent = cached.MeshExtent;
+                trunkMesh = cached.TrunkMesh;
+                return true;
+            }
+        }
+
+        if (tpl.Source == null)
+            return false;
+
+        var extracted = new List<PlanetGpuTrees.SubmeshPart>(4);
+        Mesh? bestTrunk = null;
+        CollectSubmeshPartsRecursive(tpl.Source, extracted, ref bestTrunk);
+        if (extracted.Count == 0)
+            return false;
+
+        float ext = tpl.MeshExtent > 1e-3f ? tpl.MeshExtent : EstimateHierarchyVerticalExtent(tpl.Source);
+        if (ext < 1e-3f) ext = 1f;
+        bestTrunk ??= extracted[0].Mesh;
+
+        lock (s_gpuTreeTemplateParts)
+            s_gpuTreeTemplateParts[key] = (extracted, ext, bestTrunk);
+
+        parts = extracted;
+        meshExtent = ext;
+        trunkMesh = bestTrunk;
+        return true;
+    }
+
+    static void CollectSubmeshPartsRecursive(GameObject node, List<PlanetGpuTrees.SubmeshPart> dst, ref Mesh? trunkMesh)
+    {
+        if (node == null) return;
+        if (!string.IsNullOrEmpty(node.Name) && node.Name.Contains("collider", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        MeshFilter? pendingMf = null;
+        foreach (var b in node.Behaviors)
+        {
+            if (b is MeshFilter f && f.Mesh != null)
+            {
+                pendingMf = f;
+                continue;
+            }
+            if (b is MeshRenderer r && pendingMf?.Mesh != null)
+            {
+                dst.Add(new PlanetGpuTrees.SubmeshPart(pendingMf.Mesh, r.Material, true));
+                if (trunkMesh == null && (
+                    (node.Name?.Contains("trunk", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (node.Name?.Contains("bark", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (pendingMf.SourceNodeName?.Contains("trunk", StringComparison.OrdinalIgnoreCase) ?? false)))
+                {
+                    trunkMesh = pendingMf.Mesh;
+                }
+                pendingMf = null;
+            }
+        }
+        if (pendingMf?.Mesh != null)
+            dst.Add(new PlanetGpuTrees.SubmeshPart(pendingMf.Mesh, null, true));
+
+        for (int i = 0; i < node.Children.Count; i++)
+            CollectSubmeshPartsRecursive(node.Children[i], dst, ref trunkMesh);
+    }
+
+    static List<PlanetGpuTrees.SubmeshPart> GetOrCreateProceduralGpuTreeParts(out float meshExtent)
+    {
+        meshExtent = 1f;
+        if (s_proceduralGpuTreeParts != null)
+            return s_proceduralGpuTreeParts;
+
+        // Simple 2-part procedural tree (trunk + foliage crown) in unit height [0..1].
+        var trunk = Mesh.CreateCylinder(sides: 6, radius: 0.08f, height: 0.50f);
+        // Shift cylinder so base sits at y = 0.
+        for (int i = 0; i < trunk.Vertices.Length; i++)
+            trunk.Vertices[i] = new SN.Vector3(trunk.Vertices[i].X, trunk.Vertices[i].Y + 0.25f, trunk.Vertices[i].Z);
+
+        var crown = Mesh.CreateCone(sides: 8, radius: 0.42f, height: 0.72f);
+        for (int i = 0; i < crown.Vertices.Length; i++)
+            crown.Vertices[i] = new SN.Vector3(crown.Vertices[i].X, crown.Vertices[i].Y + 0.64f, crown.Vertices[i].Z);
+
+        var trunkMat = new Material { Name = "ProcTreeTrunk", BaseColor = Avalonia.Media.Color.FromArgb(255, 88, 60, 38), Roughness = 0.9f };
+        var crownMat = new Material { Name = "ProcTreeCrown", BaseColor = Avalonia.Media.Color.FromArgb(255, 52, 118, 44), Roughness = 0.85f };
+
+        s_proceduralGpuTreeParts = new List<PlanetGpuTrees.SubmeshPart>
+        {
+            new(trunk, trunkMat, false),
+            new(crown, crownMat, true)
+        };
+        return s_proceduralGpuTreeParts;
     }
 
     /// <summary>Underwater profile meshes. Plant a few on the seabed near the camera.</summary>

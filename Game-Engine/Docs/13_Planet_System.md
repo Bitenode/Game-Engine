@@ -274,7 +274,17 @@ Planet grass is drawn as GPU instances (one cross-card mesh, batched by texture 
 
 - **Fixed slots** — each patch owns a slot in its batch; add/remove/re-seat rewrites only that slot (sparse GPU upload when ≤32 slots change, otherwise one range upload)
 - **Single-card LOD** — distant patches can draw only the first quad of the cross card (`singleCard`) to cut overdraw
+- **Macro altitude transition** — `ShouldDrawGpuGrass` extends to `r + 550 m` with a smooth `uAltitudeFade` ramp from `550 m` down to `300 m` so swooping down in Scene View blends cleanly from terrain splat into grass
 - **Clear zones** — patches inside a `VegetationClearZone` are not submitted
+- **Pause / Scene View streaming** — `PlanetVegetationSystem.TickStreaming`, `DropCarpetOutsideBands`, and `CameraTooHighForCarpet` advance via an internal monotonic `_streamTick` counter + elapsed wall time instead of `Time.frameCount`, so Scene View continues streaming smoothly while Game View is paused
+
+### 2-Tier GPU-Instanced Whole-Planet Forest (`PlanetWholePlanetForest` & `PlanetGpuTrees`)
+
+Planet trees use a 2-tier GPU-instanced pipeline compatible with Desktop OpenGL 3.3 Core and OpenGL ES 3.0 (ANGLE / Android / Xbox UWP), with per-`ResourceCache` GPU resources so Scene View and Game View never share VAO/VBO state:
+
+- **Tier 2 — Whole-planet canopy layer (`PlanetWholePlanetForest`):** once `PlanetTerrain.HasBakedStandSurface` is true, a background worker samples `PlanetSurfaceCubemap` (`Height`, `HeightDelta`, `Splat0`, `Splat1`), sea level, slope, and `BiomeDefinition.TreeDensity` / scale across all 6 cube faces to scatter up to **48,000** instances (16,000 on `XBOX_UWP`) at **48 bytes/instance** (`loc 5` pos+scale, `loc 6` up+yaw, `loc 7` biome tint + fade seed). Uses a built-in 22-triangle stylized 2-tier canopy + trunk mesh rendered in **1 draw call** (chunked on `XBOX_UWP`) via `PlanetForestCanopy.vert/frag.glsl` at every camera altitude with horizon culling, wind sway, HDR/Reinhard output, and smooth near-ring crossfade (`uCrossfadeRange`, disabled in orbit so 100% of the planet has canopies).
+- **Tier 1 — Near-ring 3D trees (`PlanetGpuTrees`):** when `PlanetVegetationSystem.UseGpuInstancedTrees` is enabled (default `true`), near-ring trees (up to 480–640 desktop / 48 console out to ~240 m) are batched by `(Owner, Mesh, Material, DoubleSided)` and drawn via `GPUMesh.DrawInstanced` using `Standard.vert.glsl` (`uInstanced = 1`) with O(1) swap-remove slots. In Play Mode, a lightweight pool of up to **20** invisible trunk-collider `GameObject`s (`MeshCollider` + `TreeTrunk`) follows the closest trees around the player so collision and tree chopping continue working seamlessly.
+- **Dig & tree-fell sync:** `PlanetVegetationSystem.NotifySurfaceEdit(...)` and `RememberFelledDir(...)` call `PlanetWholePlanetForest.RemoveInCone(...)`, zeroing affected instance scales in-place and updating each GL context's static VBO via `BufferSubData`.
 
 Built-in vegetation profiles: `Default`, `Universal`, `Forest`, `Grassland`, `Desert`, `Alpine`, `Tundra`, `Volcanic`, `Ocean` (with `TreeItems` / `BushItems` / `RockItems` stubs).
 

@@ -13,6 +13,7 @@ uniform float uWindStrength;
 uniform float uRain;
 uniform float uStorm;
 uniform float uCardWidth;
+uniform float uAltitudeFade;
 
 out vec2 vUV;
 out vec3 vWorldPos;
@@ -30,7 +31,8 @@ void main()
     vec3 xAxis = side * cy + fwd * sy;
     vec3 zAxis = -side * sy + fwd * cy;
 
-    float h = max(0.05, aInstPosScale.w);
+    float fade = clamp(uAltitudeFade, 0.0, 1.0);
+    float h = max(0.05, aInstPosScale.w) * fade;
     float w = h * max(0.25, uCardWidth);
     vec3 local = aInstPosScale.xyz
         + xAxis * (aPosition.x * w)

@@ -36,6 +36,8 @@ public static class ShaderSources
         public const string PlanetCloudsFrag     = "Planet/PlanetClouds.frag.glsl";
         public const string PlanetGpuGrassVert   = "Planet/PlanetGpuGrass.vert.glsl";
         public const string PlanetGpuGrassFrag   = "Planet/PlanetGpuGrass.frag.glsl";
+        public const string PlanetForestCanopyVert = "Planet/PlanetForestCanopy.vert.glsl";
+        public const string PlanetForestCanopyFrag = "Planet/PlanetForestCanopy.frag.glsl";
 
         public const string SkyVert              = "Effects/Sky.vert.glsl";
         public const string SkyFrag              = "Effects/Sky.frag.glsl";
@@ -178,4 +180,6 @@ public static class ShaderSources
     public static string PlanetCloudsFrag      => LoadDesktop(Paths.PlanetCloudsFrag);
     public static string PlanetGpuGrassVert    => LoadDesktop(Paths.PlanetGpuGrassVert);
     public static string PlanetGpuGrassFrag    => LoadDesktop(Paths.PlanetGpuGrassFrag);
+    public static string PlanetForestCanopyVert => LoadDesktop(Paths.PlanetForestCanopyVert);
+    public static string PlanetForestCanopyFrag => LoadDesktop(Paths.PlanetForestCanopyFrag);
 }
