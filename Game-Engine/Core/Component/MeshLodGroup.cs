@@ -50,7 +50,7 @@ namespace Game_Engine.Core.Component
             if (_capturedBaseMesh == null && mf.Mesh != null)
                 _capturedBaseMesh = mf.Mesh;
 
-            var worldMat = TransformUtil.WorldFromTransform(gameObject.Transform);
+            var worldMat = SceneGraphUtil.AccumulateWorld(gameObject);
             var objPos = new SN.Vector3(worldMat.M41, worldMat.M42, worldMat.M43);
             float dist = SN.Vector3.Distance(cameraPos, objPos);
 

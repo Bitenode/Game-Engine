@@ -244,6 +244,7 @@ namespace Game_Engine.Views
             catch (Exception ex)
             {
                 Debug.WriteLine($"[GameView] GL init failed: {ex}");
+                Log.Error(ex, "[GameView] GL init failed");
             }
         }
 

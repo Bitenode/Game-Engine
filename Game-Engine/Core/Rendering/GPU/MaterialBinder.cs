@@ -239,6 +239,20 @@ public static class MaterialBinder
                         shader.SetTexture(prop.Name, unit);
                         break;
                     }
+
+                    case ShaderPropertyType.TextureCube:
+                    {
+                        if (texSlotIdx >= s_customTextureUnits.Length)
+                            break;
+
+                        // Assign every declared samplerCube its own dedicated custom unit with a valid
+                        // fallback cubemap so ANGLE / GLES 3.0 never sees a samplerCube sharing unit 0
+                        // with a sampler2D (GL_INVALID_OPERATION).
+                        int unit = s_customTextureUnits[texSlotIdx++];
+                        cache.GetBlackCubemap().BindCubemap((TextureUnit)((int)TextureUnit.Texture0 + unit));
+                        shader.SetTexture(prop.Name, unit);
+                        break;
+                    }
                 }
             }
         }

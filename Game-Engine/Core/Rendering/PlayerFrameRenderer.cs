@@ -83,7 +83,7 @@ namespace Game_Engine.Core.Rendering
                 float lum = (light.Color.R * 0.2126f + light.Color.G * 0.7152f + light.Color.B * 0.0722f) / 255f;
                 diffuseK = Math.Max(light.Intensity * Math.Max(lum, 0.001f), 0.001f);
                 lightColorNorm = new SN.Vector3(light.Color.R / 255f, light.Color.G / 255f, light.Color.B / 255f);
-                var m = TransformUtil.WorldFromTransform(light.gameObject.Transform);
+                var m = SceneGraphUtil.AccumulateWorld(light.gameObject);
                 if (light.Type == LightType.Directional)
                 {
                     var fwd = SN.Vector3.Normalize(new SN.Vector3(m.M13, m.M23, m.M33));

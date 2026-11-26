@@ -252,7 +252,7 @@ namespace Game_Engine.Core.Component
                 }
             }
 
-            var worldMat = TransformUtil.WorldFromTransform(go.Transform);
+            var worldMat = SceneGraphUtil.AccumulateWorld(go);
             // Extract world-space basis axes and scale so distance is measured in true world units
             var axisX = new SN.Vector3(worldMat.M11, worldMat.M12, worldMat.M13);
             var axisY = new SN.Vector3(worldMat.M21, worldMat.M22, worldMat.M23);

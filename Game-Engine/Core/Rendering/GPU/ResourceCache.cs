@@ -476,6 +476,17 @@ public sealed class ResourceCache : IDisposable
     }
     private GPUTexture? _flatNormalTex;
 
+    /// <summary>Create a 1x1 opaque black cubemap (used as a safe fallback for custom <c>samplerCube</c> properties).</summary>
+    public GPUTexture GetBlackCubemap()
+    {
+        if (_blackCubemap != null) return _blackCubemap;
+
+        _blackCubemap = new GPUTexture(_gl);
+        _blackCubemap.CreateCubemapSolidRgba8(0, 0, 0, 255);
+        return _blackCubemap;
+    }
+    private GPUTexture? _blackCubemap;
+
     /// <summary>
     /// Get or create splatmap GPU textures for a Terrain. Per-context, so
     /// SceneView and GameView each get their own GL textures.
@@ -582,6 +593,8 @@ public sealed class ResourceCache : IDisposable
         _blackTex = null;
         _flatNormalTex?.Dispose();
         _flatNormalTex = null;
+        _blackCubemap?.Dispose();
+        _blackCubemap = null;
         _skipBcnCompress.Clear();
     }
 }

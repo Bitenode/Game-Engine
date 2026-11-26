@@ -95,7 +95,7 @@ namespace Game_Engine.Core
         public static void UpdateListenerTransform()
         {
             if (_listener == null || _listener.gameObject == null) return;
-            var world = TransformUtil.WorldFromTransform(_listener.gameObject.Transform);
+            var world = SceneGraphUtil.AccumulateWorld(_listener.gameObject);
             var pos = new SN.Vector3(world.M41, world.M42, world.M43);
             var fwd = SN.Vector3.Normalize(new SN.Vector3(world.M31, world.M32, world.M33));
             var up = SN.Vector3.Normalize(new SN.Vector3(world.M21, world.M22, world.M23));

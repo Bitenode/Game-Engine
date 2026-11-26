@@ -141,6 +141,7 @@ public static class GameRenderPipeline
 
     static void WalkTerrain(GameObject go, SN.Vector3 cam)
     {
+        if (!go.Enabled) return;
         foreach (var b in go.Behaviors)
             if (b is Terrain t && t.Enabled) { t.UpdateLOD(cam); break; }
         foreach (var c in go.Children) WalkTerrain(c, cam);
@@ -148,6 +149,7 @@ public static class GameRenderPipeline
 
     static void WalkTree(GameObject go, SN.Vector3 cam)
     {
+        if (!go.Enabled) return;
         foreach (var b in go.Behaviors)
             if (b is TreeLOD tl && tl.Enabled) { tl.UpdateLOD(cam); break; }
         foreach (var c in go.Children) WalkTree(c, cam);
@@ -155,6 +157,7 @@ public static class GameRenderPipeline
 
     static void WalkMeshLod(GameObject go, SN.Vector3 cam)
     {
+        if (!go.Enabled) return;
         foreach (var b in go.Behaviors)
             if (b is MeshLodGroup m && m.Enabled) m.UpdateLOD(cam);
         foreach (var c in go.Children) WalkMeshLod(c, cam);
@@ -186,10 +189,15 @@ public static class GameRenderPipeline
             SceneRenderer.RenderPlanetVegetationAfterTerrain(g, res.Standard, res.Cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
                 shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor, cascadedShadow: cascadedShadow);
-            FrameProfile.Enter(FrameProfile.Part.SceneAfterPlanet);
-            SceneRenderer.RenderForwardSceneOpaques(g, res.Standard, res.Cache, view, proj, camPos,
-                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor, cascadedShadow: cascadedShadow);
+            // Forward re-draw of opaques exists only so meshes are not buried by the planet pass.
+            // Without active planets it would just overwrite deferred shading with forward shading.
+            if (PlanetTerrain.ActivePlanets.Count > 0)
+            {
+                FrameProfile.Enter(FrameProfile.Part.SceneAfterPlanet);
+                SceneRenderer.RenderForwardSceneOpaques(g, res.Standard, res.Cache, view, proj, camPos,
+                    lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                    shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor, cascadedShadow: cascadedShadow);
+            }
         }
 
         FrameProfile.Enter(FrameProfile.Part.Water);
@@ -327,10 +335,10 @@ public static class GameRenderPipeline
 
         g.BindVertexArray(res.FsQuad.VAO);
         float ssaoIntensity = postSettings != null ? postSettings.SSAOIntensity : 1f;
-        var probePick = ReflectionProbe.GetBestForPosition(camPos);
+        var probePick = ReflectionProbe.GetBestForPosition(camPos, g);
         SceneRenderer.RenderDeferredLighting(g, res.DeferredLight, res.FsQuad, res.GBufferFbo, ssaoResult, shadowFbo,
             view, proj, camPos, shadowVP, sunSD, ambient, 0.008f, ssaoIntensity, res.TiledLights, W, H,
-            probePick?.GpuCubemap, probePick?.Intensity ?? 0f, cascadedShadow);
+            probePick?.GetCubemap(g), probePick?.Intensity ?? 0f, cascadedShadow);
         g.BindVertexArray(0);
 
         res.SceneFbo.Bind();

@@ -162,13 +162,13 @@ public sealed class ViewRenderResources : IDisposable
 
 #if !XBOX_UWP
         if (logProgress) Game_Engine.Core.Log.Info("[Shader] dof");
-        DepthOfField = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DepthOfFieldFrag);
+        DepthOfField = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DepthOfFieldFrag, throwOnInitialError: false);
 #endif
 
         if (_includeVolFog && !_includeDeferred)
         {
             if (logProgress) Game_Engine.Core.Log.Info("[Shader] volfog");
-            VolFog = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.VolumetricFogFrag);
+            VolFog = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.VolumetricFogFrag, throwOnInitialError: false);
         }
 
         if (_includeDeferred)
@@ -180,17 +180,17 @@ public sealed class ViewRenderResources : IDisposable
             DeferredLight = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DeferredLightingFrag);
 
             if (logProgress) Game_Engine.Core.Log.Info("[Shader] ssao");
-            Ssao = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSAOFrag);
-            SsaoBlur = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSAOBlurFrag);
+            Ssao = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSAOFrag, throwOnInitialError: false);
+            SsaoBlur = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSAOBlurFrag, throwOnInitialError: false);
 
             if (logProgress) Game_Engine.Core.Log.Info("[Shader] ssr");
-            Ssr = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSRFrag);
+            Ssr = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSRFrag, throwOnInitialError: false);
 
             if (logProgress) Game_Engine.Core.Log.Info("[Shader] volfog");
-            VolFog = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.VolumetricFogFrag);
+            VolFog = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.VolumetricFogFrag, throwOnInitialError: false);
 
             if (logProgress) Game_Engine.Core.Log.Info("[Shader] taa");
-            TaaResolve = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.TaaResolveFrag);
+            TaaResolve = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.TaaResolveFrag, throwOnInitialError: false);
             DepthCopy = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DepthCopyFrag);
         }
         else if (logProgress)

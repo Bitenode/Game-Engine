@@ -24,6 +24,13 @@ public sealed class TiledLightTextureSystem : IDisposable
     GPUTexture? _localLightTex;
     int _tilesX, _tilesY;
     int _lastW, _lastH;
+    bool _metaDirty = true;
+
+    // Grow-only reusable CPU scratch buffers to avoid per-frame GC allocations.
+    byte[] _metaScratch = Array.Empty<byte>();
+    byte[] _indicesScratch = Array.Empty<byte>();
+    int[] _countsScratch = Array.Empty<int>();
+    float[] _lightDataScratch = Array.Empty<float>();
 
     public TiledLightTextureSystem(GL gl) => _gl = gl;
 
@@ -75,6 +82,7 @@ public sealed class TiledLightTextureSystem : IDisposable
             _indexTex.CreateR8UNorm(MaxLightsPerTile, numTiles);
             _lastW = screenW;
             _lastH = screenH;
+            _metaDirty = true;
         }
 
         if (_localLightTex == null || _localLightTex.Width < localOut.Count || _localLightTex.Height != 4)
@@ -84,16 +92,40 @@ public sealed class TiledLightTextureSystem : IDisposable
             _localLightTex.CreateRgbaFloat32(Math.Max(1, localOut.Count), 4);
         }
 
-        Span<byte> meta = stackalloc byte[_tilesX * _tilesY];
-        meta.Clear();
-        var indices = new byte[MaxLightsPerTile * numTiles];
-        Array.Clear(indices, 0, indices.Length);
-        var counts = new int[numTiles];
+        int lc = localOut.Count;
+        if (lc == 0)
+        {
+            // DeferredLighting skips tile reads when uLocalLightCount == 0, but ensure _metaTex
+            // is zeroed once after resize or after a non-zero frame so stale counts never linger.
+            if (_metaDirty)
+            {
+                if (_metaScratch.Length < numTiles)
+                    _metaScratch = new byte[numTiles];
+                Array.Clear(_metaScratch, 0, numTiles);
+                _metaTex!.UploadR8UNormData(_metaScratch.AsSpan(0, numTiles));
+                _metaDirty = false;
+            }
+            return;
+        }
+
+        if (_metaScratch.Length < numTiles)
+            _metaScratch = new byte[numTiles];
+        int indexCount = MaxLightsPerTile * numTiles;
+        if (_indicesScratch.Length < indexCount)
+            _indicesScratch = new byte[indexCount];
+        if (_countsScratch.Length < numTiles)
+            _countsScratch = new int[numTiles];
+        int lightFloatCount = lc * 16;
+        if (_lightDataScratch.Length < lightFloatCount)
+            _lightDataScratch = new float[lightFloatCount];
+
+        Array.Clear(_metaScratch, 0, numTiles);
+        Array.Clear(_indicesScratch, 0, indexCount);
+        Array.Clear(_countsScratch, 0, numTiles);
 
         var vp = view * proj;
         // Local light parameter rows (RGBA float)
-        int lc = localOut.Count;
-        var lightData = lc > 0 ? new float[lc * 4 * 4] : Array.Empty<float>();
+        var lightData = _lightDataScratch;
         for (int i = 0; i < lc; i++)
         {
             var L = localOut[i];
@@ -122,8 +154,7 @@ public sealed class TiledLightTextureSystem : IDisposable
             lightData[b + 15] = 0f;
         }
 
-        if (lc > 0)
-            _localLightTex!.UploadRgbaFloatGridColumns(lightData, lc);
+        _localLightTex!.UploadRgbaFloatGridColumns(lightData, lc);
 
         for (int li = 0; li < lc; li++)
         {
@@ -141,17 +172,18 @@ public sealed class TiledLightTextureSystem : IDisposable
                 for (int tx = x0; tx <= x1; tx++)
                 {
                     int tid = ty * _tilesX + tx;
-                    int c = counts[tid];
+                    int c = _countsScratch[tid];
                     if (c >= MaxLightsPerTile) continue;
-                    indices[tid * MaxLightsPerTile + c] = (byte)li;
-                    counts[tid]++;
-                    meta[tid] = (byte)counts[tid];
+                    _indicesScratch[tid * MaxLightsPerTile + c] = (byte)li;
+                    _countsScratch[tid] = c + 1;
+                    _metaScratch[tid] = (byte)(c + 1);
                 }
             }
         }
 
-        _metaTex!.UploadR8UNormData(meta);
-        _indexTex!.UploadR8UNormData(indices);
+        _metaTex!.UploadR8UNormData(_metaScratch.AsSpan(0, numTiles));
+        _indexTex!.UploadR8UNormData(_indicesScratch.AsSpan(0, indexCount));
+        _metaDirty = true;
     }
 
     bool ProjectLightBoundsToTiles(

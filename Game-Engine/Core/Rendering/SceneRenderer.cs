@@ -636,6 +636,7 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.Blend);
             gl.Disable(EnableCap.CullFace);
             gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -708,6 +709,7 @@ namespace Game_Engine.Core
             dofShader.SetInt("uPass", 1);
             fsQuad.Draw();
 
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
             return outFbo.ColorTexture!;
         }
@@ -805,7 +807,7 @@ namespace Game_Engine.Core
                 standardShader.SetVector3("uSunDir", sunShineDir);
                 BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
-            BindEnvMapToShader(standardShader, camPos, 12);
+            BindEnvMapToShader(gl, standardShader, camPos, 12);
 
             // Build render context for custom shader support
             var renderCtx = new RenderContext
@@ -842,7 +844,7 @@ namespace Game_Engine.Core
                     standardShader.Use();
                     if (hasShadow)
                         BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
-                    BindEnvMapToShader(standardShader, camPos, 12);
+                    BindEnvMapToShader(gl, standardShader, camPos, 12);
                     terrainShaderActive = false;
                 }
                 DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
@@ -906,7 +908,7 @@ namespace Game_Engine.Core
                 standardShader.Use();
                 if (hasShadow)
                     BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
-                BindEnvMapToShader(standardShader, camPos, 12);
+                BindEnvMapToShader(gl, standardShader, camPos, 12);
 
                 foreach (var item in transparentItems)
                 {
@@ -1152,6 +1154,7 @@ namespace Game_Engine.Core
         /// <paramref name="textureUnit"/>, or disable env-map sampling if none is captured or capture is in progress.
         /// </summary>
         public static void BindEnvMapToShader(
+            GL gl,
             ShaderProgram shader,
             SN.Vector3 worldPos,
             int textureUnit,
@@ -1175,10 +1178,11 @@ namespace Game_Engine.Core
             float intensity = explicitIntensity;
             if (cube == null)
             {
-                var probe = ReflectionProbe.GetBestForPosition(worldPos);
-                if (probe?.GpuCubemap != null && probe.HasCaptured && probe.Intensity > 0.001f)
+                var probe = ReflectionProbe.GetBestForPosition(worldPos, gl);
+                var probeCube = probe?.GetCubemap(gl);
+                if (probe != null && probeCube != null && probe.HasCapturedFor(gl) && probe.Intensity > 0.001f)
                 {
-                    cube = probe.GpuCubemap;
+                    cube = probeCube;
                     intensity = probe.Intensity;
                 }
             }
@@ -1256,21 +1260,24 @@ namespace Game_Engine.Core
             if (probes.Count == 0) return;
 
             ReflectionProbe? target = null;
+            ReflectionProbe.ProbeGpuState? targetState = null;
             for (int i = 0; i < probes.Count; i++)
             {
                 var p = probes[i];
                 if (p is not { IsActiveAndEnabled: true, gameObject: not null }) continue;
-                p.EnsureGpuResources(gl);
-                if (p.NeedsCapture || p.ShouldRefreshRealtime())
+                var state = p.EnsureGpuResources(gl);
+                if (state.NeedsCapture || p.ShouldRefreshRealtime(gl))
                 {
                     target = p;
+                    targetState = state;
                     break; // Limit to 1 probe capture per frame to avoid hitches
                 }
             }
 
-            if (target?.GpuCubemap == null || target.gameObject == null) return;
+            if (target == null || targetState?.Cubemap == null || target.gameObject == null) return;
 
-            int size = Math.Clamp(target.GpuCubemap.Width, 16, 512);
+            var targetCubemap = targetState.Cubemap;
+            int size = Math.Clamp(targetCubemap.Width, 16, 512);
 
             // Save caller GL state & FrameGlobals UBO
             gl.GetInteger(GetPName.DrawFramebufferBinding, out int prevFb);
@@ -1300,7 +1307,7 @@ namespace Game_Engine.Core
             DrawBufferMode color0 = DrawBufferMode.ColorAttachment0;
             gl.DrawBuffers(1, &color0);
 
-            var worldMat = TransformUtil.WorldFromTransform(target.gameObject.Transform);
+            var worldMat = SceneGraphUtil.AccumulateWorld(target.gameObject);
             var probePos = new SN.Vector3(worldMat.M41, worldMat.M42, worldMat.M43);
             var faceProj = SN.Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI * 0.5f, 1f, 0.1f, 500f);
 
@@ -1322,7 +1329,7 @@ namespace Game_Engine.Core
                         FramebufferTarget.Framebuffer,
                         FramebufferAttachment.ColorAttachment0,
                         TextureTarget.TextureCubeMapPositiveX + face,
-                        target.GpuCubemap.Handle,
+                        targetCubemap.Handle,
                         0);
 
                     gl.ClearColor(0.12f, 0.12f, 0.15f, 1f);
@@ -1363,12 +1370,11 @@ namespace Game_Engine.Core
                 }
 
                 // Generate prefiltered mip chain on GPU
-                gl.BindTexture(TextureTarget.TextureCubeMap, target.GpuCubemap.Handle);
+                gl.BindTexture(TextureTarget.TextureCubeMap, targetCubemap.Handle);
                 gl.GenerateMipmap(TextureTarget.TextureCubeMap);
                 gl.BindTexture(TextureTarget.TextureCubeMap, 0);
 
-                target.NeedsCapture = false;
-                target.HasCaptured = true;
+                target.MarkCaptured(gl);
             }
             finally
             {
@@ -1558,7 +1564,7 @@ namespace Game_Engine.Core
                         ctx.StandardShader.Use();
                         if (ctx.CascadedShadow != null || ctx.ShadowFBO?.DepthTexture != null)
                             BindShadowMapsToShader(ctx.StandardShader, ctx.ShadowFBO, ctx.CascadedShadow, 7);
-                        BindEnvMapToShader(ctx.StandardShader, ctx.CamPos, 12);
+                        BindEnvMapToShader(gl, ctx.StandardShader, ctx.CamPos, 12);
                         return;
                     }
                 }
@@ -2128,6 +2134,9 @@ namespace Game_Engine.Core
             gbufSurfaceShader.SetFloat("uMetallic", mat?.Metallic ?? 0f);
 
             BindCustomStandardTextures(gbufSurfaceShader, mat, cache);
+            // Surface GBuffer header declares uniform samplerCube uEnvMap; bind it to unit 15
+            // (disjoint from MaterialBinder custom units 3, 5, 6, 11..14) so it never collides with unit 0.
+            BindEnvMapToShader(gl, gbufSurfaceShader, ctx.CamPos, 15);
             MaterialBinder.BindProperties(gbufSurfaceShader, mat, schema, cache);
 
             if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
@@ -2235,6 +2244,9 @@ namespace Game_Engine.Core
                 int unit = customShader.HasLightingUniformBlock ? 7 : 4;
                 ctx.ShadowFBO.DepthTexture.Bind(TextureUnit.Texture0 + unit);
                 customShader.SetTexture("uShadowMap", unit);
+                customShader.SetTexture("uShadowMapC1", unit);
+                customShader.SetTexture("uShadowMapC2", unit);
+                customShader.SetTexture("uShadowMapC3", unit);
                 if (!customShader.HasLightingUniformBlock)
                     customShader.SetInt("uHasShadow", 1);
                 customShader.SetFloat("uShadowBias", 0.008f);
@@ -2246,7 +2258,7 @@ namespace Game_Engine.Core
             }
 
             // ReflectionProbe cubemap IBL → unit 15 (disjoint from MaterialBinder units 3,5,6,11..14)
-            BindEnvMapToShader(customShader, ctx.CamPos, 15);
+            BindEnvMapToShader(gl, customShader, ctx.CamPos, 15);
 
             // Dynamic Material.Properties overrides + schema defaults (safe units 3, 5, 6, 11..14)
             MaterialBinder.BindProperties(customShader, mat, schema, cache);
@@ -2755,7 +2767,7 @@ namespace Game_Engine.Core
             }
 
             // ReflectionProbe specular IBL (unit 14)
-            BindEnvMapToShader(deferredShader, camPos, 14, reflectionProbeCubemap, reflectionProbeBlend);
+            BindEnvMapToShader(gl, deferredShader, camPos, 14, reflectionProbeCubemap, reflectionProbeBlend);
 
             // Draw fullscreen quad — do not write depth here; scene FBO depth is filled by the
             // gbuffer→scene blit in GameView so forward overlays (terrain) depth-test correctly.
@@ -2791,6 +2803,7 @@ namespace Game_Engine.Core
             fsQuad.Draw();
             gl.ColorMask(true, true, true, true);
             gl.DepthMask(true);
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -2935,6 +2948,7 @@ namespace Game_Engine.Core
                     Ambient = ambient,
                     ShadowVP = shadowVP,
                     ShadowFBO = shadowFBO,
+                    CascadedShadow = cascadedShadow,
                     SunShineDir = sunShineDir,
                     StandardShader = standardShader,
                     Cache = cache,
@@ -2968,7 +2982,7 @@ namespace Game_Engine.Core
                 standardShader.SetVector3("uSunDir", sunShineDir);
                 BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
-            BindEnvMapToShader(standardShader, camPos, 12);
+            BindEnvMapToShader(gl, standardShader, camPos, 12);
 
             // --- TRANSPARENT PASS (back-to-front) ---
             if (transparentItems != null && transparentItems.Count > 0)
@@ -2987,7 +3001,7 @@ namespace Game_Engine.Core
                 standardShader.Use();
                 if (hasShadow)
                     BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
-                BindEnvMapToShader(standardShader, camPos, 12);
+                BindEnvMapToShader(gl, standardShader, camPos, 12);
 
                 foreach (var item in transparentItems)
                 {
@@ -3047,6 +3061,7 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -3075,6 +3090,7 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -3130,6 +3146,7 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -3165,6 +3182,7 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -3250,6 +3268,7 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.CullFace);
             fsQuad.Draw();
+            gl.Enable(EnableCap.CullFace);
             gl.Enable(EnableCap.DepthTest);
         }
 
@@ -3843,7 +3862,7 @@ namespace Game_Engine.Core
                 standardShader.SetVector3("uSunDir", sunShineDir);
                 BindShadowMapsToShader(standardShader, shadowFBO, renderCtx.CascadedShadow, 7);
             }
-            BindEnvMapToShader(standardShader, camPos, 12);
+            BindEnvMapToShader(gl, standardShader, camPos, 12);
 
             gl.Enable(EnableCap.DepthTest);
             gl.DepthMask(true);
@@ -3978,7 +3997,7 @@ namespace Game_Engine.Core
                 standardShader.SetVector3("uSunDir", sunShineDir);
                 BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
-            BindEnvMapToShader(standardShader, camPos, 12);
+            BindEnvMapToShader(gl, standardShader, camPos, 12);
 
             var renderCtx = new RenderContext
             {
@@ -4081,7 +4100,11 @@ namespace Game_Engine.Core
             var go = planet.gameObject;
             var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
             var renderableLeaves = planet.ChunkManager?.GetRenderableLeaves();
-            if (renderableLeaves == null) return;
+            if (renderableLeaves == null)
+            {
+                gl.DepthFunc(DepthFunction.Less);
+                return;
+            }
 
             float camRadial = (camPos - planetCenter).Length();
             bool belowCrust = planet.Config.CameraBelowCrust || camRadial < radiusWorld * 0.97f;
@@ -4122,6 +4145,7 @@ namespace Game_Engine.Core
                     cache.GetMesh(cave).Draw();
             }
 
+            gl.DepthFunc(DepthFunction.Less);
             gl.Enable(EnableCap.CullFace);
             gl.CullFace(TriangleFace.Back);
         }
@@ -4820,6 +4844,7 @@ namespace Game_Engine.Core
                 }
             }
 
+            gl.DepthFunc(DepthFunction.Less);
             gl.DepthMask(true);
             gl.Enable(EnableCap.CullFace);
             gl.Disable(EnableCap.Blend);
@@ -4880,11 +4905,13 @@ namespace Game_Engine.Core
             {
                 // Terrain leaves as a cloud shell is a second full-planet draw. Need a WaterGO shell.
                 gl.DepthMask(true);
+                gl.Enable(EnableCap.CullFace);
                 gl.Disable(EnableCap.Blend);
                 return;
             }
 
             gl.DepthMask(true);
+            gl.Enable(EnableCap.CullFace);
             gl.Disable(EnableCap.Blend);
         }
 
@@ -4938,11 +4965,13 @@ namespace Game_Engine.Core
             else
             {
                 gl.DepthMask(true);
+                gl.Enable(EnableCap.CullFace);
                 gl.Disable(EnableCap.Blend);
                 return;
             }
 
             gl.DepthMask(true);
+            gl.Enable(EnableCap.CullFace);
             gl.Disable(EnableCap.Blend);
         }
     }

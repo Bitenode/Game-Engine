@@ -165,6 +165,18 @@ public sealed class GPUTexture : IDisposable
         return true;
     }
 
+    private bool IsESContext()
+    {
+#if XBOX_UWP
+        return true;
+#else
+        if (ShaderLibrary.TryGet(_gl, out var lib))
+            return lib.IsES;
+        var ver = _gl.GetStringS(StringName.Version);
+        return ver != null && ver.Contains("OpenGL ES", StringComparison.OrdinalIgnoreCase);
+#endif
+    }
+
     /// <summary>
     /// Create a depth-only texture for shadow mapping.
     /// </summary>
@@ -184,23 +196,26 @@ public sealed class GPUTexture : IDisposable
             (int)TextureMinFilter.Nearest);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
             (int)TextureMagFilter.Nearest);
-#if XBOX_UWP
-        // ES 3.0 has no CLAMP_TO_BORDER. An invalid wrap leaves the depth texture
-        // incomplete and the post-process scene target fails to render.
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
-            (int)TextureWrapMode.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
-            (int)TextureWrapMode.ClampToEdge);
-#else
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
-            (int)TextureWrapMode.ClampToBorder);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
-            (int)TextureWrapMode.ClampToBorder);
+        if (IsESContext())
+        {
+            // ES 3.0 has no CLAMP_TO_BORDER. An invalid wrap leaves the depth texture
+            // incomplete and the post-process scene target fails to render.
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                (int)TextureWrapMode.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                (int)TextureWrapMode.ClampToEdge);
+        }
+        else
+        {
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                (int)TextureWrapMode.ClampToBorder);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                (int)TextureWrapMode.ClampToBorder);
 
-        // Border color = 1.0 (far) so pixels outside shadow map are never in shadow
-        float* border = stackalloc float[4] { 1f, 1f, 1f, 1f };
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureBorderColor, border);
-#endif
+            // Border color = 1.0 (far) so pixels outside shadow map are never in shadow
+            float* border = stackalloc float[4] { 1f, 1f, 1f, 1f };
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureBorderColor, border);
+        }
 
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
@@ -222,19 +237,22 @@ public sealed class GPUTexture : IDisposable
             (int)TextureMinFilter.Nearest);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
             (int)TextureMagFilter.Nearest);
-#if XBOX_UWP
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
-            (int)TextureWrapMode.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
-            (int)TextureWrapMode.ClampToEdge);
-#else
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
-            (int)TextureWrapMode.ClampToBorder);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
-            (int)TextureWrapMode.ClampToBorder);
-        float* border = stackalloc float[4] { 1f, 1f, 1f, 1f };
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureBorderColor, border);
-#endif
+        if (IsESContext())
+        {
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                (int)TextureWrapMode.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                (int)TextureWrapMode.ClampToEdge);
+        }
+        else
+        {
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                (int)TextureWrapMode.ClampToBorder);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                (int)TextureWrapMode.ClampToBorder);
+            float* border = stackalloc float[4] { 1f, 1f, 1f, 1f };
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureBorderColor, border);
+        }
 
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
@@ -585,6 +603,33 @@ public sealed class GPUTexture : IDisposable
         _gl.TexParameter(TextureTarget.TextureCubeMap, TextureParameterName.TextureWrapR,
             (int)TextureWrapMode.ClampToEdge);
         _gl.GenerateMipmap(TextureTarget.TextureCubeMap);
+        _gl.BindTexture(TextureTarget.TextureCubeMap, 0);
+    }
+
+    /// <summary>Create a 1x1 solid-color RGBA8 cubemap (used as a safe fallback for samplerCube uniforms).</summary>
+    public unsafe void CreateCubemapSolidRgba8(byte r, byte g, byte b, byte a)
+    {
+        Width = 1;
+        Height = 1;
+        byte* pixel = stackalloc byte[4] { r, g, b, a };
+        _gl.BindTexture(TextureTarget.TextureCubeMap, Handle);
+        for (int i = 0; i < 6; i++)
+        {
+            var target = TextureTarget.TextureCubeMapPositiveX + i;
+            _gl.TexImage2D(target, 0, InternalFormat.Rgba8,
+                1, 1, 0,
+                PixelFormat.Rgba, PixelType.UnsignedByte, pixel);
+        }
+        _gl.TexParameter(TextureTarget.TextureCubeMap, TextureParameterName.TextureMinFilter,
+            (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.TextureCubeMap, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.TextureCubeMap, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.TextureCubeMap, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.TextureCubeMap, TextureParameterName.TextureWrapR,
+            (int)TextureWrapMode.ClampToEdge);
         _gl.BindTexture(TextureTarget.TextureCubeMap, 0);
     }
 
