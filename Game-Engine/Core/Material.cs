@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
+using Game_Engine.Core.Rendering;
 #if !ANDROID && !XBOX_UWP
 using ImageMagick;
 #endif
@@ -799,7 +800,9 @@ namespace Game_Engine.Core
 
         [Persist] public string ShaderAssetPath { get; set; }
 
-       
+        /// <summary>Dynamic custom shader property overrides keyed by GLSL uniform name.</summary>
+        [JsonIgnore]
+        public MaterialPropertyBag Properties { get; } = new MaterialPropertyBag();
 
         // ---- Legacy Lit toggle (builder reads/sets this) ----
         [Persist] public bool Lit { get; set; } = true;
@@ -815,11 +818,17 @@ namespace Game_Engine.Core
                 AlphaCutoff = this.AlphaCutoff,
                 LumaClip = this.LumaClip,
                 Metallic = this.Metallic,
+                EmissiveColor = this.EmissiveColor,
+                EmissiveIntensity = this.EmissiveIntensity,
+                NormalStrength = this.NormalStrength,
                 ShaderAssetPath = this.ShaderAssetPath,
                 Lit = this.Lit
             };
             // keep exact roughness value (don’t re-map through Smoothness)
             m._roughness = this._roughness;
+
+            if (!this.Properties.IsEmpty)
+                m.Properties.CopyFrom(this.Properties);
 
             if (copyTextures && this.Textures != null)
             {

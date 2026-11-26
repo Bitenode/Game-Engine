@@ -1,17 +1,19 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Media;
-using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Rendering;
+using Game_Engine.Core.Rendering.GPU;
 using Game_Engine.Core.Rendering.ShaderGraph;
-using SN = System.Numerics;
 
 namespace Game_Engine.Views;
 
@@ -36,21 +38,21 @@ public partial class ShaderEditorPanel : UserControl
     private const double MinZoom = 0.2;
     private const double MaxZoom = 3.0;
 
+    // Debounced live GPU preview compilation
+    private readonly DispatcherTimer _previewDebounceTimer;
+    private bool _syncingRenderStateUi;
+
     // Visual constants
-    private const float NodeWidth = 180;
-    private const float NodeHeight = 120;
+    private const float NodeWidth = 185;
     private const float PortRadius = 7;
     private const float PortHitRadius = 12;
     private const float PortSpacing = 22;
     private const float HeaderHeight = 28;
 
-    // Preview
-    private const int PreviewSize = 220;
-    private WriteableBitmap? _previewBitmap;
-
     private static readonly IBrush NodeBg = new SolidColorBrush(Color.Parse("#2D2D44"));
     private static readonly IBrush NodeHeaderBg = new SolidColorBrush(Color.Parse("#404060"));
     private static readonly IBrush OutputNodeBg = new SolidColorBrush(Color.Parse("#443344"));
+    private static readonly IBrush PropertyNodeHeaderBg = new SolidColorBrush(Color.Parse("#2F5A48"));
     private static readonly IBrush SelectedBorder = new SolidColorBrush(Color.Parse("#6688FF"));
     private static readonly IBrush PortInputColor = new SolidColorBrush(Color.Parse("#44AAFF"));
     private static readonly IBrush PortOutputColor = new SolidColorBrush(Color.Parse("#FFAA44"));
@@ -59,6 +61,9 @@ public partial class ShaderEditorPanel : UserControl
     private static readonly IBrush ConnectedPortStroke = new SolidColorBrush(Color.Parse("#FFFFFF"));
     private static readonly IBrush TextColor = Brushes.White;
     private static readonly IBrush GridDotBrush = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
+    private static readonly IBrush StatusOkBrush = new SolidColorBrush(Color.Parse("#88DDAA"));
+    private static readonly IBrush StatusErrBrush = new SolidColorBrush(Color.Parse("#FF7777"));
+    private static readonly IBrush StatusNeutralBrush = new SolidColorBrush(Color.Parse("#CCCCCC"));
 
     public ShaderEditorPanel()
     {
@@ -67,6 +72,13 @@ public partial class ShaderEditorPanel : UserControl
         // _worldCanvas holds all graph visuals and gets the pan/zoom transform.
         // GraphCanvas stays untransformed so GetPosition() returns screen coords.
         GraphCanvas.Children.Add(_worldCanvas);
+
+        _previewDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _previewDebounceTimer.Tick += (_, _) =>
+        {
+            _previewDebounceTimer.Stop();
+            CompileToGpuPreviewNow();
+        };
 
         CompileButton.Click += (_, _) => CompileGraph();
         AddNodeButton.Click += (_, _) => AddSelectedNodeType();
@@ -77,20 +89,192 @@ public partial class ShaderEditorPanel : UserControl
         ShaderNameBox.LostFocus += (_, _) =>
         {
             _graph.Name = ShaderNameBox.Text ?? "Custom Shader";
+            ScheduleGpuPreview();
         };
+
+        // Preview toolbar controls
+        PreviewMeshCombo.SelectionChanged += (_, _) =>
+        {
+            GpuPreview.MeshType = PreviewMeshCombo.SelectedIndex switch
+            {
+                1 => ShaderPreviewMesh.Cube,
+                2 => ShaderPreviewMesh.Plane,
+                _ => ShaderPreviewMesh.Sphere
+            };
+        };
+
+        AutoSpinCheck.IsCheckedChanged += (_, _) =>
+        {
+            GpuPreview.AutoSpin = AutoSpinCheck.IsChecked == true;
+        };
+
+        // Master RenderState toolbar dropdowns
+        QueueCombo.SelectionChanged += (_, _) =>
+        {
+            if (_syncingRenderStateUi) return;
+            _graph.Output.Queue = QueueCombo.SelectedIndex switch
+            {
+                1 => ShaderRenderQueue.AlphaTest,
+                2 => ShaderRenderQueue.Transparent,
+                _ => ShaderRenderQueue.Opaque
+            };
+            if (_selectedNode is OutputNode) UpdateProperties();
+            ScheduleGpuPreview();
+        };
+
+        CullCombo.SelectionChanged += (_, _) =>
+        {
+            if (_syncingRenderStateUi) return;
+            _graph.Output.Cull = CullCombo.SelectedIndex switch
+            {
+                1 => ShaderCullMode.Front,
+                2 => ShaderCullMode.Off,
+                _ => ShaderCullMode.Back
+            };
+            if (_selectedNode is OutputNode) UpdateProperties();
+            ScheduleGpuPreview();
+        };
+
+        LightingCombo.SelectionChanged += (_, _) =>
+        {
+            if (_syncingRenderStateUi) return;
+            _graph.Output.Lighting = LightingCombo.SelectedIndex switch
+            {
+                1 => ShaderLightingModel.Unlit,
+                _ => ShaderLightingModel.PBR
+            };
+            if (_selectedNode is OutputNode) UpdateProperties();
+            ScheduleGpuPreview();
+        };
+
+        GpuPreview.CompilationResultChanged += OnGpuCompilationResult;
 
         GraphCanvas.PointerPressed += OnCanvasPointerPressed;
         GraphCanvas.PointerMoved += OnCanvasPointerMoved;
         GraphCanvas.PointerReleased += OnCanvasPointerReleased;
         GraphCanvas.PointerWheelChanged += OnCanvasPointerWheel;
 
+        SyncRenderStateToolbar();
         RenderGraph();
-        RenderPreview();
+        ScheduleGpuPreview();
+    }
+
+    private void SyncRenderStateToolbar()
+    {
+        _syncingRenderStateUi = true;
+        try
+        {
+            QueueCombo.SelectedIndex = _graph.Output.Queue switch
+            {
+                ShaderRenderQueue.AlphaTest => 1,
+                ShaderRenderQueue.Transparent => 2,
+                _ => 0
+            };
+            CullCombo.SelectedIndex = _graph.Output.Cull switch
+            {
+                ShaderCullMode.Front => 1,
+                ShaderCullMode.Off => 2,
+                _ => 0
+            };
+            LightingCombo.SelectedIndex = _graph.Output.Lighting switch
+            {
+                ShaderLightingModel.Unlit => 1,
+                _ => 0
+            };
+        }
+        finally
+        {
+            _syncingRenderStateUi = false;
+        }
+    }
+
+    private void OnGpuCompilationResult(bool ok, string message)
+    {
+        if (ok)
+        {
+            PreviewStatusText.Text = "Live GPU preview — drag to orbit, scroll to zoom";
+            PreviewStatusText.Foreground = StatusOkBrush;
+            ToolTip.SetTip(PreviewStatusText, null);
+        }
+        else
+        {
+            PreviewStatusText.Text = $"GLSL Error: {message}";
+            PreviewStatusText.Foreground = StatusErrBrush;
+            ToolTip.SetTip(PreviewStatusText, message);
+            StatusLabel.Text = $"GLSL Error: {message}";
+            StatusLabel.Foreground = StatusErrBrush;
+            ToolTip.SetTip(StatusLabel, message);
+        }
+    }
+
+    private void ScheduleGpuPreview()
+    {
+        _previewDebounceTimer.Stop();
+        _previewDebounceTimer.Start();
+    }
+
+    private void CompileToGpuPreviewNow()
+    {
+        _graph.Name = string.IsNullOrWhiteSpace(ShaderNameBox.Text) ? "Custom Shader" : ShaderNameBox.Text!;
+        var result = ShaderGraphCompiler.Compile(_graph);
+        if (!result.Success)
+        {
+            string err = result.ErrorMessage ?? "Shader graph compile failed.";
+            PreviewStatusText.Text = err;
+            PreviewStatusText.Foreground = StatusErrBrush;
+            ToolTip.SetTip(PreviewStatusText, err);
+            StatusLabel.Text = err;
+            StatusLabel.Foreground = StatusErrBrush;
+            return;
+        }
+
+        var previewMat = BuildPreviewMaterial();
+        GpuPreview.SetShaderSource(result.ShaderSource, _graph.Name, previewMat);
+    }
+
+    private Material BuildPreviewMaterial()
+    {
+        var mat = new Material { Name = _graph.Name };
+
+        foreach (var node in _graph.Nodes)
+        {
+            if (node is TextureSampleNode tn && !string.IsNullOrWhiteSpace(tn.TexturePath))
+            {
+                var tex = ShaderPreviewControl.TryLoadPreviewTexture(tn.TexturePath);
+                if (tex == null) continue;
+
+                if (!string.IsNullOrWhiteSpace(tn.PropertyName))
+                {
+                    string propName = ShaderNode.SanitizeIdentifier(tn.PropertyName, "_MainTex");
+                    mat.Properties.SetTexture(propName, tn.TexturePath, tex);
+                }
+                else
+                {
+                    string usage = tn.TextureSlot switch
+                    {
+                        1 => "Normal",
+                        2 => "Specular",
+                        _ => "Albedo"
+                    };
+                    mat.Textures.Add(new RuntimeTexSlot { Texture = tex, Usage = usage, SourcePath = tn.TexturePath });
+                }
+            }
+            else if (node is PropertyNode pn && pn.Kind == PropertyNode.PropertyKind.Texture2D && !string.IsNullOrWhiteSpace(pn.TexturePath))
+            {
+                var tex = ShaderPreviewControl.TryLoadPreviewTexture(pn.TexturePath);
+                if (tex != null)
+                {
+                    string propName = ShaderNode.SanitizeIdentifier(pn.PropertyName, "_CustomProp");
+                    mat.Properties.SetTexture(propName, pn.TexturePath, tex);
+                }
+            }
+        }
+
+        return mat;
     }
 
     // ── Coordinate Conversion ──
 
-    /// <summary>Convert screen-space mouse position to graph world coordinates.</summary>
     private Point ScreenToWorld(Point screen)
     {
         return new Point(
@@ -98,7 +282,6 @@ public partial class ShaderEditorPanel : UserControl
             (screen.Y - _panY) / _zoom);
     }
 
-    /// <summary>Update the RenderTransform on the child world canvas (not GraphCanvas).</summary>
     private void ApplyCanvasTransform()
     {
         _worldCanvas.RenderTransform = new TransformGroup
@@ -115,28 +298,34 @@ public partial class ShaderEditorPanel : UserControl
 
     private void AddSelectedNodeType()
     {
-        // Place new nodes in the center of the current visible area
         double canvasW = Math.Max(GraphCanvas.Bounds.Width, 400);
         double canvasH = Math.Max(GraphCanvas.Bounds.Height, 300);
         var center = ScreenToWorld(new Point(canvasW / 2, canvasH / 2));
-        float baseX = (float)center.X - NodeWidth / 2 + (_graph.Nodes.Count % 5) * 25;
-        float baseY = (float)center.Y - 60 + (_graph.Nodes.Count % 5) * 25;
+        float baseX = (float)center.X - NodeWidth / 2 + (_graph.Nodes.Count % 5) * 24;
+        float baseY = (float)center.Y - 60 + (_graph.Nodes.Count % 5) * 24;
 
         ShaderNode node = NodeTypeCombo.SelectedIndex switch
         {
             0 => _graph.AddNode<TextureSampleNode>(baseX, baseY),
-            1 => _graph.AddNode<ColorNode>(baseX, baseY + 100),
-            2 => _graph.AddNode<FloatNode>(baseX, baseY + 200),
-            3 => _graph.AddNode<MathNode>(baseX, baseY + 50),
-            4 => _graph.AddNode<CoordinateNode>(baseX, baseY + 150),
-            5 => _graph.AddNode<FresnelNode>(baseX, baseY + 250),
-            6 => _graph.AddNode<NoiseNode>(baseX, baseY + 300),
+            1 => _graph.AddNode<ColorNode>(baseX, baseY),
+            2 => _graph.AddNode<FloatNode>(baseX, baseY),
+            3 => _graph.AddNode<MathNode>(baseX, baseY),
+            4 => _graph.AddNode<CoordinateNode>(baseX, baseY),
+            5 => _graph.AddNode<FresnelNode>(baseX, baseY),
+            6 => _graph.AddNode<NoiseNode>(baseX, baseY),
+            7 => _graph.AddNode<PropertyNode>(baseX, baseY),
+            8 => _graph.AddNode<SplitNode>(baseX, baseY),
+            9 => _graph.AddNode<CombineNode>(baseX, baseY),
+            10 => _graph.AddNode<UVTransformNode>(baseX, baseY),
+            11 => _graph.AddNode<TimeNode>(baseX, baseY),
+            12 => _graph.AddNode<BlendNode>(baseX, baseY),
             _ => _graph.AddNode<FloatNode>(baseX, baseY)
         };
 
         _selectedNode = node;
         RenderGraph();
         UpdateProperties();
+        ScheduleGpuPreview();
     }
 
     private void DeleteSelectedNode()
@@ -144,6 +333,7 @@ public partial class ShaderEditorPanel : UserControl
         if (_selectedNode == null || _selectedNode is OutputNode)
         {
             StatusLabel.Text = "Cannot delete the Output node.";
+            StatusLabel.Foreground = StatusNeutralBrush;
             return;
         }
 
@@ -151,50 +341,40 @@ public partial class ShaderEditorPanel : UserControl
         _selectedNode = null;
         RenderGraph();
         UpdateProperties();
-        RenderPreview();
+        ScheduleGpuPreview();
     }
 
     private async void CompileGraph()
     {
         try
         {
-            var (vertex, fragment) = _graph.Compile();
-            RenderPreview();
+            string shaderName = string.IsNullOrWhiteSpace(ShaderNameBox.Text) ? _graph.Name : ShaderNameBox.Text!;
+            _graph.Name = shaderName;
 
-            // Build the .shader file content
-            string shaderName = ShaderNameBox.Text ?? _graph.Name ?? "CustomShader";
-            string shaderContent =
-$@"// ── {shaderName}.shader ──
-// Auto-generated by Visual Shader Editor
-// {DateTime.Now:yyyy-MM-dd HH:mm:ss}
+            var compileResult = ShaderGraphCompiler.Compile(_graph);
+            if (!compileResult.Success)
+            {
+                string err = compileResult.ErrorMessage ?? "Compilation failed.";
+                StatusLabel.Text = $"Compile error: {err}";
+                StatusLabel.Foreground = StatusErrBrush;
+                Log.Error($"[ShaderEditor] Compile error: {err}");
+                return;
+            }
 
-Shader ""{shaderName}""
-{{
-    // ── Vertex Shader ──
-    VERTEX
-    {{
-{IndentBlock(vertex, 8)}
-    }}
+            string shaderContent = compileResult.ShaderSource;
+            GpuPreview.SetShaderSource(shaderContent, shaderName, BuildPreviewMaterial());
 
-    // ── Fragment Shader ──
-    FRAGMENT
-    {{
-{IndentBlock(fragment, 8)}
-    }}
-}}
-";
-
-            // Ask user where to save
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel == null)
             {
-                StatusLabel.Text = $"Compiled OK ({fragment.Length} chars) — no window for save dialog";
+                StatusLabel.Text = $"Compiled OK ({shaderContent.Length} chars) — no window for save dialog";
+                StatusLabel.Foreground = StatusOkBrush;
                 return;
             }
 
             var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save Compiled Shader",
+                Title = "Save Compiled Surface Shader",
                 DefaultExtension = "shader",
                 FileTypeChoices = new[]
                 {
@@ -205,7 +385,8 @@ Shader ""{shaderName}""
 
             if (file == null)
             {
-                StatusLabel.Text = $"Compiled OK ({fragment.Length} chars) — save cancelled";
+                StatusLabel.Text = $"Compiled OK ({shaderContent.Length} chars) — save cancelled";
+                StatusLabel.Foreground = StatusOkBrush;
                 return;
             }
 
@@ -213,17 +394,19 @@ Shader ""{shaderName}""
             if (string.IsNullOrEmpty(path))
             {
                 StatusLabel.Text = "Compiled OK — could not resolve save path";
+                StatusLabel.Foreground = StatusNeutralBrush;
                 return;
             }
 
             System.IO.File.WriteAllText(path, shaderContent);
+            ShaderFileParser.InvalidateSchemaCache(path);
+            CustomShaderCache.Invalidate(path);
+            SceneService.RequestFrame();
 
-            // Auto-save the .shadergraph alongside the .shader so the material
-            // preview can load the node graph for accurate PBR blending
+            // Auto-save the .shadergraph alongside the .shader
             try
             {
                 string sgPath = System.IO.Path.ChangeExtension(path, ".shadergraph");
-                _graph.Name = shaderName;
                 _graph.SaveToFile(sgPath);
                 Log.Info($"[ShaderEditor] Shader graph saved alongside: {System.IO.Path.GetFileName(sgPath)}");
             }
@@ -232,21 +415,16 @@ Shader ""{shaderName}""
                 Log.Warning($"[ShaderEditor] Could not save .shadergraph alongside: {sgEx.Message}");
             }
 
-            StatusLabel.Text = $"Compiled & saved: {System.IO.Path.GetFileName(path)}  ({fragment.Length} chars)";
-            Log.Success($"[ShaderEditor] Shader compiled and saved to: {path}");
+            StatusLabel.Text = $"Compiled & saved: {System.IO.Path.GetFileName(path)}";
+            StatusLabel.Foreground = StatusOkBrush;
+            Log.Success($"[ShaderEditor] Surface shader compiled and saved to: {path}");
         }
         catch (Exception ex)
         {
             StatusLabel.Text = $"Error: {ex.Message}";
+            StatusLabel.Foreground = StatusErrBrush;
             Log.Error($"[ShaderEditor] Compile error: {ex.Message}");
         }
-    }
-
-    private static string IndentBlock(string text, int spaces)
-    {
-        string indent = new string(' ', spaces);
-        var lines = text.Split('\n');
-        return string.Join('\n', lines.Select(l => indent + l));
     }
 
     private async System.Threading.Tasks.Task SaveGraph()
@@ -275,10 +453,12 @@ Shader ""{shaderName}""
 
             _graph.SaveToFile(path);
             StatusLabel.Text = $"Saved: {System.IO.Path.GetFileName(path)}";
+            StatusLabel.Foreground = StatusOkBrush;
         }
         catch (Exception ex)
         {
             StatusLabel.Text = $"Save error: {ex.Message}";
+            StatusLabel.Foreground = StatusErrBrush;
         }
     }
 
@@ -308,14 +488,17 @@ Shader ""{shaderName}""
             _selectedNode = null;
             _connectingFrom = null;
 
+            SyncRenderStateToolbar();
             RenderGraph();
             UpdateProperties();
-            RenderPreview();
+            ScheduleGpuPreview();
             StatusLabel.Text = $"Loaded: {System.IO.Path.GetFileName(path)}";
+            StatusLabel.Foreground = StatusOkBrush;
         }
         catch (Exception ex)
         {
             StatusLabel.Text = $"Load error: {ex.Message}";
+            StatusLabel.Foreground = StatusErrBrush;
         }
     }
 
@@ -323,10 +506,8 @@ Shader ""{shaderName}""
 
     private (ShaderPort? port, ShaderNode? node) HitTestPort(Point pos)
     {
-        // Check all ports on all nodes (reverse for z-order)
         foreach (var node in _graph.Nodes.AsEnumerable().Reverse())
         {
-            // Check output ports
             for (int i = 0; i < node.Outputs.Count; i++)
             {
                 var portPos = GetPortPosition(node.Outputs[i]);
@@ -336,7 +517,6 @@ Shader ""{shaderName}""
                     return (node.Outputs[i], node);
             }
 
-            // Check input ports
             for (int i = 0; i < node.Inputs.Count; i++)
             {
                 var portPos = GetPortPosition(node.Inputs[i]);
@@ -371,7 +551,6 @@ Shader ""{shaderName}""
         var worldPos = ScreenToWorld(screenPos);
         var props = e.GetCurrentPoint(GraphCanvas).Properties;
 
-        // Middle-mouse button starts canvas panning
         if (props.IsMiddleButtonPressed)
         {
             _isPanning = true;
@@ -388,22 +567,13 @@ Shader ""{shaderName}""
             var (port, _) = HitTestPort(worldPos);
             if (port != null)
             {
-                _graph.Disconnect(port.IsOutput ? port : port);
-                if (port.IsOutput)
-                {
-                    var toRemove = _graph.Connections.Where(c => c.From == port).ToList();
-                    foreach (var conn in toRemove)
-                    {
-                        _graph.Disconnect(conn.To);
-                    }
-                }
+                _graph.Disconnect(port);
                 RenderGraph();
                 UpdateProperties();
-                RenderPreview();
+                ScheduleGpuPreview();
                 return;
             }
 
-            // Right-click on empty space also pans (alternative to middle-click)
             _isPanning = true;
             _panStartMouse = screenPos;
             _panStartX = _panX;
@@ -411,13 +581,12 @@ Shader ""{shaderName}""
             return;
         }
 
-        // Check ports first (higher priority than node body)
-        var (hitPort, hitNode) = HitTestPort(worldPos);
-
+        var (hitPort, _) = HitTestPort(worldPos);
         if (hitPort != null)
         {
             if (hitPort.IsOutput)
             {
+                // Fan-out: starting a new wire from an output keeps all existing outgoing wires intact!
                 _connectingFrom = hitPort;
                 _connectMousePos = worldPos;
             }
@@ -443,7 +612,6 @@ Shader ""{shaderName}""
             return;
         }
 
-        // Check node body
         _connectingFrom = null;
         var clickedNode = HitTestNode(worldPos);
 
@@ -455,7 +623,6 @@ Shader ""{shaderName}""
         }
         else
         {
-            // Left-click on empty space also pans
             _isPanning = true;
             _panStartMouse = screenPos;
             _panStartX = _panX;
@@ -472,7 +639,6 @@ Shader ""{shaderName}""
     {
         var screenPos = e.GetPosition(GraphCanvas);
 
-        // Canvas panning
         if (_isPanning)
         {
             _panX = _panStartX + (screenPos.X - _panStartMouse.X);
@@ -531,13 +697,14 @@ Shader ""{shaderName}""
                 {
                     _graph.Connect(from, to);
                     StatusLabel.Text = $"Connected {from.Owner.Name}.{from.Name} -> {to.Owner.Name}.{to.Name}";
+                    StatusLabel.Foreground = StatusNeutralBrush;
                 }
             }
 
             _connectingFrom = null;
             RenderGraph();
             UpdateProperties();
-            RenderPreview();
+            ScheduleGpuPreview();
             return;
         }
 
@@ -548,12 +715,10 @@ Shader ""{shaderName}""
     {
         var screenPos = e.GetPosition(GraphCanvas);
 
-        // Zoom toward/away from cursor position
         double oldZoom = _zoom;
         double zoomDelta = e.Delta.Y > 0 ? 1.15 : 1.0 / 1.15;
         double newZoom = Math.Clamp(_zoom * zoomDelta, MinZoom, MaxZoom);
 
-        // Adjust pan so the point under the cursor stays fixed
         _panX = screenPos.X - (screenPos.X - _panX) * (newZoom / oldZoom);
         _panY = screenPos.Y - (screenPos.Y - _panY) * (newZoom / oldZoom);
         _zoom = newZoom;
@@ -571,13 +736,11 @@ Shader ""{shaderName}""
 
         DrawGridBackground();
 
-        // Draw connections first (behind nodes)
         foreach (var conn in _graph.Connections)
         {
             DrawConnection(conn.From, conn.To, ConnectionBrush, 2.5);
         }
 
-        // Draw nodes
         foreach (var node in _graph.Nodes)
         {
             DrawNode(node);
@@ -586,7 +749,6 @@ Shader ""{shaderName}""
 
     private void DrawGridBackground()
     {
-        // Get visible area in world coordinates
         double canvasW = GraphCanvas.Bounds.Width;
         double canvasH = GraphCanvas.Bounds.Height;
         if (canvasW < 10 || canvasH < 10) return;
@@ -595,7 +757,7 @@ Shader ""{shaderName}""
         var bottomRight = ScreenToWorld(new Point(canvasW, canvasH));
 
         const double gridStep = 30;
-        double dotSize = 2 / _zoom; // Keep dot size consistent on screen
+        double dotSize = 2 / _zoom;
 
         double startX = Math.Floor(topLeft.X / gridStep) * gridStep;
         double startY = Math.Floor(topLeft.Y / gridStep) * gridStep;
@@ -618,7 +780,6 @@ Shader ""{shaderName}""
         bool isSelected = node == _selectedNode;
         float totalH = HeaderHeight + Math.Max(node.Inputs.Count, node.Outputs.Count) * PortSpacing + 12;
 
-        // Drop shadow
         var shadow = new Rectangle
         {
             Width = NodeWidth + 4,
@@ -630,7 +791,6 @@ Shader ""{shaderName}""
         Canvas.SetTop(shadow, node.EditorY + 2);
         _worldCanvas.Children.Add(shadow);
 
-        // Node background
         var bg = new Rectangle
         {
             Width = NodeWidth,
@@ -644,49 +804,56 @@ Shader ""{shaderName}""
         Canvas.SetTop(bg, node.EditorY);
         _worldCanvas.Children.Add(bg);
 
-        // Header
+        var headerBrush = node is PropertyNode ? PropertyNodeHeaderBg : NodeHeaderBg;
         var header = new Rectangle
         {
             Width = NodeWidth,
             Height = HeaderHeight,
-            Fill = NodeHeaderBg,
+            Fill = headerBrush,
             RadiusX = 6, RadiusY = 6
         };
         Canvas.SetLeft(header, node.EditorX);
         Canvas.SetTop(header, node.EditorY);
         _worldCanvas.Children.Add(header);
 
-        // Clip header bottom corners (cover the rounded corners at the bottom of the header)
         var headerClip = new Rectangle
         {
             Width = NodeWidth,
             Height = 8,
-            Fill = NodeHeaderBg
+            Fill = headerBrush
         };
         Canvas.SetLeft(headerClip, node.EditorX);
         Canvas.SetTop(headerClip, node.EditorY + HeaderHeight - 8);
         _worldCanvas.Children.Add(headerClip);
 
-        // Title
+        string displayTitle = node switch
+        {
+            PropertyNode pn => string.IsNullOrWhiteSpace(pn.DisplayName) ? pn.PropertyName : pn.DisplayName,
+            MathNode mn => $"Math ({mn.Operation})",
+            NoiseNode nn => $"Noise ({nn.Type})",
+            BlendNode bn => $"Blend ({bn.Mode})",
+            _ => node.Name
+        };
+
         var title = new TextBlock
         {
-            Text = node.Name,
+            Text = displayTitle,
             Foreground = TextColor,
-            FontSize = 12,
-            FontWeight = FontWeight.Bold
+            FontSize = 11,
+            FontWeight = FontWeight.Bold,
+            MaxWidth = NodeWidth - 16,
+            TextTrimming = TextTrimming.CharacterEllipsis
         };
-        Canvas.SetLeft(title, node.EditorX + 10);
+        Canvas.SetLeft(title, node.EditorX + 8);
         Canvas.SetTop(title, node.EditorY + 6);
         _worldCanvas.Children.Add(title);
 
-        // Input ports
         for (int i = 0; i < node.Inputs.Count; i++)
         {
             float py = node.EditorY + HeaderHeight + 8 + i * PortSpacing;
             DrawPort(node.Inputs[i], node.EditorX, py, false);
         }
 
-        // Output ports
         for (int i = 0; i < node.Outputs.Count; i++)
         {
             float py = node.EditorY + HeaderHeight + 8 + i * PortSpacing;
@@ -696,16 +863,15 @@ Shader ""{shaderName}""
 
     private void DrawPort(ShaderPort port, float x, float y, bool isOutput)
     {
-        bool isConnected = port.Connection != null;
+        bool isConnected = _graph.IsPortConnected(port);
 
-        // Outer glow when connected
         if (isConnected)
         {
             var glow = new Ellipse
             {
                 Width = PortRadius * 2 + 6,
                 Height = PortRadius * 2 + 6,
-                Fill = new SolidColorBrush(Color.FromArgb(30,
+                Fill = new SolidColorBrush(Color.FromArgb(35,
                     isOutput ? (byte)255 : (byte)68,
                     isOutput ? (byte)170 : (byte)170,
                     isOutput ? (byte)68 : (byte)255)),
@@ -742,7 +908,7 @@ Shader ""{shaderName}""
 
         if (isOutput)
         {
-            Canvas.SetLeft(label, x - 65);
+            Canvas.SetLeft(label, x - 62);
             Canvas.SetTop(label, y - 7);
         }
         else
@@ -757,9 +923,7 @@ Shader ""{shaderName}""
     {
         var fromPos = GetPortPosition(from);
         var toPos = GetPortPosition(to);
-
         if (fromPos == null || toPos == null) return;
-
         DrawBezierLine(fromPos.Value, toPos.Value, brush, thickness);
     }
 
@@ -768,24 +932,17 @@ Shader ""{shaderName}""
         var fromPos = GetPortPosition(fromPort);
         if (fromPos == null) return;
 
-        // If connecting from input, swap direction visually
         var start = fromPos.Value;
         var end = mousePos;
-
         if (!fromPort.IsOutput)
-        {
-            // Swap so the bezier curves the right way
             (start, end) = (end, start);
-        }
 
         DrawBezierLine(start, end, TempConnectionBrush, 2, true);
     }
 
     private void DrawBezierLine(Point from, Point to, IBrush brush, double thickness, bool dashed = false)
     {
-        float dx = (float)Math.Abs(to.X - from.X) * 0.5f;
-        dx = Math.Max(dx, 50f);
-
+        float dx = Math.Max((float)Math.Abs(to.X - from.X) * 0.5f, 50f);
         string pathData = $"M {F(from.X)},{F(from.Y)} C {F(from.X + dx)},{F(from.Y)} {F(to.X - dx)},{F(to.Y)} {F(to.X)},{F(to.Y)}";
 
         var path = new Avalonia.Controls.Shapes.Path
@@ -797,15 +954,12 @@ Shader ""{shaderName}""
         };
 
         if (dashed)
-        {
             path.StrokeDashArray = new Avalonia.Collections.AvaloniaList<double> { 6, 4 };
-        }
 
         _worldCanvas.Children.Add(path);
     }
 
-    // Format double for geometry path strings (invariant culture)
-    private static string F(double v) => v.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+    private static string F(double v) => v.ToString("F1", CultureInfo.InvariantCulture);
 
     private Point? GetPortPosition(ShaderPort port)
     {
@@ -834,7 +988,7 @@ Shader ""{shaderName}""
         {
             PropertiesPanel.Children.Add(new TextBlock
             {
-                Text = "Select a node to see its properties.",
+                Text = "Select a node to edit its properties.",
                 Foreground = Brushes.Gray,
                 FontStyle = FontStyle.Italic,
                 TextWrapping = TextWrapping.Wrap
@@ -855,7 +1009,7 @@ Shader ""{shaderName}""
             Text = $"ID: {_selectedNode.Id}",
             Foreground = Brushes.Gray,
             FontSize = 10,
-            Margin = new Thickness(0, 0, 0, 6)
+            Margin = new Thickness(0, 0, 0, 4)
         });
 
         // Show inputs
@@ -864,7 +1018,7 @@ Shader ""{shaderName}""
             PropertiesPanel.Children.Add(new TextBlock
             {
                 Text = "Inputs:",
-                Margin = new Thickness(0, 4, 0, 2),
+                Margin = new Thickness(0, 2, 0, 2),
                 Foreground = new SolidColorBrush(Color.Parse("#88AAFF")),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold
@@ -909,7 +1063,7 @@ Shader ""{shaderName}""
             PropertiesPanel.Children.Add(new TextBlock
             {
                 Text = "Outputs:",
-                Margin = new Thickness(0, 6, 0, 2),
+                Margin = new Thickness(0, 4, 0, 2),
                 Foreground = new SolidColorBrush(Color.Parse("#FFAA44")),
                 FontSize = 11,
                 FontWeight = FontWeight.SemiBold
@@ -917,6 +1071,7 @@ Shader ""{shaderName}""
 
             foreach (var output in _selectedNode.Outputs)
             {
+                int fanOut = _graph.Connections.Count(c => c.From == output);
                 var header = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
                 header.Children.Add(new Ellipse
                 {
@@ -926,7 +1081,7 @@ Shader ""{shaderName}""
                 });
                 header.Children.Add(new TextBlock
                 {
-                    Text = $"{output.Name} ({output.GLSLType})",
+                    Text = fanOut > 0 ? $"{output.Name} ({output.GLSLType}) [{fanOut}]" : $"{output.Name} ({output.GLSLType})",
                     Foreground = Brushes.LightGray,
                     FontSize = 11
                 });
@@ -934,61 +1089,132 @@ Shader ""{shaderName}""
             }
         }
 
-        // Separator
         PropertiesPanel.Children.Add(new Border
         {
             Height = 1,
             Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
-            Margin = new Thickness(0, 8, 0, 4)
+            Margin = new Thickness(0, 6, 0, 4)
         });
 
         // Type-specific editable properties
-        if (_selectedNode is ColorNode colorNode)
+        switch (_selectedNode)
         {
-            AddColorProperty("Red", colorNode.R, v => { colorNode.R = v; RenderGraph(); RenderPreview(); });
-            AddColorProperty("Green", colorNode.G, v => { colorNode.G = v; RenderGraph(); RenderPreview(); });
-            AddColorProperty("Blue", colorNode.B, v => { colorNode.B = v; RenderGraph(); RenderPreview(); });
-            AddColorProperty("Alpha", colorNode.A, v => { colorNode.A = v; RenderGraph(); RenderPreview(); });
-        }
-        else if (_selectedNode is FloatNode floatNode)
-        {
-            AddFloatProperty("Value", floatNode.Value, v => { floatNode.Value = v; RenderGraph(); RenderPreview(); });
-        }
-        else if (_selectedNode is TextureSampleNode texNode)
-        {
-            AddIntProperty("Texture Slot", texNode.TextureSlot, v => { texNode.TextureSlot = v; RenderGraph(); RenderPreview(); });
-        }
-        else if (_selectedNode is MathNode mathNode)
-        {
-            AddEnumProperty("Operation", mathNode.Operation, v => { mathNode.Operation = v; RenderGraph(); RenderPreview(); });
-        }
-        else if (_selectedNode is CoordinateNode coordNode)
-        {
-            AddEnumProperty("Source", coordNode.Source, v => { coordNode.Source = v; RenderGraph(); RenderPreview(); });
+            case OutputNode outNode:
+                AddEnumProperty("Queue", outNode.Queue, v => { outNode.Queue = v; SyncRenderStateToolbar(); ScheduleGpuPreview(); });
+                AddEnumProperty("Cull", outNode.Cull, v => { outNode.Cull = v; SyncRenderStateToolbar(); ScheduleGpuPreview(); });
+                AddEnumProperty("Lighting", outNode.Lighting, v => { outNode.Lighting = v; SyncRenderStateToolbar(); ScheduleGpuPreview(); });
+                AddBoolProperty("ZWrite", outNode.ZWrite, v => { outNode.ZWrite = v; ScheduleGpuPreview(); });
+                AddSliderProperty("Alpha Clip", outNode.AlphaClipThreshold, 0f, 1f, v => { outNode.AlphaClipThreshold = v; ScheduleGpuPreview(); });
+                break;
+
+            case ColorNode colorNode:
+                AddSliderProperty("Red", colorNode.R, 0f, 1f, v => { colorNode.R = v; RenderGraph(); ScheduleGpuPreview(); });
+                AddSliderProperty("Green", colorNode.G, 0f, 1f, v => { colorNode.G = v; RenderGraph(); ScheduleGpuPreview(); });
+                AddSliderProperty("Blue", colorNode.B, 0f, 1f, v => { colorNode.B = v; RenderGraph(); ScheduleGpuPreview(); });
+                AddSliderProperty("Alpha", colorNode.A, 0f, 1f, v => { colorNode.A = v; RenderGraph(); ScheduleGpuPreview(); });
+                break;
+
+            case FloatNode floatNode:
+                AddFloatProperty("Value", floatNode.Value, v => { floatNode.Value = v; RenderGraph(); ScheduleGpuPreview(); });
+                break;
+
+            case TextureSampleNode texNode:
+                AddIntProperty("Slot (0-2)", texNode.TextureSlot, v => { texNode.TextureSlot = Math.Clamp(v, 0, 2); ScheduleGpuPreview(); });
+                AddStringProperty("Property", texNode.PropertyName, v => { texNode.PropertyName = v; ScheduleGpuPreview(); });
+                AddStringProperty("Display", texNode.DisplayName, v => { texNode.DisplayName = v; ScheduleGpuPreview(); });
+                AddStringProperty("Tex Path", texNode.TexturePath, v => { texNode.TexturePath = v; ScheduleGpuPreview(); });
+                AddStringProperty("Default", texNode.DefaultTexture, v => { texNode.DefaultTexture = v; ScheduleGpuPreview(); });
+                AddBoolProperty("Normal Map", texNode.IsNormalMap, v => { texNode.IsNormalMap = v; ScheduleGpuPreview(); });
+                break;
+
+            case MathNode mathNode:
+                AddEnumProperty("Operation", mathNode.Operation, v => { mathNode.Operation = v; RenderGraph(); ScheduleGpuPreview(); });
+                break;
+
+            case CoordinateNode coordNode:
+                AddEnumProperty("Source", coordNode.Source, v => { coordNode.Source = v; RenderGraph(); ScheduleGpuPreview(); });
+                break;
+
+            case NoiseNode noiseNode:
+                AddEnumProperty("Noise Type", noiseNode.Type, v => { noiseNode.Type = v; RenderGraph(); ScheduleGpuPreview(); });
+                AddIntProperty("Octaves", noiseNode.Octaves, v => { noiseNode.Octaves = Math.Clamp(v, 1, 8); ScheduleGpuPreview(); });
+                break;
+
+            case PropertyNode propNode:
+                AddStringProperty("Uniform", propNode.PropertyName, v => { propNode.PropertyName = v; RenderGraph(); ScheduleGpuPreview(); });
+                AddStringProperty("Label", propNode.DisplayName, v => { propNode.DisplayName = v; RenderGraph(); ScheduleGpuPreview(); });
+                AddEnumProperty("Kind", propNode.Kind, v => { propNode.Kind = v; UpdateProperties(); RenderGraph(); ScheduleGpuPreview(); });
+                if (propNode.Kind == PropertyNode.PropertyKind.Float || propNode.Kind == PropertyNode.PropertyKind.Range)
+                {
+                    AddFloatProperty("Default", propNode.DefaultFloat, v => { propNode.DefaultFloat = v; ScheduleGpuPreview(); });
+                    if (propNode.Kind == PropertyNode.PropertyKind.Range)
+                    {
+                        AddFloatProperty("Min", propNode.RangeMin, v => { propNode.RangeMin = v; ScheduleGpuPreview(); });
+                        AddFloatProperty("Max", propNode.RangeMax, v => { propNode.RangeMax = v; ScheduleGpuPreview(); });
+                    }
+                }
+                else if (propNode.Kind == PropertyNode.PropertyKind.Color)
+                {
+                    AddSliderProperty("R", propNode.DefaultX, 0f, 1f, v => { propNode.DefaultX = v; ScheduleGpuPreview(); });
+                    AddSliderProperty("G", propNode.DefaultY, 0f, 1f, v => { propNode.DefaultY = v; ScheduleGpuPreview(); });
+                    AddSliderProperty("B", propNode.DefaultZ, 0f, 1f, v => { propNode.DefaultZ = v; ScheduleGpuPreview(); });
+                    AddSliderProperty("A", propNode.DefaultW, 0f, 1f, v => { propNode.DefaultW = v; ScheduleGpuPreview(); });
+                }
+                else if (propNode.Kind == PropertyNode.PropertyKind.Vector)
+                {
+                    AddFloatProperty("X", propNode.DefaultX, v => { propNode.DefaultX = v; ScheduleGpuPreview(); });
+                    AddFloatProperty("Y", propNode.DefaultY, v => { propNode.DefaultY = v; ScheduleGpuPreview(); });
+                    AddFloatProperty("Z", propNode.DefaultZ, v => { propNode.DefaultZ = v; ScheduleGpuPreview(); });
+                    AddFloatProperty("W", propNode.DefaultW, v => { propNode.DefaultW = v; ScheduleGpuPreview(); });
+                }
+                else if (propNode.Kind == PropertyNode.PropertyKind.Texture2D)
+                {
+                    AddStringProperty("Default", propNode.DefaultTexture, v => { propNode.DefaultTexture = v; ScheduleGpuPreview(); });
+                    AddStringProperty("Tex Path", propNode.TexturePath, v => { propNode.TexturePath = v; ScheduleGpuPreview(); });
+                }
+                break;
+
+            case UVTransformNode uvNode:
+                AddFloatProperty("Tiling X", uvNode.TilingX, v => { uvNode.TilingX = v; ScheduleGpuPreview(); });
+                AddFloatProperty("Tiling Y", uvNode.TilingY, v => { uvNode.TilingY = v; ScheduleGpuPreview(); });
+                AddFloatProperty("Offset X", uvNode.OffsetX, v => { uvNode.OffsetX = v; ScheduleGpuPreview(); });
+                AddFloatProperty("Offset Y", uvNode.OffsetY, v => { uvNode.OffsetY = v; ScheduleGpuPreview(); });
+                AddFloatProperty("Scroll X", uvNode.ScrollX, v => { uvNode.ScrollX = v; ScheduleGpuPreview(); });
+                AddFloatProperty("Scroll Y", uvNode.ScrollY, v => { uvNode.ScrollY = v; ScheduleGpuPreview(); });
+                AddFloatProperty("Rotation", uvNode.Rotation, v => { uvNode.Rotation = v; ScheduleGpuPreview(); });
+                break;
+
+            case BlendNode blendNode:
+                AddEnumProperty("Mode", blendNode.Mode, v => { blendNode.Mode = v; RenderGraph(); ScheduleGpuPreview(); });
+                break;
         }
     }
 
-    private void AddColorProperty(string label, float value, Action<float> setter)
+    private void AddSliderProperty(string label, float value, float min, float max, Action<float> setter)
     {
-        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
-        sp.Children.Add(new TextBlock { Text = label, Width = 50, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
-        var slider = new Slider { Minimum = 0, Maximum = 1, Value = value, Width = 140 };
-        slider.ValueChanged += (_, _) => setter((float)slider.Value);
+        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+        sp.Children.Add(new TextBlock { Text = label, Width = 62, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        var slider = new Slider { Minimum = min, Maximum = max, Value = value, Width = 140 };
+        var valLabel = new TextBlock { Text = value.ToString("F2", CultureInfo.InvariantCulture), Foreground = Brushes.Gray, FontSize = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+        slider.ValueChanged += (_, _) =>
+        {
+            valLabel.Text = slider.Value.ToString("F2", CultureInfo.InvariantCulture);
+            setter((float)slider.Value);
+        };
         sp.Children.Add(slider);
-        var valLabel = new TextBlock { Text = value.ToString("F2"), Foreground = Brushes.Gray, FontSize = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
-        slider.ValueChanged += (_, _) => valLabel.Text = slider.Value.ToString("F2");
         sp.Children.Add(valLabel);
         PropertiesPanel.Children.Add(sp);
     }
 
     private void AddFloatProperty(string label, float value, Action<float> setter)
     {
-        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
-        sp.Children.Add(new TextBlock { Text = label, Width = 50, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
-        var tb = new TextBox { Text = value.ToString("F2"), Width = 80 };
+        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+        sp.Children.Add(new TextBlock { Text = label, Width = 72, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        var tb = new TextBox { Text = value.ToString("0.0##", CultureInfo.InvariantCulture), Width = 100, FontSize = 11 };
         tb.LostFocus += (_, _) =>
         {
-            if (float.TryParse(tb.Text, out float v)) setter(v);
+            if (float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+                setter(v);
         };
         sp.Children.Add(tb);
         PropertiesPanel.Children.Add(sp);
@@ -996,23 +1222,47 @@ Shader ""{shaderName}""
 
     private void AddIntProperty(string label, int value, Action<int> setter)
     {
-        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
-        sp.Children.Add(new TextBlock { Text = label, Width = 80, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
-        var tb = new TextBox { Text = value.ToString(), Width = 60 };
+        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+        sp.Children.Add(new TextBlock { Text = label, Width = 72, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        var tb = new TextBox { Text = value.ToString(CultureInfo.InvariantCulture), Width = 80, FontSize = 11 };
         tb.LostFocus += (_, _) =>
         {
-            if (int.TryParse(tb.Text, out int v)) setter(v);
+            if (int.TryParse(tb.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v))
+                setter(v);
         };
         sp.Children.Add(tb);
         PropertiesPanel.Children.Add(sp);
     }
 
+    private void AddStringProperty(string label, string value, Action<string> setter)
+    {
+        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+        sp.Children.Add(new TextBlock { Text = label, Width = 72, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        var tb = new TextBox { Text = value, Width = 155, FontSize = 11 };
+        tb.LostFocus += (_, _) => setter(tb.Text ?? "");
+        sp.Children.Add(tb);
+        PropertiesPanel.Children.Add(sp);
+    }
+
+    private void AddBoolProperty(string label, bool value, Action<bool> setter)
+    {
+        var cb = new CheckBox
+        {
+            Content = label,
+            IsChecked = value,
+            Foreground = Brushes.White,
+            FontSize = 11
+        };
+        cb.IsCheckedChanged += (_, _) => setter(cb.IsChecked == true);
+        PropertiesPanel.Children.Add(cb);
+    }
+
     private void AddEnumProperty<T>(string label, T currentValue, Action<T> setter) where T : struct, Enum
     {
-        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
-        sp.Children.Add(new TextBlock { Text = label, Width = 70, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        var sp = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+        sp.Children.Add(new TextBlock { Text = label, Width = 72, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
 
-        var combo = new ComboBox { Width = 130 };
+        var combo = new ComboBox { Width = 155, FontSize = 11 };
         var values = Enum.GetValues<T>();
         int selectedIdx = 0;
         for (int i = 0; i < values.Length; i++)
@@ -1029,259 +1279,4 @@ Shader ""{shaderName}""
         sp.Children.Add(combo);
         PropertiesPanel.Children.Add(sp);
     }
-
-    // ── Material Preview (CPU Sphere Raytrace) ──
-
-    private void RenderPreview()
-    {
-        try
-        {
-            var pbrParams = ExtractPBRParameters();
-            _previewBitmap = MaterialPreviewRenderer.Render(pbrParams, PreviewSize);
-            PreviewImage.Source = _previewBitmap;
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[ShaderEditor] Preview error: {ex.Message}");
-        }
-    }
-
-    private MaterialPreviewRenderer.PBRParams ExtractPBRParameters()
-    {
-        var output = _graph.Output;
-
-        var albedo = EvalVec3(output.Inputs[0], new SN.Vector3(1f, 1f, 1f));
-        float metallic = EvalFloat(output.Inputs[2], 0f);
-        float roughness = EvalFloat(output.Inputs[3], 0.5f);
-        var emission = EvalVec3(output.Inputs[4], SN.Vector3.Zero);
-        float ao = EvalFloat(output.Inputs[6], 1f);
-
-        // Detect noise in the albedo chain for per-pixel variation
-        bool hasNoiseAlbedo = false;
-        var albedoBase = albedo;
-        float noiseScale = 10f;
-        var albedoConn = output.Inputs[0].Connection;
-        if (albedoConn?.Owner is MathNode albedoMath)
-        {
-            bool aIsNoise = albedoMath.Inputs[0].Connection?.Owner is NoiseNode;
-            bool bIsNoise = albedoMath.Inputs[1].Connection?.Owner is NoiseNode;
-            if (aIsNoise || bIsNoise)
-            {
-                hasNoiseAlbedo = true;
-                var colorPort = aIsNoise ? albedoMath.Inputs[1] : albedoMath.Inputs[0];
-                var noisePort = aIsNoise ? albedoMath.Inputs[0] : albedoMath.Inputs[1];
-                albedoBase = EvalVec3(colorPort, new SN.Vector3(0.5f));
-                var noiseNode = (NoiseNode)noisePort.Connection!.Owner;
-                noiseScale = EvalFloat(noiseNode.Inputs[1], 10f);
-            }
-        }
-
-        // Detect Fresnel in the emission chain — walk ALL nodes reachable from
-        // the emission port to find any FresnelNode
-        bool hasFresnel = false;
-        var fresnelColor = SN.Vector3.Zero;
-        float fresnelPower = 5f;
-
-        // Direct scan: find FresnelNode by iterating all graph nodes connected to emission
-        if (output.Inputs[4].Connection != null)
-        {
-            var fresnelNode = FindFresnelNodeInChain(output.Inputs[4]);
-            if (fresnelNode != null)
-            {
-                hasFresnel = true;
-                fresnelPower = EvalFloat(fresnelNode.Inputs[0], 5f);
-                fresnelColor = FindFresnelColor(output.Inputs[4]);
-
-                // Fallback: if FindFresnelColor returned white (couldn't determine),
-                // use the evaluated emission (which has the color baked in) divided
-                // by the Fresnel estimate of 0.5
-                if (fresnelColor == SN.Vector3.One && emission.Length() > 0.01f)
-                {
-                    fresnelColor = emission * 2f;
-                }
-            }
-        }
-
-        return new MaterialPreviewRenderer.PBRParams
-        {
-            Albedo = albedo,
-            Metallic = Math.Clamp(metallic, 0f, 1f),
-            Roughness = Math.Clamp(roughness, 0f, 1f),
-            Emission = hasFresnel ? SN.Vector3.Zero : emission,
-            AO = Math.Clamp(ao, 0f, 1f),
-            HasFresnel = hasFresnel,
-            FresnelColor = fresnelColor,
-            FresnelPower = fresnelPower,
-            HasNoiseAlbedo = hasNoiseAlbedo,
-            AlbedoBase = albedoBase,
-            NoiseScale = noiseScale
-        };
-    }
-
-    private FresnelNode? FindFresnelNodeInChain(ShaderPort input, int depth = 0)
-    {
-        if (depth > 10) return null;
-        var conn = input.Connection;
-        if (conn == null) return null;
-
-        if (conn.Owner is FresnelNode fn) return fn;
-
-        foreach (var inp in conn.Owner.Inputs)
-        {
-            var found = FindFresnelNodeInChain(inp, depth + 1);
-            if (found != null) return found;
-        }
-        return null;
-    }
-
-    /// <summary>Evaluate a port's effective float value by walking the node chain.</summary>
-    private float EvalFloat(ShaderPort input, float fallback)
-    {
-        var conn = input.Connection;
-        if (conn == null) return fallback;
-
-        var node = conn.Owner;
-        return node switch
-        {
-            FloatNode f => f.Value,
-            ColorNode c => conn.Name switch
-            {
-                "R" => c.R, "G" => c.G, "B" => c.B, "A" => c.A,
-                _ => (c.R + c.G + c.B) / 3f // RGB average
-            },
-            MathNode m => EvalMath(m),
-            FresnelNode => 0.5f, // Fresnel is view-dependent; use mid-range estimate
-            NoiseNode => 0.5f,   // Noise is spatial; use mid-range estimate
-            _ => fallback
-        };
-    }
-
-    /// <summary>Evaluate a port's effective vec3 value by walking the node chain.</summary>
-    private SN.Vector3 EvalVec3(ShaderPort input, SN.Vector3 fallback)
-    {
-        var conn = input.Connection;
-        if (conn == null) return fallback;
-
-        var node = conn.Owner;
-        return node switch
-        {
-            ColorNode c => conn.Name switch
-            {
-                "RGB" or "RGBA" => new SN.Vector3(c.R, c.G, c.B),
-                "R" => new SN.Vector3(c.R),
-                "G" => new SN.Vector3(c.G),
-                "B" => new SN.Vector3(c.B),
-                _ => new SN.Vector3(c.R, c.G, c.B)
-            },
-            FloatNode f => new SN.Vector3(f.Value),
-            MathNode m => EvalMathVec3(m),
-            FresnelNode => new SN.Vector3(0.5f),
-            NoiseNode => new SN.Vector3(0.5f),
-            _ => fallback
-        };
-    }
-
-    /// <summary>Approximate a Math node's scalar result from its inputs.</summary>
-    private float EvalMath(MathNode m)
-    {
-        float a = EvalFloat(m.Inputs[0], 0f);
-        float b = EvalFloat(m.Inputs[1], 1f);
-        return m.Operation switch
-        {
-            MathNode.MathOp.Add => a + b,
-            MathNode.MathOp.Subtract => a - b,
-            MathNode.MathOp.Multiply => a * b,
-            MathNode.MathOp.Divide => b != 0 ? a / b : 0f,
-            MathNode.MathOp.Power => MathF.Pow(Math.Max(a, 0f), b),
-            MathNode.MathOp.Min => Math.Min(a, b),
-            MathNode.MathOp.Max => Math.Max(a, b),
-            MathNode.MathOp.Lerp => a + (b - a) * 0.5f,
-            _ => a
-        };
-    }
-
-    /// <summary>Evaluate a Math node per-component as vec3, preserving color channels.</summary>
-    private SN.Vector3 EvalMathVec3(MathNode m)
-    {
-        var a = EvalVec3(m.Inputs[0], SN.Vector3.Zero);
-        var b = EvalVec3(m.Inputs[1], SN.Vector3.One);
-        return m.Operation switch
-        {
-            MathNode.MathOp.Add => a + b,
-            MathNode.MathOp.Subtract => a - b,
-            MathNode.MathOp.Multiply => a * b,
-            MathNode.MathOp.Divide => new SN.Vector3(
-                b.X != 0 ? a.X / b.X : 0f,
-                b.Y != 0 ? a.Y / b.Y : 0f,
-                b.Z != 0 ? a.Z / b.Z : 0f),
-            MathNode.MathOp.Power => new SN.Vector3(
-                MathF.Pow(Math.Max(a.X, 0f), b.X),
-                MathF.Pow(Math.Max(a.Y, 0f), b.Y),
-                MathF.Pow(Math.Max(a.Z, 0f), b.Z)),
-            MathNode.MathOp.Min => SN.Vector3.Min(a, b),
-            MathNode.MathOp.Max => SN.Vector3.Max(a, b),
-            MathNode.MathOp.Lerp => SN.Vector3.Lerp(a, b, 0.5f),
-            _ => a
-        };
-    }
-
-    /// <summary>Check if there's a FresnelNode anywhere in the chain feeding an input.</summary>
-    private bool HasNodeInChain(ShaderPort input, int depth = 0)
-    {
-        if (depth > 8) return false;
-        var conn = input.Connection;
-        if (conn == null) return false;
-        if (conn.Owner is FresnelNode) return true;
-
-        foreach (var inp in conn.Owner.Inputs)
-        {
-            if (HasNodeInChain(inp, depth + 1)) return true;
-        }
-        return false;
-    }
-
-    /// <summary>Find the color that gets multiplied with a Fresnel in the chain.</summary>
-    private SN.Vector3 FindFresnelColor(ShaderPort input, int depth = 0)
-    {
-        if (depth > 8) return SN.Vector3.One;
-        var conn = input.Connection;
-        if (conn == null) return SN.Vector3.One;
-
-        if (conn.Owner is MathNode m)
-        {
-            // Check if one input is Fresnel and the other is a color
-            bool aIsFresnel = HasNodeInChain(m.Inputs[0], depth + 1) || m.Inputs[0].Connection?.Owner is FresnelNode;
-            bool bIsFresnel = HasNodeInChain(m.Inputs[1], depth + 1) || m.Inputs[1].Connection?.Owner is FresnelNode;
-
-            if (aIsFresnel && !bIsFresnel)
-                return EvalVec3(m.Inputs[1], SN.Vector3.One);
-            if (bIsFresnel && !aIsFresnel)
-                return EvalVec3(m.Inputs[0], SN.Vector3.One);
-        }
-
-        foreach (var inp in conn.Owner.Inputs)
-        {
-            var c = FindFresnelColor(inp, depth + 1);
-            if (c != SN.Vector3.One) return c;
-        }
-        return SN.Vector3.One;
-    }
-
-    /// <summary>Find the Fresnel power value in the chain.</summary>
-    private float FindFresnelPower(ShaderPort input, int depth = 0)
-    {
-        if (depth > 8) return 5f;
-        var conn = input.Connection;
-        if (conn == null) return 5f;
-        if (conn.Owner is FresnelNode fn)
-            return EvalFloat(fn.Inputs[0], 5f);
-
-        foreach (var inp in conn.Owner.Inputs)
-        {
-            float p = FindFresnelPower(inp, depth + 1);
-            if (p != 5f) return p;
-        }
-        return 5f;
-    }
-
 }

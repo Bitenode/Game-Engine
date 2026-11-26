@@ -17,8 +17,8 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 
 ### Rendering
 - **Real-Time 3D Rendering** — Forward rendering pipeline with PBR materials, shadow mapping (4096x4096 PCF), frustum culling, and multi-level LOD
-- **Shader Graph** — Visual node-based shader editor with live preview, compiling to GLSL (nodes: Output, TextureSample, Color, Float, Math, Coordinate, Fresnel, Noise)
-- **Custom Shaders** — Hand-written `.shader` files with Cook-Torrance BRDF support, plus built-in shader graph assets (Steel PBR, Crystalline Nebula, Neon Emissive, Gold Mirror, and more)
+- **Shader Graph v2** — Visual node editor with **GPU live preview** (`ShaderPreviewControl`), compiling to unified **Surface** `.shader` assets (Forward + deferred GBuffer + shadow passes)
+- **Custom Shaders** — `Surface { surf(...) }` or explicit `VERTEX`/`FRAGMENT` `.shader` files, `MaterialPropertyBag` Inspector properties, hot-reload; modular **47 embedded GLSL** modules under `Core/Rendering/Shaders/`
 - **Water Rendering** — Gerstner wave displacement, Fresnel-based transparency, foam, and underwater post-processing effects
 - **Particle System** — Billboard, streak, and flame particle looks with emission shapes (Sphere, Cone, Box), sub-emitters, and presets (Fire, Smoke, Sparks, Rain, Snow, Dust)
 - **Decal Projection** — Runtime decal rendering on surfaces with lifetime, fade-out, and projection modes (Forward, Up, Down)

@@ -73,8 +73,11 @@ namespace Game_Engine.Core
             public float DiffuseK;
             public float Ambient;
             public SN.Matrix4x4 ShadowVP;
+            public GPUFramebuffer? ShadowFBO;
+            public SN.Vector3 SunShineDir;
             public ShaderProgram StandardShader;
             public ResourceCache Cache;
+            public GlobalUniforms Globals;
             public bool IsES;
             /// <summary>When true, skip custom shader detection and always use the standard shader.</summary>
             public bool ForceStandardShader;
@@ -272,6 +275,10 @@ namespace Game_Engine.Core
             var positions = s_particlePositions ??= new SN.Vector4[128];
             var colors = s_particleColors ??= new SN.Vector4[128];
 
+            var globals = GlobalUniforms.ForContext(gl);
+            var camPos = SN.Matrix4x4.Invert(view, out var invV) ? invV.Translation : SN.Vector3.Zero;
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, viewportW, viewportH);
+
             // Find all particle emitters
             foreach (var root in SceneService.Root)
                 RenderParticlesRecursive(gl, particleShader, cache, root, view, proj, positions, colors, overlayPass);
@@ -296,8 +303,6 @@ namespace Game_Engine.Core
                 if (b is ParticleEmitter pe && pe.IsActiveAndEnabled && pe.ActiveParticleCount > 0)
                 {
                     shader.Use();
-                    shader.SetMatrix4("uView", view);
-                    shader.SetMatrix4("uProj", proj);
                     int particleLook = pe.Look == ParticleLook.Flame ? 2
                         : pe.Look == ParticleLook.Streak || pe.StretchAlongVelocity ? 1
                         : 0;
@@ -430,6 +435,13 @@ namespace Game_Engine.Core
             SN.Vector3 camPos,
             SN.Vector3 skyColor)
         {
+            var globals = GlobalUniforms.ForContext(gl);
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                lightDir, diffuseK, SN.Vector3.One, ambient,
+                lightIsPoint: false, SN.Vector3.Zero, 0f,
+                hasShadow: false, SN.Matrix4x4.Identity);
+
             foreach (var root in SceneService.Root)
                 RenderWaterRecursive(gl, waterShader, cache, root, SN.Matrix4x4.Identity, view, proj,
                     lightDir, ambient, diffuseK, camPos, skyColor);
@@ -458,8 +470,6 @@ namespace Game_Engine.Core
 
                     shader.Use();
                     shader.SetMatrix4("uModel", world);
-                    shader.SetMatrix4("uView", view);
-                    shader.SetMatrix4("uProj", proj);
 
                     SN.Matrix4x4.Invert(world, out var invWorld);
                     shader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
@@ -487,11 +497,7 @@ namespace Game_Engine.Core
                     shader.SetFloat("uFoamIntensity", water.FoamIntensity);
                     shader.SetVector3("uFoamColor", new SN.Vector3(water.FoamColor.X, water.FoamColor.Y, water.FoamColor.Z));
 
-                    // Lighting
-                    shader.SetVector3("uLightDir", lightDir);
-                    shader.SetFloat("uAmbient", ambient);
-                    shader.SetFloat("uDiffuseK", diffuseK);
-                    shader.SetVector3("uCamPos", camPos);
+                    // Sky reflection color (lighting + camera come from FrameGlobals/LightingGlobals UBOs)
                     shader.SetVector3("uSkyColor", skyColor);
 
                     // Draw
@@ -679,28 +685,32 @@ namespace Game_Engine.Core
             gl.DepthMask(true);
             gl.Disable(EnableCap.Blend);
 
-            standardShader.Use();
-            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
-            standardShader.SetMatrix4("uView", view);
-            standardShader.SetMatrix4("uProj", proj);
-            standardShader.SetVector3("uCamPos", camPos);
+            // Upload FrameGlobals & LightingGlobals UBOs once for this pass
+            var globals = GlobalUniforms.ForContext(gl);
+            var resolvedLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
+            bool hasShadow = shadowFBO?.DepthTexture != null;
+            var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
+                ? SN.Vector3.Normalize(WindSystem.Direction)
+                : SN.Vector3.UnitX;
 
-            if (shadowFBO?.DepthTexture != null)
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                lightDir, diffuseK, resolvedLightColor, ambient,
+                lightIsPoint, lightPosW, lightRange,
+                hasShadow, in shadowVP,
+                cascadeCount: hasShadow ? 1 : 0,
+                cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
+                windDir: windDir,
+                windTime: WindSystem.Time);
+
+            standardShader.Use();
+
+            if (hasShadow)
             {
-                standardShader.SetInt("uHasShadow", 1);
-                standardShader.SetMatrix4("uShadowVP", shadowVP);
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
                 standardShader.SetTexture("uShadowMap", 7);
-
-                standardShader.SetInt("uCascadeCount", 1);
-                standardShader.SetMatrix4("uShadowVPC[0]", shadowVP);
-                standardShader.SetFloat("uCascadeSplits[0]", 1000f);
-            }
-            else
-            {
-                standardShader.SetInt("uHasShadow", 0);
             }
 
             // Build render context for custom shader support
@@ -710,12 +720,15 @@ namespace Game_Engine.Core
                 Proj = proj,
                 CamPos = camPos,
                 LightDir = lightDir,
-                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                LightColor = resolvedLightColor,
                 DiffuseK = diffuseK,
                 Ambient = ambient,
                 ShadowVP = shadowVP,
+                ShadowFBO = shadowFBO,
+                SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
+                Globals = globals,
                 IsES = isES
             };
 
@@ -732,9 +745,9 @@ namespace Game_Engine.Core
                 if (terrainShaderActive)
                 {
                     standardShader.Use();
-                    if (shadowFBO?.DepthTexture != null)
+                    if (hasShadow)
                     {
-                        shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                        shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
                         standardShader.SetTexture("uShadowMap", 7);
                     }
                     terrainShaderActive = false;
@@ -745,25 +758,17 @@ namespace Game_Engine.Core
             // Now draw ALL terrain items, grouped by terrain to minimize state changes
             if (terrainShader != null)
             {
+                // Restore scene ambient in case last non-terrain item was foliage
+                globals.UpdateAmbientIfChanged(ambient);
                 terrainShader.Use();
-                SetLightUniforms(terrainShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
-                terrainShader.SetMatrix4("uView", view);
-                terrainShader.SetMatrix4("uProj", proj);
-                terrainShader.SetVector3("uCamPos", camPos);
                 terrainShader.SetFloat("uParallaxStrength", 0.035f);
 
-                if (shadowFBO?.DepthTexture != null)
+                if (hasShadow)
                 {
-                    terrainShader.SetInt("uHasShadow", 1);
-                    terrainShader.SetMatrix4("uShadowVP", shadowVP);
                     terrainShader.SetFloat("uShadowBias", 0.008f);
                     terrainShader.SetVector3("uSunDir", sunShineDir);
-                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture2);
+                    shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture2);
                     terrainShader.SetTexture("uShadowMap", 2);
-                }
-                else
-                {
-                    terrainShader.SetInt("uHasShadow", 0);
                 }
 
                 gl.Enable(EnableCap.CullFace);
@@ -990,35 +995,39 @@ namespace Game_Engine.Core
             }
         }
 
+        private static readonly string[] s_cascadeSamplerNames = { "uShadowMap", "uShadowMapC1", "uShadowMapC2", "uShadowMapC3" };
+
         /// <summary>
-        /// Bind cascaded shadow map textures and uniforms to a shader.
+        /// Bind cascaded shadow map textures and upload cascade matrices/splits to <c>LightingGlobals</c>.
         /// </summary>
         public static void BindCascadeShadowUniforms(
             ShaderProgram shader,
             CascadedShadowMap csm,
             int baseTextureUnit = 7)
         {
-            shader.SetInt("uCascadeCount", csm.CascadeCount);
-            shader.SetInt("uHasShadow", 1);
+            int count = Math.Clamp(csm.CascadeCount, 1, 4);
 
             // Bind cascade shadow maps to texture units
-            string[] samplerNames = { "uShadowMap", "uShadowMapC1", "uShadowMapC2", "uShadowMapC3" };
-            for (int i = 0; i < csm.CascadeCount; i++)
+            for (int i = 0; i < count; i++)
             {
                 int unit = baseTextureUnit + i;
                 csm.Cascades[i].FBO.DepthTexture?.Bind(TextureUnit.Texture0 + unit);
-                shader.SetTexture(samplerNames[i], unit);
+                shader.SetTexture(s_cascadeSamplerNames[i], unit);
             }
 
-            // Upload per-cascade VP matrices and split distances
-            for (int i = 0; i < csm.CascadeCount; i++)
-            {
-                shader.SetMatrix4($"uShadowVPC[{i}]", csm.LightVPs[i]);
-                shader.SetFloat($"uCascadeSplits[{i}]", csm.SplitDistances[i]);
-            }
+            // Upload per-cascade VP matrices and split distances into LightingGlobals UBO
+            var vp0 = csm.LightVPs[0];
+            var vp1 = count > 1 ? csm.LightVPs[1] : vp0;
+            var vp2 = count > 2 ? csm.LightVPs[2] : vp1;
+            var vp3 = count > 3 ? csm.LightVPs[3] : vp2;
+            var splits = new SN.Vector4(
+                csm.SplitDistances[0],
+                count > 1 ? csm.SplitDistances[1] : 1000f,
+                count > 2 ? csm.SplitDistances[2] : 1000f,
+                count > 3 ? csm.SplitDistances[3] : 1000f);
 
-            // Backward compat: set uShadowVP to cascade 0
-            shader.SetMatrix4("uShadowVP", csm.LightVPs[0]);
+            GlobalUniforms.ForContext(shader.GL).UpdateCascadedShadows(
+                count, in vp0, in vp1, in vp2, in vp3, splits);
         }
 
         // ---------- Internal traversal ----------
@@ -1115,6 +1124,16 @@ namespace Game_Engine.Core
                     // Direct property access — no reflection, no pixel scanning.
                     var mat = mr.Material;
                     bool isTransparent = mat?.Transparent == true || mr.Color.A < 255;
+                    if (!isTransparent && mat != null && !string.IsNullOrWhiteSpace(mat.ShaderAssetPath))
+                    {
+                        var absShader = ResolveShaderAbsPath(mat.ShaderAssetPath);
+                        var schema = ShaderFileParser.GetCachedSchema(absShader);
+                        if (schema != null && (schema.RenderState.Queue == ShaderRenderQueue.Transparent
+                            || schema.RenderState.Queue == ShaderRenderQueue.Overlay))
+                        {
+                            isTransparent = true;
+                        }
+                    }
 
                     float sortZ = 0f;
                     if (isTransparent)
@@ -1173,23 +1192,25 @@ namespace Game_Engine.Core
             var mat = item.Mat;
             if (!ctx.ForceStandardShader && mat != null && !string.IsNullOrWhiteSpace(mat.ShaderAssetPath))
             {
-                string shaderPath = mat.ShaderAssetPath;
-                string absPath = shaderPath;
-                var proj = ProjectService.Current;
-                if (proj != null && !System.IO.Path.IsPathRooted(shaderPath))
-                    absPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, shaderPath));
-
-                var customShader = CustomShaderCache.GetOrCompile(absPath, gl, ctx.IsES);
-                if (customShader != null)
+                string? absPath = ResolveShaderAbsPath(mat.ShaderAssetPath);
+                if (!string.IsNullOrWhiteSpace(absPath))
                 {
-                    DrawWithCustomShader(gl, customShader, cache, item, gpuMesh, in ctx);
-                    // Restore the standard shader for subsequent draws
-                    ctx.StandardShader.Use();
-                    SetLightUniforms(ctx.StandardShader, ctx.LightDir, ctx.DiffuseK, ctx.Ambient, false, SN.Vector3.Zero, 0f);
-                    ctx.StandardShader.SetMatrix4("uView", ctx.View);
-                    ctx.StandardShader.SetMatrix4("uProj", ctx.Proj);
-                    ctx.StandardShader.SetVector3("uCamPos", ctx.CamPos);
-                    return;
+                    var schema = ShaderFileParser.GetCachedSchema(absPath);
+                    var customShader = CustomShaderCache.GetOrCompile(absPath, gl, ShaderPassType.Forward, ctx.IsES);
+                    if (customShader != null)
+                    {
+                        DrawWithCustomShader(gl, customShader, schema, cache, item, gpuMesh, in ctx);
+                        // Restore the standard shader for subsequent draws.
+                        // FrameGlobals & LightingGlobals live in UBOs so point lights, camera, and
+                        // shadow state remain intact without clobbering them!
+                        ctx.StandardShader.Use();
+                        if (ctx.ShadowFBO?.DepthTexture != null)
+                        {
+                            ctx.ShadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                            ctx.StandardShader.SetTexture("uShadowMap", 7);
+                        }
+                        return;
+                    }
                 }
             }
 
@@ -1282,11 +1303,14 @@ namespace Game_Engine.Core
                     * Math.Clamp(windMul, 0.35f, 1.15f);
                 // Light rain stiffens a bit — do not multiply into storm displacement.
                 wind *= 1f + Math.Clamp(rain, 0f, 1f) * 0.2f;
-                shader.SetInt("uIsVegetation", 1);
-                shader.SetFloat("uWindTime", WindSystem.Time * Math.Clamp(speed, 0.25f, 1.05f) * 0.45f);
-                shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
+                var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
                     ? SN.Vector3.Normalize(WindSystem.Direction)
-                    : SN.Vector3.UnitX);
+                    : SN.Vector3.UnitX;
+                float windTime = WindSystem.Time * Math.Clamp(speed, 0.25f, 1.05f) * 0.45f;
+                float foliageAmbient = Math.Clamp(atmoAmbient, 0.02f, 0.85f);
+                ctx.Globals.UpdateWindAndAmbient(windDir, windTime, foliageAmbient);
+
+                shader.SetInt("uIsVegetation", 1);
                 shader.SetFloat("uWindStrength", Math.Clamp(wind * 4.2f, 0.04f, 0.38f));
                 shader.SetFloat("uRain", rain);
                 shader.SetFloat("uWetness", wetness);
@@ -1294,27 +1318,25 @@ namespace Game_Engine.Core
                 shader.SetFloat("uCloudiness", cloudiness);
                 // Match planet day/night — no bright floors, don't pick Max(ctx, atmo).
                 shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.02f, 2f));
-                shader.SetFloat("uAmbient", Math.Clamp(atmoAmbient, 0.02f, 0.85f));
             }
             else
             {
+                ctx.Globals.UpdateAmbientIfChanged(ctx.Ambient);
                 shader.SetInt("uIsVegetation", 0);
                 shader.SetFloat("uRain", 0f);
                 shader.SetFloat("uWetness", 0f);
                 shader.SetFloat("uSnow", 0f);
                 shader.SetFloat("uCloudiness", 0f);
                 shader.SetFloat("uSunIntensity", 1f);
-                shader.SetFloat("uAmbient", ctx.Ambient);
                 SetPlanetPropFill(shader, ctx.CamPos);
             }
-            // Bone skinning matrices
+            // Bone skinning matrices (zero-allocation BoneGlobals UBO upload)
             if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
             {
                 shader.SetInt("uHasBones", 1);
                 var bones = item.Skinned.BoneMatrices!;
                 int count = System.Math.Min(bones.Length, BoneUniformLimit(ctx.IsES));
-                for (int bi = 0; bi < count; bi++)
-                    shader.SetMatrix4($"uBones[{bi}]", bones[bi]);
+                ctx.Globals.UpdateBones(bones.AsSpan(0, count));
             }
             else
             {
@@ -1594,48 +1616,49 @@ namespace Game_Engine.Core
         /// <summary>
         /// Draw a mesh using a custom shader compiled from the Visual Shader Editor.
         /// Binds all available material textures (albedo, normal, specular) and sets
-        /// lighting/shadow uniforms using the custom shader naming convention.
-        /// </summary>
-        private static void DrawWithCustomShader(
-            GL gl,
-            ShaderProgram customShader,
-            ResourceCache cache,
-            in DrawItem item,
-            GPUMesh gpuMesh,
-            in RenderContext ctx)
+        private static string? ResolveShaderAbsPath(string? shaderPath)
         {
-            customShader.Use();
+            if (string.IsNullOrWhiteSpace(shaderPath)) return null;
+            try
+            {
+                if (System.IO.Path.IsPathRooted(shaderPath))
+                {
+                    var abs = System.IO.Path.GetFullPath(shaderPath);
+                    return System.IO.File.Exists(abs) ? abs : (AssetPathRemap.FindExisting(shaderPath) ?? abs);
+                }
+                var proj = ProjectService.Current;
+                if (proj != null)
+                {
+                    var abs = System.IO.Path.GetFullPath(System.IO.Path.Combine(proj.RootPath, shaderPath));
+                    if (System.IO.File.Exists(abs)) return abs;
+                }
+                return AssetPathRemap.FindExisting(shaderPath) ?? shaderPath;
+            }
+            catch { return shaderPath; }
+        }
 
-            // ── Vertex uniforms ──
-            customShader.SetMatrix4("uModel", item.World);
-            customShader.SetMatrix4("uView", ctx.View);
-            customShader.SetMatrix4("uProjection", ctx.Proj);
-            customShader.SetMatrix4("uLightSpaceMatrix", ctx.ShadowVP);
+        private static bool IsDeferredSurfaceShader(Material? mat, out string? absPath, out ParsedShaderFile? schema)
+        {
+            absPath = null;
+            schema = null;
+            if (mat == null || string.IsNullOrWhiteSpace(mat.ShaderAssetPath)) return false;
 
-            // Normal matrix = transpose(inverse(model))
-            SN.Matrix4x4.Invert(item.World, out var invWorld);
-            var normalMatrix = SN.Matrix4x4.Transpose(invWorld);
-            customShader.SetMatrix4("uNormalMatrix", normalMatrix);
+            absPath = ResolveShaderAbsPath(mat.ShaderAssetPath);
+            if (string.IsNullOrWhiteSpace(absPath)) return false;
 
-            // ── Fragment uniforms ──
-            customShader.SetVector3("uCameraPos", ctx.CamPos);
-            customShader.SetFloat("uTime", WindSystem.Time);
+            schema = ShaderFileParser.GetCachedSchema(absPath);
+            return schema != null
+                && schema.IsSurfaceShader
+                && schema.RenderState.Queue != ShaderRenderQueue.Transparent
+                && schema.RenderState.Queue != ShaderRenderQueue.Overlay
+                && schema.RenderState.Lighting != ShaderLightingModel.Unlit;
+        }
 
-            // Both the standard shader and custom shaders use the same convention:
-            // uLightDir = direction FROM the light (the "shine" direction).
-            // Shaders negate internally: dot(N, -uLightDir) or vec3 L = normalize(-uLightDir).
-            customShader.SetVector3("uLightDir", ctx.LightDir);
-            customShader.SetVector3("uLightColor", ctx.LightColor);
-            customShader.SetFloat("uLightIntensity", ctx.DiffuseK);
-            customShader.SetFloat("uAmbient", ctx.Ambient);
-
-            // Material properties
-            var mat = item.Mat;
-            float roughness = mat?.Roughness ?? 0.5f;
-            float metallic = mat?.Metallic ?? 0f;
-            customShader.SetFloat("uRoughness", roughness);
-            customShader.SetFloat("uMetallic", metallic);
-
+        private static void BindCustomStandardTextures(
+            ShaderProgram customShader,
+            Material? mat,
+            ResourceCache cache)
+        {
             // ── Bind albedo texture → uTexture0 (unit 0) ──
             bool hasAlbedo = false;
             if (mat?.Textures != null)
@@ -1694,10 +1717,7 @@ namespace Game_Engine.Core
                 }
             }
             if (!hasNormal)
-            {
-                // Bind a flat normal texture (0.5, 0.5, 1.0 = identity)
-                cache.GetWhiteTexture().Bind(TextureUnit.Texture1);
-            }
+                cache.GetFlatNormalTexture().Bind(TextureUnit.Texture1);
             customShader.SetTexture("uTexture1", 1);
             customShader.SetInt("uHasNormalMap", hasNormal ? 1 : 0);
             customShader.SetFloat("uNormalStrength", mat?.NormalStrength ?? 1f);
@@ -1732,33 +1752,169 @@ namespace Game_Engine.Core
             if (!hasSpec) cache.GetWhiteTexture().Bind(TextureUnit.Texture2);
             customShader.SetTexture("uTexture2", 2);
             customShader.SetInt("uHasSpecularMap", hasSpec ? 1 : 0);
+        }
 
-            // ── Bind shadow map → unit 4 ──
-            // (matches deferred lighting convention so the shader can optionally use it)
-            customShader.SetInt("uHasShadow", 0);
+        private static void DrawSurfaceToGBuffer(
+            GL gl,
+            ShaderProgram gbufSurfaceShader,
+            ParsedShaderFile schema,
+            ResourceCache cache,
+            in DrawItem item,
+            in RenderContext ctx)
+        {
+            var mesh = item.MF.Mesh;
+            if (mesh == null) return;
+            var gpuMesh = cache.GetMesh(mesh);
 
-            // ── Cull face ──
-            bool doubleSided = item.MR.DoubleSided;
-            if (doubleSided)
-                gl.Disable(EnableCap.CullFace);
+            gbufSurfaceShader.Use();
+
+            gbufSurfaceShader.SetMatrix4("uModel", item.World);
+            SN.Matrix4x4.Invert(item.World, out var invWorld);
+            var normalMatrix = SN.Matrix4x4.Transpose(invWorld);
+            gbufSurfaceShader.SetMatrix4("uNormalMatrix", normalMatrix);
+
+            var mat = item.Mat;
+            gbufSurfaceShader.SetFloat("uRoughness", mat?.Roughness ?? 0.5f);
+            gbufSurfaceShader.SetFloat("uMetallic", mat?.Metallic ?? 0f);
+
+            BindCustomStandardTextures(gbufSurfaceShader, mat, cache);
+            MaterialBinder.BindProperties(gbufSurfaceShader, mat, schema, cache);
+
+            if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
+            {
+                gbufSurfaceShader.SetInt("uHasBones", 1);
+                var bones = item.Skinned.BoneMatrices!;
+                int boneCount = System.Math.Min(bones.Length, BoneUniformLimit(ctx.IsES));
+                var boneSpan = bones.AsSpan(0, boneCount);
+                if (gbufSurfaceShader.HasBoneUniformBlock)
+                    ctx.Globals.UpdateBones(boneSpan);
+                else
+                    gbufSurfaceShader.SetMatrix4Array("uBones[0]", boneSpan);
+            }
             else
             {
-                gl.Enable(EnableCap.CullFace);
-                gl.CullFace(item.MR.InvertFrontFace ? TriangleFace.Front : TriangleFace.Back);
+                gbufSurfaceShader.SetInt("uHasBones", 0);
             }
 
-            // GPU skinning (same convention as standard forward pass; shaders that omit
-            // skinning ignore these uniforms).
+            using var stateScope = MaterialBinder.ApplyRenderState(
+                gl,
+                schema.RenderState,
+                doubleSidedOverride: item.MR.DoubleSided,
+                invertFrontFace: item.MR.InvertFrontFace,
+                restoreCullEnabled: true,
+                restoreCullFace: TriangleFace.Back,
+                restoreDepthWrite: true,
+                restoreBlend: false);
+
+            gpuMesh.Draw();
+        }
+
+        /// <summary>
+        /// Draws a mesh item using a custom .shader program, binding all standard
+        /// lighting/shadow uniforms, custom Material.Properties, and ShaderRenderState.
+        /// </summary>
+        private static void DrawWithCustomShader(
+            GL gl,
+            ShaderProgram customShader,
+            ParsedShaderFile? schema,
+            ResourceCache cache,
+            in DrawItem item,
+            GPUMesh gpuMesh,
+            in RenderContext ctx)
+        {
+            customShader.Use();
+
+            // Ensure LightingGlobals has the scene ambient (in case previous draw was foliage)
+            ctx.Globals.UpdateAmbientIfChanged(ctx.Ambient);
+
+            // ── Vertex uniforms ──
+            customShader.SetMatrix4("uModel", item.World);
+
+            // Normal matrix = transpose(inverse(model))
+            SN.Matrix4x4.Invert(item.World, out var invWorld);
+            var normalMatrix = SN.Matrix4x4.Transpose(invWorld);
+            customShader.SetMatrix4("uNormalMatrix", normalMatrix);
+
+            // Legacy custom shaders that don't declare FrameGlobals / LightingGlobals UBO blocks
+            // still receive the classic uniform names for 100% backward compatibility.
+            if (!customShader.HasFrameUniformBlock)
+            {
+                customShader.SetMatrix4("uView", ctx.View);
+                customShader.SetMatrix4("uProjection", ctx.Proj);
+                customShader.SetMatrix4("uProj", ctx.Proj);
+                customShader.SetVector3("uCameraPos", ctx.CamPos);
+                customShader.SetVector3("uCamPos", ctx.CamPos);
+                customShader.SetFloat("uTime", WindSystem.Time);
+            }
+
+            if (!customShader.HasLightingUniformBlock)
+            {
+                customShader.SetMatrix4("uLightSpaceMatrix", ctx.ShadowVP);
+                customShader.SetMatrix4("uShadowVP", ctx.ShadowVP);
+                // Both the standard shader and custom shaders use the same convention:
+                // uLightDir = direction FROM the light (the "shine" direction).
+                // Shaders negate internally: dot(N, -uLightDir) or vec3 L = normalize(-uLightDir).
+                customShader.SetVector3("uLightDir", ctx.LightDir);
+                customShader.SetVector3("uLightColor", ctx.LightColor);
+                customShader.SetFloat("uLightIntensity", ctx.DiffuseK);
+                customShader.SetFloat("uDiffuseK", ctx.DiffuseK);
+                customShader.SetFloat("uAmbient", ctx.Ambient);
+            }
+
+            // Material properties
+            var mat = item.Mat;
+            float roughness = mat?.Roughness ?? 0.5f;
+            float metallic = mat?.Metallic ?? 0f;
+            customShader.SetFloat("uRoughness", roughness);
+            customShader.SetFloat("uMetallic", metallic);
+
+            // Standard material texture slots (units 0, 1, 2)
+            BindCustomStandardTextures(customShader, mat, cache);
+
+            // ── Bind shadow map → unit 4 ──
+            // Pass real shadow state so both Surface shaders and legacy custom shaders can sample shadows.
+            if (ctx.ShadowFBO?.DepthTexture != null)
+            {
+                ctx.ShadowFBO.DepthTexture.Bind(TextureUnit.Texture4);
+                customShader.SetTexture("uShadowMap", 4);
+                if (!customShader.HasLightingUniformBlock)
+                    customShader.SetInt("uHasShadow", 1);
+                customShader.SetFloat("uShadowBias", 0.008f);
+                customShader.SetVector3("uSunDir", ctx.SunShineDir);
+            }
+            else if (!customShader.HasLightingUniformBlock)
+            {
+                customShader.SetInt("uHasShadow", 0);
+            }
+
+            // Dynamic Material.Properties overrides + schema defaults (safe units 3, 5, 6, 11..15)
+            MaterialBinder.BindProperties(customShader, mat, schema, cache);
+
+            // GPU skinning: upload to BoneGlobals UBO when declared, or fall back to zero-alloc
+            // SetMatrix4Array("uBones[0]", ...) for legacy custom shaders.
             if (item.Skinned != null && item.Skinned.HasValidBoneMatrices)
             {
                 customShader.SetInt("uHasBones", 1);
                 var bones = item.Skinned.BoneMatrices!;
                 int boneCount = System.Math.Min(bones.Length, BoneUniformLimit(ctx.IsES));
-                for (int bi = 0; bi < boneCount; bi++)
-                    customShader.SetMatrix4($"uBones[{bi}]", bones[bi]);
+                var boneSpan = bones.AsSpan(0, boneCount);
+                if (customShader.HasBoneUniformBlock)
+                    ctx.Globals.UpdateBones(boneSpan);
+                else
+                    customShader.SetMatrix4Array("uBones[0]", boneSpan);
             }
             else
                 customShader.SetInt("uHasBones", 0);
+
+            using var stateScope = MaterialBinder.ApplyRenderState(
+                gl,
+                schema?.RenderState,
+                doubleSidedOverride: item.MR.DoubleSided,
+                invertFrontFace: item.MR.InvertFrontFace,
+                restoreCullEnabled: true,
+                restoreCullFace: TriangleFace.Back,
+                restoreDepthWrite: !item.IsTransparent,
+                restoreBlend: item.IsTransparent);
 
             gpuMesh.Draw();
         }
@@ -2034,11 +2190,18 @@ namespace Game_Engine.Core
             gl.DepthMask(true);
             gl.Disable(EnableCap.Blend);
 
+            var globals = GlobalUniforms.ForContext(gl);
+            var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
+                ? SN.Vector3.Normalize(WindSystem.Direction)
+                : SN.Vector3.UnitX;
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                SN.Vector3.UnitY, 0f, SN.Vector3.One, 0f,
+                lightIsPoint: false, SN.Vector3.Zero, 0f,
+                hasShadow: shadowFBO?.DepthTexture != null, in shadowVP,
+                windDir: windDir, windTime: WindSystem.Time);
+
             gbufferShader.Use();
-            gbufferShader.SetMatrix4("uView", view);
-            gbufferShader.SetMatrix4("uProj", proj);
-            gbufferShader.SetVector3("uCamPos", camPos);
-            gbufferShader.SetMatrix4("uShadowVP", shadowVP);
 
             // Build render context — ForceStandardShader ensures custom shader items
             // render with the G-buffer shader instead of their custom shaders.
@@ -2052,8 +2215,11 @@ namespace Game_Engine.Core
                 DiffuseK = 0f,
                 Ambient = 0f,
                 ShadowVP = shadowVP,
+                ShadowFBO = shadowFBO,
+                SunShineDir = sunShineDir,
                 StandardShader = gbufferShader,
                 Cache = cache,
+                Globals = globals,
                 IsES = isES,
                 ForceStandardShader = true
             };
@@ -2063,9 +2229,19 @@ namespace Game_Engine.Core
                 // Skip terrain (forward-rendered with splatmap shader)
                 if (item.Terrain != null && item.Terrain.Layers.Count > 0) continue;
 
-                // Custom shader items are rendered here with the G-buffer shader
-                // (standard PBR). Custom shader effects only apply in Scene View
-                // (forward renderer). This avoids cross-pipeline rendering issues.
+                // First-class Surface shaders (opaque + lit): render natively into the G-Buffer!
+                if (IsDeferredSurfaceShader(item.Mat, out var absShaderPath, out var surfaceSchema))
+                {
+                    var gbufSurface = CustomShaderCache.GetOrCompile(absShaderPath!, gl, ShaderPassType.GBuffer, isES);
+                    if (gbufSurface != null)
+                    {
+                        DrawSurfaceToGBuffer(gl, gbufSurface, surfaceSchema!, cache, item, in renderCtx);
+                        gbufferShader.Use();
+                        continue;
+                    }
+                }
+
+                // Standard items (and legacy non-Surface custom shaders as depth/fallback proxy)
                 DrawMeshItem(gl, gbufferShader, cache, item, in renderCtx);
             }
         }
@@ -2095,6 +2271,17 @@ namespace Game_Engine.Core
             GPUTexture? reflectionProbeCubemap = null,
             float reflectionProbeBlend = 0f)
         {
+            // Update FrameGlobals & LightingGlobals UBOs for deferred lighting pass
+            var globals = GlobalUniforms.ForContext(gl);
+            bool hasShadow = shadowFBO?.DepthTexture != null;
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, screenWidth, screenHeight);
+            globals.UpdateLighting(
+                sunShineDir, 1f, SN.Vector3.One, ambient,
+                lightIsPoint: false, SN.Vector3.Zero, 0f,
+                hasShadow: hasShadow, in shadowVP,
+                cascadeCount: hasShadow ? 1 : 0,
+                cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f));
+
             deferredShader.Use();
 
             // Bind G-buffer textures
@@ -2118,18 +2305,12 @@ namespace Game_Engine.Core
             }
 
             // Shadow map
-            if (shadowFBO?.DepthTexture != null)
+            if (hasShadow)
             {
-                shadowFBO.DepthTexture.Bind(TextureUnit.Texture4);
+                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture4);
                 deferredShader.SetTexture("uShadowMap", 4);
-                deferredShader.SetInt("uHasShadow", 1);
-                deferredShader.SetMatrix4("uShadowVP", shadowVP);
                 deferredShader.SetFloat("uShadowBias", shadowBias);
                 deferredShader.SetVector3("uSunDir", sunShineDir);
-            }
-            else
-            {
-                deferredShader.SetInt("uHasShadow", 0);
             }
 
             // SSAO
@@ -2146,14 +2327,11 @@ namespace Game_Engine.Core
                 deferredShader.SetFloat("uSSAOIntensity", 0f);
             }
 
-            // Camera + inverse VP
-            deferredShader.SetVector3("uCamPos", camPos);
+            // Inverse VP (uCamPos and uAmbient come from FrameGlobals / LightingGlobals UBOs)
             var vp = view * proj;
             SN.Matrix4x4.Invert(vp, out var invVP);
             deferredShader.SetMatrix4("uInvViewProj", invVP);
 
-            // Ambient
-            deferredShader.SetFloat("uAmbient", ambient);
             SetPlanetPropFill(deferredShader, camPos);
 
             var dirScratch = new List<Light>(8);
@@ -2305,18 +2483,38 @@ namespace Game_Engine.Core
                 GatherDrawItems(root, SN.Matrix4x4.Identity, view, proj, planes, opaqueItems, transparentItems);
             SkipPlanetVegetationDraws = prevSkipF;
 
+            var globals = GlobalUniforms.ForContext(gl);
+            var resolvedLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
+            bool hasShadow = shadowFBO?.DepthTexture != null;
+            var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
+                ? SN.Vector3.Normalize(WindSystem.Direction)
+                : SN.Vector3.UnitX;
+
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                lightDir, diffuseK, resolvedLightColor, ambient,
+                lightIsPoint, lightPosW, lightRange,
+                hasShadow, in shadowVP,
+                cascadeCount: hasShadow ? 1 : 0,
+                cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
+                windDir: windDir,
+                windTime: WindSystem.Time);
+
             var renderCtx = new RenderContext
             {
                 View = view,
                 Proj = proj,
                 CamPos = camPos,
                 LightDir = lightDir,
-                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                LightColor = resolvedLightColor,
                 DiffuseK = diffuseK,
                 Ambient = ambient,
                 ShadowVP = shadowVP,
+                ShadowFBO = shadowFBO,
+                SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
+                Globals = globals,
                 IsES = isES
             };
 
@@ -2335,24 +2533,14 @@ namespace Game_Engine.Core
                 gl.Enable(EnableCap.PolygonOffsetFill);
                 gl.PolygonOffset(-1f, -1f);
                 terrainShader.Use();
-                SetLightUniforms(terrainShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
-                terrainShader.SetMatrix4("uView", view);
-                terrainShader.SetMatrix4("uProj", proj);
-                terrainShader.SetVector3("uCamPos", camPos);
                 terrainShader.SetFloat("uParallaxStrength", 0.035f);
 
-                if (shadowFBO?.DepthTexture != null)
+                if (hasShadow)
                 {
-                    terrainShader.SetInt("uHasShadow", 1);
-                    terrainShader.SetMatrix4("uShadowVP", shadowVP);
                     terrainShader.SetFloat("uShadowBias", 0.008f);
                     terrainShader.SetVector3("uSunDir", sunShineDir);
-                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture2);
+                    shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture2);
                     terrainShader.SetTexture("uShadowMap", 2);
-                }
-                else
-                {
-                    terrainShader.SetInt("uHasShadow", 0);
                 }
 
                 gl.Enable(EnableCap.CullFace);
@@ -2385,12 +2573,15 @@ namespace Game_Engine.Core
                     Proj = proj,
                     CamPos = camPos,
                     LightDir = lightDir,
-                    LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                    LightColor = resolvedLightColor,
                     DiffuseK = diffuseK,
                     Ambient = ambient,
                     ShadowVP = shadowVP,
+                    ShadowFBO = shadowFBO,
+                    SunShineDir = sunShineDir,
                     StandardShader = standardShader,
                     Cache = cache,
+                    Globals = globals,
                     IsES = isES,
                     ForceStandardShader = false
                 };
@@ -2401,6 +2592,11 @@ namespace Game_Engine.Core
                     if (item.Terrain != null) continue;
                     var mat = item.Mat;
                     if (mat == null || string.IsNullOrWhiteSpace(mat.ShaderAssetPath)) continue;
+
+                    // Opaque lit Surface shaders were already rendered natively into the G-Buffer
+                    // (avoid double-drawing / double-tonemapping).
+                    if (IsDeferredSurfaceShader(mat, out _, out _)) continue;
+
                     DrawMeshItem(gl, standardShader, cache, item, in customCtx);
                 }
                 gl.DepthFunc(DepthFunction.Less);
@@ -2408,27 +2604,13 @@ namespace Game_Engine.Core
 
             // Set up the standard shader for transparent items below.
             standardShader.Use();
-            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
-            standardShader.SetMatrix4("uView", view);
-            standardShader.SetMatrix4("uProj", proj);
-            standardShader.SetVector3("uCamPos", camPos);
 
-            if (shadowFBO?.DepthTexture != null)
+            if (hasShadow)
             {
-                standardShader.SetInt("uHasShadow", 1);
-                standardShader.SetMatrix4("uShadowVP", shadowVP);
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
                 standardShader.SetTexture("uShadowMap", 7);
-
-                standardShader.SetInt("uCascadeCount", 1);
-                standardShader.SetMatrix4("uShadowVPC[0]", shadowVP);
-                standardShader.SetFloat("uCascadeSplits[0]", 1000f);
-            }
-            else
-            {
-                standardShader.SetInt("uHasShadow", 0);
             }
 
             // --- TRANSPARENT PASS (back-to-front) ---
@@ -2699,13 +2881,20 @@ namespace Game_Engine.Core
 
         // ══════════════════════════════════════════════════════════
 
-        static void BindNearestPointLights(ShaderProgram shader, SN.Vector3 camPos)
+        // Reusable scratch buffers for zero-allocation nearest point-light gathering
+        [ThreadStatic] private static Light?[]? s_nearestPointSlots;
+        [ThreadStatic] private static float[]? s_nearestPointDists;
+
+        static void BindNearestPointLights(GlobalUniforms globals, SN.Vector3 camPos)
         {
             const int Max = 4;
-            var slot = new Light?[Max];
-            var dist = new float[Max];
+            var slot = s_nearestPointSlots ??= new Light?[Max];
+            var dist = s_nearestPointDists ??= new float[Max];
             for (int i = 0; i < Max; i++)
+            {
+                slot[i] = null;
                 dist[i] = float.MaxValue;
+            }
 
             var lights = Light.AllLights;
             for (int i = 0; i < lights.Count; i++)
@@ -2731,40 +2920,37 @@ namespace Game_Engine.Core
                 }
             }
 
-            int count = 0;
-            for (int i = 0; i < Max; i++)
+            static void PackPoint(Light? light, out SN.Vector4 posRange, out SN.Vector4 color)
             {
-                var light = slot[i];
                 if (light == null)
                 {
-                    shader.SetVector3($"uPointPos[{i}]", SN.Vector3.Zero);
-                    shader.SetVector3($"uPointColor[{i}]", SN.Vector3.Zero);
-                    shader.SetFloat($"uPointRange[{i}]", 0f);
-                    continue;
+                    posRange = SN.Vector4.Zero;
+                    color = SN.Vector4.Zero;
+                    return;
                 }
-                count = i + 1;
                 var p = light.GetWorldPosition();
-                shader.SetVector3($"uPointPos[{i}]", p);
-                shader.SetVector3($"uPointColor[{i}]", new SN.Vector3(
+                posRange = new SN.Vector4(p.X, p.Y, p.Z, light.Range);
+                color = new SN.Vector4(
                     light.Color.R / 255f * light.Intensity,
                     light.Color.G / 255f * light.Intensity,
-                    light.Color.B / 255f * light.Intensity));
-                shader.SetFloat($"uPointRange[{i}]", light.Range);
+                    light.Color.B / 255f * light.Intensity,
+                    light.Intensity);
             }
-            shader.SetInt("uPointCount", count);
-        }
 
-        private static void SetLightUniforms(
-            ShaderProgram shader,
-            SN.Vector3 lightDir, float diffuseK, float ambient,
-            bool lightIsPoint, SN.Vector3 lightPosW, float lightRange)
-        {
-            shader.SetVector3("uLightDir", lightDir);
-            shader.SetFloat("uDiffuseK", diffuseK);
-            shader.SetFloat("uAmbient", ambient);
-            shader.SetInt("uLightIsPoint", lightIsPoint ? 1 : 0);
-            shader.SetVector3("uLightPos", lightPosW);
-            shader.SetFloat("uLightRange", lightRange);
+            int count = 0;
+            for (int i = 0; i < Max; i++)
+                if (slot[i] != null) count = i + 1;
+
+            PackPoint(slot[0], out var pr0, out var c0);
+            PackPoint(slot[1], out var pr1, out var c1);
+            PackPoint(slot[2], out var pr2, out var c2);
+            PackPoint(slot[3], out var pr3, out var c3);
+
+            // Clear references so Light instances aren't retained across scene unloads
+            for (int i = 0; i < Max; i++)
+                slot[i] = null;
+
+            globals.UpdatePointLights(count, pr0, c0, pr1, c1, pr2, c2, pr3, c3);
         }
 
         private static void RenderShadowNode(
@@ -2826,24 +3012,72 @@ namespace Game_Engine.Core
 
                     var gpuMesh = cache.GetMesh(mesh);
                     var mvp = world * lightVP;
-                    depthShader.SetMatrix4("uMVP", mvp);
 
                     // Handle skinned mesh bone matrices in shadow pass
                     var skinned = mr as SkinnedMeshRenderer;
                     if (skinned != null)
                         skinned.EnsureBoneMatrices();
 
+                    // First-class Surface ShadowCaster pass (for AlphaTest cutout surface shaders)
+                    var shadowMat = mr.Material;
+                    if (shadowMat != null && !string.IsNullOrWhiteSpace(shadowMat.ShaderAssetPath))
+                    {
+                        var absShader = ResolveShaderAbsPath(shadowMat.ShaderAssetPath);
+                        var schema = ShaderFileParser.GetCachedSchema(absShader);
+                        if (schema != null && schema.IsSurfaceShader && schema.RenderState.Queue == ShaderRenderQueue.AlphaTest)
+                        {
+                            var lib = ShaderLibrary.GetOrCreate(gl);
+                            var surfShadow = lib.GetCustom(absShader!, ShaderPassType.ShadowCaster);
+                            if (surfShadow != null)
+                            {
+                                surfShadow.Use();
+                                surfShadow.SetMatrix4("uMVP", mvp);
+                                surfShadow.SetMatrix4("uModel", world);
+                                SN.Matrix4x4.Invert(world, out var invW);
+                                surfShadow.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invW));
+                                surfShadow.SetFloat("uRoughness", shadowMat.Roughness);
+                                surfShadow.SetFloat("uMetallic", shadowMat.Metallic);
+
+                                if (skinned != null && skinned.HasValidBoneMatrices)
+                                {
+                                    surfShadow.SetInt("uHasBones", 1);
+                                    var bones = skinned.BoneMatrices!;
+                                    var globals = GlobalUniforms.ForContext(gl);
+                                    int boneCount = System.Math.Min(bones.Length, globals.MaxBones);
+                                    globals.UpdateBones(bones.AsSpan(0, boneCount));
+                                }
+                                else
+                                {
+                                    surfShadow.SetInt("uHasBones", 0);
+                                }
+
+                                BindCustomStandardTextures(surfShadow, shadowMat, cache);
+                                MaterialBinder.BindProperties(surfShadow, shadowMat, schema, cache);
+
+                                if (mr.DoubleSided || schema.RenderState.Cull == ShaderCullMode.Off)
+                                    gl.Disable(EnableCap.CullFace);
+                                else
+                                {
+                                    gl.Enable(EnableCap.CullFace);
+                                    gl.CullFace(TriangleFace.Front);
+                                }
+
+                                gpuMesh.Draw();
+                                depthShader.Use();
+                                continue;
+                            }
+                        }
+                    }
+
+                    depthShader.SetMatrix4("uMVP", mvp);
+
                     if (skinned != null && skinned.HasValidBoneMatrices)
                     {
                         depthShader.SetInt("uHasBones", 1);
                         var bones = skinned.BoneMatrices!;
-#if XBOX_UWP
-                        int boneCount = System.Math.Min(bones.Length, 48);
-#else
-                        int boneCount = System.Math.Min(bones.Length, SkeletonLimits.MaxBones);
-#endif
-                        for (int bi = 0; bi < boneCount; bi++)
-                            depthShader.SetMatrix4($"uBones[{bi}]", bones[bi]);
+                        var globals = GlobalUniforms.ForContext(gl);
+                        int boneCount = System.Math.Min(bones.Length, globals.MaxBones);
+                        globals.UpdateBones(bones.AsSpan(0, boneCount));
                     }
                     else
                     {
@@ -3132,6 +3366,7 @@ namespace Game_Engine.Core
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
             ExtractFrustumPlanes(viewProj, planes);
+            var globals = GlobalUniforms.ForContext(gl);
             var renderCtx = new RenderContext
             {
                 View = view,
@@ -3142,8 +3377,11 @@ namespace Game_Engine.Core
                 DiffuseK = diffuseK,
                 Ambient = ambient,
                 ShadowVP = shadowVP,
+                ShadowFBO = shadowFBO,
+                SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
+                Globals = globals,
                 IsES = isES,
                 PlanetFoliagePass = true
             };
@@ -3206,23 +3444,27 @@ namespace Game_Engine.Core
 
             if (vegOpaque.Count > 0 || vegTransparent.Count > 0)
             {
+            bool hasShadow = shadowFBO?.DepthTexture != null;
+            var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
+                ? SN.Vector3.Normalize(WindSystem.Direction)
+                : SN.Vector3.UnitX;
+            renderCtx.Globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            renderCtx.Globals.UpdateLighting(
+                lightDir, diffuseK, renderCtx.LightColor, ambient,
+                lightIsPoint, lightPosW, lightRange,
+                hasShadow, in shadowVP,
+                cascadeCount: hasShadow ? 1 : 0,
+                cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
+                windDir: windDir,
+                windTime: WindSystem.Time);
+
             standardShader.Use();
-            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
-            standardShader.SetMatrix4("uView", view);
-            standardShader.SetMatrix4("uProj", proj);
-            standardShader.SetVector3("uCamPos", camPos);
-            if (shadowFBO?.DepthTexture != null)
+            if (hasShadow)
             {
-                standardShader.SetInt("uHasShadow", 1);
-                standardShader.SetMatrix4("uShadowVP", shadowVP);
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
                 standardShader.SetTexture("uShadowMap", 7);
-            }
-            else
-            {
-                standardShader.SetInt("uHasShadow", 0);
             }
 
             gl.Enable(EnableCap.DepthTest);
@@ -3330,27 +3572,31 @@ namespace Game_Engine.Core
             gl.DepthMask(true);
             gl.Disable(EnableCap.Blend);
 
-            standardShader.Use();
-            SetLightUniforms(standardShader, lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange);
-            standardShader.SetMatrix4("uView", view);
-            standardShader.SetMatrix4("uProj", proj);
-            standardShader.SetVector3("uCamPos", camPos);
+            var globals = GlobalUniforms.ForContext(gl);
+            var resolvedLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
+            bool hasShadow = shadowFBO?.DepthTexture != null;
+            var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
+                ? SN.Vector3.Normalize(WindSystem.Direction)
+                : SN.Vector3.UnitX;
 
-            if (shadowFBO?.DepthTexture != null)
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                lightDir, diffuseK, resolvedLightColor, ambient,
+                lightIsPoint, lightPosW, lightRange,
+                hasShadow, in shadowVP,
+                cascadeCount: hasShadow ? 1 : 0,
+                cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
+                windDir: windDir,
+                windTime: WindSystem.Time);
+
+            standardShader.Use();
+
+            if (hasShadow)
             {
-                standardShader.SetInt("uHasShadow", 1);
-                standardShader.SetMatrix4("uShadowVP", shadowVP);
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
+                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
                 standardShader.SetTexture("uShadowMap", 7);
-                standardShader.SetInt("uCascadeCount", 1);
-                standardShader.SetMatrix4("uShadowVPC[0]", shadowVP);
-                standardShader.SetFloat("uCascadeSplits[0]", 1000f);
-            }
-            else
-            {
-                standardShader.SetInt("uHasShadow", 0);
             }
 
             var renderCtx = new RenderContext
@@ -3359,12 +3605,15 @@ namespace Game_Engine.Core
                 Proj = proj,
                 CamPos = camPos,
                 LightDir = lightDir,
-                LightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor,
+                LightColor = resolvedLightColor,
                 DiffuseK = diffuseK,
                 Ambient = ambient,
                 ShadowVP = shadowVP,
+                ShadowFBO = shadowFBO,
+                SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
+                Globals = globals,
                 IsES = isES
             };
 
@@ -3402,14 +3651,16 @@ namespace Game_Engine.Core
             var vp = view * proj;
             ExtractFrustumPlanes(vp, out var frustumPlanes);
 
+            var globals = GlobalUniforms.ForContext(gl);
+            bool hasShadow = shadowFBO != null;
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                lightDir, diffuseK, SN.Vector3.One, atmo.Ambient,
+                lightIsPoint: false, SN.Vector3.Zero, 0f,
+                hasShadow: hasShadow, in shadowVP);
+            BindNearestPointLights(globals, camPos);
+
             planetShader.Use();
-            planetShader.SetMatrix4("uView", view);
-            planetShader.SetMatrix4("uProj", proj);
-            planetShader.SetVector3("uLightDir", lightDir);
-            planetShader.SetVector3("uCamPos", camPos);
-            planetShader.SetFloat("uAmbient", atmo.Ambient);
-            planetShader.SetFloat("uDiffuseK", diffuseK);
-            BindNearestPointLights(planetShader, camPos);
             planetShader.SetVector3("uPlanetCenter", planetCenter);
             float radiusWorld = MathF.Max(1f, planet.Config.EffectiveWorldRadius);
             if (radiusWorld < 2f)
@@ -3435,17 +3686,11 @@ namespace Game_Engine.Core
             planetShader.SetVector3("uAtmoHorizonTint", atmo.HorizonTint);
             planetShader.SetVector3("uAtmoSkyTint", atmo.SkyTint);
 
-            if (shadowFBO != null)
+            if (hasShadow)
             {
-                planetShader.SetMatrix4("uShadowVP", shadowVP);
-                planetShader.SetInt("uHasShadow", 1);
                 gl.ActiveTexture(TextureUnit.Texture15);
-                gl.BindTexture(TextureTarget.Texture2D, shadowFBO.DepthTexture?.Handle ?? 0);
+                gl.BindTexture(TextureTarget.Texture2D, shadowFBO!.DepthTexture?.Handle ?? 0);
                 planetShader.SetTexture("uShadowMap", 15);
-            }
-            else
-            {
-                planetShader.SetInt("uHasShadow", 0);
             }
 
             BindBiomeTextures(gl, planetShader, cache, planet.Config.Biomes);
@@ -4033,10 +4278,15 @@ namespace Game_Engine.Core
             float seaLevelWorld = seaLevel * radiusScale;
             float planetRadiusWorld = MathF.Max(1f, atmo.GroundRadius * radiusScale);
 
+            var globals = GlobalUniforms.ForContext(gl);
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            globals.UpdateLighting(
+                lightDir, diffuseK, SN.Vector3.One, atmo.Ambient,
+                lightIsPoint: false, SN.Vector3.Zero, 0f,
+                hasShadow: false, SN.Matrix4x4.Identity);
+
             waterShader.Use();
             waterShader.SetMatrix4("uModel", world);
-            waterShader.SetMatrix4("uView", view);
-            waterShader.SetMatrix4("uProj", proj);
 
             SN.Matrix4x4.Invert(world, out var invWorld);
             waterShader.SetMatrix4("uNormalMatrix", SN.Matrix4x4.Transpose(invWorld));
@@ -4123,11 +4373,7 @@ namespace Game_Engine.Core
             waterShader.SetFloat("uReflectivity", 0.65f);
             waterShader.SetFloat("uTransparency", 0.75f);
 
-            waterShader.SetVector3("uLightDir", lightDir);
-            waterShader.SetVector3("uCamPos", camPos);
             waterShader.SetVector3("uSkyColor", atmo.SkyTint);
-            waterShader.SetFloat("uAmbient", atmo.Ambient);
-            waterShader.SetFloat("uDiffuseK", diffuseK);
             waterShader.SetInt("uAtmoEnabled", atmo.Enabled ? 1 : 0);
             waterShader.SetVector3("uAtmoSunDir", atmo.SunDir);
             waterShader.SetFloat("uAtmoSunIntensity", atmo.SunIntensity);
@@ -4213,10 +4459,9 @@ namespace Game_Engine.Core
             if (!atmo.Enabled || !atmo.CloudsEnabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
                 return;
 
+            GlobalUniforms.ForContext(gl).UpdateFrame(in view, in proj, camPos, timeSec);
+
             cloudShader.Use();
-            cloudShader.SetMatrix4("uView", view);
-            cloudShader.SetMatrix4("uProj", proj);
-            cloudShader.SetVector3("uCamPos", camPos);
             cloudShader.SetVector3("uPlanetCenter", planetCenter);
             cloudShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
             cloudShader.SetFloat("uCloudBaseHeight", atmo.CloudBaseHeight);
@@ -4276,10 +4521,9 @@ namespace Game_Engine.Core
             if (!atmo.Enabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
                 return;
 
+            GlobalUniforms.ForContext(gl).UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+
             atmoShader.Use();
-            atmoShader.SetMatrix4("uView", view);
-            atmoShader.SetMatrix4("uProj", proj);
-            atmoShader.SetVector3("uCamPos", camPos);
             atmoShader.SetVector3("uPlanetCenter", planetCenter);
             atmoShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
             atmoShader.SetFloat("uAtmosphereHeight", atmo.AtmosphereHeight);

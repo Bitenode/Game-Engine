@@ -77,6 +77,8 @@ When a texture is missing or fails to load, a **1x1 white fallback texture** is 
 
 Materials can be saved as standalone asset files in JSON format:
 
+**Simple JSON** (legacy / quick hand-editing):
+
 ```json
 {
   "BaseColor": "#FFFFFFFF",
@@ -88,18 +90,39 @@ Materials can be saved as standalone asset files in JSON format:
     {
       "Usage": "Albedo",
       "Path": "Assets/Textures/brick_albedo.png"
-    },
-    {
-      "Usage": "Normal",
-      "Path": "Assets/Textures/brick_normal.png"
-    },
-    {
-      "Usage": "Roughness",
-      "Path": "Assets/Textures/brick_roughness.png"
     }
   ]
 }
 ```
+
+**Asset pipeline JSON** (created by the editor; supports custom shaders):
+
+```json
+{
+  "name": "Brick",
+  "type": "Material",
+  "version": 1,
+  "shader": "Assets/Shaders/Brick.shader",
+  "parameters": {
+    "Tint": "#FFFFFFFF",
+    "Metallic": 0.0,
+    "Roughness": 0.5,
+    "Transparent": false,
+    "AlphaCutoff": 0.5
+  },
+  "textures": {
+    "Albedo": "Assets/Textures/brick_albedo.png",
+    "Normal": "Assets/Textures/brick_normal.png"
+  },
+  "properties": {
+    "floats": { "_DetailStrength": 0.5 },
+    "colors": { "_RimColor": "#FF4488FF" },
+    "texturePaths": { "_DetailTex": "Assets/Textures/detail.png" }
+  }
+}
+```
+
+The optional **`properties`** object is a serialized **`MaterialPropertyBag`** — per-uniform overrides keyed by GLSL name (e.g. `_Metallic`, `_MainTex`) for custom `.shader` and Surface shaders. Standard PBR fields still live under **`parameters`** and **`textures`**.
 
 ### Referencing Materials
 `MeshRenderer` components reference materials by path:
@@ -131,6 +154,7 @@ When a `MeshRenderer` is selected, the Inspector shows:
 - **PBR sliders** — Metallic and Roughness values
 - **Texture slots** — "..." browse buttons for each texture usage type
 - **Material path** — displays the referenced `.material` file
+- **Custom shader** — when the material references a `.shader`, the Inspector builds **dynamic property rows** from `ShaderFileParser` / `ParsedShaderFile.Properties` (`Color`, `Float`, `Int`, `Texture2D`, toggles) bound through `MaterialPropertyBag`
 - **Wireframe toggle** — render as wireframe lines only
 - **Line width** — wireframe line thickness (default: 1.0)
 - **Shadow toggles** — Cast Shadows and Receive Shadows checkboxes
@@ -290,20 +314,23 @@ Key features:
 
 ## Shader Graph Materials
 
-Materials can use shaders created with the visual **Shader Graph** system or hand-written `.shader` files instead of the default Standard shader.
+Materials can use shaders from **Shader Graph v2**, hand-written **Surface** `.shader` files, or explicit `VERTEX`/`FRAGMENT` `.shader` files instead of the built-in Standard shader.
 
 ### Using a Shader Graph
-1. Create a new shader graph in the **Shader Editor** (Window > Shader Editor)
-2. Connect nodes to define surface properties (BaseColor, Normal, Metallic, Roughness, Emission, Opacity)
-3. Save as a `.shadergraph` file
-4. Assign the shader graph to a material in the Inspector
+1. Open **Window → Shader Editor** (or double-click a `.shadergraph`)
+2. Wire **Shader Graph v2** nodes (Property, Split, Combine, UV Transform, Time, Blend, plus the original Output / Texture / Math / Fresnel / Noise set)
+3. Set **Queue / Cull / Lighting** on the toolbar (maps to `RenderState` on the compiled `.shader`)
+4. **Compile & Save** writes a unified **`Surface` `.shader`** asset (not raw GLSL strings)
+5. Reference that `.shader` from a `.material` (`shader` field) or assign via the Inspector
+
+The graph JSON (`.shadergraph`) is the source; the compiled `.shader` is what `ShaderLibrary` loads at runtime.
 
 ### Custom .shader Files
-Hand-written GLSL shaders using the engine's custom format:
-- Declare properties (exposed in the Inspector as sliders, color pickers, texture slots)
-- Write GLSL vertex and fragment shader code directly
-- Support the same PBR lighting model as the Standard shader
-- Example: `Standard Assets/Shader/Steel PBR.shader` — Cook-Torrance BRDF with GGX/Smith/Schlick
+- **`PROPERTIES`** — declared uniforms become Inspector + `MaterialPropertyBag` keys
+- **`Surface { void surf(...) }`** — preferred; engine expands to Forward, deferred GBuffer, and Shadow passes
+- **`VERTEX` / `FRAGMENT`** — full manual GLSL when you need low-level control
+- **`RenderState`** — opaque / alpha-test / transparent queue, cull mode, ZWrite, PBR vs unlit
+- Example: `Standard Assets/Shader/Steel PBR.shader` — Cook-Torrance Surface shader
 
 ### Built-In Shader Graph Assets
 | File | Style |

@@ -12,7 +12,7 @@ A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalon
 |-------------------|-----------------------------------------------|-----------|--------------------------------------------|
 | Runtime           | .NET                                          | 9.0       | Core runtime and language features         |
 | UI Framework      | Avalonia                                      | 12.*      | Cross-platform desktop UI (Windows/macOS/Linux) |
-| Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)      | 2.23.0    | GPU-accelerated 3D rendering               |
+| Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)      | 2.23.0    | Modular GLSL, UBO globals, Surface shaders, deferred GBuffer |
 | 3D Import         | AssimpNet                                     | 5.0.0-beta1 | FBX, OBJ, glTF 2 / GLB, DAE model loading |
 | Image Loading     | SkiaSharp                                     | 2.88.9    | PNG, JPG, BMP texture decoding             |
 | Scripting         | Roslyn (Microsoft.CodeAnalysis.CSharp)        | 4.14.0    | Runtime C# compilation and hot-reload      |
@@ -120,16 +120,20 @@ Game-Engine/
 │   │   ├── UI/                  # Runtime UI rendering
 │   │   │   ├── CanvasRenderer.cs # Batched quad renderer for UI canvases
 │   │   │   └── UIEventSystem.cs # Pointer input dispatch for UI elements
+│   │   ├── Shaders/             # 47 modular .glsl sources (embedded + dev hot-reload)
 │   │   └── GPU/                 # OpenGL wrappers
 │   │       ├── GLContext.cs     # OpenGL context (ANGLE detection)
 │   │       ├── ResourceCache.cs # Mesh/texture GPU caching
 │   │       ├── GPUMesh.cs       # VAO/VBO/EBO management
 │   │       ├── GPUTexture.cs    # Texture upload and formats
-│   │       ├── ShaderProgram.cs # Shader compilation and uniforms
+│   │       ├── ShaderProgram.cs # Compile/link, binary cache, UBO binding
 │   │       ├── GPUFramebuffer.cs# FBO for off-screen rendering
 │   │       ├── FullscreenQuad.cs# Fullscreen triangle for post-processing
-│   │       ├── ShaderSources.cs # All embedded GLSL shaders
-│   │       └── CustomShaderCache.cs # Custom shader compilation + caching
+│   │       ├── ShaderSources.cs # Facade over modular GLSL paths
+│   │       ├── ShaderPreprocessor.cs / ShaderLibrary.cs / ShaderFileParser.cs
+│   │       ├── GlobalUniforms.cs / MaterialBinder.cs / ShaderHotReloader.cs
+│   │       ├── MaterialPropertyBag.cs (Core/Rendering)
+│   │       └── CustomShaderCache.cs # API over ShaderLibrary
 │   ├── Editor/                  # Editor-only helpers (not runtime components)
 │   │   └── EditorJobScheduler.cs # Thread-pool jobs + Avalonia UI post (see EditorJobs façade)
 │   ├── Extensibility/           # Editor extension system
@@ -251,7 +255,8 @@ Game-Engine/
 │   ├── ScenePanel.axaml.cs      # Scene view container
 │   ├── ScriptEditorWindow.axaml.cs # Code editor
 │   ├── InputRemappingWindow.axaml.cs # Input configuration
-│   ├── ShaderEditorPanel.axaml.cs  # Visual shader graph editor
+│   ├── ShaderEditorPanel.axaml.cs  # Shader Graph v2 + GPU preview
+│   ├── ShaderPreviewControl.cs     # OpenGL material preview for Shader Editor
 │   ├── BiomeGraphPanel.axaml.cs # Biome graph editor for planet generation
 │   ├── ProfilerPanel.axaml.cs   # Performance profiler view
 │   ├── BuildSettingsWindow.axaml.cs # Build configuration and packaging
@@ -412,7 +417,7 @@ SceneRenderer.RenderGPU()
     ├─► Shadow Pass (4096x4096 depth-only FBO, front-face culling)
     ├─► Sky Pass (gradient + equirectangular texture + sun glow)
     ├─► Grid Pass (infinite ground grid with distance fade)
-    ├─► Opaque Pass (frustum-culled, standard/terrain/skinned shaders)
+    ├─► Opaque Pass (frustum-culled; built-in + Surface/custom via ShaderLibrary)
     ├─► Water Pass (Gerstner waves, Fresnel, foam)
     ├─► Transparent Pass (back-to-front sorted, alpha blending)
     ├─► Particle Pass (billboard quads, instanced rendering)

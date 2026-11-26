@@ -5,48 +5,98 @@
 	<DockPanel>
 		<!-- Toolbar -->
 		<Border DockPanel.Dock="Top" Background="#18FFFFFF" Padding="8,6" CornerRadius="0,0,0,0">
-			<StackPanel Orientation="Horizontal" Spacing="8">
-				<TextBlock Text="Name:" FontSize="13" VerticalAlignment="Center" Foreground="#AAA" />
-				<TextBox x:Name="ShaderNameBox" Width="160" Text="Custom Shader" FontSize="13"
-				         Background="#2A2A3E" Foreground="White" BorderBrush="#555"
-				         CaretBrush="White" SelectionBrush="#5588AAFF" />
-				<Border Width="1" Background="#444" Margin="4,2" />
-				<Button x:Name="CompileButton" Content="Compile" Classes="tool" />
-				<Button x:Name="SaveButton" Content="Save" Classes="tool" />
-				<Button x:Name="LoadButton" Content="Load" Classes="tool" />
-				<Border Width="1" Background="#444" Margin="4,2" />
-				<Button x:Name="AddNodeButton" Content="+ Add Node" Classes="tool" />
-				<ComboBox x:Name="NodeTypeCombo" Width="180" SelectedIndex="0">
-					<ComboBoxItem Content="Texture Sample" />
-					<ComboBoxItem Content="Color" />
-					<ComboBoxItem Content="Float" />
-					<ComboBoxItem Content="Math" />
-					<ComboBoxItem Content="Coordinates" />
-					<ComboBoxItem Content="Fresnel" />
-					<ComboBoxItem Content="Noise" />
-				</ComboBox>
-				<Button x:Name="DeleteNodeButton" Content="Delete Node" Classes="tool" Foreground="#FF6666" />
-				<TextBlock x:Name="StatusLabel" Text="" VerticalAlignment="Center" Opacity="0.7" />
-			</StackPanel>
+			<WrapPanel Orientation="Horizontal" ItemHeight="30">
+				<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,8,0">
+					<TextBlock Text="Name:" FontSize="12" VerticalAlignment="Center" Foreground="#AAA" />
+					<TextBox x:Name="ShaderNameBox" Width="150" Text="Custom Shader" FontSize="12"
+					         Background="#2A2A3E" Foreground="White" BorderBrush="#555"
+					         CaretBrush="White" SelectionBrush="#5588AAFF" VerticalAlignment="Center" />
+				</StackPanel>
+
+				<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,8,0">
+					<Button x:Name="CompileButton" Content="Compile &amp; Save" Classes="tool" />
+					<Button x:Name="SaveButton" Content="Save Graph" Classes="tool" />
+					<Button x:Name="LoadButton" Content="Load" Classes="tool" />
+				</StackPanel>
+
+				<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,8,0">
+					<Button x:Name="AddNodeButton" Content="+ Add Node" Classes="tool" />
+					<ComboBox x:Name="NodeTypeCombo" Width="155" SelectedIndex="0" VerticalAlignment="Center">
+						<ComboBoxItem Content="Texture Sample" />
+						<ComboBoxItem Content="Color" />
+						<ComboBoxItem Content="Float" />
+						<ComboBoxItem Content="Math" />
+						<ComboBoxItem Content="Coordinates" />
+						<ComboBoxItem Content="Fresnel" />
+						<ComboBoxItem Content="Noise" />
+						<ComboBoxItem Content="Property" />
+						<ComboBoxItem Content="Split" />
+						<ComboBoxItem Content="Combine" />
+						<ComboBoxItem Content="UV Transform" />
+						<ComboBoxItem Content="Time" />
+						<ComboBoxItem Content="Blend" />
+					</ComboBox>
+					<Button x:Name="DeleteNodeButton" Content="Delete Node" Classes="tool" Foreground="#FF6666" />
+				</StackPanel>
+
+				<!-- Master RenderState quick controls -->
+				<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,8,0">
+					<TextBlock Text="Queue:" FontSize="11" VerticalAlignment="Center" Foreground="#AAA" />
+					<ComboBox x:Name="QueueCombo" Width="105" SelectedIndex="0" VerticalAlignment="Center">
+						<ComboBoxItem Content="Opaque" />
+						<ComboBoxItem Content="AlphaTest" />
+						<ComboBoxItem Content="Transparent" />
+					</ComboBox>
+					<TextBlock Text="Cull:" FontSize="11" VerticalAlignment="Center" Foreground="#AAA" />
+					<ComboBox x:Name="CullCombo" Width="78" SelectedIndex="0" VerticalAlignment="Center">
+						<ComboBoxItem Content="Back" />
+						<ComboBoxItem Content="Front" />
+						<ComboBoxItem Content="Off" />
+					</ComboBox>
+					<TextBlock Text="Lighting:" FontSize="11" VerticalAlignment="Center" Foreground="#AAA" />
+					<ComboBox x:Name="LightingCombo" Width="78" SelectedIndex="0" VerticalAlignment="Center">
+						<ComboBoxItem Content="PBR" />
+						<ComboBoxItem Content="Unlit" />
+					</ComboBox>
+				</StackPanel>
+
+				<TextBlock x:Name="StatusLabel" Text="" VerticalAlignment="Center" FontSize="11"
+				           Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="360" />
+			</WrapPanel>
 		</Border>
 
-		<Grid ColumnDefinitions="*,280">
+		<Grid ColumnDefinitions="*,300">
 			<!-- Node graph canvas -->
 			<Border Grid.Column="0" Background="#1A1A2E" ClipToBounds="True" CornerRadius="4" Margin="4">
 				<Canvas x:Name="GraphCanvas" Background="Transparent" />
 			</Border>
 
-			<!-- Properties + Preview panel -->
+			<!-- Properties + Real GPU Preview panel -->
 			<DockPanel Grid.Column="1" Margin="4">
-				<!-- Material Preview sphere at bottom -->
+				<!-- Real-Time GPU Material Preview at bottom -->
 				<Border DockPanel.Dock="Bottom" Background="#10FFFFFF" CornerRadius="8" Margin="0,4,0,0" Padding="8">
-					<StackPanel Spacing="4" HorizontalAlignment="Center">
-						<TextBlock Text="Material Preview" FontSize="11" FontWeight="SemiBold"
-						           Foreground="#AAA" HorizontalAlignment="Center" />
-						<Border Background="#0D0D1A" CornerRadius="100" Width="220" Height="220"
-						        ClipToBounds="True" HorizontalAlignment="Center">
-							<Image x:Name="PreviewImage" Width="220" Height="220" Stretch="Fill" />
+					<StackPanel Spacing="6">
+						<Grid ColumnDefinitions="*,Auto,Auto">
+							<TextBlock Grid.Column="0" Text="GPU Live Preview" FontSize="11" FontWeight="SemiBold"
+							           Foreground="#CCC" VerticalAlignment="Center" />
+							<ComboBox Grid.Column="1" x:Name="PreviewMeshCombo" Width="82" SelectedIndex="0"
+							          FontSize="11" Margin="4,0">
+								<ComboBoxItem Content="Sphere" />
+								<ComboBoxItem Content="Cube" />
+								<ComboBoxItem Content="Plane" />
+							</ComboBox>
+							<CheckBox Grid.Column="2" x:Name="AutoSpinCheck" Content="Spin" IsChecked="True"
+							          FontSize="11" Foreground="#CCC" VerticalAlignment="Center" />
+						</Grid>
+
+						<Border Background="#0D0D1A" CornerRadius="6" Height="230" ClipToBounds="True">
+							<local:ShaderPreviewControl x:Name="GpuPreview" HorizontalAlignment="Stretch"
+							                            VerticalAlignment="Stretch" />
 						</Border>
+
+						<TextBlock x:Name="PreviewStatusText" Text="Drag to orbit, scroll to zoom"
+						           FontSize="10" Foreground="#888" TextWrapping="Wrap" MaxLines="2"
+						           TextTrimming="CharacterEllipsis" />
 					</StackPanel>
 				</Border>
 

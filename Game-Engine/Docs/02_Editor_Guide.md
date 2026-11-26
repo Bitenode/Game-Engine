@@ -26,6 +26,7 @@ The editor window contains dockable panels distributed across five dock regions:
 - **Close** panels via right-click > Close
 - **Reset** to defaults with **Window > Reset Layout**
 - **Layout presets** — **Window > Layout Presets** saves or restores three named arrangements (**Save Preset 1–3** / **Load Preset 1–3**). Presets are stored on disk so they survive restarts.
+- **Project open / layout restore** — dock tabs are reconciled **in place** so existing **Scene View** and **Game View** GL controls (and their `ShaderLibrary` / GPU caches) are not torn down and recreated when opening a project or loading a saved layout.
 - Each dock region supports multiple tabs
 - Reset Layout opens Scene View and Game View side-by-side by default (separate center hosts for live editing + play testing)
 
@@ -734,23 +735,22 @@ Graphs are assigned to GameObjects with the **Visual Blueprint** component (**Sc
 
 ## Shader Editor
 
-The Shader Editor panel provides a visual node-based interface for creating custom shaders:
+The Shader Editor panel provides a visual **Shader Graph v2** workflow with a real GPU material preview.
 
 ### Features
-- **Node graph canvas** — drag and drop shader nodes, connect inputs/outputs with wires
-- **Live preview** — material preview sphere updates in real-time as nodes are edited
-- **Node palette** — Output, TextureSample, Color, Float, Math, Coordinate, Fresnel, Noise nodes
-- **GLSL compilation** — the node graph compiles to GLSL vertex + fragment shaders
-- **Save/Load** — shader graphs are saved as `.shadergraph` JSON files
-- **Custom .shader files** — hand-written GLSL shaders (like `Steel PBR.shader`) are also supported
+- **Node graph canvas** — drag nodes, connect typed data/exec wires on the canvas
+- **`ShaderPreviewControl`** — OpenGL **GPU live preview** (sphere / cube / plane), orbit + scroll zoom, optional auto-spin; compiles the same `Surface` `.shader` path as runtime (`ShaderFileParser`, `ShaderPreprocessor`, `MaterialBinder`, studio lighting)
+- **Node palette** — Output, TextureSample, Color, Float, Math, Coordinate, Fresnel, Noise, **Property**, **Split**, **Combine**, **UV Transform**, **Time**, **Blend**
+- **Toolbar RenderState** — Queue (Opaque / AlphaTest / Transparent), Cull, Lighting (PBR / Unlit) written into the compiled `.shader`
+- **Compile & Save** — `ShaderGraphCompiler` emits a **`Surface` `.shader`** file; **Save Graph** stores `.shadergraph` JSON
+- **Hot-reload** — saving `.shader` / `.shadergraph` / project GLSL triggers `ShaderHotReloader` (~150 ms debounce); editing built-in engine `.glsl` hot-reloads in dev when `ShaderPreprocessor.DevShadersDirectory` is found
 
 ### Workflow
-1. Open via **Window > Shader Editor** or double-click a `.shadergraph` file
-2. Add nodes from the palette (right-click canvas)
-3. Connect node outputs to inputs by dragging wires
-4. The Output node defines the final surface properties (BaseColor, Normal, Metallic, Roughness, Emission, Opacity)
-5. Click **Compile** to generate the GLSL shader
-6. Assign the compiled shader to materials via the Inspector
+1. Open via **Window → Shader Editor** or double-click a `.shadergraph` file
+2. Add nodes from **+ Add Node** or the type combo; wire into the **Output** node (BaseColor, Normal, Metallic, Roughness, Emission, Opacity)
+3. Tune **Queue / Cull / Lighting** if needed
+4. Click **Compile & Save** to write the `.shader` asset and refresh the GPU preview
+5. Assign the `.shader` on a `.material` or MeshRenderer; Inspector shows dynamic **MaterialPropertyBag** fields
 
 ### Built-In Shader Graph Assets
 Located in `Standard Assets/Shader/`:

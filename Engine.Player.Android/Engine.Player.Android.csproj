@@ -26,6 +26,7 @@
   <ItemGroup>
     <Compile Include="..\Game-Engine\Core\**\*.cs" Exclude="..\Game-Engine\Core\UIX\**;..\Game-Engine\Core\EditorWindows\**;..\Game-Engine\Core\Extensibility\**;..\Game-Engine\Core\Editor\**" Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\Game-Engine\Standard Assets\Code Examples\UI\*.cs" Link="StdUI\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\Game-Engine\Core\Rendering\Shaders\**\*.glsl" Link="Core\Rendering\Shaders\%(RecursiveDir)%(Filename)%(Extension)" LogicalName="Shaders/%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\Engine.Player\App.axaml.cs" Link="App.axaml.cs" />
     <Compile Include="..\Engine.Player\PlayerRoot.axaml.cs" Link="PlayerRoot.axaml.cs" />
     <Compile Include="..\Engine.Player\PlayerWindow.axaml.cs" Link="PlayerWindow.axaml.cs" />

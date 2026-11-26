@@ -1893,9 +1893,10 @@ public partial class InspectorPanel : UserControl
             catch { return abs.Replace('\\', '/'); }
         };
 
-        // Load current textures -> show existing values
+        // Load current textures + custom shader properties -> show existing values
         var texturesOrder = new[] { "Albedo", "Normal", "Metallic", "Roughness", "Specular", "AmbientOcclusion", "Emissive", "Opacity" };
         var texMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var customProps = new Game_Engine.Core.Rendering.MaterialPropertyBag();
         try
         {
             var raw = File.ReadAllText(path);
@@ -1920,6 +1921,13 @@ public partial class InspectorPanel : UserControl
                 {
                     foreach (var k in texturesOrder) texMap[k] = null;
                 }
+
+                if (root.TryGetProperty("properties", out var cpEl) && cpEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    customProps.ReadFromJson(cpEl, projRoot);
+                else if (root.TryGetProperty("customProperties", out var cpEl2) && cpEl2.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    customProps.ReadFromJson(cpEl2, projRoot);
+                else if (root.TryGetProperty("Properties", out var cpEl3) && cpEl3.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    customProps.ReadFromJson(cpEl3, projRoot);
             }
         }
         catch
@@ -2267,6 +2275,8 @@ public partial class InspectorPanel : UserControl
             if (e.Property == TextBox.TextProperty)
                 renderMaterialPreview();
         };
+        Action? rebuildShaderPropertiesUI = null;
+
         tbShader.PropertyChanged += (_, e) =>
         {
             if (e.Property == TextBox.TextProperty)
@@ -2274,6 +2284,7 @@ public partial class InspectorPanel : UserControl
                 // Update the shader label when shader changes
                 shaderLabel.Text = !string.IsNullOrWhiteSpace(tbShader.Text)
                     ? $"Shader: {System.IO.Path.GetFileNameWithoutExtension(tbShader.Text)}" : "";
+                rebuildShaderPropertiesUI?.Invoke();
                 renderMaterialPreview();
             }
         };
@@ -2289,6 +2300,10 @@ public partial class InspectorPanel : UserControl
         cutRowInner.Children.Add(sCutoff);
         cutRowInner.Children.Add(lblCut);
         props.Children.Add(Labeled("Alpha Cutoff", cutRowInner));
+
+        // ---------- Dynamic Shader Properties (from .shader Properties { ... } block) ----------
+        var shaderPropsHost = new StackPanel { Spacing = 6 };
+        props.Children.Add(shaderPropsHost);
 
         // ---------- Textures ----------
         props.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 6) });
@@ -2496,7 +2511,7 @@ public partial class InspectorPanel : UserControl
 
         btnRevert.Click += (_, __) => { try { OnAssetSelected(path); } catch { } };
 
-        btnSave.Click += (_, __) =>
+        Action<bool> saveMaterialToDisk = notifyChanged =>
         {
             var finalName = string.IsNullOrWhiteSpace(tbName.Text) ? "Material" : tbName.Text.Trim();
             var finalShader = tbShader.Text != null ? tbShader.Text.Trim() : "";
@@ -2548,6 +2563,12 @@ public partial class InspectorPanel : UserControl
                     }
                     jw.WriteEndObject();
 
+                    if (!customProps.IsEmpty)
+                    {
+                        jw.WritePropertyName("properties");
+                        customProps.WriteToJson(jw);
+                    }
+
                     jw.WriteEndObject();
                     jw.Flush();
                 }
@@ -2557,7 +2578,77 @@ public partial class InspectorPanel : UserControl
                 {
                     File.WriteAllText(path, json);
                     ProjectService.TouchModified();
-                    Game_Engine.Core.SceneService.NotifyChanged();
+
+                    // Push live edits into any cached / active scene Material referencing this .material file
+                    var cachedMat = ProjectService.TryGetCachedRuntimeMaterial(path);
+                    if (cachedMat != null)
+                    {
+                        cachedMat.Name = finalName;
+                        cachedMat.ShaderAssetPath = finalShader;
+                        cachedMat.BaseColor = parseHex(tbTint.Text);
+                        cachedMat.Metallic = (float)m;
+                        cachedMat.Roughness = (float)r;
+                        cachedMat.Transparent = tr;
+                        cachedMat.AlphaCutoff = (float)ac;
+                        cachedMat.Properties.CopyFrom(customProps);
+                        cachedMat.Properties.ResolveTextures(projRoot);
+                    }
+
+                    string normMatAbs = "";
+                    try { normMatAbs = Path.GetFullPath(path); } catch { normMatAbs = path; }
+
+                    void SyncTree(GameObject go)
+                    {
+                        foreach (var b in go.Behaviors)
+                        {
+                            if (b is MeshRenderer mr)
+                            {
+                                bool matches = false;
+                                if (mr.MaterialPaths != null)
+                                {
+                                    for (int pi = 0; pi < mr.MaterialPaths.Count; pi++)
+                                    {
+                                        var mp = mr.MaterialPaths[pi];
+                                        if (string.IsNullOrWhiteSpace(mp)) continue;
+                                        var mpAbs = ProjectService.GetExistingMaterialAbsolutePath(mp);
+                                        if (mpAbs != null && string.Equals(Path.GetFullPath(mpAbs), normMatAbs, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            matches = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (matches && mr.Material != null && !ReferenceEquals(mr.Material, cachedMat))
+                                {
+                                    mr.Material.ShaderAssetPath = finalShader;
+                                    mr.Material.Properties.CopyFrom(customProps);
+                                    mr.Material.Properties.ResolveTextures(projRoot);
+                                }
+                                if (matches && mr.ResolvedMaterials != null)
+                                {
+                                    for (int mi = 0; mi < mr.ResolvedMaterials.Count; mi++)
+                                    {
+                                        var rm = mr.ResolvedMaterials[mi];
+                                        if (rm != null && !ReferenceEquals(rm, cachedMat))
+                                        {
+                                            rm.ShaderAssetPath = finalShader;
+                                            rm.Properties.CopyFrom(customProps);
+                                            rm.Properties.ResolveTextures(projRoot);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        foreach (var child in go.Children)
+                            SyncTree(child);
+                    }
+                    foreach (var rootGo in SceneService.Root)
+                        SyncTree(rootGo);
+
+                    if (notifyChanged)
+                        Game_Engine.Core.SceneService.NotifyChanged();
+                    else
+                        Game_Engine.Core.SceneService.RequestFrame();
                 }
                 catch (Exception ex)
                 {
@@ -2571,7 +2662,267 @@ public partial class InspectorPanel : UserControl
             }
         };
 
-        // Initial preview render
+        rebuildShaderPropertiesUI = () =>
+        {
+            shaderPropsHost.Children.Clear();
+            string curShader = tbShader.Text?.Trim() ?? "";
+            if (string.IsNullOrWhiteSpace(curShader)) return;
+
+            string absShaderPath;
+            try
+            {
+                absShaderPath = Path.IsPathRooted(curShader) || string.IsNullOrWhiteSpace(projRoot)
+                    ? Path.GetFullPath(curShader)
+                    : Path.GetFullPath(Path.Combine(projRoot, curShader.Replace('/', Path.DirectorySeparatorChar)));
+            }
+            catch { return; }
+
+            var schema = Game_Engine.Core.Rendering.GPU.ShaderFileParser.GetCachedSchema(absShaderPath);
+            if (schema == null || schema.Properties.Count == 0) return;
+
+            shaderPropsHost.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 6) });
+            var hdr = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 4) };
+            hdr.Children.Add(new TextBlock { Text = "Shader Properties", FontWeight = FontWeight.SemiBold });
+            var rs = schema.RenderState;
+            hdr.Children.Add(new TextBlock
+            {
+                Text = $"({rs.Queue} · {rs.Lighting} · Cull {rs.Cull})",
+                Opacity = 0.65,
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            shaderPropsHost.Children.Add(hdr);
+
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+            void ApplyLiveChange()
+            {
+                saveMaterialToDisk(false);
+                renderMaterialPreview();
+            }
+
+            foreach (var sp in schema.Properties)
+            {
+                var prop = sp;
+                string label = string.IsNullOrWhiteSpace(prop.DisplayName) ? prop.Name : prop.DisplayName;
+
+                switch (prop.Type)
+                {
+                    case Game_Engine.Core.Rendering.GPU.ShaderPropertyType.Range:
+                    {
+                        float defVal = prop.DefaultNumbers.Length > 0 ? prop.DefaultNumbers[0] : prop.RangeMin;
+                        float curVal = customProps.TryGetFloat(prop.Name, out float f) ? f : defVal;
+                        float minV = prop.RangeMin;
+                        float maxV = prop.RangeMax > prop.RangeMin ? prop.RangeMax : prop.RangeMin + 1f;
+                        curVal = Math.Clamp(curVal, minV, maxV);
+
+                        var slider = new Slider { Minimum = minV, Maximum = maxV, Value = curVal, Width = 170 };
+                        var readout = new TextBlock
+                        {
+                            Text = curVal.ToString("0.00", inv),
+                            Width = 48,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            VerticalAlignment = VerticalAlignment.Center
+                        };
+                        slider.PropertyChanged += (_, e) =>
+                        {
+                            if (e.Property == RangeBase.ValueProperty)
+                            {
+                                float nv = (float)slider.Value;
+                                readout.Text = nv.ToString("0.00", inv);
+                                customProps.SetFloat(prop.Name, nv);
+                                ApplyLiveChange();
+                            }
+                        };
+                        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                        row.Children.Add(slider);
+                        row.Children.Add(readout);
+                        shaderPropsHost.Children.Add(Labeled(label, row));
+                        break;
+                    }
+
+                    case Game_Engine.Core.Rendering.GPU.ShaderPropertyType.Float:
+                    {
+                        float defVal = prop.DefaultNumbers.Length > 0 ? prop.DefaultNumbers[0] : 0f;
+                        float curVal = customProps.TryGetFloat(prop.Name, out float f) ? f : defVal;
+                        var tb = new TextBox { Text = curVal.ToString("0.###", inv), Width = 110 };
+                        tb.PropertyChanged += (_, e) =>
+                        {
+                            if (e.Property == TextBox.TextProperty
+                                && float.TryParse(tb.Text, System.Globalization.NumberStyles.Float, inv, out float nv))
+                            {
+                                customProps.SetFloat(prop.Name, nv);
+                                ApplyLiveChange();
+                            }
+                        };
+                        shaderPropsHost.Children.Add(Labeled(label, tb));
+                        break;
+                    }
+
+                    case Game_Engine.Core.Rendering.GPU.ShaderPropertyType.Int:
+                    {
+                        int defVal = prop.DefaultNumbers.Length > 0 ? (int)MathF.Round(prop.DefaultNumbers[0]) : 0;
+                        int curVal = customProps.TryGetInt(prop.Name, out int iv) ? iv : defVal;
+                        var tb = new TextBox { Text = curVal.ToString(inv), Width = 110 };
+                        tb.PropertyChanged += (_, e) =>
+                        {
+                            if (e.Property == TextBox.TextProperty
+                                && int.TryParse(tb.Text, System.Globalization.NumberStyles.Integer, inv, out int nv))
+                            {
+                                customProps.SetInt(prop.Name, nv);
+                                ApplyLiveChange();
+                            }
+                        };
+                        shaderPropsHost.Children.Add(Labeled(label, tb));
+                        break;
+                    }
+
+                    case Game_Engine.Core.Rendering.GPU.ShaderPropertyType.Color:
+                    {
+                        Color curCol;
+                        if (!customProps.TryGetColor(prop.Name, out curCol))
+                        {
+                            var d = prop.DefaultNumbers;
+                            curCol = Game_Engine.Core.Rendering.MaterialPropertyBag.ColorFromNormalized(
+                                d.Length > 0 ? d[0] : 1f,
+                                d.Length > 1 ? d[1] : 1f,
+                                d.Length > 2 ? d[2] : 1f,
+                                d.Length > 3 ? d[3] : 1f);
+                        }
+                        var tbCol = new TextBox
+                        {
+                            Text = Game_Engine.Core.Rendering.MaterialPropertyBag.FormatHexColor(curCol),
+                            Width = 120
+                        };
+                        var colSwatch = new Border
+                        {
+                            Width = 28,
+                            Height = 20,
+                            Background = new SolidColorBrush(curCol),
+                            BorderBrush = Brushes.Black,
+                            BorderThickness = new Thickness(1),
+                            CornerRadius = new CornerRadius(3),
+                            Margin = new Thickness(4, 0, 0, 0)
+                        };
+                        tbCol.PropertyChanged += (_, e) =>
+                        {
+                            if (e.Property == TextBox.TextProperty
+                                && Game_Engine.Core.Rendering.MaterialPropertyBag.TryParseHexColor(tbCol.Text, out var nc))
+                            {
+                                if (colSwatch.Background is SolidColorBrush sb) sb.Color = nc;
+                                customProps.SetColor(prop.Name, nc);
+                                ApplyLiveChange();
+                            }
+                        };
+                        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                        row.Children.Add(tbCol);
+                        row.Children.Add(colSwatch);
+                        shaderPropsHost.Children.Add(Labeled(label, row));
+                        break;
+                    }
+
+                    case Game_Engine.Core.Rendering.GPU.ShaderPropertyType.Vector:
+                    {
+                        if (!customProps.TryGetVector(prop.Name, out var vec))
+                        {
+                            var d = prop.DefaultNumbers;
+                            vec = new System.Numerics.Vector4(
+                                d.Length > 0 ? d[0] : 0f,
+                                d.Length > 1 ? d[1] : 0f,
+                                d.Length > 2 ? d[2] : 0f,
+                                d.Length > 3 ? d[3] : 0f);
+                        }
+                        var tbX = new TextBox { Text = vec.X.ToString("0.###", inv), Width = 54, Watermark = "X" };
+                        var tbY = new TextBox { Text = vec.Y.ToString("0.###", inv), Width = 54, Watermark = "Y" };
+                        var tbZ = new TextBox { Text = vec.Z.ToString("0.###", inv), Width = 54, Watermark = "Z" };
+                        var tbW = new TextBox { Text = vec.W.ToString("0.###", inv), Width = 54, Watermark = "W" };
+
+                        void OnVecChanged()
+                        {
+                            if (float.TryParse(tbX.Text, System.Globalization.NumberStyles.Float, inv, out float vx)
+                                && float.TryParse(tbY.Text, System.Globalization.NumberStyles.Float, inv, out float vy)
+                                && float.TryParse(tbZ.Text, System.Globalization.NumberStyles.Float, inv, out float vz)
+                                && float.TryParse(tbW.Text, System.Globalization.NumberStyles.Float, inv, out float vw))
+                            {
+                                customProps.SetVector(prop.Name, new System.Numerics.Vector4(vx, vy, vz, vw));
+                                ApplyLiveChange();
+                            }
+                        }
+
+                        tbX.PropertyChanged += (_, e) => { if (e.Property == TextBox.TextProperty) OnVecChanged(); };
+                        tbY.PropertyChanged += (_, e) => { if (e.Property == TextBox.TextProperty) OnVecChanged(); };
+                        tbZ.PropertyChanged += (_, e) => { if (e.Property == TextBox.TextProperty) OnVecChanged(); };
+                        tbW.PropertyChanged += (_, e) => { if (e.Property == TextBox.TextProperty) OnVecChanged(); };
+
+                        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                        row.Children.Add(tbX);
+                        row.Children.Add(tbY);
+                        row.Children.Add(tbZ);
+                        row.Children.Add(tbW);
+                        shaderPropsHost.Children.Add(Labeled(label, row));
+                        break;
+                    }
+
+                    case Game_Engine.Core.Rendering.GPU.ShaderPropertyType.Texture2D:
+                    {
+                        customProps.TryGetTexturePath(prop.Name, out var curTexPath);
+                        var tbTex = new TextBox { Text = curTexPath ?? "", Width = 180, Watermark = prop.DefaultTexture ?? "white" };
+                        var btnBrowse = new Button { Content = "Browse…" };
+                        var btnClear = new Button { Content = "Clear" };
+
+                        btnBrowse.Click += async (_, __) =>
+                        {
+                            if (owner == null) return;
+                            var dlg = new OpenFileDialog
+                            {
+                                Title = $"Select Texture for {label}",
+                                AllowMultiple = false,
+                                Filters = new List<FileDialogFilter>
+                                {
+                                    new FileDialogFilter { Name = "Images", Extensions = new List<string> { "png", "jpg", "jpeg", "tga", "bmp", "webp", "tif", "tiff", "psd" } },
+                                    new FileDialogFilter { Name = "All Files", Extensions = new List<string> { "*" } },
+                                }
+                            };
+                            var files = await dlg.ShowAsync(owner);
+                            if (files != null && files.Length > 0)
+                            {
+                                var picked = files[0];
+                                tbTex.Text = isUnderProject(picked) ? absToProjectRel(picked) : picked;
+                            }
+                        };
+                        btnClear.Click += (_, __) => tbTex.Text = "";
+
+                        tbTex.PropertyChanged += (_, e) =>
+                        {
+                            if (e.Property == TextBox.TextProperty)
+                            {
+                                var newPath = tbTex.Text?.Trim();
+                                if (string.IsNullOrWhiteSpace(newPath))
+                                    customProps.SetTexture(prop.Name, null, null);
+                                else
+                                {
+                                    customProps.SetTexture(prop.Name, newPath, null);
+                                    customProps.ResolveTextures(projRoot);
+                                }
+                                ApplyLiveChange();
+                            }
+                        };
+
+                        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                        row.Children.Add(tbTex);
+                        row.Children.Add(btnBrowse);
+                        row.Children.Add(btnClear);
+                        shaderPropsHost.Children.Add(Labeled(label, row));
+                        break;
+                    }
+                }
+            }
+        };
+
+        btnSave.Click += (_, __) => saveMaterialToDisk(true);
+
+        // Initial dynamic shader properties + preview render
+        rebuildShaderPropertiesUI();
         renderMaterialPreview();
     }
 
@@ -3777,25 +4128,32 @@ public partial class InspectorPanel : UserControl
                     }
                 }
 
-                var jsonObj = new Dictionary<string, object>
+                if (!matForSave.Properties.IsEmpty)
                 {
-                    ["name"] = matForSave.Name ?? defaultName,
-                    ["type"] = "Material",
-                    ["version"] = 1,
-                    ["shader"] = matForSave.ShaderAssetPath ?? "",
-                    ["parameters"] = new Dictionary<string, object>
+                    ProjectService.SaveMaterial(dest, matForSave);
+                }
+                else
+                {
+                    var jsonObj = new Dictionary<string, object>
                     {
-                        ["Tint"] = new float[] { matForSave.BaseColor.R / 255f, matForSave.BaseColor.G / 255f, matForSave.BaseColor.B / 255f, matForSave.BaseColor.A / 255f },
-                        ["Metallic"] = matForSave.Metallic,
-                        ["Roughness"] = matForSave.Roughness,
-                        ["Transparent"] = matForSave.Transparent,
-                        ["AlphaCutoff"] = matForSave.AlphaCutoff
-                    },
-                    ["textures"] = texDict
-                };
+                        ["name"] = matForSave.Name ?? defaultName,
+                        ["type"] = "Material",
+                        ["version"] = 1,
+                        ["shader"] = matForSave.ShaderAssetPath ?? "",
+                        ["parameters"] = new Dictionary<string, object>
+                        {
+                            ["Tint"] = new float[] { matForSave.BaseColor.R / 255f, matForSave.BaseColor.G / 255f, matForSave.BaseColor.B / 255f, matForSave.BaseColor.A / 255f },
+                            ["Metallic"] = matForSave.Metallic,
+                            ["Roughness"] = matForSave.Roughness,
+                            ["Transparent"] = matForSave.Transparent,
+                            ["AlphaCutoff"] = matForSave.AlphaCutoff
+                        },
+                        ["textures"] = texDict
+                    };
 
-                var json = System.Text.Json.JsonSerializer.Serialize(jsonObj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(dest, json);
+                    var json = System.Text.Json.JsonSerializer.Serialize(jsonObj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(dest, json);
+                }
 
                 // Make project-relative and update MaterialPaths on the renderer
                 var proj = ProjectService.Current;

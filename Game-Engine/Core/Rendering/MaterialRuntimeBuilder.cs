@@ -41,36 +41,72 @@ namespace Game_Engine.Core.Rendering
             m.Transparent = transp;
             m.AlphaCutoff = Clamp01(GetFloat(src, "_AlphaCutoff", m.AlphaCutoff));
 
-            // ── Texture2D properties → RuntimeTexSlot entries ──
-            // The old code never processed texture properties, so materials loaded
-            // through the asset pipeline always had zero texture slots.
+            // ── Dynamic properties + Texture2D → RuntimeTexSlot entries ──
             if (src?.Properties != null)
             {
                 foreach (var kv in src.Properties)
                 {
                     var prop = kv.Value;
-                    if (prop == null || prop.Type != ShaderPropType.Texture2D) continue;
-                    if (string.IsNullOrWhiteSpace(prop.TexturePath)) continue;
+                    if (prop == null) continue;
 
-                    string usage = GuessUsageFromPropertyName(kv.Key);
-                    string absPath = ResolveTexturePath(prop.TexturePath);
-                    if (string.IsNullOrWhiteSpace(absPath) || !File.Exists(absPath)) continue;
-
-                    try
+                    switch (prop.Type)
                     {
-                        var tex = Texture2D.FromFile(absPath);
-                        if (tex != null)
-                        {
-                            m.Textures.Add(new RuntimeTexSlot
+                        case ShaderPropType.Float:
+                        case ShaderPropType.Range:
+                            if (prop.Floats != null && prop.Floats.Length >= 1)
+                                m.Properties.SetFloat(kv.Key, prop.Floats[0]);
+                            break;
+                        case ShaderPropType.Int:
+                            m.Properties.SetInt(kv.Key, prop.Int);
+                            break;
+                        case ShaderPropType.Color:
+                            if (prop.Floats != null && prop.Floats.Length >= 3)
                             {
-                                Texture = tex,
-                                Usage = usage,
-                                FaceMask = -1,
-                                SourcePath = prop.TexturePath
-                            });
+                                float ca = prop.Floats.Length >= 4 ? prop.Floats[3] : 1f;
+                                m.Properties.SetColor(kv.Key, MaterialPropertyBag.ColorFromNormalized(
+                                    prop.Floats[0], prop.Floats[1], prop.Floats[2], ca));
+                            }
+                            break;
+                        case ShaderPropType.Vector2:
+                        case ShaderPropType.Vector3:
+                        case ShaderPropType.Vector4:
+                            if (prop.Floats != null && prop.Floats.Length >= 2)
+                            {
+                                float vx = prop.Floats[0];
+                                float vy = prop.Floats[1];
+                                float vz = prop.Floats.Length >= 3 ? prop.Floats[2] : 0f;
+                                float vw = prop.Floats.Length >= 4 ? prop.Floats[3] : 0f;
+                                m.Properties.SetVector(kv.Key, new Vector4(vx, vy, vz, vw));
+                            }
+                            break;
+                        case ShaderPropType.Texture2D:
+                        {
+                            if (string.IsNullOrWhiteSpace(prop.TexturePath)) break;
+
+                            string usage = GuessUsageFromPropertyName(kv.Key);
+                            string absPath = ResolveTexturePath(prop.TexturePath);
+                            Texture2D? tex = null;
+                            if (!string.IsNullOrWhiteSpace(absPath) && File.Exists(absPath))
+                            {
+                                try { tex = Texture2D.FromFile(absPath); }
+                                catch { tex = null; }
+                            }
+
+                            m.Properties.SetTexture(kv.Key, prop.TexturePath, tex);
+
+                            if (tex != null)
+                            {
+                                m.Textures.Add(new RuntimeTexSlot
+                                {
+                                    Texture = tex,
+                                    Usage = usage,
+                                    FaceMask = -1,
+                                    SourcePath = prop.TexturePath
+                                });
+                            }
+                            break;
                         }
                     }
-                    catch { /* skip unreadable textures */ }
                 }
             }
 

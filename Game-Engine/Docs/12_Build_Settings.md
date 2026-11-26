@@ -416,7 +416,7 @@ All shaders are written as desktop GLSL (`#version 330 core`) and automatically 
 | macOS | OpenGL 3.3 Core | `#version 330 core` | No adaptation needed |
 | Linux | OpenGL 3.3 Core | `#version 330 core` | No adaptation needed |
 
-The `ShaderSources.Adapt()` method handles this conversion transparently — no platform-specific shader files are needed.
+`ShaderPreprocessor.AdaptSource()` (via `ShaderSources.Adapt()`) handles this conversion from the single modular `.glsl` tree — no duplicate per-platform shader files are needed. Linked program binaries for ANGLE are cached under `%LOCALAPPDATA%\GameEngine\ShaderCache` on desktop (see [Rendering Pipeline — Shaders](04_Rendering_Pipeline.md#shaders)).
 
 ### Native Libraries
 All native libraries (ANGLE, OpenGL, Skia, Assimp, NAudio) are bundled automatically by their NuGet packages. No manual DLL copying or `DllImport` configuration is required.

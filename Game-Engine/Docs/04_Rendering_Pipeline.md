@@ -68,9 +68,28 @@ The Standard fragment shader supports cascaded shadow maps (`uShadowVPC[]`, `uCa
 
 ## Shaders
 
-All GLSL source code is stored as `const string` fields in `ShaderSources.cs`. The `Adapt()` method trims leading whitespace, then on OpenGL ES replaces `#version 330 core` with `#version 300 es` and adds `precision highp float`, `highp int`, `highp sampler2D`, and `highp samplerCube`. `#version` has to stay the first token. `TerrainFragForUnits` inserts its sampler `#define` lines after that version line and accepts either LF or CRLF, so ANGLE keeps GLSL ES 3.00 instead of falling back to ES 1.00.
+### Modular GLSL architecture
+
+Built-in shaders ship as **47 embedded `.glsl` files** under `Core/Rendering/Shaders/` (folders: `Common/`, `Core/`, `Terrain/`, `Planet/`, `Effects/`, `PostProcess/`, `Editor/`, `UI/`). Shared headers include `FrameGlobals.glsl`, `LightingGlobals.glsl`, `PBR.glsl`, `Shadows.glsl`, and `Skinning.glsl`.
+
+| Component | Role |
+|-----------|------|
+| **`ShaderPreprocessor`** | Disk-first load in Editor dev (auto-finds `Core/Rendering/Shaders` next to source) with embedded-resource fallback; comment-aware `#include` / `#pragma once`; platform headers (`#version 330 core` vs `#version 300 es` + precision); variant `#define`s; **line-mapped** compiler errors back to the original file |
+| **`ShaderSources`** | Backward-compatible facade — `ShaderSources.Paths` logical paths, lazy `LoadDesktop()` properties, `Adapt()` → `ShaderPreprocessor.AdaptSource()`, `TerrainFragForUnits()` → terrain sampler budget variants |
+| **`ShaderLibrary`** | Per-`GL` context owner — built-in + custom `.shader` programs, variant cache (`ShaderVariantKey`), `#include` dependency tracking, **safe hot-reload** (compile candidate first; keep last good program on failure) |
+| **`GlobalUniforms`** | std140 UBOs: binding **0** `FrameGlobals`, **1** `LightingGlobals`, **2** `BoneGlobals` (`GlobalUniforms` + `UniformBuffer` / `BoneUniformBuffer` on CPU) |
+| **`CustomShaderCache`** | Facade for project `.shader` files via `ShaderLibrary` — passes: **Forward**, **GBuffer** (deferred Surface materials), **ShadowCaster** |
+| **`ShaderFileParser`** | Parses `.shader` assets — explicit `VERTEX`/`FRAGMENT` blocks or a single **`Surface { void surf(...) }`** block expanded into Forward/GBuffer/Shadow passes |
+| **`MaterialBinder`** | Binds `MaterialPropertyBag` + schema defaults; applies `ShaderRenderState` (queue, cull, ZWrite, blend) with deterministic GL restore |
+| **`ShaderHotReloader`** | Watches project `*.shader` / `*.glsl` and (dev) engine built-ins; ~150 ms debounce; marks dirty libraries and redraws viewports |
+
+**ANGLE binary cache:** `ShaderProgram.BinaryCacheDirectory` defaults to `%LOCALAPPDATA%\GameEngine\ShaderCache` in the editor and desktop player (`.glbin` keyed by GPU driver, ANGLE DLL stamp, and preprocessed sources). Xbox builds use their own `LocalCache\Shaders` path.
+
+New rendering code should prefer `ShaderLibrary.GetOrCreate(gl, isES)` over compiling raw strings so variants, UBO binding, hot-reload, and caching stay consistent.
 
 ### Standard Shader (StandardVert + StandardFrag)
+
+Sources: `Core/Standard.vert.glsl` + `Core/Standard.frag.glsl` (includes Common lighting/PBR/shadows; reads global UBOs when present).
 
 The primary shader for most objects. Full feature set:
 
@@ -252,23 +271,23 @@ Fullscreen ray-marching shader for volumetric light scattering.
 
 ## Shader Graph System
 
-The engine includes a visual **node-based shader graph** system that compiles to GLSL shaders at runtime.
+The engine includes a visual **node-based shader graph** (Shader Graph v2) that compiles to the unified **`Surface` `.shader` format**, then to GPU programs through the same path as hand-authored shaders.
 
 ### Architecture
 ```
 ShaderGraph (JSON .shadergraph file)
     │ contains
     ▼
-ShaderNodes (connected graph of operations)
+ShaderNodes (typed ports, ShaderGraph v2 nodes)
     │ compiled by
     ▼
-ShaderGraph.Compile()
-    │ produces
+ShaderGraphCompiler.Compile() → Surface { surf(...) } .shader text
+    │ parsed by
     ▼
-GLSL Vertex + Fragment source code
-    │ compiled by
+ShaderFileParser.GeneratePassSources() → Forward / GBuffer / Shadow
+    │ owned by
     ▼
-CustomShaderCache → ShaderProgram (GPU-ready shader)
+ShaderLibrary (per GL context) → ShaderProgram
 ```
 
 ### Node Types
@@ -282,9 +301,21 @@ CustomShaderCache → ShaderProgram (GPU-ready shader)
 | **CoordinateNode** | UV coordinates, world position, view direction, normal |
 | **FresnelNode** | Fresnel effect (angle-dependent reflection/glow) |
 | **NoiseNode** | Procedural noise generation (Perlin, Simplex) |
+| **PropertyNode** | Exposes a shader graph property as a data port |
+| **SplitNode** / **CombineNode** | Swizzle / pack vector components |
+| **UvTransformNode** | Scale / offset UV coordinates |
+| **TimeNode** | Elapsed time and sine wave for animation |
+| **BlendNode** | Lerp / multiply / add blend modes |
 
 ### Custom Shader Files (.shader)
-Hand-written shaders using a custom format with GLSL vertex and fragment sections:
+
+Two authoring styles share one parser:
+
+1. **Surface shader** (preferred) — implement `void surf(in SurfaceInput IN, inout SurfaceOutput OUT)` inside a `Surface { ... }` block; the engine generates Forward, deferred **GBuffer**, and ShadowCaster stages and injects `FrameGlobals` / lighting includes.
+2. **Explicit stages** — legacy `VERTEX { ... }` and `FRAGMENT { ... }` blocks for full manual GLSL.
+
+Common header fields: `SHADER "Name"`, `PROPERTIES { _Foo (Type) = default }`, and optional **`RenderState`** (queue, cull, ZWrite, lighting mode).
+
 ```
 SHADER "My PBR Shader"
 
@@ -293,27 +324,31 @@ PROPERTIES {
     _Metallic (Float) = 0.5
     _Roughness (Float) = 0.5
     _MainTex (Texture2D)
-    _NormalMap (Texture2D)
 }
 
-VERTEX { ... GLSL code ... }
-FRAGMENT { ... GLSL code ... }
+Surface {
+    void surf(in SurfaceInput IN, inout SurfaceOutput OUT) {
+        OUT.Albedo = _BaseColor.rgb * texture(_MainTex, IN.uv).rgb;
+        OUT.Metallic = _Metallic;
+        OUT.Roughness = _Roughness;
+    }
+}
 ```
 
-The `Steel PBR.shader` in Standard Assets demonstrates a full Cook-Torrance BRDF implementation with GGX distribution, Smith geometry, and Schlick Fresnel approximation.
+`Standard Assets/Shader/Steel PBR.shader` demonstrates a Cook-Torrance BRDF (GGX / Smith / Schlick) in the Surface style.
 
 ### CustomShaderCache
-Compiled custom shaders are cached per GL context. The `CustomShaderCache` manages:
-- Compilation of `.shader` files and shader graph output to GPU programs
-- Per-context caching to avoid recompilation
-- Fallback to the standard shader on compilation errors
+Delegates to **`ShaderLibrary`** per GL context:
+- Loads and caches `.shader` files and shader-graph output for Forward, GBuffer, and Shadow passes
+- `Invalidate(path)` / `ShaderHotReloader` for live reload; failed compiles keep the last valid program
+- `TryGetSchema()` exposes PROPERTY metadata for the Inspector without an active GL context
 
 ---
 
 ## GPU Resource Management
 
 ### GLContext
-Wraps the Silk.NET `GL` instance obtained from Avalonia's OpenGL control. Detects whether the context is OpenGL ES (ANGLE on Windows) or desktop OpenGL by checking the version string. The `Adapt()` method on `ShaderSources` uses this detection to generate the correct GLSL version directive.
+Wraps the Silk.NET `GL` instance obtained from Avalonia's OpenGL control. Detects whether the context is OpenGL ES (ANGLE on Windows) or desktop OpenGL by checking the version string. `ShaderCompileOptions` (`IsES`, `MaxBones`, variant defines) flow into `ShaderPreprocessor` and `ShaderLibrary` for the correct GLSL dialect and skinning limits (48 bones on ES, 128 on desktop).
 
 ### ResourceCache
 Maps engine objects to GPU resources, handles lazy upload and disposal. **Each view** (SceneView, GameView) has its own `ResourceCache` instance tied to its OpenGL context.
@@ -380,10 +415,12 @@ A single triangle that covers the entire screen, used for:
 Using a single oversized triangle instead of a quad avoids the diagonal seam artifact.
 
 ### ShaderProgram
-Compiles and links GLSL vertex + fragment shaders. Provides:
+Compiles and links preprocessed GLSL (with optional `ShaderSourceMap` for diagnostics). Provides:
 - Uniform location caching (dictionary lookup)
 - Type-safe uniform setters: `SetInt`, `SetFloat`, `SetVec2/3/4`, `SetMat4`, `SetTexture`
 - Matrix upload with `transpose=false` (row-major to column-major conversion)
+- `BindStandardUniformBlocks()` wires `FrameGlobals`, `LightingGlobals`, and `BoneGlobals` when present
+- Optional on-disk **program binary** cache via `BinaryCacheDirectory` (see modular architecture above)
 
 ---
 

@@ -18,6 +18,7 @@ namespace Game_Engine.Core.Rendering
 
         public static void Render(GL g, PlayerFrameState s, int fb)
         {
+            s.Res?.RefreshIfDirty();
             if (s.Res?.Standard == null || s.Res.Sky == null || s.Res.FsQuad == null || s.Res.Cache == null)
                 return;
 
@@ -265,6 +266,7 @@ namespace Game_Engine.Core.Rendering
         {
             g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
             g.UseProgram(0);
+            ShaderProgram.NotifyProgramUnbound(g);
             g.BindVertexArray(0);
             g.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
             g.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);

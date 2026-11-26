@@ -2,6 +2,7 @@ using Avalonia;
 using System;
 using System.IO;
 using Game_Engine.Core;
+using Game_Engine.Core.Rendering.GPU;
 
 namespace Game_Engine;
 
@@ -32,6 +33,13 @@ internal static class Program
         }
 
         App.BuildJsonPath = buildJson;
+
+        if (string.IsNullOrEmpty(ShaderProgram.BinaryCacheDirectory))
+        {
+            ShaderProgram.BinaryCacheDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "GameEnginePlayer", "ShaderCache");
+        }
 
         // Model and material loaders for scene files. Shared with the Xbox host.
         PlayerBootstrap.WireSceneSerialization();

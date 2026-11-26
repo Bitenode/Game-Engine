@@ -44,6 +44,8 @@ public sealed class GLContext : IDisposable
 
     public void Dispose()
     {
+        GlobalUniforms.RemoveContext(GL);
+        ShaderLibrary.RemoveContext(GL);
         GL.Dispose();
     }
 

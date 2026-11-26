@@ -47,6 +47,7 @@
     <Compile Include="$(GameEngineCoreDir)**\*.cs" Exclude="$(GameEngineCoreDir)UIX\**;$(GameEngineCoreDir)EditorWindows\**;$(GameEngineCoreDir)Extensibility\**;$(GameEngineCoreDir)Editor\**" Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
     <!-- Kept out of GameScripts.dll because the desktop player compiles them in. Xbox must compile them here. -->
     <Compile Include="$(GameEngineStdUiDir)*.cs" Link="StdUI\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(GameEngineCoreDir)Rendering\Shaders\**\*.glsl" Link="Core\Rendering\Shaders\%(RecursiveDir)%(Filename)%(Extension)" LogicalName="Shaders/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

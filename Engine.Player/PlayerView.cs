@@ -155,6 +155,12 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     protected override void OnOpenGlDeinit(GlInterface gl)
     {
+        var g = _glCtx?.GL;
+        if (g != null)
+        {
+            SceneRenderer.DisposeStaticGlResources(g);
+            CustomShaderCache.ClearContext(g);
+        }
         _sceneFBO?.Dispose(); _sceneFBO = null; _sceneFBO_W = 0; _sceneFBO_H = 0;
         _res?.Dispose(); _res = null;
         _glCtx?.Dispose();

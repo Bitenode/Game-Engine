@@ -77,6 +77,7 @@ public static class PlanetGpuGrass
     {
         public GL Gl = null!;
         public ShaderProgram? Shader;
+        public long SeenReloadGen;
         public uint Vao;
         public uint MeshVbo;
         public uint MeshEbo;
@@ -331,16 +332,20 @@ public static class PlanetGpuGrass
         // Prefer atmosphere night values over a brighter scene ambient floor.
         float amb = Math.Min(Math.Max(0.02f, ambient), Math.Max(0.02f, atmoAmbient));
 
+        var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
+            ? SN.Vector3.Normalize(WindSystem.Direction)
+            : SN.Vector3.UnitX;
+        var globals = GlobalUniforms.ForContext(gl);
+        globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+        globals.UpdateLighting(
+            lightDir, Math.Clamp(diffuseK, 0.20f, 1.35f), sunTint, Math.Clamp(amb, 0.02f, 0.85f),
+            lightIsPoint: false, SN.Vector3.Zero, 0f,
+            hasShadow: false, SN.Matrix4x4.Identity,
+            windDir: windDir, windTime: WindSystem.Time);
+
         var shader = gpu.Shader;
         shader.Use();
         shader.SetMatrix4("uPlanetWorld", planetWorld);
-        shader.SetMatrix4("uView", view);
-        shader.SetMatrix4("uProj", proj);
-        shader.SetVector3("uCamPos", camPos);
-        shader.SetVector3("uLightDir", lightDir);
-        shader.SetVector3("uLightColor", sunTint);
-        shader.SetFloat("uAmbient", Math.Clamp(amb, 0.02f, 0.85f));
-        shader.SetFloat("uDiffuseK", Math.Clamp(diffuseK, 0.20f, 1.35f));
         shader.SetFloat("uSunIntensity", Math.Clamp(sunIntensity, 0.02f, 2f));
         shader.SetFloat("uAlphaCutoff", 0.32f);
         shader.SetFloat("uWetness", wetness);
@@ -348,11 +353,7 @@ public static class PlanetGpuGrass
         shader.SetFloat("uRain", rain);
         shader.SetFloat("uStorm", storm);
         shader.SetFloat("uCloudiness", cloudiness);
-        shader.SetFloat("uWindTime", WindSystem.Time);
         shader.SetFloat("uWindStrength", Math.Clamp(wind * 3.0f, 0.02f, 0.36f));
-        shader.SetVector3("uWindDir", WindSystem.Direction.LengthSquared() > 1e-6f
-            ? SN.Vector3.Normalize(WindSystem.Direction)
-            : SN.Vector3.UnitX);
         shader.SetFloat("uCardWidth", Math.Clamp(owner.GrassWidthScale, 0.25f, 4f));
         shader.SetTexture("uAlbedoTex", 0);
 
@@ -435,6 +436,7 @@ public static class PlanetGpuGrass
         if (prevCull) gl.Enable(EnableCap.CullFace);
         if (prevBlend) gl.Enable(EnableCap.Blend);
         gl.UseProgram(0);
+        ShaderProgram.NotifyProgramUnbound(gl);
     }
 
     /// <summary>
@@ -517,19 +519,31 @@ public static class PlanetGpuGrass
     static unsafe bool TryGetGpu(GL gl, object gpuKey, out GrassGpu gpu)
     {
         if (s_gpus.TryGetValue(gpuKey, out gpu!))
+        {
+            if (!gpu.Failed && ShaderLibrary.TryGet(gl, out var lib) && lib != null)
+            {
+                long gen = lib.ReloadGeneration;
+                if (gen != gpu.SeenReloadGen)
+                {
+                    gpu.SeenReloadGen = gen;
+                    gpu.Shader = lib.GetBuiltin(
+                        ShaderSources.Paths.PlanetGpuGrassVert,
+                        ShaderSources.Paths.PlanetGpuGrassFrag,
+                        throwOnInitialError: false);
+                }
+            }
             return !gpu.Failed && gpu.Shader != null;
+        }
 
         gpu = new GrassGpu { Gl = gl };
         s_gpus[gpuKey] = gpu;
         try
         {
-            bool es = true;
-            try { es = gl.GetStringS(StringName.Version)?.Contains("OpenGL ES", StringComparison.OrdinalIgnoreCase) == true; }
-            catch { es = true; }
-
-            gpu.Shader = new ShaderProgram(gl,
-                ShaderSources.Adapt(ShaderSources.PlanetGpuGrassVert, es),
-                ShaderSources.Adapt(ShaderSources.PlanetGpuGrassFrag, es));
+            var shaders = ShaderLibrary.GetOrCreate(gl);
+            gpu.Shader = shaders.GetBuiltin(
+                ShaderSources.Paths.PlanetGpuGrassVert,
+                ShaderSources.Paths.PlanetGpuGrassFrag);
+            gpu.SeenReloadGen = shaders.ReloadGeneration;
 
             float halfW = 0.32f;
             float[] verts =
@@ -611,7 +625,7 @@ public static class PlanetGpuGrass
         }
         gpu.Textures.Clear();
         gpu.Bufs.Clear();
-        gpu.Shader?.Dispose();
+        // gpu.Shader is owned and disposed by ShaderLibrary.
         gpu.Shader = null;
         gpu.Vao = gpu.MeshVbo = gpu.MeshEbo = gpu.InstanceVbo = 0;
     }

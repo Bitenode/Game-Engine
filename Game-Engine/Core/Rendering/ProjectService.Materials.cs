@@ -56,6 +56,25 @@ namespace Game_Engine.Core
             }
         }
 
+        /// <summary>Evict one or all cached runtime materials so edits on disk reload cleanly.</summary>
+        public static void InvalidateCachedMaterial(string? relOrAbs = null)
+        {
+            if (string.IsNullOrWhiteSpace(relOrAbs))
+            {
+                lock (s_runtimeMaterialsLock) { s_runtimeMaterialsByAbsPath.Clear(); }
+                s_matCache.Clear();
+                return;
+            }
+
+            var abs = GetExistingMaterialAbsolutePath(relOrAbs);
+            if (abs != null)
+            {
+                var key = Path.GetFullPath(abs);
+                lock (s_runtimeMaterialsLock) { s_runtimeMaterialsByAbsPath.Remove(key); }
+            }
+            s_matCache.Remove(relOrAbs);
+        }
+
         /// <summary>Define ENABLE_MATERIAL_TRACE in the project to log every MaterialsLoad (very noisy).</summary>
         [Conditional("ENABLE_MATERIAL_TRACE")]
         static void MaterialLoadTrace(string message) => Debug.WriteLine(message);
@@ -192,6 +211,34 @@ namespace Game_Engine.Core
                         m.LumaClip = Clamp01((float)lcd);
                         MaterialLoadTrace($"[MatTrace:MatLoad] param.LumaClip = {m.LumaClip}");
                     }
+
+                    if (p.TryGetProperty("EmissiveColor", out var emColEl) && emColEl.ValueKind == JsonValueKind.String
+                        && TryParseHexColor(emColEl.GetString(), out var emCol))
+                    {
+                        m.EmissiveColor = emCol;
+                    }
+                    if (p.TryGetProperty("EmissiveIntensity", out var emIntEl) && emIntEl.TryGetDouble(out var emInt))
+                    {
+                        m.EmissiveIntensity = Math.Max(0f, (float)emInt);
+                    }
+                    if (p.TryGetProperty("NormalStrength", out var nsEl) && nsEl.TryGetDouble(out var ns))
+                    {
+                        m.NormalStrength = Math.Max(0f, (float)ns);
+                    }
+                }
+
+                // ---------- dynamic shader properties ----------
+                if (rootEl.TryGetProperty("properties", out var propsEl) && propsEl.ValueKind == JsonValueKind.Object)
+                {
+                    m.Properties.ReadFromJson(propsEl, root);
+                }
+                else if (rootEl.TryGetProperty("customProperties", out var customPropsEl) && customPropsEl.ValueKind == JsonValueKind.Object)
+                {
+                    m.Properties.ReadFromJson(customPropsEl, root);
+                }
+                else if (rootEl.TryGetProperty("Properties", out var assetPropsEl) && assetPropsEl.ValueKind == JsonValueKind.Object)
+                {
+                    m.Properties.ReadFromJson(assetPropsEl, root);
                 }
 
                 // ---------- textures -> RuntimeTexSlot list ----------
@@ -372,6 +419,72 @@ namespace Game_Engine.Core
             }
             catch { }
             return false;
+        }
+
+        public static void SaveMaterial(string absPath, Material m)
+        {
+            if (string.IsNullOrWhiteSpace(absPath) || m == null) return;
+            var dir = Path.GetDirectoryName(absPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            var writerOptions = new JsonWriterOptions { Indented = true };
+            using var ms = new MemoryStream();
+            using (var jw = new Utf8JsonWriter(ms, writerOptions))
+            {
+                jw.WriteStartObject();
+                jw.WriteString("name", string.IsNullOrWhiteSpace(m.Name) ? "Material" : m.Name);
+                jw.WriteString("type", "Material");
+                jw.WriteNumber("version", 1);
+                jw.WriteString("shader", m.ShaderAssetPath ?? "");
+
+                jw.WritePropertyName("parameters");
+                jw.WriteStartObject();
+                jw.WriteString("Tint", MaterialPropertyBag.FormatHexColor(m.BaseColor));
+                jw.WriteNumber("Metallic", Clamp01(m.Metallic));
+                jw.WriteNumber("Roughness", Clamp01(m.Roughness));
+                jw.WriteBoolean("Transparent", m.Transparent);
+                jw.WriteNumber("AlphaCutoff", Clamp01(m.AlphaCutoff));
+                if (m.LumaClip > 0f) jw.WriteNumber("LumaClip", Clamp01(m.LumaClip));
+                if (m.EmissiveIntensity > 0f)
+                {
+                    jw.WriteString("EmissiveColor", MaterialPropertyBag.FormatHexColor(m.EmissiveColor));
+                    jw.WriteNumber("EmissiveIntensity", m.EmissiveIntensity);
+                }
+                if (Math.Abs(m.NormalStrength - 1f) > 1e-4f)
+                    jw.WriteNumber("NormalStrength", m.NormalStrength);
+                jw.WriteEndObject();
+
+                jw.WritePropertyName("textures");
+                jw.WriteStartObject();
+                if (m.Textures != null)
+                {
+                    var writtenTex = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    for (int i = 0; i < m.Textures.Count; i++)
+                    {
+                        var slot = m.Textures[i];
+                        string? usage = null;
+                        string? srcPath = null;
+                        if (slot is RuntimeTexSlot rts) { usage = rts.Usage; srcPath = rts.SourcePath; }
+                        else if (slot is MaterialTexture mt) { usage = mt.Usage.ToString(); srcPath = mt.SourcePath; }
+                        if (!string.IsNullOrWhiteSpace(usage) && !string.IsNullOrWhiteSpace(srcPath) && writtenTex.Add(usage))
+                            jw.WriteString(usage, srcPath);
+                    }
+                }
+                jw.WriteEndObject();
+
+                if (!m.Properties.IsEmpty)
+                {
+                    jw.WritePropertyName("properties");
+                    m.Properties.WriteToJson(jw);
+                }
+
+                jw.WriteEndObject();
+                jw.Flush();
+            }
+
+            File.WriteAllText(absPath, System.Text.Encoding.UTF8.GetString(ms.ToArray()));
+            InvalidateCachedMaterial(absPath);
+            TouchModified();
         }
 
         public static string CreateNewMaterial(string name, string shaderRel, string folderRel = "Assets/Materials")

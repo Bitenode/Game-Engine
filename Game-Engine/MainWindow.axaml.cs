@@ -10,6 +10,7 @@ using Game_Engine.Core.Component;
 using Game_Engine.Core.Editor;
 using Game_Engine.Core.Extensibility;
 using Game_Engine.Core.Input;
+using Game_Engine.Core.Rendering.GPU;
 using Game_Engine.Docking;
 using Game_Engine.Views;
 using System;
@@ -173,7 +174,12 @@ public partial class MainWindow : Window
         ProjectService.ProjectOpened += TryRestoreProjectDockLayout;
         Closing += OnMainWindowClosing;
         Closing += (_, __) => SaveProjectDockLayout();
-        Closed += (_, __) => _closingAfterUnsavedOk = false;
+        Closed += (_, __) =>
+        {
+            _closingAfterUnsavedOk = false;
+            ShaderHotReloader.Stop();
+        };
+        ShaderHotReloader.Start();
         SceneService.DirtyStateChanged += _ => UpdateEditorWindowTitle();
 
         // --- Extensions + Menus wiring ---

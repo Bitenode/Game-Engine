@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using Game_Engine.Core;
 using Game_Engine.Core.Input;
 using Game_Engine.Core.Networking;
+using Game_Engine.Core.Rendering.GPU;
 using System;
 using System.IO;
 using System.IO.Compression;
@@ -22,6 +23,13 @@ public partial class PlayerRoot : UserControl
 
     public PlayerRoot()
     {
+        if (string.IsNullOrEmpty(ShaderProgram.BinaryCacheDirectory))
+        {
+            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrEmpty(baseDir)) baseDir = Path.GetTempPath();
+            ShaderProgram.BinaryCacheDirectory = Path.Combine(baseDir, "GameEnginePlayer", "ShaderCache");
+        }
+
         InitializeComponent();
         Loaded += OnLoaded;
         DetachedFromVisualTree += OnDetached;

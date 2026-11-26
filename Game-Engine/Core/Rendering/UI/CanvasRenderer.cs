@@ -17,12 +17,13 @@ namespace Game_Engine.Core.Rendering.UI
     public sealed class CanvasRenderer : IDisposable
     {
         private readonly GL _gl;
+        private readonly ShaderLibrary _shaders;
         private ShaderProgram? _uiShader;
         private ShaderProgram? _textShader;
+        private long _seenReloadGen;
         private uint _vao;
         private uint _vbo;
         private uint _ebo;
-        private bool _isES;
 
         // White 1x1 fallback texture
         private uint _whiteTexture;
@@ -51,17 +52,19 @@ namespace Game_Engine.Core.Rendering.UI
         }
 
         public CanvasRenderer(GL gl, bool isES)
+            : this(gl, ShaderLibrary.GetOrCreate(gl, isES))
+        {
+        }
+
+        public CanvasRenderer(GL gl, ShaderLibrary shaders)
         {
             _gl = gl;
-            _isES = isES;
+            _shaders = shaders;
 
-            // Compile shaders
-            string vert = ShaderSources.Adapt(ShaderSources.UIVert, isES);
-            string frag = ShaderSources.Adapt(ShaderSources.UIFrag, isES);
-            string textFrag = ShaderSources.Adapt(ShaderSources.UITextFrag, isES);
-
-            _uiShader = new ShaderProgram(gl, vert, frag);
-            _textShader = new ShaderProgram(gl, vert, textFrag);
+            // Compile shaders via ShaderLibrary
+            _uiShader = _shaders.GetBuiltin(ShaderSources.Paths.UIVert, ShaderSources.Paths.UIFrag);
+            _textShader = _shaders.GetBuiltin(ShaderSources.Paths.UIVert, ShaderSources.Paths.UITextFrag);
+            _seenReloadGen = _shaders.ReloadGeneration;
 
             // Create VAO/VBO/EBO
             _vao = _gl.GenVertexArray();
@@ -324,6 +327,14 @@ namespace Game_Engine.Core.Rendering.UI
         {
             if (_vertices.Count == 0 || _batches.Count == 0) return;
 
+            long gen = _shaders.ReloadGeneration;
+            if (gen != _seenReloadGen)
+            {
+                _seenReloadGen = gen;
+                _uiShader = _shaders.GetBuiltin(ShaderSources.Paths.UIVert, ShaderSources.Paths.UIFrag, throwOnInitialError: false);
+                _textShader = _shaders.GetBuiltin(ShaderSources.Paths.UIVert, ShaderSources.Paths.UITextFrag, throwOnInitialError: false);
+            }
+
             // Upload vertex data. Grass instancing can leave a divisor on attrib 2,
             // which is this buffer's color. Force per-vertex fetch before drawing text.
             _gl.BindVertexArray(_vao);
@@ -394,8 +405,7 @@ namespace Game_Engine.Core.Rendering.UI
 
         public void Dispose()
         {
-            _uiShader?.Dispose();
-            _textShader?.Dispose();
+            // _uiShader and _textShader are owned and disposed by ShaderLibrary.
             _uiShader = null;
             _textShader = null;
 

@@ -185,6 +185,10 @@ public sealed class ResourceCache : IDisposable
 
         _whiteTex?.Dispose();
         _whiteTex = null;
+        _blackTex?.Dispose();
+        _blackTex = null;
+        _flatNormalTex?.Dispose();
+        _flatNormalTex = null;
 
         _globalVersion++;
         FlushRequested = false;
@@ -448,6 +452,30 @@ public sealed class ResourceCache : IDisposable
     }
     private GPUTexture? _whiteTex;
 
+    /// <summary>Create a 1x1 opaque black texture (used for "black" shader property defaults).</summary>
+    public GPUTexture GetBlackTexture()
+    {
+        if (_blackTex != null) return _blackTex;
+
+        _blackTex = new GPUTexture(_gl);
+        var black = new Texture2D(1, 1, new byte[] { 0, 0, 0, 255 });
+        _blackTex.Upload(black);
+        return _blackTex;
+    }
+    private GPUTexture? _blackTex;
+
+    /// <summary>Create a 1x1 flat tangent-space normal texture (0.5, 0.5, 1.0) for "bump"/"normal" defaults.</summary>
+    public GPUTexture GetFlatNormalTexture()
+    {
+        if (_flatNormalTex != null) return _flatNormalTex;
+
+        _flatNormalTex = new GPUTexture(_gl);
+        var flatN = new Texture2D(1, 1, new byte[] { 128, 128, 255, 255 });
+        _flatNormalTex.Upload(flatN);
+        return _flatNormalTex;
+    }
+    private GPUTexture? _flatNormalTex;
+
     /// <summary>
     /// Get or create splatmap GPU textures for a Terrain. Per-context, so
     /// SceneView and GameView each get their own GL textures.
@@ -550,6 +578,10 @@ public sealed class ResourceCache : IDisposable
 
         _whiteTex?.Dispose();
         _whiteTex = null;
+        _blackTex?.Dispose();
+        _blackTex = null;
+        _flatNormalTex?.Dispose();
+        _flatNormalTex = null;
         _skipBcnCompress.Clear();
     }
 }

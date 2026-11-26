@@ -6,12 +6,21 @@ using Silk.NET.OpenGL;
 
 namespace Game_Engine.Core.Rendering;
 
-/// <summary>GPU programs and caches shared by the editor Game view and the standalone player.</summary>
+/// <summary>
+/// GPU programs, caches, and framebuffers owned by a viewport (SceneView, GameView, PlayerView, Xbox).
+/// Built-in shaders are compiled and owned by <see cref="Shaders"/> (<see cref="ShaderLibrary"/>) so
+/// variant caching, line-mapped diagnostics, binary caching, and live hot-reload work uniformly.
+/// </summary>
 public sealed class ViewRenderResources : IDisposable
 {
+    public ShaderLibrary? Shaders { get; private set; }
+    public GlobalUniforms? Globals { get; private set; }
+
     public ShaderProgram? Standard, Depth, Sky, Terrain, Particle, Water;
     public ShaderProgram? PlanetTerrain, PlanetWater, PlanetAtmosphere, PlanetCloud, PostProcess;
     public ShaderProgram? GBuffer, DeferredLight, Ssao, SsaoBlur, Ssr, VolFog, TaaResolve, DepthCopy;
+    public ShaderProgram? Grid, Wireframe;
+
     public FullscreenQuad? FsQuad;
     public ResourceCache? Cache;
     public ShadowMapGPU? Shadow;
@@ -21,79 +30,196 @@ public sealed class ViewRenderResources : IDisposable
     public GPUFramebuffer? SsrFbo, VolFogFbo, TaaHistoryFbo, TaaTempFbo;
     public int SceneW, SceneH, GBufferW, GBufferH;
     public bool IsES { get; set; }
-    /// <summary>When false, <see cref="Dispose"/> does not free GPU objects (editor GameView owns them).</summary>
+
+    /// <summary>When false, <see cref="Dispose"/> does not free GPU objects.</summary>
     public bool OwnsResources { get; set; } = true;
 
-    public void Initialize(GL g, bool es, int shadowResolution = 768)
+    private GL? _gl;
+    private bool _includeEditorShaders;
+    private bool _includeDeferred;
+    private bool _includeVolFog;
+    private ShaderVariantKey _terrainVariant = ShaderVariantKey.Empty;
+    private long _seenReloadGen;
+
+    public void Initialize(
+        GL g,
+        bool es,
+        int shadowResolution = 768,
+        bool includeEditorShaders = false,
+        bool includeDeferred = true,
+        bool includeVolFog = true)
     {
+        _gl = g;
         IsES = es;
-        Game_Engine.Core.Log.Info("[Shader] standard");
-        Standard = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.StandardVert, es), ShaderSources.Adapt(ShaderSources.StandardFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] depth");
-        Depth = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.DepthOnlyVert, es), ShaderSources.Adapt(ShaderSources.DepthOnlyFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] sky");
-        Sky = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.SkyVert, es), ShaderSources.Adapt(ShaderSources.SkyFrag, es));
+        _includeEditorShaders = includeEditorShaders;
+#if XBOX_UWP
+        _includeDeferred = false;
+        _includeVolFog = false;
+        bool isXbox = true;
+#else
+        _includeDeferred = includeDeferred;
+        _includeVolFog = includeVolFog || includeDeferred;
+        bool isXbox = false;
+#endif
+
+        Shaders = ShaderLibrary.GetOrCreate(g, es, isXbox);
+        Globals = GlobalUniforms.GetOrCreate(g, es);
+        Globals.BindAll();
+
         int terrainUnits = g.GetInteger(GLEnum.MaxTextureImageUnits);
-        Game_Engine.Core.Log.Info("[Shader] terrain");
-        Terrain = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.TerrainVert, es), ShaderSources.Adapt(ShaderSources.TerrainFragForUnits(terrainUnits), es));
-        Game_Engine.Core.Log.Info("[Shader] particle");
-        Particle = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.ParticleVert, es), ShaderSources.Adapt(ShaderSources.ParticleFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] water");
-        Water = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.WaterVert, es), ShaderSources.Adapt(ShaderSources.WaterFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] planet");
-#if XBOX_UWP
-        PlanetTerrain = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es), ShaderSources.Adapt(ShaderSources.PlanetTerrainFragXbox, es));
-#else
-        PlanetTerrain = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PlanetTerrainVert, es), ShaderSources.Adapt(ShaderSources.PlanetTerrainFrag, es));
-#endif
-        Game_Engine.Core.Log.Info("[Shader] planet-water");
-        PlanetWater = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PlanetWaterVert, es), ShaderSources.Adapt(ShaderSources.PlanetWaterFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] planet-atmosphere");
-        PlanetAtmosphere = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PlanetAtmosphereVert, es), ShaderSources.Adapt(ShaderSources.PlanetAtmosphereFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] planet-cloud");
-        PlanetCloud = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PlanetCloudsVert, es), ShaderSources.Adapt(ShaderSources.PlanetCloudsFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] post");
-        PostProcess = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PostProcessVert, es), ShaderSources.Adapt(ShaderSources.PostProcessFrag, es));
-#if XBOX_UWP
-        // The Xbox player stays on the forward path. Linking deferred, SSAO, SSR,
-        // and the volumetric-fog march here sits inside ANGLE's HLSL compiler and
-        // the first frame never presents. The last [Shader] line in player.log is
-        // the program that was linking when that happens.
-        Game_Engine.Core.Log.Info("[Shader] deferred set skipped");
-#else
-        Game_Engine.Core.Log.Info("[Shader] gbuffer");
-        GBuffer = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.GBufferVert, es), ShaderSources.Adapt(ShaderSources.GBufferFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] deferred-light");
-        DeferredLight = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.DeferredLightingVert, es), ShaderSources.Adapt(ShaderSources.DeferredLightingFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] ssao");
-        Ssao = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.SSAOVert, es), ShaderSources.Adapt(ShaderSources.SSAOFrag, es));
-        SsaoBlur = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.SSAOVert, es), ShaderSources.Adapt(ShaderSources.SSAOBlurFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] ssr");
-        Ssr = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.SSRVert, es), ShaderSources.Adapt(ShaderSources.SSRFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] volfog");
-        VolFog = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.VolumetricFogVert, es), ShaderSources.Adapt(ShaderSources.VolumetricFogFrag, es));
-        Game_Engine.Core.Log.Info("[Shader] taa");
-        TaaResolve = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.PostProcessVert, es), ShaderSources.Adapt(ShaderSources.TaaResolveFrag, es));
-        DepthCopy = new ShaderProgram(g, ShaderSources.Adapt(ShaderSources.BlitVert, es), ShaderSources.Adapt(ShaderSources.DepthCopyFrag, es));
-#endif
+        _terrainVariant = ShaderSources.TerrainVariantForUnits(terrainUnits);
+
+        CompileBuiltinShaders(logProgress: true);
+        _seenReloadGen = Shaders.ReloadGeneration;
+
         FsQuad = new FullscreenQuad(g);
         Cache = new ResourceCache(g);
         GpuCompressionCaps.Initialize(g);
-        TiledLights = new TiledLightTextureSystem(g);
+        if (_includeDeferred)
+            TiledLights = new TiledLightTextureSystem(g);
         Shadow = new ShadowMapGPU(g, shadowResolution, shadowResolution);
-        Canvas = new CanvasRenderer(g, es);
+        Canvas = new CanvasRenderer(g, Shaders);
+    }
+
+    /// <summary>
+    /// If any watched <c>.glsl</c> file changed on disk, recompile only the affected shaders
+    /// and update the cached program properties (preserving the previous valid shader on error).
+    /// Zero overhead on normal frames (single volatile read).
+    /// </summary>
+    public void RefreshIfDirty()
+    {
+        // Re-assert UBO bindings and reset cached program handle at the start of each frame
+        // (Avalonia's compositor or another viewport may have changed GL program/UBO state).
+        if (_gl != null)
+            ShaderProgram.NotifyProgramUnbound(_gl);
+        Globals?.BindAll();
+
+        if (Shaders == null)
+            return;
+
+        long gen = Shaders.ReloadGeneration;
+        if (gen == _seenReloadGen)
+            return;
+
+        _seenReloadGen = gen;
+        CompileBuiltinShaders(logProgress: false);
+    }
+
+    private void CompileBuiltinShaders(bool logProgress)
+    {
+        var lib = Shaders;
+        if (lib == null) return;
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] standard");
+        Standard = lib.GetBuiltin(ShaderSources.Paths.StandardVert, ShaderSources.Paths.StandardFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] depth");
+        Depth = lib.GetBuiltin(ShaderSources.Paths.DepthOnlyVert, ShaderSources.Paths.DepthOnlyFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] sky");
+        Sky = lib.GetBuiltin(ShaderSources.Paths.SkyVert, ShaderSources.Paths.SkyFrag);
+
+        if (_includeEditorShaders)
+        {
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] grid");
+            Grid = lib.GetBuiltin(ShaderSources.Paths.GridVert, ShaderSources.Paths.GridFrag);
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] wireframe");
+            Wireframe = lib.GetBuiltin(ShaderSources.Paths.WireframeVert, ShaderSources.Paths.WireframeFrag);
+        }
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] terrain");
+        Terrain = lib.GetBuiltin(ShaderSources.Paths.TerrainVert, ShaderSources.Paths.TerrainFrag, _terrainVariant);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] particle");
+        Particle = lib.GetBuiltin(ShaderSources.Paths.ParticleVert, ShaderSources.Paths.ParticleFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] water");
+        Water = lib.GetBuiltin(ShaderSources.Paths.WaterVert, ShaderSources.Paths.WaterFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet");
+        PlanetTerrain = lib.GetBuiltin(ShaderSources.Paths.PlanetTerrainVert, ShaderSources.Paths.PlanetTerrainFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-water");
+        PlanetWater = lib.GetBuiltin(ShaderSources.Paths.PlanetWaterVert, ShaderSources.Paths.PlanetWaterFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-atmosphere");
+        PlanetAtmosphere = lib.GetBuiltin(ShaderSources.Paths.PlanetAtmosphereVert, ShaderSources.Paths.PlanetAtmosphereFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-cloud");
+        PlanetCloud = lib.GetBuiltin(ShaderSources.Paths.PlanetCloudsVert, ShaderSources.Paths.PlanetCloudsFrag);
+
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] post");
+        PostProcess = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.PostProcessFrag);
+
+        if (_includeVolFog && !_includeDeferred)
+        {
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] volfog");
+            VolFog = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.VolumetricFogFrag);
+        }
+
+        if (_includeDeferred)
+        {
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] gbuffer");
+            GBuffer = lib.GetBuiltin(ShaderSources.Paths.GBufferVert, ShaderSources.Paths.GBufferFrag);
+
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] deferred-light");
+            DeferredLight = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DeferredLightingFrag);
+
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] ssao");
+            Ssao = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSAOFrag);
+            SsaoBlur = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSAOBlurFrag);
+
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] ssr");
+            Ssr = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.SSRFrag);
+
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] volfog");
+            VolFog = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.VolumetricFogFrag);
+
+            if (logProgress) Game_Engine.Core.Log.Info("[Shader] taa");
+            TaaResolve = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.TaaResolveFrag);
+            DepthCopy = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DepthCopyFrag);
+        }
+        else if (logProgress)
+        {
+#if XBOX_UWP
+            // The Xbox player stays on the forward path. Linking deferred, SSAO, SSR,
+            // and the volumetric-fog march here sits inside ANGLE's HLSL compiler and
+            // the first frame never presents.
+            Game_Engine.Core.Log.Info("[Shader] deferred set skipped");
+#endif
+        }
     }
 
     public void Dispose()
     {
         if (!OwnsResources) return;
-        SceneFbo?.Dispose(); GBufferFbo?.Dispose(); SsaoFbo?.Dispose(); SsaoBlurFbo?.Dispose();
-        SsrFbo?.Dispose(); VolFogFbo?.Dispose(); TaaHistoryFbo?.Dispose(); TaaTempFbo?.Dispose();
-        Canvas?.Dispose(); TiledLights?.Dispose(); Shadow?.Dispose(); Cache?.Dispose(); FsQuad?.Dispose();
-        Standard?.Dispose(); Depth?.Dispose(); Sky?.Dispose(); Terrain?.Dispose(); Particle?.Dispose();
-        Water?.Dispose(); PlanetTerrain?.Dispose(); PlanetWater?.Dispose(); PlanetAtmosphere?.Dispose();
-        PlanetCloud?.Dispose(); PostProcess?.Dispose(); GBuffer?.Dispose(); DeferredLight?.Dispose();
-        Ssao?.Dispose(); SsaoBlur?.Dispose(); Ssr?.Dispose(); VolFog?.Dispose(); TaaResolve?.Dispose();
-        DepthCopy?.Dispose();
+
+        SceneFbo?.Dispose(); SceneFbo = null; SceneW = 0; SceneH = 0;
+        GBufferFbo?.Dispose(); GBufferFbo = null; GBufferW = 0; GBufferH = 0;
+        SsaoFbo?.Dispose(); SsaoFbo = null;
+        SsaoBlurFbo?.Dispose(); SsaoBlurFbo = null;
+        SsrFbo?.Dispose(); SsrFbo = null;
+        VolFogFbo?.Dispose(); VolFogFbo = null;
+        TaaHistoryFbo?.Dispose(); TaaHistoryFbo = null;
+        TaaTempFbo?.Dispose(); TaaTempFbo = null;
+
+        Canvas?.Dispose(); Canvas = null;
+        TiledLights?.Dispose(); TiledLights = null;
+        Shadow?.Dispose(); Shadow = null;
+        Cache?.Dispose(); Cache = null;
+        FsQuad?.Dispose(); FsQuad = null;
+
+        // GlobalUniforms owns the per-context UBOs (FrameGlobals, LightingGlobals, BoneGlobals).
+        Globals?.Dispose();
+        Globals = null;
+
+        // ShaderLibrary owns and deletes every ShaderProgram compiled for this GL context.
+        Shaders?.Dispose();
+        Shaders = null;
+
+        Standard = Depth = Sky = Terrain = Particle = Water = null;
+        PlanetTerrain = PlanetWater = PlanetAtmosphere = PlanetCloud = PostProcess = null;
+        GBuffer = DeferredLight = Ssao = SsaoBlur = Ssr = VolFog = TaaResolve = DepthCopy = null;
+        Grid = Wireframe = null;
     }
 }

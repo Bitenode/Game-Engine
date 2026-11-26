@@ -71,6 +71,11 @@
   </Target>
 
   <ItemGroup>
+    <None Remove="Core\Rendering\Shaders\**\*.glsl" />
+    <EmbeddedResource Include="Core\Rendering\Shaders\**\*.glsl" LogicalName="Shaders/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Remove="artifacts\**\*.cs" />
     <EmbeddedResource Remove="artifacts\**\*" />
     <None Remove="artifacts\**\*" />
