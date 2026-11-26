@@ -360,11 +360,15 @@ public sealed class ShaderPreviewControl : OpenGlControlBase, ICustomHitTest
                     _activeShader.SetFloat("uAmbient", 0.20f);
                 }
 
-                // Bind standard texture slots (0, 1, 2)
+                // Bind standard texture slots (0, 1, 2) and keep uEnvMap (samplerCube) off unit 0
                 var mat = _activeMaterial;
                 BindStandardSlot(_activeShader, 0, "uTexture0", mat?.Textures, "Albedo", _cache.GetWhiteTexture());
                 BindStandardSlot(_activeShader, 1, "uTexture1", mat?.Textures, "Normal", _cache.GetFlatNormalTexture());
                 BindStandardSlot(_activeShader, 2, "uTexture2", mat?.Textures, "Specular", _cache.GetWhiteTexture());
+                _activeShader.SetTexture("uEnvMap", 15);
+                _activeShader.SetInt("uHasEnvMap", 0);
+                _activeShader.SetFloat("uEnvIntensity", 0f);
+                _activeShader.SetFloat("uEnvMaxMip", 0f);
 
                 // Bind declared Properties { ... } defaults + overrides
                 MaterialBinder.BindProperties(_activeShader, mat, _activeSchema, _cache);

@@ -549,21 +549,15 @@ namespace Game_Engine.Views
 
             _tSetup = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
-            // --- SHADOW MAP PASS (skippable) ---
+            // --- SHADOW MAP PASS (4-cascade CSM on desktop, single map fallback for point/Xbox) ---
             SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
             GPUFramebuffer? shadowFBO = null;
-            if (ShowShadows && res.Shadow != null && res.Depth != null)
+            CascadedShadowMap? activeCsm = null;
+            if (ShowShadows && (res.CascadedShadow != null || res.Shadow != null) && res.Depth != null)
             {
                 var sunShineDir = fallbackPlanetSunDir;
 
-                SN.Matrix4x4.Invert(view, out var invV);
-                var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
-                var sceneCenter = camPos + camFwd * 12f;
-                float sceneRadius = 50f;
-
                 _shadowAccumSec += Math.Max(0.0, dt);
-                // A slow frame is already longer than the old 0.1s budget, so the
-                // shadow pass was running every frame and redrawing the whole planet.
                 bool movedFar = false;
                 if (!float.IsNaN(_lastShadowCamPos.X))
                 {
@@ -571,6 +565,7 @@ namespace Game_Engine.Views
                     movedFar = d.LengthSquared() >= SHADOW_UPDATE_MOVE_THRESHOLD * SHADOW_UPDATE_MOVE_THRESHOLD;
                 }
                 bool updateShadow = !_hasShadowMap
+                    || (!lightIsPoint && res.CascadedShadow != null)
                     || (movedFar && _shadowAccumSec >= SHADOW_UPDATE_INTERVAL_SEC)
                     || _shadowAccumSec >= 0.55;
 
@@ -578,26 +573,24 @@ namespace Game_Engine.Views
                 {
                     _shadowAccumSec = 0.0;
                     _lastShadowCamPos = camPos;
-                    shadowVP = ShadowMapGPU.BuildDirectionalLightVP(
-                        sunShineDir, sceneCenter, sceneRadius, res.Shadow.Width);
-                    res.Shadow.LightVP = shadowVP;
-
-                    res.Shadow.Begin(g);
-                    g.Enable(EnableCap.DepthTest);
-                    g.DepthFunc(DepthFunction.Less);
-                    SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache!, shadowVP);
-                    res.Shadow.End(g, (uint)fb);
-
-                    // Restore main viewport after shadow pass
-                    g.Viewport(0, 0, (uint)W, (uint)H);
+                    GameRenderPipeline.RenderShadowMaps(g, res, (uint)fb, W, H,
+                        in view, in proj, camPos, sunShineDir, lightIsPoint,
+                        out shadowFBO, out shadowVP, out activeCsm);
                     _hasShadowMap = true;
                 }
-                else
+                else if (res.Shadow != null)
                 {
                     shadowVP = res.Shadow.LightVP;
+                    shadowFBO = res.Shadow.FBO;
                 }
-                shadowFBO = res.Shadow.FBO;
             }
+
+            // Capture up to 1 pending ReflectionProbe cubemap per frame before main passes
+            SceneRenderer.CaptureReflectionProbes(g, res,
+                SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadowFBO, in shadowVP, fallbackPlanetSunDir, lightColorNorm, _light,
+                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, fallbackPlanetSunDir, planetSkyUp);
 
             _tShadow = sec.Elapsed.TotalMilliseconds; sec.Restart();
 
@@ -622,10 +615,9 @@ namespace Game_Engine.Views
             }
             var underwater = _underwaterFxLatch ? _underwaterFxCached : null;
 
-            // --- POST-PROCESSING setup ---
-            var postVolume = PostProcessVolume.GetActive();
-            bool usePostFX = (postVolume != null || underwater != null) && res.PostProcess != null;
-            bool useSSR = postVolume?.SSREnabled == true;
+            // --- POST-PROCESSING setup (global + local volume blending) ---
+            var postSettings = PostProcessVolume.SampleBlended(camPos);
+            bool usePostFX = (postSettings != null || underwater != null) && res.PostProcess != null;
             double planetLodMs = 0.0;
 
             bool shouldUpdateLod = false;
@@ -701,13 +693,11 @@ namespace Game_Engine.Views
 
             var sunSD = fallbackPlanetSunDir;
 
-            // Flat scenes: deferred + PostProcessVolume wiped the frame (sky/teal).
-            // Capture those through forward. Planet scenes need deferred even with a
-            // post volume — skipping it left the player looking through a broken blit.
+            // Deferred rendering stays active even when PostProcessVolume is active (renders into SceneFbo,
+            // then runs SSR / Volumetric Fog / TAA / DepthOfField / PostProcess cleanly).
             bool onPlanet = PlanetTerrain.ActivePlanets.Count > 0;
-            bool useDeferred = ProjectRenderingSettings.UseDeferredRendering
-                && (!usePostFX || onPlanet);
-            bool useTaa = postVolume?.TAAEnabled == true && useDeferred && !onPlanet;
+            bool useDeferred = GameRenderPipeline.UseDeferred(res);
+            bool useTaa = postSettings?.TAAEnabled == true && useDeferred && !onPlanet;
             if (cam != null && cam.InvalidateTemporalHistory)
             {
                 _taaResetHistory = true;
@@ -739,6 +729,7 @@ namespace Game_Engine.Views
             SN.Matrix4x4 prevVp = _taaResetHistory ? (view * proj) : _prevViewProj;
 
             GPUTexture? finalSceneTex = null;
+            GPUTexture? sceneDepthTex = null;
             double planetRenderMs = 0;
 
             if (!useDeferred)
@@ -763,7 +754,7 @@ namespace Game_Engine.Views
                 GameRenderPipeline.RenderForwardWorld(g, res,
                     view, proj, camPos, L, DiffuseK, Ambient,
                     lightIsPoint, lightPosW, lightRange,
-                    shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky, fallbackPlanetSunDir);
+                    shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky, fallbackPlanetSunDir, activeCsm);
                 planetRenderSwF.Stop();
                 planetRenderMs = planetRenderSwF.Elapsed.TotalMilliseconds;
 
@@ -778,6 +769,7 @@ namespace Game_Engine.Views
                 }
 
                 finalSceneTex = usePostFX ? res.SceneFbo?.ColorTexture : null;
+                sceneDepthTex = usePostFX ? res.SceneFbo?.DepthTexture : null;
                 _prevViewProj = view * proj;
             }
             else
@@ -790,9 +782,10 @@ namespace Game_Engine.Views
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, sunSD, lightColorNorm, _light, _sky,
                 skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
-                postVolume, fallbackPlanetSunDir, planetSkyUp);
+                postSettings, fallbackPlanetSunDir, planetSkyUp, activeCsm);
             planetRenderSw.Stop();
             planetRenderMs = planetRenderSw.Elapsed.TotalMilliseconds;
+            sceneDepthTex = res.SceneFbo?.DepthTexture ?? res.GBufferFbo?.DepthTexture;
 
             // WORLD-SPACE UI CANVASES (rendered in 3D space before post-processing)
             if (res.Canvas != null && res.Cache != null)
@@ -805,115 +798,23 @@ namespace Game_Engine.Views
                 }
             }
 
-            // SSR — screen-space reflections (reads lit scene + G-buffer)
-            finalSceneTex ??= res.SceneFbo?.ColorTexture;
-            if (useSSR && res.Ssr != null && res.SceneFbo?.ColorTexture != null)
-            {
-                if (res.SsrFbo == null) res.SsrFbo = new GPUFramebuffer(g);
-                if (res.SsrFbo.Width != W || res.SsrFbo.Height != H)
-                    res.SsrFbo.SetupColorDepth(W, H);
-
-                res.SsrFbo.Bind();
-                g.ClearColor(0f, 0f, 0f, 1f);
-                g.Clear(ClearBufferMask.ColorBufferBit);
-
-                g.BindVertexArray(res.FsQuad!.VAO);
-                SceneRenderer.RenderSSR(g, res.Ssr, res.FsQuad!, res.SceneFbo.ColorTexture, res.GBufferFbo!,
-                    view, proj, camPos, W, H,
-                    postVolume?.SSRMaxRaySteps ?? 64,
-                    postVolume?.SSRRoughnessCutoff ?? 0.6f,
-                    postVolume?.SSRMaxRayDistance ?? 50f);
-                g.BindVertexArray(0);
-
-                finalSceneTex = res.SsrFbo.ColorTexture;
-            }
-
-            // VOLUMETRIC FOG — ray-marched fullscreen pass (reads scene color + depth)
-            if (res.VolFog != null && postVolume?.VolumetricFogEnabled == true
-                && finalSceneTex != null && res.GBufferFbo?.DepthTexture != null)
-            {
-                if (res.VolFogFbo == null) res.VolFogFbo = new GPUFramebuffer(g);
-                if (res.VolFogFbo.Width != W || res.VolFogFbo.Height != H)
-                    res.VolFogFbo.SetupColorDepth(W, H);
-
-                res.VolFogFbo.Bind();
-                g.ClearColor(0f, 0f, 0f, 1f);
-                g.Clear(ClearBufferMask.ColorBufferBit);
-
-                g.BindVertexArray(res.FsQuad!.VAO);
-                SceneRenderer.RenderVolumetricFog(g, res.VolFog, res.FsQuad!,
-                    finalSceneTex, res.GBufferFbo.DepthTexture,
-                    view, proj, camPos,
-                    sunSD, lightColorNorm,
-                    shadowFBO, shadowVP, postVolume,
-                    (float)Core.Time.time);
-                g.BindVertexArray(0);
-
-                finalSceneTex = res.VolFogFbo.ColorTexture;
-            }
-
-            //  TAA — temporal resolve (camera motion via depth reprojection)
-            if (useTaa && res.TaaResolve != null && finalSceneTex != null && res.SceneFbo?.DepthTexture != null)
-            {
-                if (res.TaaHistoryFbo == null) res.TaaHistoryFbo = new GPUFramebuffer(g);
-                if (res.TaaHistoryFbo.Width != W || res.TaaHistoryFbo.Height != H)
-                    res.TaaHistoryFbo.SetupColorDepth(W, H);
-                if (res.TaaTempFbo == null) res.TaaTempFbo = new GPUFramebuffer(g);
-                if (res.TaaTempFbo.Width != W || res.TaaTempFbo.Height != H)
-                    res.TaaTempFbo.SetupColorDepth(W, H);
-
-                res.TaaTempFbo.Bind();
-                g.Viewport(0, 0, (uint)W, (uint)H);
-                g.Clear(ClearBufferMask.ColorBufferBit);
-                g.BindVertexArray(res.FsQuad!.VAO);
-                SceneRenderer.RenderTemporalAA(g, res.TaaResolve, res.FsQuad!, finalSceneTex,
-                    res.TaaHistoryFbo.ColorTexture, res.SceneFbo.DepthTexture, invVpCurr, prevVp, W, H,
-                    postVolume?.TAAFrameBlend ?? 0.12f,
-                    postVolume?.TAASharpen ?? 0.35f,
-                    _taaResetHistory);
-                g.BindVertexArray(0);
-
-                g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, res.TaaTempFbo.Handle);
-                g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, res.TaaHistoryFbo.Handle);
-                g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
-                    ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
-
-                finalSceneTex = res.TaaTempFbo.ColorTexture;
-                _taaResetHistory = false;
-            }
-            else if (!useTaa)
-                _taaResetHistory = true;
+            // Shared SSR -> Volumetric Fog -> TAA chain
+            GameRenderPipeline.RunPostDeferredEffects(g, res, W, H,
+                in view, in proj, camPos, sunSD, lightColorNorm,
+                shadowFBO, in shadowVP, postSettings,
+                useTaa, in invVpCurr, in prevVp, ref _taaResetHistory, ref finalSceneTex);
 
             _prevViewProj = view * proj;
 
             } // end deferred branch
 
-            // POST-PROCESSING → Avalonia framebuffer
-            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-            g.Viewport(0, 0, (uint)W, (uint)H);
-
-            if (usePostFX && finalSceneTex != null)
+            // DEPTH OF FIELD + POST-PROCESSING → Avalonia framebuffer
+            if (finalSceneTex != null)
             {
-                // Clear so the earlier sky pass on Avalonia's FB cannot show through
-                // if the blit/post pass has any incomplete coverage.
-                g.Disable(EnableCap.DepthTest);
-                g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
-                g.Clear(ClearBufferMask.ColorBufferBit);
-                g.BindVertexArray(res.FsQuad!.VAO);
-                SceneRenderer.ApplyPostProcessing(g, res.PostProcess!, finalSceneTex, W, H,
-                    postVolume, underwater, (float)Core.Time.time);
-                g.BindVertexArray(0);
-                g.Enable(EnableCap.DepthTest);
-            }
-            else if (finalSceneTex != null)
-            {
-                // No post-processing: simple blit to screen
-                g.Disable(EnableCap.DepthTest);
-                g.BindVertexArray(res.FsQuad!.VAO);
-                SceneRenderer.ApplyPostProcessing(g, res.PostProcess!, finalSceneTex, W, H,
-                    null, null, 0f);
-                g.BindVertexArray(0);
-                g.Enable(EnableCap.DepthTest);
+                GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, W, H,
+                    in view, in proj, camPos, finalSceneTex, sceneDepthTex,
+                    usePostFX ? postSettings : null, usePostFX ? underwater : null,
+                    usePostFX ? (float)Core.Time.time : 0f);
             }
 
             // PARTICLES — full-screen overlay (SSAO/shadow passes leave a half-width viewport).

@@ -17,17 +17,21 @@ public sealed class ViewRenderResources : IDisposable
     public GlobalUniforms? Globals { get; private set; }
 
     public ShaderProgram? Standard, Depth, Sky, Terrain, Particle, Water;
-    public ShaderProgram? PlanetTerrain, PlanetWater, PlanetAtmosphere, PlanetCloud, PostProcess;
+    public ShaderProgram? PlanetTerrain, PlanetWater, PlanetAtmosphere, PlanetCloud, PostProcess, DepthOfField;
     public ShaderProgram? GBuffer, DeferredLight, Ssao, SsaoBlur, Ssr, VolFog, TaaResolve, DepthCopy;
     public ShaderProgram? Grid, Wireframe;
 
     public FullscreenQuad? FsQuad;
     public ResourceCache? Cache;
     public ShadowMapGPU? Shadow;
+    public CascadedShadowMap? CascadedShadow;
     public CanvasRenderer? Canvas;
     public TiledLightTextureSystem? TiledLights;
     public GPUFramebuffer? SceneFbo, GBufferFbo, SsaoFbo, SsaoBlurFbo;
     public GPUFramebuffer? SsrFbo, VolFogFbo, TaaHistoryFbo, TaaTempFbo;
+    public GPUFramebuffer? DofTempFbo, DofOutFbo;
+    public uint ProbeCaptureFbo, ProbeCaptureDepthRbo;
+    public int ProbeCaptureSize;
     public int SceneW, SceneH, GBufferW, GBufferH;
     public bool IsES { get; set; }
 
@@ -47,7 +51,8 @@ public sealed class ViewRenderResources : IDisposable
         int shadowResolution = 768,
         bool includeEditorShaders = false,
         bool includeDeferred = true,
-        bool includeVolFog = true)
+        bool includeVolFog = true,
+        int csmResolution = 1024)
     {
         _gl = g;
         IsES = es;
@@ -78,6 +83,10 @@ public sealed class ViewRenderResources : IDisposable
         if (_includeDeferred)
             TiledLights = new TiledLightTextureSystem(g);
         Shadow = new ShadowMapGPU(g, shadowResolution, shadowResolution);
+#if !XBOX_UWP
+        if (csmResolution > 0)
+            CascadedShadow = new CascadedShadowMap(g, cascadeCount: 4, resolution: csmResolution);
+#endif
         Canvas = new CanvasRenderer(g, Shaders);
     }
 
@@ -151,6 +160,11 @@ public sealed class ViewRenderResources : IDisposable
         if (logProgress) Game_Engine.Core.Log.Info("[Shader] post");
         PostProcess = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.PostProcessFrag);
 
+#if !XBOX_UWP
+        if (logProgress) Game_Engine.Core.Log.Info("[Shader] dof");
+        DepthOfField = lib.GetBuiltin(ShaderSources.Paths.FullscreenVert, ShaderSources.Paths.DepthOfFieldFrag);
+#endif
+
         if (_includeVolFog && !_includeDeferred)
         {
             if (logProgress) Game_Engine.Core.Log.Info("[Shader] volfog");
@@ -202,9 +216,19 @@ public sealed class ViewRenderResources : IDisposable
         VolFogFbo?.Dispose(); VolFogFbo = null;
         TaaHistoryFbo?.Dispose(); TaaHistoryFbo = null;
         TaaTempFbo?.Dispose(); TaaTempFbo = null;
+        DofTempFbo?.Dispose(); DofTempFbo = null;
+        DofOutFbo?.Dispose(); DofOutFbo = null;
+
+        if (_gl != null)
+        {
+            if (ProbeCaptureDepthRbo != 0) { _gl.DeleteRenderbuffer(ProbeCaptureDepthRbo); ProbeCaptureDepthRbo = 0; }
+            if (ProbeCaptureFbo != 0) { _gl.DeleteFramebuffer(ProbeCaptureFbo); ProbeCaptureFbo = 0; }
+            ProbeCaptureSize = 0;
+        }
 
         Canvas?.Dispose(); Canvas = null;
         TiledLights?.Dispose(); TiledLights = null;
+        CascadedShadow?.Dispose(); CascadedShadow = null;
         Shadow?.Dispose(); Shadow = null;
         Cache?.Dispose(); Cache = null;
         FsQuad?.Dispose(); FsQuad = null;
@@ -218,7 +242,7 @@ public sealed class ViewRenderResources : IDisposable
         Shaders = null;
 
         Standard = Depth = Sky = Terrain = Particle = Water = null;
-        PlanetTerrain = PlanetWater = PlanetAtmosphere = PlanetCloud = PostProcess = null;
+        PlanetTerrain = PlanetWater = PlanetAtmosphere = PlanetCloud = PostProcess = DepthOfField = null;
         GBuffer = DeferredLight = Ssao = SsaoBlur = Ssr = VolFog = TaaResolve = DepthCopy = null;
         Grid = Wireframe = null;
     }

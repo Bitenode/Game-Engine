@@ -48,12 +48,19 @@ uniform int       uHasEmissiveTex;
 uniform vec3      uEmissiveColor;
 uniform float     uEmissiveIntensity;
 
-// Global UBOs + Shadow (cascaded shadow maps)
+// Global UBOs + Shadow (cascaded shadow maps) + Cook-Torrance PBR
 #include "Common/FrameGlobals.glsl"
 #include "Common/LightingGlobals.glsl"
 #define SHADOW_CASCADES
 #include "Common/Shadows.glsl"
 #include "Common/NormalMapping.glsl"
+#include "Common/PBR.glsl"
+
+// Environment / ReflectionProbe IBL (unit 12)
+uniform samplerCube uEnvMap;
+uniform int         uHasEnvMap;
+uniform float       uEnvIntensity;
+uniform float       uEnvMaxMip;
 
 // Lighting (per-pass / planet overrides)
 uniform int   uHasPlanetFill;
@@ -70,29 +77,7 @@ out vec4 FragColor;
 
 float ShadowCalc(vec4 sc, vec3 N)
 {
-    if (uHasShadow == 0) return 1.0;
-
-    // Determine cascade index from fragment distance to camera
-    float fragDist = length(vWorldPos - uCamPos);
-    int cascadeIdx = SelectShadowCascade(fragDist);
-
-    // Project into the selected cascade's light space
-    vec4 shadowCoord = uShadowVPC[cascadeIdx] * vec4(vWorldPos, 1.0);
-    vec3 proj = shadowCoord.xyz / shadowCoord.w;
-    proj = proj * 0.5 + 0.5;
-
-    // Outside shadow map bounds -> fully lit
-    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
-        return 1.0;
-
-    // Slope-scaled bias: surfaces nearly parallel to the light get more bias
-    float cosTheta = max(dot(N, -uSunDir), 0.0);
-    float bias = uShadowBias + uShadowBias * 3.0 * (1.0 - cosTheta);
-    float currentDepth = proj.z - bias;
-
-    float shadow = SampleShadowMap(cascadeIdx, proj.xy, currentDepth);
-    float fade = ShadowEdgeFade(proj.xy, 0.08);
-    return mix(1.0, shadow, fade);
+    return SampleShadowCascaded(vWorldPos, N, uSunDir, max(uShadowBias, 0.002), 0.04);
 }
 
 void main()
@@ -151,13 +136,13 @@ void main()
         discard;
 
     // Per-pixel PBR parameters from texture maps
-    float roughness = uRoughness;
+    float roughness = clamp(uRoughness, 0.04, 1.0);
     if (uHasRoughnessTex == 1)
-        roughness = texture(uRoughnessTex, vUV).r;
+        roughness = clamp(texture(uRoughnessTex, vUV).r, 0.04, 1.0);
 
-    float metallic = uMetallic;
+    float metallic = clamp(uMetallic, 0.0, 1.0);
     if (uHasMetallicTex == 1)
-        metallic = texture(uMetallicTex, vUV).r;
+        metallic = clamp(texture(uMetallicTex, vUV).r, 0.0, 1.0);
 
     float aoFactor = 1.0;
     if (uHasAOTex == 1)
@@ -167,8 +152,7 @@ void main()
     if (uHasSpecularTex == 1)
         specMask = texture(uSpecularTex, vUV).r;
 
-    // Light direction
-    // uLightDir is FROM the light (shine direction). Negate for TOWARD the light.
+    // Primary light direction (uLightDir is FROM the light; negate for TOWARD the light)
     vec3 L;
     float atten = 1.0;
     if (uLightIsPoint != 0)
@@ -184,35 +168,25 @@ void main()
     }
     else
     {
-        L = -uLightDir;
+        L = normalize(-uLightDir);
     }
 
-    float NdotL = max(dot(N, L), 0.0);
-    float card = uIsVegetation == 1 && uAlphaCutoff > 0.05 ? 1.0 : 0.0;
-    float wrap = mix(NdotL, NdotL * 0.5 + 0.5, card);
-    float back = max(dot(-N, L), 0.0) * 0.28 * card;
-    float diffuse = min((wrap + back) * atten, 1.15);
+    vec3 V = normalize(uCamPos - vWorldPos);
+    vec3 lightCol = dot(uLightColor, uLightColor) < 0.001 ? vec3(1.0) : uLightColor;
 
     // Shadow — use geometric normal for bias to prevent normal-map shadow acne
     float shadow = ShadowCalc(vShadowCoord, geoN);
 
-    // Specular (Blinn-Phong)
-    float specular = 0.0;
-    if (uDiffuseK > 0.0 && diffuse > 0.0)
-    {
-        float smoothness = 1.0 - roughness;
-        float shininess = 8.0 + smoothness * smoothness * 248.0;
-        vec3 V = normalize(uCamPos - vWorldPos);
-        vec3 H = normalize(L + V);
-        float NdotH = max(dot(N, H), 0.0);
-        specular = pow(NdotH, shininess) * (0.25 + 0.75 * metallic) * diffuse * specMask;
-    }
-
     vec3 litAlbedo = albedo.rgb;
-    float shade;
-    float aoLit = aoFactor;
+    vec3 color;
     if (uIsVegetation == 1)
     {
+        float NdotL = max(dot(N, L), 0.0);
+        float card = uAlphaCutoff > 0.05 ? 1.0 : 0.0;
+        float wrap = mix(NdotL, NdotL * 0.5 + 0.5, card);
+        float back = max(dot(-N, L), 0.0) * 0.28 * card;
+        float diffuse = min((wrap + back) * atten, 1.15);
+
         float clouds = clamp(uCloudiness, 0.0, 1.0);
         float wet = clamp(uWetness, 0.0, 1.0);
         float snow = clamp(uSnow, 0.0, 1.0);
@@ -221,46 +195,86 @@ void main()
         litAlbedo *= mix(1.0, 0.82, wet);
         litAlbedo = mix(litAlbedo, litAlbedo * vec3(0.86, 0.92, 0.96), wet * 0.35);
         litAlbedo = mix(litAlbedo, vec3(0.86, 0.89, 0.93), snow * mix(0.18, 0.42, card));
-        aoLit = mix(0.62, 1.0, aoFactor);
+        float aoLit = mix(0.62, 1.0, aoFactor);
         float ambShadow = mix(0.42, 1.0, shadow);
-        // Scale wrap with sun so night does not keep half-Lambert fill lighting.
         float night = clamp(uSunIntensity, 0.0, 1.0);
         float wrapDiff = mix(diffuse, diffuse * 0.35 + 0.08, 1.0 - night);
-        shade = amb * ambShadow + uDiffuseK * wrapDiff * sunI * mix(0.40, 1.0, shadow);
-        specular *= wet * 0.45 * sunI;
+
+        vec3 F0 = mix(vec3(0.04), litAlbedo, metallic);
+        vec3 direct = litAlbedo * (uDiffuseK * wrapDiff * sunI * mix(0.40, 1.0, shadow)) * lightCol;
+        if (wet > 0.01)
+        {
+            vec3 specOnly = EvaluateCookTorrance(N, V, L, vec3(0.0), metallic, mix(roughness, 0.15, wet), F0, lightCol * uDiffuseK * sunI * atten);
+            direct += specOnly * wet * 0.65 * shadow * specMask;
+        }
+        color = (litAlbedo * (amb * ambShadow) + direct) * aoLit;
     }
     else
     {
-        // Shadow attenuates both ambient (sky occlusion) and diffuse
-        float ambShadow = mix(0.35, 1.0, shadow);
-        shade = clamp(uAmbient * ambShadow + uDiffuseK * diffuse * shadow, 0.0, 1.0);
-        // Planet terrain is Lambert. Props were left on a dim PBR-style response plus a
-        // crushed AO bake, so campfires and workbenches read nearly black on the ground.
+        // Cook-Torrance GGX PBR direct lighting (matches DeferredLighting.frag.glsl)
+        vec3 F0 = mix(vec3(0.04) * specMask, litAlbedo, metallic);
+        vec3 radiance = lightCol * max(uDiffuseK, 0.0) * atten;
+        vec3 Lo = EvaluateCookTorrance(N, V, L, litAlbedo, metallic, roughness, F0, radiance) * shadow;
+
+        // Additional point lights from LightingGlobals UBO (up to 4)
+        for (int i = 0; i < 4; ++i)
+        {
+            if (i >= uPointCount) break;
+            vec3 toP = uPointPosRange[i].xyz - vWorldPos;
+            float pDist = length(toP);
+            float pRange = max(uPointPosRange[i].w, 0.001);
+            if (pDist < pRange)
+            {
+                vec3 pL = toP / max(pDist, 0.0001);
+                float pt = pDist / pRange;
+                float pAtten = 1.0 / (1.0 + pt * pt);
+                vec3 pRad = uPointColor[i].rgb * max(uPointColor[i].a, 1.0) * pAtten;
+                Lo += EvaluateCookTorrance(N, V, pL, litAlbedo, metallic, roughness, F0, pRad);
+            }
+        }
+
+        // Specular IBL (ReflectionProbe cubemap or procedural sky-hemisphere fallback)
+        vec3 R = reflect(-V, N);
+        float NdotV = max(dot(N, V), 0.0);
+        vec3 Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3 envSpec;
+        if (uHasEnvMap != 0)
+        {
+            float mip = roughness * max(uEnvMaxMip, 0.0);
+            envSpec = textureLod(uEnvMap, R, mip).rgb * Fenv * uEnvIntensity * specMask;
+        }
+        else
+        {
+            envSpec = ProceduralSkyIBL(R, roughness, uAmbient) * Fenv * (0.35 + 0.65 * metallic) * specMask;
+        }
+
+        vec3 ambientTerm;
         if (uHasPlanetFill == 1)
         {
             vec3 radial = normalize(vWorldPos - uPlanetCenter);
             float sky = clamp(dot(N, radial), 0.0, 1.0);
             float aoLift = mix(0.62, 1.0, clamp(aoFactor, 0.0, 1.0));
-            float hemi = uAmbient * aoLift * (0.90 + 0.55 * sky);
-            float sun = uDiffuseK * diffuse * mix(0.55, 1.0, shadow);
-            shade = clamp(hemi + sun, 0.0, 1.35);
-            aoLit = 1.0;
+            Lo *= PI;
+            ambientTerm = litAlbedo * uAmbient * aoLift * (0.90 + 0.55 * sky);
+            color = ambientTerm + Lo + envSpec * aoLift;
+        }
+        else
+        {
+            float ambShadow = mix(0.35, 1.0, shadow);
+            vec3 kD = (vec3(1.0) - Fenv) * (1.0 - metallic);
+            ambientTerm = kD * litAlbedo * uAmbient * ambShadow;
+            color = (ambientTerm + envSpec) * aoFactor + Lo;
         }
     }
 
-    vec3 color = litAlbedo * shade + vec3(specular * shadow);
-
-    // AO darkens the entire lit result (ambient + diffuse + specular)
-    // Applied before emissive so self-illumination is unaffected by occlusion
-    color *= aoLit;
-
-    // Emissive (bypasses lighting)
+    // Emissive (bypasses lighting & AO)
     vec3 emissive = uEmissiveColor * uEmissiveIntensity;
     if (uHasEmissiveTex == 1)
         emissive *= texture(uEmissiveTex, vUV).rgb;
     color += emissive;
 
-    color = clamp(color, 0.0, 1.0);
+    // Reinhard tone mapping (matches DeferredLighting.frag.glsl)
+    color = color / (color + vec3(1.0));
 
     float alpha = (uTransparent != 0) ? maskA : 1.0;
     FragColor = vec4(color, alpha);

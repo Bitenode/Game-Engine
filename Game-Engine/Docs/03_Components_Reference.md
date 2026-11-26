@@ -104,7 +104,7 @@ Illuminates the scene. Supports directional, point, and spot light types.
 - `GetWorldPosition()` — returns world-space position (accumulates parent transforms — child lights on moving objects follow correctly)
 - `GetColorRGB()` — returns normalized RGB multiplied by intensity
 
-**Directional lights** use the Transform's forward direction and cast shadows via a 4096x4096 shadow map with PCF soft shadows.
+**Directional lights** use the Transform's forward direction and cast shadows via a 4-cascade texel-snapped `CascadedShadowMap` (CSM, up to 160 world units with 10% cascade-border blend and PCF) on desktop Editor & `Engine.Player`, or a lightweight single `ShadowMapGPU` on Xbox UWP.
 
 **Point lights** illuminate a sphere of influence defined by `Range`.
 
@@ -176,7 +176,7 @@ GPU-accelerated bone skinning for skeletal animation. Replaces `MeshRenderer` fo
 
 ## ReflectionProbe
 
-Box-style reflection probe: a **runtime RGBA8 cubemap** allocated on the GPU and filled by the engine’s reflection capture. Used for specular IBL in deferred lighting (see `GameView` / renderer integration).
+Box-style reflection probe: a **runtime 6-face RGBA8 cubemap** with GPU mipmaps, captured by `SceneRenderer.CaptureReflectionProbes` (1 probe/frame budget, reusable FBO/RBO, feedback-safe capture). Used for roughness-based specular IBL in both **Deferred** (`DeferredLighting.frag.glsl`) and **Forward** (`Standard.frag.glsl`) PBR lighting, falling back to `ProceduralSkyIBL` when no probe is active.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -777,13 +777,13 @@ Post-processing effects applied as a full-screen pass after scene rendering. Sup
 | **SSAO** | Screen-space ambient occlusion (radius, intensity, bias, sample count, depth sigma) |
 | **SSR** | Screen-space reflections (ray steps, roughness cutoff, max distance) |
 | **TAA** | Temporal anti-aliasing (frame blend, sharpen) |
-| **Fog** | Distance-based atmospheric fog |
+| **Fog** | World-position Distance & Height Fog reconstructed from `uDepthTex` |
 | **Volumetric Fog** | Ray-marched volumetric scattering with shadow sampling, height falloff, and 3D noise |
 | **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |
 | **Tone Mapping** | HDR to LDR conversion (Reinhard or ACES methods) |
 | **Vignette** | Darkened edges around the screen |
 | **FXAA** | Fast approximate anti-aliasing |
-| **Depth of Field** | Focus distance, aperture, focal length, near/far blur scales |
+| **Depth of Field** | 2-pass separable bokeh DoF (`DepthOfField.frag.glsl`) with focus distance, aperture, focal length, and near/far blur scales |
 | **Underwater** | Distortion, fog, caustics, and color absorption when camera is below water |
 
 **Typical usage:** add to a camera GameObject, or let `PlanetPlayerSpawner` attach one at play spawn when `AttachPostProcess` is enabled.
@@ -806,7 +806,8 @@ Post-processing effects applied as a full-screen pass after scene rendering. Sup
 
 **Features:**
 - **Priority system** — higher-priority volumes override lower ones
-- **Global/Local scope** — global volumes affect the entire scene; local volumes affect a defined region
+- **Global/Local scope** — global volumes affect the entire scene; oriented-box local volumes blend smoothly around the camera via `PostProcessVolume.SampleBlended(...)`
+- **Editor & Player parity** — full Deferred + SSAO + SSR + Volumetric Fog + TAA + DoF + PostProcess stack runs in both Editor `GameView` and standalone `Engine.Player` (`#if XBOX_UWP` stays forward)
 - **Underwater integration** — automatically activates underwater effects when the camera is below a Water surface
 
 ---

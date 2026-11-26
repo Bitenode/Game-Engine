@@ -2,7 +2,7 @@
 
 ## Overview
 
-The engine uses a GPU-accelerated **forward rendering pipeline** built on Silk.NET OpenGL (or OpenGL ES 3.0 via ANGLE on Windows). All rendering happens inside Avalonia's `OpenGlControlBase`, which provides a shared GL context for the Scene View and Game View. Each view maintains its own `ResourceCache` instance tied to its GL context to avoid cross-context resource issues.
+The engine uses a GPU-accelerated rendering pipeline built on Silk.NET OpenGL (or OpenGL ES 3.0 via ANGLE on Windows), supporting both **forward** (Scene View, Xbox UWP, and fallback) and **deferred** (desktop Game View and standalone `Engine.Player`) paths. Editor `GameView` and standalone `PlayerFrameRenderer` share `GameRenderPipeline` helpers so Deferred + SSAO + SSR + Volumetric Fog + TAA + Depth of Field + Post-Processing work identically when a `PostProcessVolume` is active (`#if XBOX_UWP` remains on the lightweight forward path). All editor rendering happens inside Avalonia's `OpenGlControlBase`, where each view maintains its own `ResourceCache` instance tied to its GL context to avoid cross-context resource issues.
 
 ---
 
@@ -38,31 +38,28 @@ Each frame, both SceneView and GameView execute these passes in order:
 ## Shadow Mapping
 
 ### Setup
-- **Resolution:** 4096 x 4096 depth texture (Depth24 format)
-- **Type:** Directional light orthographic projection
-- **Implementation:** `ShadowMapGPU` class wraps a depth-only `GPUFramebuffer`
-- **Light direction:** Computed from `Skybox.SunElevation` and `Skybox.Yaw`
+- **Desktop Editor & `Engine.Player` (CSM):** 4-cascade texel-snapped `CascadedShadowMap` (CSM) covering up to `MaxShadowDistance` = **160 world units**, with 10% cascade-border blending (`SampleShadowCascaded` in `Common/Shadows.glsl`)
+- **Xbox UWP (`#if XBOX_UWP`):** Lightweight single `ShadowMapGPU` (4096×4096 Depth24 FBO)
+- **Type:** Directional light orthographic projection per cascade
+- **Light direction:** Computed from the active directional `Light` (or `Skybox.SunElevation` / `Skybox.Yaw` fallback)
 
 ### Shadow Pass
-1. Compute sun direction from Skybox elevation and yaw angles
-2. Build an orthographic light view-projection matrix centered on the visible scene
-3. Bind the shadow FBO and clear the depth buffer
-4. Enable **front-face culling** during the shadow pass to reduce self-shadowing artifacts (Peter Panning)
-5. Render all shadow-casting meshes with the **DepthOnly** shader (position-only, no fragment color)
-6. GPU skinning is supported in the shadow pass for animated meshes
+1. Compute sun direction and split the camera frustum into 4 cascades (texel-snapped to eliminate shimmering during camera movement)
+2. Bind each cascade's depth FBO and clear the depth buffer
+3. Enable **front-face culling** during the shadow pass to reduce self-shadowing artifacts (Peter Panning)
+4. Render all shadow-casting meshes with the **DepthOnly** shader (position-only, no fragment color)
+5. GPU skinning is supported in the shadow pass for animated meshes
 
 ### Shadow Sampling (Fragment Shader)
 | Technique | Description |
 |-----------|-------------|
+| **Cascaded Sampling** | `SampleShadowCascaded` selects the cascade by view-space depth and blends smoothly across the outer 10% of each cascade border |
 | **PCF** | 3x3 Percentage Closer Filtering for soft shadow edges |
 | **Slope Bias** | Dynamic bias based on `dot(normal, lightDir)` to prevent shadow acne |
-| **Edge Fadeout** | Smooth falloff near shadow map borders to hide hard boundary artifacts |
+| **Edge Fadeout** | Smooth falloff near shadow map / max-distance borders to hide hard boundary artifacts |
 | **Minimum Shadow** | 10% minimum light to prevent completely black shadow areas |
 
-Shadow sampling is shared between the Standard and Terrain shaders via the `ShadowCalc()` GLSL function.
-
-### Cascaded Shadow Map Compatibility
-The Standard fragment shader supports cascaded shadow maps (`uShadowVPC[]`, `uCascadeCount`, `uCascadeSplits[]` uniforms). When using the forward pipeline (Scene View), which only produces a single shadow map, the renderer sets `uCascadeCount = 1`, `uShadowVPC[0]` to the single light VP matrix, and `uCascadeSplits[0]` to a large value. This ensures vegetation and other objects using the cascaded shadow path receive correct shadows in both the deferred (Game View) and forward (Scene View) pipelines.
+Shadow sampling is shared across Standard, Deferred, and Terrain shaders via `Common/Shadows.glsl`. When only a single shadow map is active (e.g. Xbox UWP), the renderer sets `uCascadeCount = 1`, `uShadowVPC[0]` to the single light VP matrix, and `uCascadeSplits[0]` to a large value.
 
 ---
 
@@ -101,12 +98,11 @@ The primary shader for most objects. Full feature set:
 - **Wind animation** — when `uIsVegetation` is set, applies time-based vertex displacement modulated by vertex height
 
 **Fragment shader features:**
-- **PBR-like lighting:** Blinn-Phong specular with roughness/metallic workflow
-  - Diffuse: `baseColor * max(dot(N, L), 0)` with shadow attenuation
-  - Specular: `pow(max(dot(N, H), 0), shininess)` where shininess = `(1 - roughness) * 128`
-  - Metallic blending between dielectric and metallic reflectance
-- **Directional + Point lights:** Switchable via `uLightIsPoint` uniform
-- **Shadow mapping:** PCF shadow sampling via `ShadowCalc()` function
+- **Cook-Torrance GGX PBR lighting** (matching the Deferred lighting pass via `Common/PBR.glsl`):
+  - GGX normal distribution, Smith geometry term, and Schlick Fresnel with metallic/roughness workflow
+  - Mipmapped `ReflectionProbe` cubemap specular IBL (falls back to `ProceduralSkyIBL` when no probe is captured)
+- **Directional + up to 4 Point lights:** Main directional light plus up to 4 nearest point lights
+- **Cascaded shadow mapping:** 4-cascade `SampleShadowCascaded` with 10% border blend and PCF
 - **Alpha testing:** Configurable `uAlphaCutoff` for transparent materials
 - **Double-sided rendering:** Normal flipping based on `gl_FrontFacing` when `uDoubleSided` is set
 - **Ambient lighting:** Global ambient from Skybox `Ambient` property
@@ -213,12 +209,17 @@ Full-screen post-processing composite pass.
 |--------|---------------|
 | **FXAA** | Fast approximate anti-aliasing — edge detection and directional blur |
 | **SSAO** | Screen-space ambient occlusion pass before the composite (optional via `PostProcessVolume.SSAOEnabled`) |
+| **SSR** | Screen-space reflections (ray-marched in deferred pipeline) |
+| **TAA** | Temporal anti-aliasing with frame history blend and sharpening |
+| **Depth of Field** | 2-pass separable bokeh DoF (`PostProcess/DepthOfField.frag.glsl`) with focus distance, aperture, focal length, and near/far blur |
 | **Bloom** | Simplified single-pass bloom — bright pixel extraction + Gaussian-like blur |
-| **Fog** | Depth-based atmospheric fog with configurable color and density |
+| **Fog** | World-position Distance & Height Fog reconstructed from `uDepthTex` with configurable color, density, start/end, and height falloff |
 | **Color Grading** | Brightness, Contrast, Saturation, Exposure adjustments |
 | **Tone Mapping** | HDR to LDR conversion — Reinhard or ACES filmic methods |
 | **Vignette** | Darkened edges — configurable intensity and smoothness |
 | **Underwater** | Wave distortion, underwater fog, caustic patterns, color absorption (blue channel boosted, red absorbed). Planet Game View enables this only while `RigidbodyPlayer` is swimming **and** the head/camera is under the water table — surface float and weather fog do not turn it on |
+
+**Local volume blending:** `PostProcessVolume.SampleBlended(...)` evaluates all active global and oriented-box local volumes around the camera position, blending settings smoothly by priority and `BlendDistance`.
 
 ### Volumetric Fog Shader (VolumetricFogVert + VolumetricFogFrag)
 
@@ -490,11 +491,19 @@ Rendered when `PostProcessVolume.VolumetricFogEnabled` is `true`. Uses a dedicat
 
 **Supported in both Game View (deferred pipeline) and Scene View (forward pipeline).**
 
+### ReflectionProbe Cubemap Capture & IBL
+
+`SceneRenderer.CaptureReflectionProbes(...)` renders real 6-face RGBA8 cubemaps for active `ReflectionProbe` components:
+- **Budget:** Captures at most **1 probe per frame** (`Baked` on demand / `NeedsCapture`, `Realtime` every `RealtimeRefreshFrames`)
+- **Resources:** Reuses a shared FBO/RBO pair per context and generates **GPU mipmaps** for roughness-based specular IBL sampling
+- **Feedback safety:** Disables probe cubemap sampling while capturing so a probe never samples itself
+- **Fallback:** When no probe cubemap is available, both Forward (`Standard.frag.glsl`) and Deferred (`DeferredLighting.frag.glsl`) fall back to `ProceduralSkyIBL`
+
 ### Post-Processing Pass
-1. The scene is rendered to an off-screen framebuffer (color + depth)
-2. Bind the PostProcess shader
-3. Read the scene color texture and depth texture
-4. Apply enabled effects in order: FXAA → Bloom → Fog → Color Grading → Tone Mapping → Vignette → Underwater
+1. The scene is rendered to an off-screen framebuffer (color + depth); `PostProcessVolume.SampleBlended(...)` resolves blended global + oriented-box local settings
+2. Optional pre-composite passes run in order (Deferred pipeline in both Editor `GameView` and standalone `PlayerFrameRenderer` via `GameRenderPipeline`): **SSAO** → **SSR** → **Volumetric Fog** → **TAA** → **2-pass separable bokeh Depth of Field** (`DepthOfField.frag.glsl`)
+3. Bind the PostProcess shader (`PostProcess.frag.glsl`) with scene color and `uDepthTex`
+4. Apply enabled effects in order: FXAA → Bloom → World-Position Distance & Height Fog → Color Grading → Tone Mapping → Vignette → Underwater
 5. Blit the final result to the screen
 
 ### Frustum Culling

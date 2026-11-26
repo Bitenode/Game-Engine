@@ -2,8 +2,12 @@
 
 in vec2 vUV;
 
-uniform sampler2D uScene;
-uniform vec2 uTexelSize;     // 1.0 / resolution
+#include "Common/FrameGlobals.glsl"
+
+uniform sampler2D uScene;       // unit 0
+uniform sampler2D uDepthTex;    // unit 1
+uniform int       uHasDepthTex;
+uniform vec2 uTexelSize;        // 1.0 / resolution
 
 // Bloom
 uniform int   uBloomEnabled;
@@ -16,6 +20,8 @@ uniform vec3  uFogColor;
 uniform float uFogDensity;
 uniform float uFogStart;
 uniform float uFogEnd;
+uniform int   uFogHeightBased;
+uniform float uFogHeightFalloff;
 
 // Color Grading
 uniform int   uColorGradingEnabled;
@@ -118,14 +124,47 @@ void main()
         color += bloom * uBloomIntensity;
     }
 
-    // Fog
-    if (uFogEnabled != 0)
+    // Depth & Height Fog (real scene depth from uDepthTex + FrameGlobals)
+    if (uFogEnabled != 0 && uHasDepthTex != 0)
     {
-        // Distance-based fog using depth approximation from luminance (simplified)
-        float depth = dot(color, vec3(0.299, 0.587, 0.114)); // rough depth proxy
-        float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * depth * depth * 100.0);
-        fogFactor = clamp(fogFactor, 0.0, 1.0);
-        color = mix(color, uFogColor, fogFactor);
+        float rawDepth = texture(uDepthTex, vUV).r;
+        // Skip skybox pixels (depth >= 0.9999)
+        if (rawDepth < 0.9999)
+        {
+            vec4 clipPos = vec4(vUV * 2.0 - 1.0, rawDepth * 2.0 - 1.0, 1.0);
+            vec4 viewPos = uInvProj * clipPos;
+            viewPos /= max(abs(viewPos.w), 1e-6) * (viewPos.w < 0.0 ? -1.0 : 1.0);
+            vec3 worldPos = (uInvView * viewPos).xyz;
+
+            float dist = length(worldPos - uCamPos);
+            float dStart = max(dist - uFogStart, 0.0);
+
+            float fogFactor;
+            if (uFogDensity > 0.0001)
+            {
+                // Exponential distance fog starting at uFogStart
+                fogFactor = 1.0 - exp(-uFogDensity * dStart);
+                if (uFogEnd > uFogStart)
+                {
+                    float linFactor = clamp(dStart / max(uFogEnd - uFogStart, 0.001), 0.0, 1.0);
+                    fogFactor = max(fogFactor, linFactor * clamp(uFogDensity * 25.0, 0.0, 1.0));
+                }
+            }
+            else
+            {
+                // Pure linear fog when density is 0
+                fogFactor = clamp(dStart / max(uFogEnd - uFogStart, 0.001), 0.0, 1.0);
+            }
+
+            if (uFogHeightBased != 0)
+            {
+                float heightTerm = exp(-max(worldPos.y, 0.0) * max(uFogHeightFalloff, 0.001));
+                fogFactor *= clamp(heightTerm, 0.0, 1.0);
+            }
+
+            fogFactor = clamp(fogFactor, 0.0, 1.0);
+            color = mix(color, uFogColor, fogFactor);
+        }
     }
 
     // Color Grading
@@ -181,10 +220,23 @@ void main()
 
         // Underwater fog (depth-based tinting — stronger further below surface)
         float depthFactor = clamp(uUnderwaterDepth * uUnderwaterFogDensity, 0.0, 0.85);
-        // Also apply screen-space depth fog (objects far from camera appear foggier)
-        float screenDepth = dot(color, vec3(0.299, 0.587, 0.114));
-        float screenFog = 1.0 - exp(-uUnderwaterFogDensity * 8.0 * screenDepth);
-        float totalFog = clamp(depthFactor + screenFog * 0.5, 0.0, 0.9);
+        float screenFog = 0.0;
+        if (uHasDepthTex != 0)
+        {
+            float uwRawDepth = texture(uDepthTex, distortedUV).r;
+            float zNear = max(uNearPlane, 0.01);
+            float zFar = max(uFarPlane, zNear + 1.0);
+            float uwLin = (uwRawDepth >= 0.9999)
+                ? zFar
+                : (2.0 * zNear * zFar) / max(zFar + zNear - (uwRawDepth * 2.0 - 1.0) * (zFar - zNear), 0.001);
+            screenFog = 1.0 - exp(-uUnderwaterFogDensity * 0.25 * uwLin);
+        }
+        else
+        {
+            float screenDepth = dot(color, vec3(0.299, 0.587, 0.114));
+            screenFog = 1.0 - exp(-uUnderwaterFogDensity * 8.0 * screenDepth);
+        }
+        float totalFog = clamp(depthFactor + screenFog * 0.6, 0.0, 0.9);
         color = mix(color, uUnderwaterTint, totalFog);
 
         // Caustic light patterns (animated)

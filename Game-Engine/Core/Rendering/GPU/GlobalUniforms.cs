@@ -234,6 +234,15 @@ public sealed class GlobalUniforms : IDisposable
         _frameUbo.Update(in _frameData);
     }
 
+    /// <summary>Restore a previously saved <see cref="FrameUboData"/> snapshot (e.g. after cubemap capture).</summary>
+    public void RestoreFrame(in FrameUboData data)
+    {
+        if (_disposed) return;
+        _frameData = data;
+        _frameUbo.Bind(FrameBindingPoint);
+        _frameUbo.Update(in _frameData);
+    }
+
     /// <summary>Upload lighting, shadow, and wind parameters into <c>LightingGlobals</c> (binding 1).</summary>
     public void UpdateLighting(
         SN.Vector3 lightDir,

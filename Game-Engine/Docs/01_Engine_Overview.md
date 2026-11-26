@@ -377,7 +377,7 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `Profiler` | Frame timing statistics, FPS tracking, per-system performance metrics |
 | `AudioMixer` | Hierarchical audio group mixing with volume, effects, and routing |
 | `NavMesh` | Static navigation mesh baking, A* pathfinding, and spatial queries |
-| `GameRenderPipeline` | Shared world draw for editor Play and `PlayerView` (deferred G-buffer/SSAO, planet stack, forward fallback) |
+| `GameRenderPipeline` | Shared world draw for editor Play (`GameView`) and standalone `PlayerFrameRenderer` (4-cascade CSM, deferred G-buffer, SSAO, SSR, volumetric fog, TAA, 2-pass bokeh DoF, post-process, planet stack, forward fallback on `#if XBOX_UWP`) |
 
 ---
 

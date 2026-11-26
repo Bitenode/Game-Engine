@@ -36,17 +36,17 @@ uniform sampler2D uTileMeta;
 uniform sampler2D uTileLightIdx;
 uniform sampler2D uLocalLightTex;
 
-// Optional reflection probe (specular IBL)
-uniform int   uHasProbe;
-uniform samplerCube uProbeSpec;
-uniform float uProbeMipCount;
-uniform float uProbeBlend;
+// Optional reflection probe (specular IBL, unit 14)
+uniform samplerCube uEnvMap;
+uniform int         uHasEnvMap;
+uniform float       uEnvIntensity;
+uniform float       uEnvMaxMip;
 
 // Ambient (uAmbient provided by LightingGlobals)
 uniform int   uHasPlanetFill;
 uniform vec3  uPlanetCenter;
 
-// SSAO (optional)
+// SSAO (optional, unit 4)
 uniform sampler2D uSSAOTex;
 uniform int       uHasSSAO;
 uniform float     uSSAOIntensity;
@@ -64,34 +64,7 @@ vec3 WorldPosFromDepth(float depth, vec2 uv)
 
 float ShadowCalc(vec3 worldPos, vec3 N)
 {
-    if (uHasShadow == 0) return 1.0;
-
-    // Normal offset for shadow acne reduction
-    float cosTheta = max(dot(N, -uSunDir), 0.0);
-    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
-    float normalOff = 0.15 * sinTheta;
-    float lightOff  = 0.08;
-    vec3 offsetPos = worldPos + N * normalOff + (-uSunDir) * lightOff;
-
-    // Select cascade based on distance to camera
-    float fragDist = length(worldPos - uCamPos);
-    int cascadeIdx = SelectShadowCascade(fragDist);
-
-    vec4 sc = uShadowVPC[cascadeIdx] * vec4(offsetPos, 1.0);
-    vec3 proj = sc.xyz / sc.w;
-    proj = proj * 0.5 + 0.5;
-
-    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
-        return 1.0;
-
-    // Aggressive slope-scaled depth bias for deferred
-    float bias = uShadowBias * 3.0 + uShadowBias * 8.0 * (1.0 - cosTheta);
-    bias = max(bias, 0.002);
-    float currentDepth = proj.z - bias;
-
-    float shadow = SampleShadowMap(cascadeIdx, proj.xy, currentDepth);
-    float fade = ShadowEdgeFade(proj.xy, 0.08);
-    return mix(1.0, shadow, fade);
+    return SampleShadowCascaded(worldPos, N, uSunDir, max(uShadowBias * 2.0, 0.002), 0.12);
 }
 
 void main()
@@ -183,13 +156,19 @@ void main()
         }
     }
 
-    if (uHasProbe != 0)
+    // Specular IBL (ReflectionProbe cubemap or procedural sky-hemisphere fallback)
+    vec3 R = reflect(-V, N);
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
+    vec3 envSpec;
+    if (uHasEnvMap != 0)
     {
-        vec3 R = reflect(-V, N);
-        float mip = roughness * max(uProbeMipCount - 1.0, 0.0);
-        vec3 prefiltered = textureLod(uProbeSpec, R, mip).rgb;
-        vec3 Fenv = FresnelSchlick(max(dot(N, V), 0.0), F0);
-        Lo += prefiltered * Fenv * uProbeBlend * (1.0 - roughness) * 0.5;
+        float mip = roughness * max(uEnvMaxMip, 0.0);
+        envSpec = textureLod(uEnvMap, R, mip).rgb * Fenv * uEnvIntensity;
+    }
+    else
+    {
+        envSpec = ProceduralSkyIBL(R, roughness, uAmbient) * Fenv * (0.35 + 0.65 * metallic);
     }
 
     // Ambient. On a planet, match the terrain Lambert term: the cook-torrance
@@ -202,12 +181,13 @@ void main()
         float sky = clamp(dot(N, radial), 0.0, 1.0);
         float aoLift = mix(0.62, 1.0, clamp(ao, 0.0, 1.0));
         Lo *= PI;
-        ambient = albedo * uAmbient * aoLift * (0.90 + 0.55 * sky);
+        ambient = albedo * uAmbient * aoLift * (0.90 + 0.55 * sky) + envSpec * aoLift;
     }
     else
     {
         float ambShadow = mix(0.35, 1.0, shadow);
-        ambient = vec3(uAmbient) * albedo * ao * ambShadow;
+        vec3 kD = (vec3(1.0) - Fenv) * (1.0 - metallic);
+        ambient = (kD * vec3(uAmbient) * albedo * ambShadow + envSpec) * ao;
     }
 
     vec3 color = ambient + Lo + emissive;

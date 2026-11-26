@@ -17,14 +17,15 @@ public static class MaterialBinder
     /// Completely disjoint from:
     /// <list type="bullet">
     ///   <item>Units 0, 1, 2: <c>uTexture0</c> (Albedo), <c>uTexture1</c> (Normal), <c>uTexture2</c> (Specular)</item>
-    ///   <item>Unit 4: <c>uShadowMap</c> (custom forward pass)</item>
-    ///   <item>Units 7, 8, 9, 10: <c>uShadowMap</c> and <c>uShadowMapC1..C3</c> (standard/CSM)</item>
+    ///   <item>Unit 4: <c>uShadowMap</c> (legacy custom forward pass)</item>
+    ///   <item>Units 7, 8, 9, 10: <c>uShadowMap</c> and <c>uShadowMapC1..C3</c> (standard/Surface CSM)</item>
+    ///   <item>Unit 15: <c>uEnvMap</c> (ReflectionProbe cubemap for Surface forward shaders)</item>
     /// </list>
     /// Stays strictly within OpenGL ES 3.0's guaranteed 16 texture image units (0..15).
     /// </summary>
-    public static ReadOnlySpan<int> CustomTextureUnits => new[] { 3, 5, 6, 11, 12, 13, 14, 15 };
+    public static ReadOnlySpan<int> CustomTextureUnits => new[] { 3, 5, 6, 11, 12, 13, 14 };
 
-    private static readonly int[] s_customTextureUnits = { 3, 5, 6, 11, 12, 13, 14, 15 };
+    private static readonly int[] s_customTextureUnits = { 3, 5, 6, 11, 12, 13, 14 };
 
     /// <summary>
     /// Zero-allocation RAII scope that applies a <see cref="ShaderRenderState"/> before a draw

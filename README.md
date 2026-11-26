@@ -16,7 +16,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Play Mode** — Scene snapshot and restore, ensuring runtime changes don't persist after stopping
 
 ### Rendering
-- **Real-Time 3D Rendering** — Forward rendering pipeline with PBR materials, shadow mapping (4096x4096 PCF), frustum culling, and multi-level LOD
+- **Real-Time 3D Rendering** — Forward & Deferred Cook-Torrance GGX PBR pipelines with 4-cascade texel-snapped CSM shadows, real-time 6-face `ReflectionProbe` cubemap IBL, frustum culling, multi-level LOD, and full Editor ↔ `Engine.Player` rendering parity
 - **Shader Graph v2** — Visual node editor with **GPU live preview** (`ShaderPreviewControl`), compiling to unified **Surface** `.shader` assets (Forward + deferred GBuffer + shadow passes)
 - **Custom Shaders** — `Surface { surf(...) }` or explicit `VERTEX`/`FRAGMENT` `.shader` files, `MaterialPropertyBag` Inspector properties, hot-reload; modular **47 embedded GLSL** modules under `Core/Rendering/Shaders/`
 - **Water Rendering** — Gerstner wave displacement, Fresnel-based transparency, foam, and underwater post-processing effects

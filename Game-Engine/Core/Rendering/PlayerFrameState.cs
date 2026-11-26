@@ -25,6 +25,9 @@ namespace Game_Engine.Core.Rendering
         public double MsFrameLast, MsFrameEma, FpsDisplay;
         public int FpsFrames;
         public bool RenderInFlight;
+        public System.Numerics.Matrix4x4 PrevViewProj = System.Numerics.Matrix4x4.Identity;
+        public bool TaaResetHistory = true;
+        public int TaaFrameCounter;
 
         public void DisposeGpu()
         {

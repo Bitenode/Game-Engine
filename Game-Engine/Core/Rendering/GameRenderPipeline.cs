@@ -9,14 +9,120 @@ using AColor = Avalonia.Media.Color;
 
 namespace Game_Engine.Core.Rendering;
 
-/// <summary>Shared play/player world draw: planet stack + deferred lighting.</summary>
+/// <summary>Shared play/player world draw: CSM shadows, planet stack, deferred lighting, and post-processing.</summary>
 public static class GameRenderPipeline
 {
     /// <summary>Xbox sets this so the console stays on the forward path until deferred is measured.</summary>
     public static bool PreferForward { get; set; }
 
+    /// <summary>
+    /// Deferred rendering is enabled whenever <see cref="ProjectRenderingSettings.UseDeferredRendering"/> is true,
+    /// <see cref="PreferForward"/> is false (desktop), and the deferred shaders are compiled — regardless of
+    /// whether a <see cref="PostProcessVolume"/> is active.
+    /// </summary>
+    public static bool UseDeferred(ViewRenderResources? res = null)
+        => !PreferForward
+           && ProjectRenderingSettings.UseDeferredRendering
+           && (res == null || (res.DeferredLight != null && res.GBuffer != null));
+
+    /// <summary>Backward-compatible overload (PostProcessVolume no longer disables deferred rendering).</summary>
     public static bool UseDeferred(bool needsPostCapture)
-        => !PreferForward && ProjectRenderingSettings.UseDeferredRendering && !needsPostCapture;
+        => !PreferForward && ProjectRenderingSettings.UseDeferredRendering;
+
+    /// <summary>
+    /// Extract near and far clip planes from a perspective projection matrix
+    /// (supports <see cref="SN.Matrix4x4.CreatePerspectiveFieldOfView"/> and standard GL perspective).
+    /// </summary>
+    public static void ExtractNearFar(in SN.Matrix4x4 proj, out float near, out float far)
+    {
+        near = 0.1f;
+        far = 1000f;
+        if (MathF.Abs(proj.M34) < 1e-5f) return; // orthographic
+
+        // System.Numerics.Matrix4x4.CreatePerspectiveFieldOfView:
+        //   M33 = far / (near - far), M43 = (near * far) / (near - far)
+        //   => near = M43 / M33, far = M43 / (M33 + 1)
+        float m33 = proj.M33;
+        float m43 = proj.M43;
+        if (MathF.Abs(m33) > 1e-6f && MathF.Abs(m33 + 1f) > 1e-6f)
+        {
+            float n = m43 / m33;
+            float f = m43 / (m33 + 1f);
+            if (n > 0.0001f && f > n)
+            {
+                near = n;
+                far = f;
+                return;
+            }
+        }
+    }
+
+    public static float TaaHalton(int index, int b)
+    {
+        float f = 1f, r = 0f;
+        int i = index;
+        while (i > 0)
+        {
+            f /= b;
+            r += f * (i % b);
+            i /= b;
+        }
+        return r;
+    }
+
+    /// <summary>
+    /// Render directional 4-cascade CSM (when available on desktop) or fall back to single <see cref="ShadowMapGPU"/>
+    /// (for point lights or Xbox UWP).
+    /// </summary>
+    public static void RenderShadowMaps(
+        GL g,
+        ViewRenderResources res,
+        uint restoreFb,
+        int viewportW,
+        int viewportH,
+        in SN.Matrix4x4 view,
+        in SN.Matrix4x4 proj,
+        SN.Vector3 camPos,
+        SN.Vector3 sunShineDir,
+        bool lightIsPoint,
+        out GPUFramebuffer? shadowFbo,
+        out SN.Matrix4x4 shadowVP,
+        out CascadedShadowMap? activeCsm)
+    {
+        shadowFbo = null;
+        shadowVP = SN.Matrix4x4.Identity;
+        activeCsm = null;
+
+        if (res.Depth == null || res.Cache == null) return;
+
+        if (!lightIsPoint && res.CascadedShadow != null)
+        {
+            ExtractNearFar(in proj, out float nearP, out float farP);
+            res.CascadedShadow.Update(sunShineDir, in view, in proj, nearP, farP);
+            g.Enable(EnableCap.DepthTest);
+            g.DepthFunc(DepthFunction.Less);
+            SceneRenderer.RenderCascadedShadowPass(g, res.Depth, res.Cache, res.CascadedShadow, restoreFb);
+            g.Viewport(0, 0, (uint)viewportW, (uint)viewportH);
+            activeCsm = res.CascadedShadow;
+            shadowFbo = res.CascadedShadow.Cascades[0].FBO;
+            shadowVP = res.CascadedShadow.LightVPs[0];
+        }
+        else if (res.Shadow != null)
+        {
+            SN.Matrix4x4.Invert(view, out var invV);
+            var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
+            var sceneCenter = camPos + camFwd * 12f;
+            shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, 50f, res.Shadow.Width);
+            res.Shadow.LightVP = shadowVP;
+            res.Shadow.Begin(g);
+            g.Enable(EnableCap.DepthTest);
+            g.DepthFunc(DepthFunction.Less);
+            SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache, shadowVP);
+            res.Shadow.End(g, restoreFb);
+            g.Viewport(0, 0, (uint)viewportW, (uint)viewportH);
+            shadowFbo = res.Shadow.FBO;
+        }
+    }
 
     public static void UpdateLod(SN.Vector3 camPos)
     {
@@ -60,7 +166,8 @@ public static class GameRenderPipeline
         SN.Vector3 camPos, SN.Vector3 lightDir, float diffuseK, float ambient,
         bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
         GPUFramebuffer? shadowFbo, SN.Matrix4x4 shadowVP, SN.Vector3 sunSD,
-        SN.Vector3 lightColor, Light? light, Skybox? sky, SN.Vector3 fallbackSun)
+        SN.Vector3 lightColor, Light? light, Skybox? sky, SN.Vector3 fallbackSun,
+        CascadedShadowMap? cascadedShadow = null)
     {
         if (res.Cache == null) return;
         if (res.PlanetTerrain != null && res.Standard != null)
@@ -78,11 +185,11 @@ public static class GameRenderPipeline
             FrameProfile.Enter(FrameProfile.Part.PlanetPlants);
             SceneRenderer.RenderPlanetVegetationAfterTerrain(g, res.Standard, res.Cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor);
+                shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor, cascadedShadow: cascadedShadow);
             FrameProfile.Enter(FrameProfile.Part.SceneAfterPlanet);
             SceneRenderer.RenderForwardSceneOpaques(g, res.Standard, res.Cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor);
+                shadowFbo, shadowVP, sunSD, isES: res.IsES, lightColor: lightColor, cascadedShadow: cascadedShadow);
         }
 
         FrameProfile.Enter(FrameProfile.Part.Water);
@@ -143,7 +250,24 @@ public static class GameRenderPipeline
         GPUFramebuffer? shadowFbo, SN.Matrix4x4 shadowVP, SN.Vector3 sunSD,
         SN.Vector3 lightColor, Light? light, Skybox? sky,
         AColor skyTop, AColor skyBot, SN.Vector3? sunDir, Texture2D? skyTex, float skyMix, float skyYaw,
-        PostProcessVolume? postVolume, SN.Vector3 fallbackSun, SN.Vector3? planetSkyUp = null)
+        PostProcessVolume? postVolume, SN.Vector3 fallbackSun, SN.Vector3? planetSkyUp = null,
+        CascadedShadowMap? cascadedShadow = null)
+        => RenderDeferred(g, res, W, H, view, proj, camPos, L, diffuseK, ambient,
+            lightIsPoint, lightPosW, lightRange, shadowFbo, shadowVP, sunSD,
+            lightColor, light, sky, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
+            postVolume != null ? PostProcessSettings.FromVolume(postVolume) : null,
+            fallbackSun, planetSkyUp, cascadedShadow);
+
+    public static GPUTexture? RenderDeferred(
+        GL g, ViewRenderResources res, int W, int H,
+        SN.Matrix4x4 view, SN.Matrix4x4 proj,
+        SN.Vector3 camPos, SN.Vector3 L, float diffuseK, float ambient,
+        bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
+        GPUFramebuffer? shadowFbo, SN.Matrix4x4 shadowVP, SN.Vector3 sunSD,
+        SN.Vector3 lightColor, Light? light, Skybox? sky,
+        AColor skyTop, AColor skyBot, SN.Vector3? sunDir, Texture2D? skyTex, float skyMix, float skyYaw,
+        PostProcessSettings? postSettings, SN.Vector3 fallbackSun, SN.Vector3? planetSkyUp = null,
+        CascadedShadowMap? cascadedShadow = null)
     {
         if (res.GBuffer == null || res.Cache == null || res.FsQuad == null || res.DeferredLight == null || res.Sky == null)
             return null;
@@ -162,7 +286,7 @@ public static class GameRenderPipeline
         SceneRenderer.RenderGBufferPass(g, res.GBuffer, res.Cache, view, proj, camPos, shadowFbo, shadowVP, sunSD, res.IsES);
 
         GPUTexture? ssaoResult = null;
-        bool useSSAO = postVolume?.SSAOEnabled == true;
+        bool useSSAO = postSettings?.SSAOEnabled == true;
         if (useSSAO && res.Ssao != null && res.SsaoBlur != null)
         {
             int ssaoW = Math.Max(1, W / 2);
@@ -177,10 +301,10 @@ public static class GameRenderPipeline
             res.SsaoFbo.Bind();
             g.ClearColor(1f, 1f, 1f, 1f);
             g.Clear(ClearBufferMask.ColorBufferBit);
-            float ssaoRadius = postVolume != null ? Math.Clamp(postVolume.SSAORadius, 0.05f, 3f) : 0.5f;
-            float ssaoBias = postVolume != null ? Math.Clamp(postVolume.SSAOBias, 0.0001f, 0.2f) : 0.025f;
-            int ssaoSamples = postVolume != null ? Math.Clamp(postVolume.SSAOSamples, 4, 32) : 24;
-            float depthSig = postVolume != null ? Math.Clamp(postVolume.SSAODepthSigma, 1f, 500f) : 80f;
+            float ssaoRadius = postSettings != null ? Math.Clamp(postSettings.SSAORadius, 0.05f, 3f) : 0.5f;
+            float ssaoBias = postSettings != null ? Math.Clamp(postSettings.SSAOBias, 0.0001f, 0.2f) : 0.025f;
+            int ssaoSamples = postSettings != null ? Math.Clamp(postSettings.SSAOSamples, 4, 32) : 24;
+            float depthSig = postSettings != null ? Math.Clamp(postSettings.SSAODepthSigma, 1f, 500f) : 80f;
             SceneRenderer.RenderSSAO(g, res.Ssao, res.FsQuad, res.GBufferFbo, view, proj, W, H, ssaoRadius, ssaoBias, ssaoSamples);
             res.SsaoBlurFbo.Bind();
             g.ClearColor(1f, 1f, 1f, 1f);
@@ -202,13 +326,11 @@ public static class GameRenderPipeline
         Sky.RenderGPU(g, res.Sky, res.FsQuad, res.Cache, view, proj, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
 
         g.BindVertexArray(res.FsQuad.VAO);
-        float ssaoIntensity = postVolume != null ? postVolume.SSAOIntensity : 1f;
-        foreach (var rp in ReflectionProbe.ActiveProbes)
-            rp.EnsureGpuResources(g);
+        float ssaoIntensity = postSettings != null ? postSettings.SSAOIntensity : 1f;
         var probePick = ReflectionProbe.GetBestForPosition(camPos);
         SceneRenderer.RenderDeferredLighting(g, res.DeferredLight, res.FsQuad, res.GBufferFbo, ssaoResult, shadowFbo,
             view, proj, camPos, shadowVP, sunSD, ambient, 0.008f, ssaoIntensity, res.TiledLights, W, H,
-            probePick?.GpuCubemap, probePick?.Intensity ?? 0f);
+            probePick?.GpuCubemap, probePick?.Intensity ?? 0f, cascadedShadow);
         g.BindVertexArray(0);
 
         res.SceneFbo.Bind();
@@ -234,11 +356,13 @@ public static class GameRenderPipeline
         {
             SceneRenderer.RenderForwardOverlays(g, res.Standard, res.Cache, view, proj, camPos,
                 SN.Vector3.Normalize(-L), diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFbo, shadowVP, sunSD, terrainShader: res.Terrain, isES: res.IsES, lightColor: lightColor);
+                shadowFbo, shadowVP, sunSD, terrainShader: res.Terrain, isES: res.IsES, lightColor: lightColor,
+                cascadedShadow: cascadedShadow);
         }
 
         RenderPlanetStack(g, res, view, proj, camPos, SN.Vector3.Normalize(-L), diffuseK, ambient,
-            lightIsPoint, lightPosW, lightRange, shadowFbo, shadowVP, sunSD, lightColor, light, sky, fallbackSun);
+            lightIsPoint, lightPosW, lightRange, shadowFbo, shadowVP, sunSD, lightColor, light, sky, fallbackSun,
+            cascadedShadow: cascadedShadow);
 
         return res.SceneFbo.ColorTexture;
     }
@@ -249,7 +373,8 @@ public static class GameRenderPipeline
         SN.Vector3 camPos, SN.Vector3 L, float diffuseK, float ambient,
         bool lightIsPoint, SN.Vector3 lightPosW, float lightRange,
         GPUFramebuffer? shadowFbo, SN.Matrix4x4 shadowVP, SN.Vector3 sunSD,
-        SN.Vector3 lightColor, Light? light, Skybox? sky, SN.Vector3 fallbackSun)
+        SN.Vector3 lightColor, Light? light, Skybox? sky, SN.Vector3 fallbackSun,
+        CascadedShadowMap? cascadedShadow = null)
     {
         if (res.Standard == null || res.Depth == null || res.Cache == null) return;
         FrameProfile.Enter(FrameProfile.Part.Scene);
@@ -257,8 +382,156 @@ public static class GameRenderPipeline
             view, proj, SN.Vector3.Normalize(-L), diffuseK, ambient,
             lightIsPoint, lightPosW, lightRange,
             shadowFbo, shadowVP, camPos, sunSD,
-            terrainShader: res.Terrain, isES: res.IsES, lightColor: lightColor);
+            terrainShader: res.Terrain, isES: res.IsES, lightColor: lightColor,
+            cascadedShadow: cascadedShadow);
         RenderPlanetStack(g, res, view, proj, camPos, SN.Vector3.Normalize(-L), diffuseK, ambient,
-            lightIsPoint, lightPosW, lightRange, shadowFbo, shadowVP, sunSD, lightColor, light, sky, fallbackSun);
+            lightIsPoint, lightPosW, lightRange, shadowFbo, shadowVP, sunSD, lightColor, light, sky, fallbackSun,
+            cascadedShadow: cascadedShadow);
+    }
+
+    /// <summary>
+    /// Shared post-deferred screen-space effects (SSR -> Volumetric Fog -> TAA) used by both
+    /// Editor <c>GameView</c> and standalone <c>PlayerFrameRenderer</c>.
+    /// </summary>
+    public static void RunPostDeferredEffects(
+        GL g, ViewRenderResources res, int W, int H,
+        in SN.Matrix4x4 view, in SN.Matrix4x4 proj, SN.Vector3 camPos,
+        SN.Vector3 sunSD, SN.Vector3 lightColor,
+        GPUFramebuffer? shadowFbo, in SN.Matrix4x4 shadowVP,
+        PostProcessSettings? postSettings,
+        bool useTaa, in SN.Matrix4x4 invVpCurr, in SN.Matrix4x4 prevVp,
+        ref bool taaResetHistory,
+        ref GPUTexture? finalSceneTex)
+    {
+        if (res.FsQuad == null) return;
+        finalSceneTex ??= res.SceneFbo?.ColorTexture;
+        var depthTex = res.SceneFbo?.DepthTexture ?? res.GBufferFbo?.DepthTexture;
+
+        // 1. SSR — screen-space reflections
+        if (postSettings?.SSREnabled == true && res.Ssr != null && res.SceneFbo?.ColorTexture != null && res.GBufferFbo != null)
+        {
+            if (res.SsrFbo == null) res.SsrFbo = new GPUFramebuffer(g);
+            if (res.SsrFbo.Width != W || res.SsrFbo.Height != H)
+                res.SsrFbo.SetupColorDepth(W, H);
+
+            res.SsrFbo.Bind();
+            g.ClearColor(0f, 0f, 0f, 1f);
+            g.Clear(ClearBufferMask.ColorBufferBit);
+
+            g.BindVertexArray(res.FsQuad.VAO);
+            SceneRenderer.RenderSSR(g, res.Ssr, res.FsQuad, res.SceneFbo.ColorTexture, res.GBufferFbo,
+                view, proj, camPos, W, H,
+                postSettings.SSRMaxRaySteps,
+                postSettings.SSRRoughnessCutoff,
+                postSettings.SSRMaxRayDistance);
+            g.BindVertexArray(0);
+
+            finalSceneTex = res.SsrFbo.ColorTexture;
+        }
+
+        // 2. Volumetric Fog — ray-marched fullscreen pass
+        if (res.VolFog != null && postSettings?.VolumetricFogEnabled == true
+            && finalSceneTex != null && depthTex != null)
+        {
+            if (res.VolFogFbo == null) res.VolFogFbo = new GPUFramebuffer(g);
+            if (res.VolFogFbo.Width != W || res.VolFogFbo.Height != H)
+                res.VolFogFbo.SetupColorDepth(W, H);
+
+            res.VolFogFbo.Bind();
+            g.ClearColor(0f, 0f, 0f, 1f);
+            g.Clear(ClearBufferMask.ColorBufferBit);
+
+            g.BindVertexArray(res.FsQuad.VAO);
+            SceneRenderer.RenderVolumetricFog(g, res.VolFog, res.FsQuad,
+                finalSceneTex, depthTex,
+                view, proj, camPos,
+                sunSD, lightColor,
+                shadowFbo, shadowVP, postSettings,
+                (float)Time.time);
+            g.BindVertexArray(0);
+
+            finalSceneTex = res.VolFogFbo.ColorTexture;
+        }
+
+        // 3. TAA — temporal resolve
+        if (useTaa && res.TaaResolve != null && finalSceneTex != null && depthTex != null)
+        {
+            if (res.TaaHistoryFbo == null) res.TaaHistoryFbo = new GPUFramebuffer(g);
+            if (res.TaaHistoryFbo.Width != W || res.TaaHistoryFbo.Height != H)
+                res.TaaHistoryFbo.SetupColorDepth(W, H);
+            if (res.TaaTempFbo == null) res.TaaTempFbo = new GPUFramebuffer(g);
+            if (res.TaaTempFbo.Width != W || res.TaaTempFbo.Height != H)
+                res.TaaTempFbo.SetupColorDepth(W, H);
+
+            res.TaaTempFbo.Bind();
+            g.Viewport(0, 0, (uint)W, (uint)H);
+            g.Clear(ClearBufferMask.ColorBufferBit);
+            g.BindVertexArray(res.FsQuad.VAO);
+            SceneRenderer.RenderTemporalAA(g, res.TaaResolve, res.FsQuad, finalSceneTex,
+                res.TaaHistoryFbo.ColorTexture, depthTex, invVpCurr, prevVp, W, H,
+                postSettings?.TAAFrameBlend ?? 0.12f,
+                postSettings?.TAASharpen ?? 0.35f,
+                taaResetHistory);
+            g.BindVertexArray(0);
+
+            g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, res.TaaTempFbo.Handle);
+            g.BindFramebuffer(FramebufferTarget.DrawFramebuffer, res.TaaHistoryFbo.Handle);
+            g.BlitFramebuffer(0, 0, W, H, 0, 0, W, H,
+                ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
+
+            finalSceneTex = res.TaaTempFbo.ColorTexture;
+            taaResetHistory = false;
+        }
+        else if (!useTaa)
+        {
+            taaResetHistory = true;
+        }
+    }
+
+    /// <summary>
+    /// Shared Depth-of-Field + PostProcess (Depth/Height Fog, Bloom, Color Grading, Vignette, FXAA, Underwater)
+    /// presentation pass into <paramref name="targetFb"/>.
+    /// </summary>
+    public static void RunPostProcessAndPresent(
+        GL g, ViewRenderResources res, uint targetFb, int W, int H,
+        in SN.Matrix4x4 view, in SN.Matrix4x4 proj, SN.Vector3 camPos,
+        GPUTexture? finalSceneTex, GPUTexture? sceneDepthTex,
+        PostProcessSettings? postSettings, UnderwaterState? underwater, float time)
+    {
+        if (finalSceneTex == null || res.PostProcess == null || res.FsQuad == null)
+            return;
+
+        // Ensure FrameGlobals UBO carries accurate near/far and invView/invProj for Depth Fog & DoF
+        ExtractNearFar(in proj, out float nearP, out float farP);
+        GlobalUniforms.ForContext(g).UpdateFrame(in view, in proj, camPos, time, W, H, nearP, farP);
+
+        // Optional 2-pass separable Depth of Field before final PostProcess
+        if (postSettings?.DepthOfFieldEnabled == true && res.DepthOfField != null && sceneDepthTex != null)
+        {
+            if (res.DofTempFbo == null) res.DofTempFbo = new GPUFramebuffer(g);
+            if (res.DofTempFbo.Width != W || res.DofTempFbo.Height != H)
+                res.DofTempFbo.SetupColorDepth(W, H);
+            if (res.DofOutFbo == null) res.DofOutFbo = new GPUFramebuffer(g);
+            if (res.DofOutFbo.Width != W || res.DofOutFbo.Height != H)
+                res.DofOutFbo.SetupColorDepth(W, H);
+
+            g.BindVertexArray(res.FsQuad.VAO);
+            finalSceneTex = SceneRenderer.RenderDepthOfField(g, res.DepthOfField, res.FsQuad,
+                finalSceneTex, sceneDepthTex, res.DofTempFbo, res.DofOutFbo, W, H,
+                postSettings, nearP, farP);
+            g.BindVertexArray(0);
+        }
+
+        // Final PostProcess / Blit -> target framebuffer
+        g.BindFramebuffer(FramebufferTarget.Framebuffer, targetFb);
+        g.Viewport(0, 0, (uint)W, (uint)H);
+        g.Disable(EnableCap.DepthTest);
+        g.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+        g.Clear(ClearBufferMask.ColorBufferBit);
+        g.BindVertexArray(res.FsQuad.VAO);
+        SceneRenderer.ApplyPostProcessing(g, res.PostProcess, finalSceneTex, W, H,
+            postSettings, underwater, time, sceneDepthTex);
+        g.BindVertexArray(0);
+        g.Enable(EnableCap.DepthTest);
     }
 }

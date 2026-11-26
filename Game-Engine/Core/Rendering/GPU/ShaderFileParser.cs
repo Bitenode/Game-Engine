@@ -383,7 +383,6 @@ in vec4 vShadowCoord;
 uniform sampler2D uTexture0;
 uniform sampler2D uTexture1;
 uniform sampler2D uTexture2;
-uniform sampler2D uShadowMap;
 
 uniform int   uHasNormalMap;
 uniform float uNormalStrength;
@@ -394,10 +393,17 @@ uniform vec3  uSunDir;
 uniform float uRoughness;
 uniform float uMetallic;
 
+// ReflectionProbe cubemap IBL (unit 15)
+uniform samplerCube uEnvMap;
+uniform int         uHasEnvMap;
+uniform float       uEnvIntensity;
+uniform float       uEnvMaxMip;
+
 {propUniforms}
 
 #include ""Common/NormalMapping.glsl""
 #include ""Common/PBR.glsl""
+#define SHADOW_CASCADES
 #include ""Common/Shadows.glsl""
 
 struct SurfaceInput
@@ -501,15 +507,8 @@ struct SurfaceOutput
             sb.AppendLine("    float shadow = 1.0;");
             sb.AppendLine("    if (uHasShadow != 0 && uLightIsPoint == 0)");
             sb.AppendLine("    {");
-            sb.AppendLine("        vec3 proj = vShadowCoord.xyz / max(vShadowCoord.w, 0.0001);");
-            sb.AppendLine("        proj = proj * 0.5 + 0.5;");
-            sb.AppendLine("        if (proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            float baseBias = uShadowBias > 0.0 ? uShadowBias : 0.006;");
-            sb.AppendLine("            float bias = baseBias + baseBias * 2.5 * (1.0 - max(dot(N, L), 0.0));");
-            sb.AppendLine("            float s = SampleShadowSingle(uShadowMap, proj.xy, proj.z - bias);");
-            sb.AppendLine("            shadow = mix(1.0, s, ShadowEdgeFade(proj.xy, 0.08));");
-            sb.AppendLine("        }");
+            sb.AppendLine("        float baseBias = uShadowBias > 0.0 ? uShadowBias : 0.006;");
+            sb.AppendLine("        shadow = SampleShadowCascaded(vWorldPos, geoN, uSunDir, baseBias, 0.04);");
             sb.AppendLine("    }");
             sb.AppendLine("    vec3 Lo = EvaluateCookTorrance(N, V, L, OUT.Albedo, metallic, roughness, F0, lightCol * intensity * atten) * shadow;");
             sb.AppendLine("    for (int pi = 0; pi < 4; ++pi)");
@@ -527,8 +526,15 @@ struct SurfaceOutput
             sb.AppendLine("            Lo += EvaluateCookTorrance(N, V, pL, OUT.Albedo, metallic, roughness, F0, pRad);");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
+            sb.AppendLine("    vec3 R = reflect(-V, N);");
+            sb.AppendLine("    vec3 Fenv = FresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);");
+            sb.AppendLine("    vec3 envSpec = (uHasEnvMap != 0)");
+            sb.AppendLine("        ? textureLod(uEnvMap, R, roughness * max(uEnvMaxMip, 0.0)).rgb * Fenv * uEnvIntensity");
+            sb.AppendLine("        : ProceduralSkyIBL(R, roughness, uAmbient) * Fenv * (0.35 + 0.65 * metallic);");
             sb.AppendLine("    float amb = uAmbient < 0.01 ? 0.15 : uAmbient;");
-            sb.AppendLine("    vec3 color = vec3(amb) * OUT.Albedo * OUT.AO + Lo + OUT.Emission;");
+            sb.AppendLine("    vec3 kD = (vec3(1.0) - Fenv) * (1.0 - metallic);");
+            sb.AppendLine("    vec3 color = (kD * vec3(amb) * OUT.Albedo + envSpec) * OUT.AO + Lo + OUT.Emission;");
+            sb.AppendLine("    color = color / (color + vec3(1.0));");
         }
         sb.AppendLine("    FragColor = vec4(color, OUT.Alpha);");
         sb.AppendLine("}");

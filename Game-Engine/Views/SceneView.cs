@@ -1889,31 +1889,45 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         _tSetup = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
 
-        // --- SHADOW MAP PASS (skippable via ShowShadows toggle) ---
+        // --- SHADOW MAP PASS (4-cascade CSM on desktop, single map fallback for point light) ---
         SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
         GPUFramebuffer? shadowFBO = null;
-        if (ShowShadows && !GameView.IsAnyViewPlaying && res.Shadow != null && res.Depth != null)
+        CascadedShadowMap? activeCsm = null;
+        if (ShowShadows && !GameView.IsAnyViewPlaying && (res.CascadedShadow != null || res.Shadow != null) && res.Depth != null)
         {
-            // Sun direction: direction sunlight travels (from sun toward scene)
             var sunShineDir = fallbackPlanetSunDir;
+            if (!lightIsPoint && res.CascadedShadow != null)
+            {
+                GameRenderPipeline.RenderShadowMaps(g, res, (uint)fb, pxW, pxH,
+                    in view, in proj, camPos, sunShineDir, lightIsPoint: false,
+                    out shadowFBO, out shadowVP, out activeCsm);
+            }
+            else if (res.Shadow != null)
+            {
+                var sceneCenter = _target;
+                float sceneRadius = Math.Max(20f, _distance * 1.5f);
+                shadowVP = ShadowMapGPU.BuildDirectionalLightVP(
+                    sunShineDir, sceneCenter, sceneRadius, res.Shadow.Width);
+                res.Shadow.LightVP = shadowVP;
 
-            // Shadow frustum centered on orbit target
-            var sceneCenter = _target;
-            float sceneRadius = Math.Max(20f, _distance * 1.5f);
-            shadowVP = ShadowMapGPU.BuildDirectionalLightVP(
-                sunShineDir, sceneCenter, sceneRadius, res.Shadow.Width);
-            res.Shadow.LightVP = shadowVP;
+                res.Shadow.Begin(g);
+                g.Enable(EnableCap.DepthTest);
+                g.DepthFunc(DepthFunction.Less);
+                SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache!, shadowVP);
+                res.Shadow.End(g, (uint)fb);
+                g.Viewport(0, 0, (uint)pxW, (uint)pxH);
+                shadowFBO = res.Shadow.FBO;
+            }
+        }
 
-            // Render depth from the sun's perspective
-            res.Shadow.Begin(g);
-            g.Enable(EnableCap.DepthTest);
-            g.DepthFunc(DepthFunction.Less);
-            SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache!, shadowVP);
-            res.Shadow.End(g, (uint)fb);
-
-            // Restore viewport for main pass
-            g.Viewport(0, 0, (uint)pxW, (uint)pxH);
-            shadowFBO = res.Shadow.FBO;
+        // Capture up to 1 pending ReflectionProbe cubemap per frame before main passes
+        if (!ShowWire && !GameView.IsAnyViewPlaying)
+        {
+            SceneRenderer.CaptureReflectionProbes(g, res,
+                SN.Vector3.Normalize(-L), DiffuseK, Ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadowFBO, in shadowVP, fallbackPlanetSunDir, lightColorNorm, light,
+                skyTop, skyBot, sunDir, skyTex, skyBlend, skyYaw, fallbackPlanetSunDir, planetSkyUp);
         }
 
         _tShadow = _sec.Elapsed.TotalMilliseconds; _sec.Restart();
@@ -1921,11 +1935,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         // --- UNDERWATER DETECTION ---
         var underwater = UnderwaterQuery.GetState(camPos);
 
-        // --- POST-PROCESSING FBO setup ---
-        // If a PostProcessVolume is active, render the scene to an offscreen FBO
-        // so we can apply screen-space effects before blitting to Avalonia's FB.
-        var postVolume = PostProcessVolume.GetActive();
-        bool usePostFX = (postVolume != null || underwater != null) && res.PostProcess != null && !ShowWire;
+        // --- POST-PROCESSING FBO setup (global + local volume blending) ---
+        var postSettings = PostProcessVolume.SampleBlended(camPos);
+        bool usePostFX = (postSettings != null || underwater != null) && res.PostProcess != null && !ShowWire;
 
         if (usePostFX)
         {
@@ -1977,7 +1989,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                 lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, camPos, sunSD,
                 terrainShader: res.Terrain,
-                lightColor: lightColorNorm);
+                lightColor: lightColorNorm,
+                cascadedShadow: activeCsm);
 
             // --- PLANET TERRAIN ---
             if (res.PlanetTerrain != null)
@@ -1997,13 +2010,15 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     SN.Vector3.Normalize(-L), DiffuseK, Ambient,
                     lightIsPoint, lightPosW, lightRange,
                     shadowFBO, shadowVP, sunSD,
-                    lightColor: lightColorNorm);
+                    lightColor: lightColorNorm,
+                    cascadedShadow: activeCsm);
                 SceneRenderer.RenderForwardSceneOpaques(g, res.Standard!, res.Cache,
                     view, proj, camPos,
                     SN.Vector3.Normalize(-L), DiffuseK, Ambient,
                     lightIsPoint, lightPosW, lightRange,
                     shadowFBO, shadowVP, sunSD,
-                    lightColor: lightColorNorm);
+                    lightColor: lightColorNorm,
+                    cascadedShadow: activeCsm);
             }
 
             // --- WATER ---
@@ -2075,8 +2090,9 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
         // --- VOLUMETRIC FOG PASS ---
         GPUTexture? postInputTex = res.SceneFbo?.ColorTexture;
-        if (res.VolFog != null && postVolume?.VolumetricFogEnabled == true
-            && res.SceneFbo?.ColorTexture != null && res.SceneFbo?.DepthTexture != null)
+        GPUTexture? postDepthTex = res.SceneFbo?.DepthTexture;
+        if (res.VolFog != null && postSettings?.VolumetricFogEnabled == true
+            && res.SceneFbo?.ColorTexture != null && postDepthTex != null)
         {
             if (res.VolFogFbo == null) res.VolFogFbo = new GPUFramebuffer(g);
             if (res.VolFogFbo.Width != pxW || res.VolFogFbo.Height != pxH)
@@ -2090,29 +2106,22 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
             g.BindVertexArray(res.FsQuad!.VAO);
             SceneRenderer.RenderVolumetricFog(g, res.VolFog, res.FsQuad!,
-                res.SceneFbo.ColorTexture, res.SceneFbo.DepthTexture,
+                res.SceneFbo.ColorTexture, postDepthTex,
                 view, proj, camPos,
                 volFogSunDir, lightColorNorm,
-                shadowFBO, shadowVP, postVolume,
+                shadowFBO, shadowVP, postSettings,
                 (float)Core.Time.time);
             g.BindVertexArray(0);
 
             postInputTex = res.VolFogFbo.ColorTexture;
         }
 
-        // --- POST-PROCESSING BLIT ---
+        // --- DEPTH OF FIELD + POST-PROCESSING BLIT ---
         if (usePostFX && postInputTex != null)
         {
-            // Bind Avalonia's framebuffer as the output target
-            g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-            g.Viewport(0, 0, (uint)pxW, (uint)pxH);
-            g.Disable(EnableCap.DepthTest);
-
-            g.BindVertexArray(res.FsQuad!.VAO);
-            SceneRenderer.ApplyPostProcessing(g, res.PostProcess!, postInputTex, pxW, pxH, postVolume, underwater, (float)Core.Time.time);
-            g.BindVertexArray(0);
-
-            g.Enable(EnableCap.DepthTest);
+            GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, pxW, pxH,
+                in view, in proj, camPos, postInputTex, postDepthTex,
+                postSettings, underwater, (float)Core.Time.time);
 
             // Blit depth from scene FBO so gizmos occlude correctly
             g.BindFramebuffer(FramebufferTarget.ReadFramebuffer, res.SceneFbo!.Handle);

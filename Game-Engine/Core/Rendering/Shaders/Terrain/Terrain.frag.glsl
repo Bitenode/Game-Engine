@@ -110,8 +110,7 @@ float ShadowCalc(vec4 sc, vec3 N)
     float bias = uShadowBias + uShadowBias * 3.0 * (1.0 - cosTheta);
     float currentDepth = proj.z - bias;
 
-    float pcfDepth = texture(uShadowMap, proj.xy).r;
-    float shadow = (currentDepth > pcfDepth) ? 0.10 : 1.0;
+    float shadow = SampleShadowSingle(uShadowMap, proj.xy, currentDepth);
 
     float fade = ShadowEdgeFade(proj.xy, 0.08);
     return mix(1.0, shadow, fade);

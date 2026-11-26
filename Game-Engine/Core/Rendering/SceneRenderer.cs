@@ -9,6 +9,7 @@ using Avalonia;
 using Silk.NET.OpenGL;
 using Game_Engine.Core.Component;
 using Game_Engine.Core.Planet;
+using Game_Engine.Core.Rendering;
 using Game_Engine.Core.Rendering.GPU;
 using SN = System.Numerics;
 
@@ -52,6 +53,7 @@ namespace Game_Engine.Core
         [ThreadStatic] public static bool SkipPlanetAtmosphereClouds;
         /// <summary>Skip drawing every planet leaf into the shadow map (orbit / play Scene view).</summary>
         [ThreadStatic] public static bool SkipPlanetLeafShadows;
+        [ThreadStatic] private static bool s_suppressEnvMap;
 
         public static bool TryBeginViewRender()
             => Interlocked.CompareExchange(ref s_viewRenderActive, 1, 0) == 0;
@@ -74,6 +76,7 @@ namespace Game_Engine.Core
             public float Ambient;
             public SN.Matrix4x4 ShadowVP;
             public GPUFramebuffer? ShadowFBO;
+            public CascadedShadowMap? CascadedShadow;
             public SN.Vector3 SunShineDir;
             public ShaderProgram StandardShader;
             public ResourceCache Cache;
@@ -522,9 +525,8 @@ namespace Game_Engine.Core
 
         /// <summary>
         /// Apply post-processing effects to the scene texture.
-        /// Renders a fullscreen quad with the post-processing shader.
-        /// The caller MUST pass the volume obtained from GetActive() — this avoids
-        /// a second lookup that could return a different result mid-frame.
+        /// <summary>
+        /// Renders a fullscreen quad with the post-processing shader (blended <see cref="PostProcessSettings"/> + real scene depth).
         /// </summary>
         public static void ApplyPostProcessing(
             GL gl,
@@ -532,9 +534,10 @@ namespace Game_Engine.Core
             GPUTexture sceneTexture,
             int viewportWidth,
             int viewportHeight,
-            PostProcessVolume? volume = null,
+            PostProcessSettings? settings = null,
             UnderwaterState? underwater = null,
-            float underwaterTime = 0f)
+            float underwaterTime = 0f,
+            GPUTexture? depthTexture = null)
         {
             // Always bind the post-process shader, even for passthrough —
             // rendering without a shader causes a black screen.
@@ -547,11 +550,24 @@ namespace Game_Engine.Core
             postShader.SetTexture("uScene", 0);
             postShader.SetVector2("uTexelSize", 1f / viewportWidth, 1f / viewportHeight);
 
-            if (volume == null)
+            if (depthTexture != null)
+            {
+                depthTexture.Bind(TextureUnit.Texture1);
+                postShader.SetTexture("uDepthTex", 1);
+                postShader.SetInt("uHasDepthTex", 1);
+            }
+            else
+            {
+                postShader.SetInt("uHasDepthTex", 0);
+            }
+
+            if (settings == null)
             {
                 // Pass-through: disable all effects so the shader just copies the texture
                 postShader.SetInt("uBloomEnabled", 0);
                 postShader.SetInt("uFogEnabled", 0);
+                postShader.SetInt("uFogHeightBased", 0);
+                postShader.SetFloat("uFogHeightFalloff", 0.1f);
                 postShader.SetInt("uColorGradingEnabled", 0);
                 postShader.SetInt("uVignetteEnabled", 0);
                 postShader.SetInt("uFXAAEnabled", 0);
@@ -566,32 +582,34 @@ namespace Game_Engine.Core
             else
             {
                 // Bloom
-                postShader.SetInt("uBloomEnabled", volume.BloomEnabled ? 1 : 0);
-                postShader.SetFloat("uBloomThreshold", volume.BloomThreshold);
-                postShader.SetFloat("uBloomIntensity", volume.BloomIntensity);
+                postShader.SetInt("uBloomEnabled", settings.BloomEnabled ? 1 : 0);
+                postShader.SetFloat("uBloomThreshold", settings.BloomThreshold);
+                postShader.SetFloat("uBloomIntensity", settings.BloomIntensity);
 
-                // Fog
-                postShader.SetInt("uFogEnabled", volume.FogEnabled ? 1 : 0);
-                postShader.SetVector3("uFogColor", volume.FogColor);
-                postShader.SetFloat("uFogDensity", volume.FogDensity);
-                postShader.SetFloat("uFogStart", volume.FogStart);
-                postShader.SetFloat("uFogEnd", volume.FogEnd);
+                // Fog (real depth & height fog)
+                postShader.SetInt("uFogEnabled", settings.FogEnabled ? 1 : 0);
+                postShader.SetVector3("uFogColor", settings.FogColor);
+                postShader.SetFloat("uFogDensity", settings.FogDensity);
+                postShader.SetFloat("uFogStart", settings.FogStart);
+                postShader.SetFloat("uFogEnd", settings.FogEnd);
+                postShader.SetInt("uFogHeightBased", settings.FogHeightBased ? 1 : 0);
+                postShader.SetFloat("uFogHeightFalloff", settings.FogHeightFalloff);
 
                 // Color Grading
-                postShader.SetInt("uColorGradingEnabled", volume.ColorGradingEnabled ? 1 : 0);
-                postShader.SetFloat("uBrightness", volume.Brightness);
-                postShader.SetFloat("uContrast", volume.Contrast);
-                postShader.SetFloat("uSaturation", volume.Saturation);
-                postShader.SetFloat("uExposure", volume.Exposure);
-                postShader.SetInt("uToneMap", (int)volume.ToneMap);
+                postShader.SetInt("uColorGradingEnabled", settings.ColorGradingEnabled ? 1 : 0);
+                postShader.SetFloat("uBrightness", settings.Brightness);
+                postShader.SetFloat("uContrast", settings.Contrast);
+                postShader.SetFloat("uSaturation", settings.Saturation);
+                postShader.SetFloat("uExposure", settings.Exposure);
+                postShader.SetInt("uToneMap", (int)settings.ToneMap);
 
                 // Vignette
-                postShader.SetInt("uVignetteEnabled", volume.VignetteEnabled ? 1 : 0);
-                postShader.SetFloat("uVignetteIntensity", volume.VignetteIntensity);
-                postShader.SetFloat("uVignetteSmoothness", volume.VignetteSmoothness);
+                postShader.SetInt("uVignetteEnabled", settings.VignetteEnabled ? 1 : 0);
+                postShader.SetFloat("uVignetteIntensity", settings.VignetteIntensity);
+                postShader.SetFloat("uVignetteSmoothness", settings.VignetteSmoothness);
 
                 // FXAA
-                postShader.SetInt("uFXAAEnabled", volume.FXAAEnabled ? 1 : 0);
+                postShader.SetInt("uFXAAEnabled", settings.FXAAEnabled ? 1 : 0);
             }
 
             // Underwater. Land weather fog must not run in this pass — it tints
@@ -619,6 +637,79 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.CullFace);
             gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
             gl.Enable(EnableCap.DepthTest);
+        }
+
+        /// <summary>Backward-compatible overload accepting a <see cref="PostProcessVolume"/> directly.</summary>
+        public static void ApplyPostProcessing(
+            GL gl,
+            ShaderProgram postShader,
+            GPUTexture sceneTexture,
+            int viewportWidth,
+            int viewportHeight,
+            PostProcessVolume? volume,
+            UnderwaterState? underwater = null,
+            float underwaterTime = 0f,
+            GPUTexture? depthTexture = null)
+        {
+            ApplyPostProcessing(gl, postShader, sceneTexture, viewportWidth, viewportHeight,
+                volume != null ? PostProcessSettings.FromVolume(volume) : null,
+                underwater, underwaterTime, depthTexture);
+        }
+
+        /// <summary>
+        /// 2-pass separable Depth-of-Field post-processing pass (horizontal -> vertical).
+        /// Uses unit 0 (<c>uSceneColor</c>) and unit 1 (<c>uDepthTex</c>).
+        /// </summary>
+        public static GPUTexture RenderDepthOfField(
+            GL gl,
+            ShaderProgram dofShader,
+            FullscreenQuad fsQuad,
+            GPUTexture sceneColor,
+            GPUTexture depthTex,
+            GPUFramebuffer tempFbo,
+            GPUFramebuffer outFbo,
+            int width,
+            int height,
+            PostProcessSettings settings,
+            float nearPlane,
+            float farPlane)
+        {
+            dofShader.Use();
+            dofShader.SetFloat("uFocusDistance", MathF.Max(settings.DoFFocusDistance, 0.1f));
+            dofShader.SetFloat("uAperture", MathF.Max(settings.DoFAperture, 0.5f));
+            dofShader.SetFloat("uFocalLength", MathF.Max(settings.DoFFocalLength, 1f));
+            dofShader.SetFloat("uMaxBlurRadius", Math.Clamp(settings.DoFMaxBlurRadius, 1f, 16f));
+            dofShader.SetFloat("uNearBlurScale", MathF.Max(settings.DoFNearBlurScale, 0f));
+            dofShader.SetFloat("uFarBlurScale", MathF.Max(settings.DoFFarBlurScale, 0f));
+            dofShader.SetVector2("uTexelSize", 1f / Math.Max(1, width), 1f / Math.Max(1, height));
+            dofShader.SetFloat("uNear", MathF.Max(nearPlane, 0.01f));
+            dofShader.SetFloat("uFar", MathF.Max(farPlane, nearPlane + 1f));
+
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.Blend);
+            gl.Disable(EnableCap.CullFace);
+            gl.ColorMask(true, true, true, true);
+
+            // Pass 0: horizontal blur -> tempFbo
+            tempFbo.Bind();
+            sceneColor.Bind(TextureUnit.Texture0);
+            dofShader.SetTexture("uSceneColor", 0);
+            depthTex.Bind(TextureUnit.Texture1);
+            dofShader.SetTexture("uDepthTex", 1);
+            dofShader.SetInt("uPass", 0);
+            fsQuad.Draw();
+
+            // Pass 1: vertical blur -> outFbo
+            outFbo.Bind();
+            tempFbo.ColorTexture!.Bind(TextureUnit.Texture0);
+            dofShader.SetTexture("uSceneColor", 0);
+            depthTex.Bind(TextureUnit.Texture1);
+            dofShader.SetTexture("uDepthTex", 1);
+            dofShader.SetInt("uPass", 1);
+            fsQuad.Draw();
+
+            gl.Enable(EnableCap.DepthTest);
+            return outFbo.ColorTexture!;
         }
 
         // ---------- GPU RENDER ENTRY POINT ----------
@@ -656,7 +747,8 @@ namespace Game_Engine.Core
             SN.Vector3 sunShineDir = default,
             ShaderProgram? terrainShader = null,
             bool isES = true,
-            SN.Vector3 lightColor = default)
+            SN.Vector3 lightColor = default,
+            CascadedShadowMap? cascadedShadow = null)
         {
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
@@ -688,12 +780,13 @@ namespace Game_Engine.Core
             // Upload FrameGlobals & LightingGlobals UBOs once for this pass
             var globals = GlobalUniforms.ForContext(gl);
             var resolvedLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
-            bool hasShadow = shadowFBO?.DepthTexture != null;
+            bool hasShadow = cascadedShadow != null || shadowFBO?.DepthTexture != null;
             var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
                 ? SN.Vector3.Normalize(WindSystem.Direction)
                 : SN.Vector3.UnitX;
 
-            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            GameRenderPipeline.ExtractNearFar(in proj, out float nearP, out float farP);
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, nearPlane: nearP, farPlane: farP);
             globals.UpdateLighting(
                 lightDir, diffuseK, resolvedLightColor, ambient,
                 lightIsPoint, lightPosW, lightRange,
@@ -702,6 +795,7 @@ namespace Game_Engine.Core
                 cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
                 windDir: windDir,
                 windTime: WindSystem.Time);
+            BindNearestPointLights(globals, camPos);
 
             standardShader.Use();
 
@@ -709,9 +803,9 @@ namespace Game_Engine.Core
             {
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
-                standardShader.SetTexture("uShadowMap", 7);
+                BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
+            BindEnvMapToShader(standardShader, camPos, 12);
 
             // Build render context for custom shader support
             var renderCtx = new RenderContext
@@ -725,6 +819,7 @@ namespace Game_Engine.Core
                 Ambient = ambient,
                 ShadowVP = shadowVP,
                 ShadowFBO = shadowFBO,
+                CascadedShadow = cascadedShadow,
                 SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
@@ -746,10 +841,8 @@ namespace Game_Engine.Core
                 {
                     standardShader.Use();
                     if (hasShadow)
-                    {
-                        shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
-                        standardShader.SetTexture("uShadowMap", 7);
-                    }
+                        BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
+                    BindEnvMapToShader(standardShader, camPos, 12);
                     terrainShaderActive = false;
                 }
                 DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
@@ -767,7 +860,10 @@ namespace Game_Engine.Core
                 {
                     terrainShader.SetFloat("uShadowBias", 0.008f);
                     terrainShader.SetVector3("uSunDir", sunShineDir);
-                    shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture2);
+                    var terrainShadowTex = cascadedShadow != null
+                        ? cascadedShadow.Cascades[0].FBO.DepthTexture
+                        : shadowFBO?.DepthTexture;
+                    terrainShadowTex?.Bind(TextureUnit.Texture2);
                     terrainShader.SetTexture("uShadowMap", 2);
                 }
 
@@ -808,11 +904,9 @@ namespace Game_Engine.Core
 
                 // Ensure standard shader is active for transparent pass
                 standardShader.Use();
-                if (shadowFBO?.DepthTexture != null)
-                {
-                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
-                    standardShader.SetTexture("uShadowMap", 7);
-                }
+                if (hasShadow)
+                    BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
+                BindEnvMapToShader(standardShader, camPos, 12);
 
                 foreach (var item in transparentItems)
                 {
@@ -1030,6 +1124,264 @@ namespace Game_Engine.Core
                 count, in vp0, in vp1, in vp2, in vp3, splits);
         }
 
+        /// <summary>
+        /// Bind either all 4 CSM cascades (units 7..10) or a single shadow map (unit 7) to <paramref name="shader"/>.
+        /// </summary>
+        private static void BindShadowMapsToShader(
+            ShaderProgram shader,
+            GPUFramebuffer? shadowFBO,
+            CascadedShadowMap? csm,
+            int baseUnit = 7)
+        {
+            if (csm != null)
+            {
+                BindCascadeShadowUniforms(shader, csm, baseUnit);
+            }
+            else if (shadowFBO?.DepthTexture != null)
+            {
+                shadowFBO.DepthTexture.Bind(TextureUnit.Texture0 + baseUnit);
+                shader.SetTexture("uShadowMap", baseUnit);
+                shader.SetTexture("uShadowMapC1", baseUnit);
+                shader.SetTexture("uShadowMapC2", baseUnit);
+                shader.SetTexture("uShadowMapC3", baseUnit);
+            }
+        }
+
+        /// <summary>
+        /// Bind the nearest captured <see cref="ReflectionProbe"/> cubemap (<c>uEnvMap</c>) to
+        /// <paramref name="textureUnit"/>, or disable env-map sampling if none is captured or capture is in progress.
+        /// </summary>
+        public static void BindEnvMapToShader(
+            ShaderProgram shader,
+            SN.Vector3 worldPos,
+            int textureUnit,
+            GPUTexture? explicitCubemap = null,
+            float explicitIntensity = 0f)
+        {
+            // Always assign uEnvMap to its dedicated texture unit (even when uHasEnvMap == 0).
+            // OpenGL / GLES 3.0 (strictly enforced by ANGLE) rejects draw calls with GL_INVALID_OPERATION
+            // if a samplerCube (defaulting to unit 0) shares a texture unit with a sampler2D (uAlbedoTex on unit 0).
+            shader.SetTexture("uEnvMap", textureUnit);
+
+            if (s_suppressEnvMap)
+            {
+                shader.SetInt("uHasEnvMap", 0);
+                shader.SetFloat("uEnvIntensity", 0f);
+                shader.SetFloat("uEnvMaxMip", 0f);
+                return;
+            }
+
+            GPUTexture? cube = explicitCubemap;
+            float intensity = explicitIntensity;
+            if (cube == null)
+            {
+                var probe = ReflectionProbe.GetBestForPosition(worldPos);
+                if (probe?.GpuCubemap != null && probe.HasCaptured && probe.Intensity > 0.001f)
+                {
+                    cube = probe.GpuCubemap;
+                    intensity = probe.Intensity;
+                }
+            }
+
+            if (cube != null && intensity > 0.001f)
+            {
+                cube.BindCubemap(TextureUnit.Texture0 + textureUnit);
+                shader.SetInt("uHasEnvMap", 1);
+                shader.SetFloat("uEnvIntensity", Math.Clamp(intensity, 0f, 3f));
+                int dim = Math.Max(1, cube.Width);
+                float maxMip = MathF.Max(0f, MathF.Floor(MathF.Log2(dim)));
+                shader.SetFloat("uEnvMaxMip", maxMip);
+            }
+            else
+            {
+                shader.SetInt("uHasEnvMap", 0);
+                shader.SetFloat("uEnvIntensity", 0f);
+                shader.SetFloat("uEnvMaxMip", 0f);
+            }
+        }
+
+        // OpenGL cubemap face directions and exact up vectors (+X, -X, +Y, -Y, +Z, -Z)
+        private static readonly SN.Vector3[] s_cubeFaceDirs =
+        {
+            new SN.Vector3( 1f,  0f,  0f),
+            new SN.Vector3(-1f,  0f,  0f),
+            new SN.Vector3( 0f,  1f,  0f),
+            new SN.Vector3( 0f, -1f,  0f),
+            new SN.Vector3( 0f,  0f,  1f),
+            new SN.Vector3( 0f,  0f, -1f),
+        };
+
+        private static readonly SN.Vector3[] s_cubeFaceUps =
+        {
+            new SN.Vector3(0f, -1f,  0f),
+            new SN.Vector3(0f, -1f,  0f),
+            new SN.Vector3(0f,  0f,  1f),
+            new SN.Vector3(0f,  0f, -1f),
+            new SN.Vector3(0f, -1f,  0f),
+            new SN.Vector3(0f, -1f,  0f),
+        };
+
+        /// <summary>
+        /// Capture up to 1 pending <see cref="ReflectionProbe"/> cubemap per frame (6 faces, 90° FOV,
+        /// Sky + forward opaque scene + terrain + planets) with <c>uHasEnvMap = 0</c> to avoid feedback,
+        /// then generate mipmaps and cleanly restore previous FBO, viewport, and <c>FrameGlobals</c> UBO.
+        /// </summary>
+        public static unsafe void CaptureReflectionProbes(
+            GL gl,
+            ViewRenderResources res,
+            SN.Vector3 lightDir,
+            float diffuseK,
+            float ambient,
+            bool lightIsPoint,
+            SN.Vector3 lightPosW,
+            float lightRange,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            SN.Vector3 sunSD,
+            SN.Vector3 lightColor,
+            Light? light,
+            Avalonia.Media.Color skyTop,
+            Avalonia.Media.Color skyBot,
+            SN.Vector3? sunDir,
+            Texture2D? skyTex,
+            float skyMix,
+            float skyYaw,
+            SN.Vector3 fallbackSun,
+            SN.Vector3? planetSkyUp = null)
+        {
+            if (res.Standard == null || res.Depth == null || res.Sky == null || res.FsQuad == null || res.Cache == null)
+                return;
+
+            var probes = ReflectionProbe.ActiveProbes;
+            if (probes.Count == 0) return;
+
+            ReflectionProbe? target = null;
+            for (int i = 0; i < probes.Count; i++)
+            {
+                var p = probes[i];
+                if (p is not { IsActiveAndEnabled: true, gameObject: not null }) continue;
+                p.EnsureGpuResources(gl);
+                if (p.NeedsCapture || p.ShouldRefreshRealtime())
+                {
+                    target = p;
+                    break; // Limit to 1 probe capture per frame to avoid hitches
+                }
+            }
+
+            if (target?.GpuCubemap == null || target.gameObject == null) return;
+
+            int size = Math.Clamp(target.GpuCubemap.Width, 16, 512);
+
+            // Save caller GL state & FrameGlobals UBO
+            gl.GetInteger(GetPName.DrawFramebufferBinding, out int prevFb);
+            Span<int> prevViewport = stackalloc int[4];
+            gl.GetInteger(GetPName.Viewport, prevViewport);
+
+            var globals = GlobalUniforms.ForContext(gl);
+            var savedFrame = globals.FrameData;
+
+            // Ensure reusable capture FBO + depth renderbuffer matching probe size
+            if (res.ProbeCaptureFbo == 0)
+                res.ProbeCaptureFbo = gl.GenFramebuffer();
+            if (res.ProbeCaptureDepthRbo == 0)
+                res.ProbeCaptureDepthRbo = gl.GenRenderbuffer();
+
+            gl.BindFramebuffer(FramebufferTarget.Framebuffer, res.ProbeCaptureFbo);
+            if (res.ProbeCaptureSize != size)
+            {
+                gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, res.ProbeCaptureDepthRbo);
+                gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer, InternalFormat.DepthComponent24, (uint)size, (uint)size);
+                gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment,
+                    RenderbufferTarget.Renderbuffer, res.ProbeCaptureDepthRbo);
+                gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+                res.ProbeCaptureSize = size;
+            }
+
+            DrawBufferMode color0 = DrawBufferMode.ColorAttachment0;
+            gl.DrawBuffers(1, &color0);
+
+            var worldMat = TransformUtil.WorldFromTransform(target.gameObject.Transform);
+            var probePos = new SN.Vector3(worldMat.M41, worldMat.M42, worldMat.M43);
+            var faceProj = SN.Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI * 0.5f, 1f, 0.1f, 500f);
+
+            bool prevSuppress = s_suppressEnvMap;
+            s_suppressEnvMap = true;
+
+            try
+            {
+                gl.Viewport(0, 0, (uint)size, (uint)size);
+                gl.Enable(EnableCap.DepthTest);
+                gl.DepthFunc(DepthFunction.Less);
+                gl.DepthMask(true);
+                gl.Disable(EnableCap.Blend);
+                gl.ColorMask(true, true, true, true);
+
+                for (int face = 0; face < 6; face++)
+                {
+                    gl.FramebufferTexture2D(
+                        FramebufferTarget.Framebuffer,
+                        FramebufferAttachment.ColorAttachment0,
+                        TextureTarget.TextureCubeMapPositiveX + face,
+                        target.GpuCubemap.Handle,
+                        0);
+
+                    gl.ClearColor(0.12f, 0.12f, 0.15f, 1f);
+                    gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+                    var faceView = SN.Matrix4x4.CreateLookAt(
+                        probePos,
+                        probePos + s_cubeFaceDirs[face],
+                        s_cubeFaceUps[face]);
+
+                    globals.UpdateFrame(in faceView, in faceProj, probePos, WindSystem.Time, size, size, 0.1f, 500f);
+
+                    // 1. Skybox
+                    Sky.RenderGPU(gl, res.Sky, res.FsQuad, res.Cache, faceView, faceProj,
+                        skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
+
+                    // 2. Opaque scene + terrain (forward pass, env map suppressed)
+                    RenderGPU(gl, res.Standard, res.Depth, res.Cache,
+                        faceView, faceProj, lightDir, diffuseK, ambient,
+                        lightIsPoint, lightPosW, lightRange,
+                        shadowFBO, shadowVP, probePos, sunSD,
+                        terrainShader: res.Terrain, isES: res.IsES, lightColor: lightColor,
+                        cascadedShadow: null);
+
+                    // 3. Planet terrain (if any)
+                    if (res.PlanetTerrain != null && PlanetTerrain.ActivePlanets.Count > 0)
+                    {
+                        foreach (var planet in PlanetTerrain.ActivePlanets)
+                        {
+                            if (planet?.Config == null) continue;
+                            var tp = planet.gameObject?.Transform?.Position;
+                            var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
+                            var atmo = ResolvePlanetAtmosphere(planet, light, fallbackSun, ambient);
+                            RenderPlanetTerrain(gl, res.PlanetTerrain, res.Cache, faceView, faceProj, planet, atmo,
+                                lightDir, diffuseK, probePos, pc, shadowFBO, shadowVP);
+                        }
+                    }
+                }
+
+                // Generate prefiltered mip chain on GPU
+                gl.BindTexture(TextureTarget.TextureCubeMap, target.GpuCubemap.Handle);
+                gl.GenerateMipmap(TextureTarget.TextureCubeMap);
+                gl.BindTexture(TextureTarget.TextureCubeMap, 0);
+
+                target.NeedsCapture = false;
+                target.HasCaptured = true;
+            }
+            finally
+            {
+                s_suppressEnvMap = prevSuppress;
+
+                // Restore caller framebuffer, draw buffers, viewport, and FrameGlobals UBO
+                gl.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)prevFb);
+                GPUFramebuffer.DrawColorTo(gl, (uint)prevFb);
+                gl.Viewport(prevViewport[0], prevViewport[1], (uint)Math.Max(1, prevViewport[2]), (uint)Math.Max(1, prevViewport[3]));
+                globals.RestoreFrame(in savedFrame);
+            }
+        }
+
         // ---------- Internal traversal ----------
 
         private static void GatherDrawItems(
@@ -1204,11 +1556,9 @@ namespace Game_Engine.Core
                         // FrameGlobals & LightingGlobals live in UBOs so point lights, camera, and
                         // shadow state remain intact without clobbering them!
                         ctx.StandardShader.Use();
-                        if (ctx.ShadowFBO?.DepthTexture != null)
-                        {
-                            ctx.ShadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
-                            ctx.StandardShader.SetTexture("uShadowMap", 7);
-                        }
+                        if (ctx.CascadedShadow != null || ctx.ShadowFBO?.DepthTexture != null)
+                            BindShadowMapsToShader(ctx.StandardShader, ctx.ShadowFBO, ctx.CascadedShadow, 7);
+                        BindEnvMapToShader(ctx.StandardShader, ctx.CamPos, 12);
                         return;
                     }
                 }
@@ -1871,12 +2221,20 @@ namespace Game_Engine.Core
             // Standard material texture slots (units 0, 1, 2)
             BindCustomStandardTextures(customShader, mat, cache);
 
-            // ── Bind shadow map → unit 4 ──
-            // Pass real shadow state so both Surface shaders and legacy custom shaders can sample shadows.
-            if (ctx.ShadowFBO?.DepthTexture != null)
+            // ── Bind shadow map(s) → units 7..10 (CSM) or unit 7 (single) + unit 4 (legacy custom) ──
+            if (ctx.CascadedShadow != null)
             {
-                ctx.ShadowFBO.DepthTexture.Bind(TextureUnit.Texture4);
-                customShader.SetTexture("uShadowMap", 4);
+                BindCascadeShadowUniforms(customShader, ctx.CascadedShadow, 7);
+                if (!customShader.HasLightingUniformBlock)
+                    customShader.SetInt("uHasShadow", 1);
+                customShader.SetFloat("uShadowBias", 0.008f);
+                customShader.SetVector3("uSunDir", ctx.SunShineDir);
+            }
+            else if (ctx.ShadowFBO?.DepthTexture != null)
+            {
+                int unit = customShader.HasLightingUniformBlock ? 7 : 4;
+                ctx.ShadowFBO.DepthTexture.Bind(TextureUnit.Texture0 + unit);
+                customShader.SetTexture("uShadowMap", unit);
                 if (!customShader.HasLightingUniformBlock)
                     customShader.SetInt("uHasShadow", 1);
                 customShader.SetFloat("uShadowBias", 0.008f);
@@ -1887,7 +2245,10 @@ namespace Game_Engine.Core
                 customShader.SetInt("uHasShadow", 0);
             }
 
-            // Dynamic Material.Properties overrides + schema defaults (safe units 3, 5, 6, 11..15)
+            // ReflectionProbe cubemap IBL → unit 15 (disjoint from MaterialBinder units 3,5,6,11..14)
+            BindEnvMapToShader(customShader, ctx.CamPos, 15);
+
+            // Dynamic Material.Properties overrides + schema defaults (safe units 3, 5, 6, 11..14)
             MaterialBinder.BindProperties(customShader, mat, schema, cache);
 
             // GPU skinning: upload to BoneGlobals UBO when declared, or fall back to zero-alloc
@@ -2269,12 +2630,14 @@ namespace Game_Engine.Core
             int screenWidth = 0,
             int screenHeight = 0,
             GPUTexture? reflectionProbeCubemap = null,
-            float reflectionProbeBlend = 0f)
+            float reflectionProbeBlend = 0f,
+            CascadedShadowMap? cascadedShadow = null)
         {
             // Update FrameGlobals & LightingGlobals UBOs for deferred lighting pass
             var globals = GlobalUniforms.ForContext(gl);
-            bool hasShadow = shadowFBO?.DepthTexture != null;
-            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, screenWidth, screenHeight);
+            bool hasShadow = cascadedShadow != null || shadowFBO?.DepthTexture != null;
+            GameRenderPipeline.ExtractNearFar(in proj, out float nearP, out float farP);
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, screenWidth, screenHeight, nearP, farP);
             globals.UpdateLighting(
                 sunShineDir, 1f, SN.Vector3.One, ambient,
                 lightIsPoint: false, SN.Vector3.Zero, 0f,
@@ -2284,7 +2647,8 @@ namespace Game_Engine.Core
 
             deferredShader.Use();
 
-            // Bind G-buffer textures
+            // Texture unit map (0..14 — zero collisions, GLES 3.0 safe):
+            // 0..2: G-buffer MRT | 3: gDepth | 4: uSSAOTex | 7..10: CSM shadows | 11..13: Tiled lights | 14: uEnvMap
             if (gbufferFBO.ColorTextures != null && gbufferFBO.ColorTextures.Length >= 3)
             {
                 gbufferFBO.ColorTextures[0].Bind(TextureUnit.Texture0);
@@ -2297,27 +2661,18 @@ namespace Game_Engine.Core
                 deferredShader.SetTexture("gEmissiveAO", 2);
             }
 
-            // Depth
+            // Depth (unit 3)
             if (gbufferFBO.DepthTexture != null)
             {
                 gbufferFBO.DepthTexture.Bind(TextureUnit.Texture3);
                 deferredShader.SetTexture("gDepth", 3);
             }
 
-            // Shadow map
-            if (hasShadow)
-            {
-                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture4);
-                deferredShader.SetTexture("uShadowMap", 4);
-                deferredShader.SetFloat("uShadowBias", shadowBias);
-                deferredShader.SetVector3("uSunDir", sunShineDir);
-            }
-
-            // SSAO
+            // SSAO (unit 4)
             if (ssaoTexture != null)
             {
-                ssaoTexture.Bind(TextureUnit.Texture5);
-                deferredShader.SetTexture("uSSAOTex", 5);
+                ssaoTexture.Bind(TextureUnit.Texture4);
+                deferredShader.SetTexture("uSSAOTex", 4);
                 deferredShader.SetInt("uHasSSAO", 1);
                 deferredShader.SetFloat("uSSAOIntensity", Math.Clamp(ssaoIntensity, 0f, 2f));
             }
@@ -2325,6 +2680,14 @@ namespace Game_Engine.Core
             {
                 deferredShader.SetInt("uHasSSAO", 0);
                 deferredShader.SetFloat("uSSAOIntensity", 0f);
+            }
+
+            // Shadow map(s) (units 7..10)
+            if (hasShadow)
+            {
+                BindShadowMapsToShader(deferredShader, shadowFBO, cascadedShadow, 7);
+                deferredShader.SetFloat("uShadowBias", shadowBias);
+                deferredShader.SetVector3("uSunDir", sunShineDir);
             }
 
             // Inverse VP (uCamPos and uAmbient come from FrameGlobals / LightingGlobals UBOs)
@@ -2374,6 +2737,7 @@ namespace Game_Engine.Core
                 }
             }
 
+            // Tiled local lights (units 11, 12, 13)
             int localCount = localScratch.Count;
             if (tiledLights != null && screenWidth > 0 && screenHeight > 0)
             {
@@ -2381,7 +2745,7 @@ namespace Game_Engine.Core
                 deferredShader.SetInt("uTilesX", tiledLights.TilesX);
                 deferredShader.SetInt("uTilesY", tiledLights.TilesY);
                 if (localCount > 0)
-                    tiledLights.BindToShader(deferredShader, 6);
+                    tiledLights.BindToShader(deferredShader, 11);
             }
             else
             {
@@ -2390,22 +2754,8 @@ namespace Game_Engine.Core
                 deferredShader.SetInt("uTilesY", 1);
             }
 
-            if (reflectionProbeCubemap != null && reflectionProbeBlend > 0.001f)
-            {
-                reflectionProbeCubemap.BindCubemap(TextureUnit.Texture9);
-                deferredShader.SetTexture("uProbeSpec", 9);
-                deferredShader.SetInt("uHasProbe", 1);
-                int dim = Math.Max(1, reflectionProbeCubemap.Width);
-                float mips = 1f + (float)Math.Floor(Math.Log2(dim));
-                deferredShader.SetFloat("uProbeMipCount", mips);
-                deferredShader.SetFloat("uProbeBlend", Math.Clamp(reflectionProbeBlend, 0f, 2f));
-            }
-            else
-            {
-                deferredShader.SetInt("uHasProbe", 0);
-                deferredShader.SetFloat("uProbeMipCount", 1f);
-                deferredShader.SetFloat("uProbeBlend", 0f);
-            }
+            // ReflectionProbe specular IBL (unit 14)
+            BindEnvMapToShader(deferredShader, camPos, 14, reflectionProbeCubemap, reflectionProbeBlend);
 
             // Draw fullscreen quad — do not write depth here; scene FBO depth is filled by the
             // gbuffer→scene blit in GameView so forward overlays (terrain) depth-test correctly.
@@ -2466,7 +2816,8 @@ namespace Game_Engine.Core
             SN.Vector3 sunShineDir,
             ShaderProgram? terrainShader = null,
             bool isES = true,
-            SN.Vector3 lightColor = default)
+            SN.Vector3 lightColor = default,
+            CascadedShadowMap? cascadedShadow = null)
         {
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
@@ -2485,12 +2836,13 @@ namespace Game_Engine.Core
 
             var globals = GlobalUniforms.ForContext(gl);
             var resolvedLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
-            bool hasShadow = shadowFBO?.DepthTexture != null;
+            bool hasShadow = cascadedShadow != null || shadowFBO?.DepthTexture != null;
             var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
                 ? SN.Vector3.Normalize(WindSystem.Direction)
                 : SN.Vector3.UnitX;
 
-            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            GameRenderPipeline.ExtractNearFar(in proj, out float nearP, out float farP);
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, nearPlane: nearP, farPlane: farP);
             globals.UpdateLighting(
                 lightDir, diffuseK, resolvedLightColor, ambient,
                 lightIsPoint, lightPosW, lightRange,
@@ -2499,6 +2851,7 @@ namespace Game_Engine.Core
                 cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
                 windDir: windDir,
                 windTime: WindSystem.Time);
+            BindNearestPointLights(globals, camPos);
 
             var renderCtx = new RenderContext
             {
@@ -2511,6 +2864,7 @@ namespace Game_Engine.Core
                 Ambient = ambient,
                 ShadowVP = shadowVP,
                 ShadowFBO = shadowFBO,
+                CascadedShadow = cascadedShadow,
                 SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
@@ -2539,7 +2893,10 @@ namespace Game_Engine.Core
                 {
                     terrainShader.SetFloat("uShadowBias", 0.008f);
                     terrainShader.SetVector3("uSunDir", sunShineDir);
-                    shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture2);
+                    var terrainShadowTex = cascadedShadow != null
+                        ? cascadedShadow.Cascades[0].FBO.DepthTexture
+                        : shadowFBO?.DepthTexture;
+                    terrainShadowTex?.Bind(TextureUnit.Texture2);
                     terrainShader.SetTexture("uShadowMap", 2);
                 }
 
@@ -2609,9 +2966,9 @@ namespace Game_Engine.Core
             {
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
-                standardShader.SetTexture("uShadowMap", 7);
+                BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
+            BindEnvMapToShader(standardShader, camPos, 12);
 
             // --- TRANSPARENT PASS (back-to-front) ---
             if (transparentItems != null && transparentItems.Count > 0)
@@ -2628,11 +2985,9 @@ namespace Game_Engine.Core
                 gl.PolygonOffset(-2f, -2f);
 
                 standardShader.Use();
-                if (shadowFBO?.DepthTexture != null)
-                {
-                    shadowFBO.DepthTexture.Bind(TextureUnit.Texture7);
-                    standardShader.SetTexture("uShadowMap", 7);
-                }
+                if (hasShadow)
+                    BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
+                BindEnvMapToShader(standardShader, camPos, 12);
 
                 foreach (var item in transparentItems)
                 {
@@ -2833,6 +3188,25 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 shadowVP,
             PostProcessVolume volume,
             float time)
+            => RenderVolumetricFog(gl, volFogShader, fsQuad, sceneColor, sceneDepth,
+                in view, in proj, camPos, lightDir, lightColor, shadowFBO, in shadowVP,
+                PostProcessSettings.FromVolume(volume), time);
+
+        public static void RenderVolumetricFog(
+            GL gl,
+            ShaderProgram volFogShader,
+            FullscreenQuad fsQuad,
+            GPUTexture sceneColor,
+            GPUTexture sceneDepth,
+            in SN.Matrix4x4 view,
+            in SN.Matrix4x4 proj,
+            SN.Vector3 camPos,
+            SN.Vector3 lightDir,
+            SN.Vector3 lightColor,
+            GPUFramebuffer? shadowFBO,
+            in SN.Matrix4x4 shadowVP,
+            PostProcessSettings settings,
+            float time)
         {
             volFogShader.Use();
 
@@ -2849,16 +3223,16 @@ namespace Game_Engine.Core
             volFogShader.SetVector3("uLightDir", lightDir);
             volFogShader.SetVector3("uLightColor", lightColor);
 
-            volFogShader.SetFloat("uFogDensity", volume.VolumetricFogDensity);
-            volFogShader.SetFloat("uFogAnisotropy", volume.VolumetricFogAnisotropy);
-            volFogShader.SetFloat("uFogScattering", volume.VolumetricFogScattering);
-            volFogShader.SetFloat("uFogHeightFalloff", volume.VolumetricFogHeightFalloff);
-            volFogShader.SetFloat("uFogBaseHeight", volume.VolumetricFogBaseHeight);
-            volFogShader.SetFloat("uFogNoiseScale", volume.VolumetricFogNoiseScale);
-            volFogShader.SetFloat("uFogNoiseSpeed", volume.VolumetricFogNoiseSpeed);
-            volFogShader.SetFloat("uFogMaxDistance", volume.VolumetricFogMaxDistance);
-            volFogShader.SetVector3("uFogColor", volume.VolumetricFogColor);
-            volFogShader.SetInt("uFogSteps", Math.Clamp(volume.VolumetricFogSteps, 4, 16));
+            volFogShader.SetFloat("uFogDensity", settings.VolumetricFogDensity);
+            volFogShader.SetFloat("uFogAnisotropy", settings.VolumetricFogAnisotropy);
+            volFogShader.SetFloat("uFogScattering", settings.VolumetricFogScattering);
+            volFogShader.SetFloat("uFogHeightFalloff", settings.VolumetricFogHeightFalloff);
+            volFogShader.SetFloat("uFogBaseHeight", settings.VolumetricFogBaseHeight);
+            volFogShader.SetFloat("uFogNoiseScale", settings.VolumetricFogNoiseScale);
+            volFogShader.SetFloat("uFogNoiseSpeed", settings.VolumetricFogNoiseSpeed);
+            volFogShader.SetFloat("uFogMaxDistance", settings.VolumetricFogMaxDistance);
+            volFogShader.SetVector3("uFogColor", settings.VolumetricFogColor);
+            volFogShader.SetInt("uFogSteps", Math.Clamp(settings.VolumetricFogSteps, 4, 16));
             volFogShader.SetFloat("uTime", time);
 
             if (shadowFBO?.DepthTexture != null)
@@ -3352,7 +3726,8 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 sunShineDir,
             bool isES = true,
-            SN.Vector3 lightColor = default)
+            SN.Vector3 lightColor = default,
+            CascadedShadowMap? cascadedShadow = null)
         {
             // Instanced grass is not a scene mesh. The dedicated pass also draws tree
             // meshes; with that pass off, trees still come from the main scene walk,
@@ -3378,6 +3753,7 @@ namespace Game_Engine.Core
                 Ambient = ambient,
                 ShadowVP = shadowVP,
                 ShadowFBO = shadowFBO,
+                CascadedShadow = cascadedShadow,
                 SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,
@@ -3444,11 +3820,12 @@ namespace Game_Engine.Core
 
             if (vegOpaque.Count > 0 || vegTransparent.Count > 0)
             {
-            bool hasShadow = shadowFBO?.DepthTexture != null;
+            bool hasShadow = renderCtx.CascadedShadow != null || shadowFBO?.DepthTexture != null;
             var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
                 ? SN.Vector3.Normalize(WindSystem.Direction)
                 : SN.Vector3.UnitX;
-            renderCtx.Globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            GameRenderPipeline.ExtractNearFar(in proj, out float nearP, out float farP);
+            renderCtx.Globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, nearPlane: nearP, farPlane: farP);
             renderCtx.Globals.UpdateLighting(
                 lightDir, diffuseK, renderCtx.LightColor, ambient,
                 lightIsPoint, lightPosW, lightRange,
@@ -3457,15 +3834,16 @@ namespace Game_Engine.Core
                 cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
                 windDir: windDir,
                 windTime: WindSystem.Time);
+            BindNearestPointLights(renderCtx.Globals, camPos);
 
             standardShader.Use();
             if (hasShadow)
             {
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
-                standardShader.SetTexture("uShadowMap", 7);
+                BindShadowMapsToShader(standardShader, shadowFBO, renderCtx.CascadedShadow, 7);
             }
+            BindEnvMapToShader(standardShader, camPos, 12);
 
             gl.Enable(EnableCap.DepthTest);
             gl.DepthMask(true);
@@ -3549,7 +3927,8 @@ namespace Game_Engine.Core
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 sunShineDir,
             bool isES = true,
-            SN.Vector3 lightColor = default)
+            SN.Vector3 lightColor = default,
+            CascadedShadowMap? cascadedShadow = null)
         {
             var viewProj = view * proj;
             var planes = s_planes ??= new Plane[6];
@@ -3574,12 +3953,13 @@ namespace Game_Engine.Core
 
             var globals = GlobalUniforms.ForContext(gl);
             var resolvedLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
-            bool hasShadow = shadowFBO?.DepthTexture != null;
+            bool hasShadow = cascadedShadow != null || shadowFBO?.DepthTexture != null;
             var windDir = WindSystem.Direction.LengthSquared() > 1e-6f
                 ? SN.Vector3.Normalize(WindSystem.Direction)
                 : SN.Vector3.UnitX;
 
-            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
+            GameRenderPipeline.ExtractNearFar(in proj, out float nearP, out float farP);
+            globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time, nearPlane: nearP, farPlane: farP);
             globals.UpdateLighting(
                 lightDir, diffuseK, resolvedLightColor, ambient,
                 lightIsPoint, lightPosW, lightRange,
@@ -3588,6 +3968,7 @@ namespace Game_Engine.Core
                 cascadeSplits: new SN.Vector4(1000f, 1000f, 1000f, 1000f),
                 windDir: windDir,
                 windTime: WindSystem.Time);
+            BindNearestPointLights(globals, camPos);
 
             standardShader.Use();
 
@@ -3595,9 +3976,9 @@ namespace Game_Engine.Core
             {
                 standardShader.SetFloat("uShadowBias", 0.008f);
                 standardShader.SetVector3("uSunDir", sunShineDir);
-                shadowFBO!.DepthTexture!.Bind(TextureUnit.Texture7);
-                standardShader.SetTexture("uShadowMap", 7);
+                BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
             }
+            BindEnvMapToShader(standardShader, camPos, 12);
 
             var renderCtx = new RenderContext
             {
@@ -3610,6 +3991,7 @@ namespace Game_Engine.Core
                 Ambient = ambient,
                 ShadowVP = shadowVP,
                 ShadowFBO = shadowFBO,
+                CascadedShadow = cascadedShadow,
                 SunShineDir = sunShineDir,
                 StandardShader = standardShader,
                 Cache = cache,

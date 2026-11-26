@@ -149,39 +149,52 @@ namespace Game_Engine.Core.Rendering
             Sky.RenderGPU(g, res.Sky!, res.FsQuad!, res.Cache!, view, proj, skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, planetSkyUp);
 
             FrameProfile.Enter(FrameProfile.Part.Shadows);
-            SN.Matrix4x4 shadowVP = SN.Matrix4x4.Identity;
-            GPUFramebuffer? shadowFBO = null;
-            if (res.Shadow != null && res.Depth != null)
-            {
-                var sunShineDir = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
-                SN.Matrix4x4.Invert(view, out var invV);
-                var camFwd = new SN.Vector3(-invV.M31, -invV.M32, -invV.M33);
-                var sceneCenter = camPos + camFwd * 12f;
-                shadowVP = ShadowMapGPU.BuildDirectionalLightVP(sunShineDir, sceneCenter, 50f);
-                res.Shadow.LightVP = shadowVP;
-                res.Shadow.Begin(g);
-                g.Enable(EnableCap.DepthTest);
-                g.DepthFunc(DepthFunction.Less);
-                SceneRenderer.RenderShadowPass(g, res.Depth, res.Cache!, shadowVP);
-                res.Shadow.End(g, (uint)fb);
-                g.Viewport(0, 0, (uint)W, (uint)H);
-                shadowFBO = res.Shadow.FBO;
-            }
-
-            FrameProfile.Enter(FrameProfile.Part.Other);
-            var underwater = UnderwaterQuery.GetState(camPos);
-            var postVolume = PostProcessVolume.GetActive();
-            bool usePostFX = (postVolume != null || underwater != null) && res.PostProcess != null;
-            bool useDeferred = GameRenderPipeline.UseDeferred(usePostFX);
             var sunSD = -(sunDir ?? SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f)));
             var fallbackPlanetSunDir = sunSD.LengthSquared() > 1e-8f
                 ? SN.Vector3.Normalize(sunSD)
                 : SN.Vector3.Normalize(new SN.Vector3(-0.35f, 0.60f, 0.45f));
 
+            GameRenderPipeline.RenderShadowMaps(g, res, (uint)fb, W, H,
+                in view, in proj, camPos, fallbackPlanetSunDir, lightIsPoint,
+                out GPUFramebuffer? shadowFBO, out SN.Matrix4x4 shadowVP, out CascadedShadowMap? activeCsm);
+
+            // Capture up to 1 pending ReflectionProbe cubemap per frame before main passes
+            SceneRenderer.CaptureReflectionProbes(g, res,
+                SN.Vector3.Normalize(-L), diffuseK, ambient,
+                lightIsPoint, lightPosW, lightRange,
+                shadowFBO, in shadowVP, sunSD, lightColorNorm, light,
+                skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw, fallbackPlanetSunDir, planetSkyUp);
+
+            FrameProfile.Enter(FrameProfile.Part.Other);
+            var underwater = UnderwaterQuery.GetState(camPos);
+            var postSettings = PostProcessVolume.SampleBlended(camPos);
+            bool usePostFX = (postSettings != null || underwater != null) && res.PostProcess != null;
+            bool useDeferred = GameRenderPipeline.UseDeferred(res);
+            bool onPlanet = PlanetTerrain.ActivePlanets.Count > 0;
+            bool useTaa = postSettings?.TAAEnabled == true && useDeferred && !onPlanet;
+
+            if (cam != null && cam.InvalidateTemporalHistory)
+            {
+                s.TaaResetHistory = true;
+                cam.InvalidateTemporalHistory = false;
+            }
+            if (useTaa)
+            {
+                s.TaaFrameCounter++;
+                int fi = (s.TaaFrameCounter % 16) + 1;
+                float jx = (GameRenderPipeline.TaaHalton(fi, 2) - 0.5f) * 2f / Math.Max(1, W);
+                float jy = (GameRenderPipeline.TaaHalton(fi, 3) - 0.5f) * 2f / Math.Max(1, H);
+                proj.M13 += jx;
+                proj.M23 += jy;
+            }
+            SN.Matrix4x4.Invert(view * proj, out var invVpCurr);
+            SN.Matrix4x4 prevVp = s.TaaResetHistory ? (view * proj) : s.PrevViewProj;
+
             GameRenderPipeline.UpdateLod(camPos);
 
             FrameProfile.Enter(FrameProfile.Part.Scene);
             GPUTexture? finalSceneTex = null;
+            GPUTexture? sceneDepthTex = null;
             if (useDeferred)
             {
                 finalSceneTex = GameRenderPipeline.RenderDeferred(g, res, W, H,
@@ -189,13 +202,32 @@ namespace Game_Engine.Core.Rendering
                     lightIsPoint, lightPosW, lightRange,
                     shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky,
                     skyTop, skyBot, sunDir, skyTex, skyMix, skyYaw,
-                    postVolume, fallbackPlanetSunDir, planetSkyUp);
+                    postSettings, fallbackPlanetSunDir, planetSkyUp, activeCsm);
                 s.SceneFbo = res.SceneFbo;
                 s.SceneW = res.SceneW;
                 s.SceneH = res.SceneH;
+                sceneDepthTex = res.SceneFbo?.DepthTexture ?? res.GBufferFbo?.DepthTexture;
+
+                FrameProfile.Enter(FrameProfile.Part.WorldUi);
+                if (res.Canvas != null && res.Cache != null)
+                {
+                    var viewProj = view * proj;
+                    foreach (var wc in Component.UI.Canvas.All)
+                    {
+                        if (wc.IsActiveAndEnabled && wc.RenderMode == Component.UI.CanvasRenderMode.WorldSpace)
+                            res.Canvas.RenderWorldCanvas(wc, in viewProj, res.Cache);
+                    }
+                }
+
+                GameRenderPipeline.RunPostDeferredEffects(g, res, W, H,
+                    in view, in proj, camPos, sunSD, lightColorNorm,
+                    shadowFBO, in shadowVP, postSettings,
+                    useTaa, in invVpCurr, in prevVp, ref s.TaaResetHistory, ref finalSceneTex);
+                s.PrevViewProj = view * proj;
             }
             else
             {
+                s.TaaResetHistory = true;
                 if (usePostFX)
                 {
                     if (s.SceneFbo == null) s.SceneFbo = new GPUFramebuffer(g);
@@ -214,33 +246,31 @@ namespace Game_Engine.Core.Rendering
                 GameRenderPipeline.RenderForwardWorld(g, res,
                     view, proj, camPos, L, diffuseK, ambient,
                     lightIsPoint, lightPosW, lightRange,
-                    shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky, fallbackPlanetSunDir);
-                finalSceneTex = usePostFX ? s.SceneFbo?.ColorTexture : null;
-            }
+                    shadowFBO, shadowVP, sunSD, lightColorNorm, light, sky, fallbackPlanetSunDir, activeCsm);
 
-            FrameProfile.Enter(FrameProfile.Part.WorldUi);
-            if (res.Canvas != null && res.Cache != null)
-            {
-                var viewProj = view * proj;
-                foreach (var wc in Component.UI.Canvas.All)
+                FrameProfile.Enter(FrameProfile.Part.WorldUi);
+                if (res.Canvas != null && res.Cache != null)
                 {
-                    if (wc.IsActiveAndEnabled && wc.RenderMode == Component.UI.CanvasRenderMode.WorldSpace)
-                        res.Canvas.RenderWorldCanvas(wc, in viewProj, res.Cache);
+                    var viewProj = view * proj;
+                    foreach (var wc in Component.UI.Canvas.All)
+                    {
+                        if (wc.IsActiveAndEnabled && wc.RenderMode == Component.UI.CanvasRenderMode.WorldSpace)
+                            res.Canvas.RenderWorldCanvas(wc, in viewProj, res.Cache);
+                    }
                 }
+
+                finalSceneTex = usePostFX ? s.SceneFbo?.ColorTexture : null;
+                sceneDepthTex = usePostFX ? s.SceneFbo?.DepthTexture : null;
+                s.PrevViewProj = view * proj;
             }
 
             FrameProfile.Enter(FrameProfile.Part.Post);
             if (finalSceneTex != null && res.PostProcess != null)
             {
-                g.BindFramebuffer(FramebufferTarget.Framebuffer, (uint)fb);
-                g.Viewport(0, 0, (uint)W, (uint)H);
-                g.Disable(EnableCap.DepthTest);
-                g.BindVertexArray(res.FsQuad!.VAO);
-                SceneRenderer.ApplyPostProcessing(g, res.PostProcess, finalSceneTex, W, H,
-                    usePostFX ? postVolume : null, usePostFX ? underwater : null,
+                GameRenderPipeline.RunPostProcessAndPresent(g, res, (uint)fb, W, H,
+                    in view, in proj, camPos, finalSceneTex, sceneDepthTex,
+                    usePostFX ? postSettings : null, usePostFX ? underwater : null,
                     usePostFX ? (float)Time.time : 0f);
-                g.BindVertexArray(0);
-                g.Enable(EnableCap.DepthTest);
             }
 
             FrameProfile.Enter(FrameProfile.Part.Particles);
