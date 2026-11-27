@@ -6,6 +6,7 @@ layout(location = 2) in vec2 aUV;
 layout(location = 5) in vec4 aInstPosScale;
 layout(location = 6) in vec4 aInstUpYaw;
 layout(location = 7) in vec4 aInstTint;
+layout(location = 8) in vec4 aInstMat3;
 
 #include "Common/FrameGlobals.glsl"
 #include "Common/LightingGlobals.glsl"
@@ -13,7 +14,7 @@ layout(location = 7) in vec4 aInstTint;
 
 uniform mat4 uModel;
 uniform mat4 uNormalMatrix;   // transpose(inverse(model))
-uniform int  uInstanced;      // 1 = planet-aligned GPU instanced draw (uModel = planetWorld)
+uniform int  uInstanced;      // 0 = single, 1 = planet-aligned (posScale/upYaw), 2 = full mat4 (loc 5..8)
 
 // Wind / vegetation animation
 uniform float uWindStrength;
@@ -32,38 +33,52 @@ void main()
 
     ApplySkinning(localPos, localNorm);
 
-    if (uInstanced == 1)
+    vec4 worldPos;
+    vec3 worldNorm;
+
+    if (uInstanced == 2)
     {
-        float instScale = aInstPosScale.w;
-        if (instScale <= 0.0001)
-        {
-            vWorldPos = vec3(0.0);
-            vWorldNormal = vec3(0.0, 1.0, 0.0);
-            vUV = aUV;
-            vShadowCoord = vec4(0.0);
-            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-            return;
-        }
-        vec3 up = normalize(aInstUpYaw.xyz);
-        vec3 seed = abs(up.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-        vec3 side = normalize(cross(seed, up));
-        vec3 fwd = normalize(cross(up, side));
-        float cy = cos(aInstUpYaw.w);
-        float sy = sin(aInstUpYaw.w);
-        vec3 xAxis = side * cy + fwd * sy;
-        vec3 zAxis = -side * sy + fwd * cy;
-
-        localPos = aInstPosScale.xyz
-            + xAxis * (localPos.x * instScale)
-            + up    * (localPos.y * instScale)
-            + zAxis * (localPos.z * instScale);
-        localNorm = normalize(
-            xAxis * localNorm.x
-            + up  * localNorm.y
-            + zAxis * localNorm.z);
+        // Full 4x4 per-instance world matrix across locations 5..8 (column-major).
+        mat4 instModel = mat4(aInstPosScale, aInstUpYaw, aInstTint, aInstMat3);
+        worldPos = instModel * vec4(localPos, 1.0);
+        worldNorm = normalize(transpose(inverse(mat3(instModel))) * localNorm);
     }
+    else
+    {
+        if (uInstanced == 1)
+        {
+            float instScale = aInstPosScale.w;
+            if (instScale <= 0.0001)
+            {
+                vWorldPos = vec3(0.0);
+                vWorldNormal = vec3(0.0, 1.0, 0.0);
+                vUV = aUV;
+                vShadowCoord = vec4(0.0);
+                gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+                return;
+            }
+            vec3 up = normalize(aInstUpYaw.xyz);
+            vec3 seed = abs(up.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+            vec3 side = normalize(cross(seed, up));
+            vec3 fwd = normalize(cross(up, side));
+            float cy = cos(aInstUpYaw.w);
+            float sy = sin(aInstUpYaw.w);
+            vec3 xAxis = side * cy + fwd * sy;
+            vec3 zAxis = -side * sy + fwd * cy;
 
-    vec4 worldPos = uModel * vec4(localPos, 1.0);
+            localPos = aInstPosScale.xyz
+                + xAxis * (localPos.x * instScale)
+                + up    * (localPos.y * instScale)
+                + zAxis * (localPos.z * instScale);
+            localNorm = normalize(
+                xAxis * localNorm.x
+                + up  * localNorm.y
+                + zAxis * localNorm.z);
+        }
+
+        worldPos = uModel * vec4(localPos, 1.0);
+        worldNorm = normalize((uNormalMatrix * vec4(localNorm, 0.0)).xyz);
+    }
 
     // Wind vertex animation for vegetation (slow canopy sway + light leaf flutter)
     if (uIsVegetation == 1 && uWindStrength > 0.0)
@@ -89,7 +104,7 @@ void main()
     }
 
     vWorldPos = worldPos.xyz;
-    vWorldNormal = normalize((uNormalMatrix * vec4(localNorm, 0.0)).xyz);
+    vWorldNormal = worldNorm;
     vUV = aUV;
     vShadowCoord = uShadowVP * worldPos;
     gl_Position = uProj * uView * worldPos;

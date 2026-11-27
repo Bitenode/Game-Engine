@@ -31,8 +31,14 @@ namespace Game_Engine.Core.Component
         [Persist] public float MaxDistance { get; set; } = 50f;
         [Persist, Range(0f, 1f)] public float DopplerLevel { get; set; } = 0f;
 
-        // ── Channel ──
+        // ── Channel & Mixer Group ──
         [Persist] public AudioChannel Channel { get; set; } = AudioChannel.SFX;
+
+        /// <summary>
+        /// Optional <see cref="Game_Engine.Core.Audio.AudioMixer"/> group name (e.g. "SFX", "Music", "Footsteps", "Weapons", "Ambient", "UI", "Voice").
+        /// When empty, defaults to the group matching <see cref="Channel"/>.
+        /// </summary>
+        [Persist] public string MixerGroup { get; set; } = "";
 
         // ── Runtime state ──
         private AudioHandle? _handle;
@@ -72,7 +78,8 @@ namespace Game_Engine.Core.Component
             float pan = ComputePan();
             _handle.Pan = pan;
 
-            // Keep loop in sync
+            // Keep pitch and loop in sync
+            _handle.Pitch = Pitch;
             _handle.Loop = Loop;
         }
 
@@ -103,7 +110,7 @@ namespace Game_Engine.Core.Component
             if (string.IsNullOrWhiteSpace(ClipPath)) return;
 
             float vol = Mute ? 0f : ComputeEffectiveVolume();
-            _handle = AudioBackend.Play(ClipPath, vol, Pitch, Loop);
+            _handle = AudioBackend.Play(ClipPath, vol, Pitch, Loop, ResolveMixerGroupName());
 
             if (_handle != null)
             {
@@ -134,6 +141,20 @@ namespace Game_Engine.Core.Component
             _handle?.Resume();
         }
 
+        /// <summary>Resolve the target AudioMixer group name for this source.</summary>
+        public string ResolveMixerGroupName()
+        {
+            if (!string.IsNullOrWhiteSpace(MixerGroup))
+                return MixerGroup.Trim();
+
+            return Channel switch
+            {
+                AudioChannel.Music => "Music",
+                AudioChannel.Master => "Master",
+                _ => "SFX"
+            };
+        }
+
         /// <summary>
         /// Compute effective volume considering distance attenuation and channel volumes.
         /// </summary>
@@ -144,7 +165,7 @@ namespace Game_Engine.Core.Component
                 : AudioManager.SFXVolume;
 
             float vol = Volume * AudioManager.MasterVolume * channelVol;
-            var mixName = Channel == AudioChannel.Music ? "Music" : "SFX";
+            var mixName = ResolveMixerGroupName();
             var mix = Game_Engine.Core.Audio.AudioMixer.FindGroup(mixName);
             if (mix != null) vol *= mix.EffectiveVolume;
 

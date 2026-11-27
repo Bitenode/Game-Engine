@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Game_Engine.Core.Audio;
 #if WINDOWS && !XBOX_UWP
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -19,7 +20,7 @@ namespace Game_Engine.Core
 
         public static string? ResolveAudioPath(string filePath) => SharedAudioPaths.Resolve(filePath);
 
-        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop)
+        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop, string? mixerGroup = null)
         {
             if (!s_available) return null;
             var abs = ResolveAudioPath(filePath);
@@ -33,7 +34,10 @@ namespace Game_Engine.Core
             return handle;
         }
 
-        public static void PlayOneShot(string filePath, float volume = 1f) => Play(filePath, volume, 1f, false);
+        public static void PlayOneShot(string filePath, float volume = 1f, string? mixerGroup = null)
+            => Play(filePath, volume, 1f, false, mixerGroup);
+
+        public static void ClearCache() => AudioClipCache.ClearCache();
 
         public static void StopAll()
         {
@@ -59,7 +63,7 @@ namespace Game_Engine.Core
     {
         readonly uint _source;
         bool _disposed;
-        float _volume = 1f, _pan;
+        float _volume = 1f, _pan, _pitch = 1f;
 
         internal AudioHandle(uint source, TimeSpan duration)
         {
@@ -73,6 +77,11 @@ namespace Game_Engine.Core
         {
             get => _volume;
             set { _volume = value; if (!_disposed) OpenAlAudio.SetGain(_source, value); }
+        }
+        public float Pitch
+        {
+            get => _pitch;
+            set => _pitch = Math.Clamp(value <= 0f ? 1f : value, 0.1f, 4f);
         }
         public bool Loop { get; set; }
         public float Pan
@@ -92,13 +101,19 @@ namespace Game_Engine.Core
     }
 #else
     /// <summary>
-    /// Low-level audio backend using NAudio.
-    /// Each sound gets its own WaveOut for maximum compatibility.
-    /// Simple and reliable — avoids mixer format-matching issues.
+    /// Low-level audio backend using NAudio with a decoded PCM clip cache (<see cref="AudioClipCache"/>),
+    /// a single shared <see cref="WaveOutEvent"/> + hierarchical <see cref="MixingSampleProvider"/> bus graph,
+    /// and real-time <see cref="AudioMixerGroupProvider"/> DSP effects per mixer group.
     /// </summary>
     public static class AudioBackend
     {
         private static bool s_available = true;
+
+        // Shared output device & hierarchical mixer graph (protected by s_mixerLock)
+        private static readonly object s_mixerLock = new();
+        private static WaveOutEvent? s_waveOut;
+        private static MixerGroupBus? s_masterBus;
+        private static readonly Dictionary<AudioMixerGroup, MixerGroupBus> s_groupBuses = new();
 
         // Track all active handles so we can stop them all on game stop
         private static readonly List<WeakReference<AudioHandle>> s_activeHandles = new();
@@ -150,10 +165,10 @@ namespace Game_Engine.Core
         }
 
         /// <summary>
-        /// Play an audio file. Returns a handle for volume/pause/stop control.
-        /// Each call creates its own output device — simple and reliable.
+        /// Play an audio file through the shared mixer output and decoded PCM cache.
+        /// Routes the voice through the requested <see cref="AudioMixer"/> group (and its parent chain up to Master).
         /// </summary>
-        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop)
+        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop, string? mixerGroup = null)
         {
             if (!s_available || string.IsNullOrWhiteSpace(filePath)) return null;
 
@@ -164,27 +179,43 @@ namespace Game_Engine.Core
                 return null;
             }
 
+            var clip = AudioClipCache.GetOrLoad(absPath);
+            if (clip == null) return null;
+
             try
             {
-                var reader = new AudioFileReader(absPath);
-                reader.Volume = Math.Clamp(volume, 0f, 1f);
+                var voice = new CachedSoundSampleProvider(clip, volume, pitch, loop, mixerGroup);
 
-                // Wrap for looping, then stereo pan and a short zone reverb.
-                var loopStream = new LoopingReader(reader, loop);
-                ISampleProvider samples = loopStream.ToSampleProvider();
-                if (samples.WaveFormat.Channels == 1)
-                    samples = new MonoToStereoSampleProvider(samples);
-                else if (samples.WaveFormat.Channels != 2)
-                    samples = new MultiplexingSampleProvider(new[] { samples }, 2);
-                var panner = new StereoPanProvider(samples);
-                var reverb = new ZoneReverbProvider(panner);
+                lock (s_mixerLock)
+                {
+                    if (!EnsureOutputDeviceLocked())
+                        return null;
 
-                var output = new WaveOut();
-                output.Init(reverb);
-                output.Play();
+                    var targetGroup = string.IsNullOrWhiteSpace(mixerGroup)
+                        ? AudioMixer.Master
+                        : (AudioMixer.FindGroup(mixerGroup) ?? AudioMixer.Master);
 
-                var handle = new AudioHandle(output, reader, loopStream, panner);
-                lock (s_activeHandles) s_activeHandles.Add(new WeakReference<AudioHandle>(handle));
+                    var bus = GetOrCreateBusLocked(targetGroup);
+                    bus.InputMixer.AddMixerInput(voice);
+
+                    if (s_waveOut != null && s_waveOut.PlaybackState != PlaybackState.Playing)
+                        s_waveOut.Play();
+                }
+
+                var handle = new AudioHandle(voice);
+                lock (s_activeHandles)
+                {
+                    if (s_activeHandles.Count > 64)
+                    {
+                        for (int i = s_activeHandles.Count - 1; i >= 0; i--)
+                        {
+                            if (!s_activeHandles[i].TryGetTarget(out var h) || !h.IsPlaying)
+                                s_activeHandles.RemoveAt(i);
+                        }
+                    }
+                    s_activeHandles.Add(new WeakReference<AudioHandle>(handle));
+                }
+
                 Log.Info($"[AudioBackend] Now playing: {Path.GetFileName(absPath)}");
                 return handle;
             }
@@ -197,11 +228,13 @@ namespace Game_Engine.Core
         }
 
         /// <summary>Play a one-shot sound (fire-and-forget).</summary>
-        public static void PlayOneShot(string filePath, float volume = 1f)
+        public static void PlayOneShot(string filePath, float volume = 1f, string? mixerGroup = null)
         {
-            var handle = Play(filePath, volume, 1f, loop: false);
-            // Handle auto-disposes when playback ends via PlaybackStopped event
+            Play(filePath, volume, 1f, loop: false, mixerGroup: mixerGroup);
         }
+
+        /// <summary>Clear the decoded PCM audio cache.</summary>
+        public static void ClearCache() => AudioClipCache.ClearCache();
 
         /// <summary>Stop all currently playing audio handles.</summary>
         public static void StopAll()
@@ -219,10 +252,22 @@ namespace Game_Engine.Core
             }
         }
 
-        /// <summary>Shut down — stops all audio and prevents future playback.</summary>
+        /// <summary>Shut down — stops all audio, disposes the shared output device, and clears the PCM cache.</summary>
         public static void Shutdown()
         {
             StopAll();
+            lock (s_mixerLock)
+            {
+                if (s_waveOut != null)
+                {
+                    try { s_waveOut.Stop(); } catch { }
+                    try { s_waveOut.Dispose(); } catch { }
+                    s_waveOut = null;
+                }
+                s_masterBus = null;
+                s_groupBuses.Clear();
+            }
+            AudioClipCache.ClearCache();
             s_available = false;
         }
 
@@ -233,7 +278,7 @@ namespace Game_Engine.Core
         public static System.Numerics.Vector3 LastListenerForward { get; private set; }
         public static System.Numerics.Vector3 LastListenerUp { get; private set; }
 
-        /// <summary>Update the 3D audio listener position and orientation (cached for diagnostics and future spatial backends).</summary>
+        /// <summary>Update the 3D audio listener position and orientation (cached for diagnostics and spatial reverb zones).</summary>
         public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up)
         {
             LastListenerPosition = pos;
@@ -242,55 +287,67 @@ namespace Game_Engine.Core
             LastListenerForward = fl;
             LastListenerUp = ul;
         }
-    }
 
-    /// <summary>
-    /// WaveStream wrapper that loops an AudioFileReader.
-    /// </summary>
-    internal sealed class LoopingReader : WaveStream
-    {
-        private readonly AudioFileReader _reader;
-        public bool Loop { get; set; }
-
-        public override WaveFormat WaveFormat => _reader.WaveFormat;
-        public override long Length => _reader.Length;
-        public override long Position
+        private static bool EnsureOutputDeviceLocked()
         {
-            get => _reader.Position;
-            set => _reader.Position = value;
-        }
+            if (s_waveOut != null && s_masterBus != null)
+                return true;
 
-        public LoopingReader(AudioFileReader reader, bool loop)
-        {
-            _reader = reader;
-            Loop = loop;
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-            => Read(buffer.AsSpan(offset, count));
-
-        public override int Read(Span<byte> buffer)
-        {
-            int totalRead = 0;
-
-            while (totalRead < buffer.Length)
+            try
             {
-                int read = _reader.Read(buffer[totalRead..]);
-                if (read == 0)
-                {
-                    if (Loop)
-                    {
-                        _reader.Position = 0; // loop back
-                    }
-                    else
-                    {
-                        break; // done, EOF
-                    }
-                }
-                totalRead += read;
+                var master = AudioMixer.Master;
+                var masterBus = new MixerGroupBus(master, AudioClipCache.MixFormat);
+                s_masterBus = masterBus;
+                s_groupBuses.Clear();
+                s_groupBuses[master] = masterBus;
+
+                var masterOutput = new ZoneReverbProvider(masterBus.EffectProvider);
+                var waveOut = new WaveOutEvent();
+                waveOut.Init(masterOutput);
+                waveOut.Play();
+
+                s_waveOut = waveOut;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[AudioBackend] Failed to initialize shared audio output: {ex.Message}");
+                s_available = false;
+                s_waveOut = null;
+                s_masterBus = null;
+                s_groupBuses.Clear();
+                return false;
+            }
+        }
+
+        private static MixerGroupBus GetOrCreateBusLocked(AudioMixerGroup group)
+        {
+            if (s_groupBuses.TryGetValue(group, out var existing))
+                return existing;
+
+            var bus = new MixerGroupBus(group, AudioClipCache.MixFormat);
+            s_groupBuses[group] = bus;
+
+            var parent = group.Parent ?? (ReferenceEquals(group, AudioMixer.Master) ? null : AudioMixer.Master);
+            if (parent != null)
+            {
+                var parentBus = GetOrCreateBusLocked(parent);
+                parentBus.InputMixer.AddMixerInput(bus.EffectProvider);
             }
 
-            return totalRead;
+            return bus;
+        }
+
+        private sealed class MixerGroupBus
+        {
+            public readonly MixingSampleProvider InputMixer;
+            public readonly AudioMixerGroupProvider EffectProvider;
+
+            public MixerGroupBus(AudioMixerGroup group, WaveFormat format)
+            {
+                InputMixer = new MixingSampleProvider(format) { ReadFully = true };
+                EffectProvider = new AudioMixerGroupProvider(InputMixer, group);
+            }
         }
     }
 
@@ -361,15 +418,31 @@ namespace Game_Engine.Core
         {
             int read = _source.Read(buffer);
             float wet = CurrentWet();
+            if (wet <= 1e-5f)
+            {
+                // Still feed delay gently or bypass when completely dry for zero coloration.
+                for (int i = 0; i < read; i++)
+                {
+                    float fed = buffer[i] + _delay[_write] * 0.45f;
+                    if (!float.IsFinite(fed) || MathF.Abs(fed) < 1e-20f) fed = 0f;
+                    _delay[_write] = fed;
+                    _write++;
+                    if (_write >= _delay.Length) _write = 0;
+                }
+                return read;
+            }
+
+            float dryMix = 1f - wet;
             for (int i = 0; i < read; i++)
             {
                 float dry = buffer[i];
                 float delayed = _delay[_write];
                 float fed = dry + delayed * 0.45f;
+                if (!float.IsFinite(fed) || MathF.Abs(fed) < 1e-20f) fed = 0f;
                 _delay[_write] = fed;
                 _write++;
                 if (_write >= _delay.Length) _write = 0;
-                buffer[i] = dry * (1f - wet) + fed * wet;
+                buffer[i] = dry * dryMix + fed * wet;
             }
             return read;
         }
@@ -386,65 +459,55 @@ namespace Game_Engine.Core
     }
 
     /// <summary>
-    /// Handle to a playing audio clip. Controls volume, pause, stop.
+    /// Handle to a playing audio voice in the shared mixer. Controls volume, pitch, pan, loop, pause, and stop.
     /// </summary>
     public sealed class AudioHandle : IDisposable
     {
-        private readonly WaveOut _output;
-        private readonly AudioFileReader _reader;
-        private readonly LoopingReader _looper;
-        private readonly StereoPanProvider _panner;
+        private readonly CachedSoundSampleProvider _voice;
         private bool _disposed;
-        private float _pan;
 
-        public bool IsPlaying => !_disposed && _output.PlaybackState == PlaybackState.Playing;
-        public TimeSpan Duration => _reader.TotalTime;
+        public bool IsPlaying => !_disposed && _voice.IsPlaying;
+        public TimeSpan Duration => _voice.Duration;
+        public string? MixerGroup => _voice.MixerGroupName;
 
-        internal AudioHandle(WaveOut output, AudioFileReader reader, LoopingReader looper, StereoPanProvider panner)
+        internal AudioHandle(CachedSoundSampleProvider voice)
         {
-            _output = output;
-            _reader = reader;
-            _looper = looper;
-            _panner = panner;
-
-            // Auto-cleanup when playback finishes naturally
-            _output.PlaybackStopped += (s, e) =>
-            {
-                if (!_looper.Loop) Dispose();
-            };
+            _voice = voice;
         }
 
         public float Volume
         {
-            get => _reader.Volume;
-            set => _reader.Volume = Math.Clamp(value, 0f, 1f);
+            get => _voice.Volume;
+            set => _voice.Volume = value;
+        }
+
+        public float Pitch
+        {
+            get => _voice.Pitch;
+            set => _voice.Pitch = value;
         }
 
         public bool Loop
         {
-            get => _looper.Loop;
-            set => _looper.Loop = value;
+            get => _voice.Loop;
+            set => _voice.Loop = value;
         }
 
         /// <summary>Stereo pan: -1 left, 0 center, +1 right.</summary>
         public float Pan
         {
-            get => _pan;
-            set
-            {
-                _pan = Math.Clamp(value, -1f, 1f);
-                _panner.Pan = _pan;
-            }
+            get => _voice.Pan;
+            set => _voice.Pan = value;
         }
 
         public void Pause()
         {
-            if (!_disposed) _output.Pause();
+            if (!_disposed) _voice.Pause();
         }
 
         public void Resume()
         {
-            if (!_disposed) _output.Play();
+            if (!_disposed) _voice.Resume();
         }
 
         public void Stop() => Dispose();
@@ -453,10 +516,7 @@ namespace Game_Engine.Core
         {
             if (_disposed) return;
             _disposed = true;
-
-            try { _output.Stop(); } catch { }
-            try { _output.Dispose(); } catch { }
-            try { _reader.Dispose(); } catch { }
+            _voice.Stop();
         }
     }
 #endif

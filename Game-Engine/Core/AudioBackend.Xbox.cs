@@ -42,7 +42,7 @@ namespace Game_Engine.Core
         public static void SetListenerPosition(System.Numerics.Vector3 pos, System.Numerics.Vector3 forward, System.Numerics.Vector3 up)
             => LastListenerPosition = pos;
 
-        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop)
+        public static AudioHandle? Play(string filePath, float volume, float pitch, bool loop, string? mixerGroup = null)
         {
             var abs = ResolveAudioPath(filePath);
             if (abs == null) return null;
@@ -80,7 +80,10 @@ namespace Game_Engine.Core
             }
         }
 
-        public static void PlayOneShot(string filePath, float volume = 1f) => Play(filePath, volume, 1f, false);
+        public static void PlayOneShot(string filePath, float volume = 1f, string? mixerGroup = null)
+            => Play(filePath, volume, 1f, false, mixerGroup);
+
+        public static void ClearCache() { }
 
         public static void StopAll()
         {
@@ -162,6 +165,11 @@ namespace Game_Engine.Core
         {
             get => _volume;
             set { _volume = value; if (!_disposed) _node.OutgoingGain = value; }
+        }
+        public float Pitch
+        {
+            get => (float)_node.PlaybackSpeedFactor;
+            set { if (!_disposed) _node.PlaybackSpeedFactor = Math.Max(0.25, value <= 0 ? 1 : value); }
         }
         public bool Loop
         {

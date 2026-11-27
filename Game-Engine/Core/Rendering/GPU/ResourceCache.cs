@@ -168,6 +168,8 @@ public sealed class ResourceCache : IDisposable
         PlanetGpuGrass.ReleaseGpuFor(this);
         PlanetWholePlanetForest.ReleaseGpuFor(this);
         PlanetGpuTrees.ReleaseGpuFor(this);
+        PlanetScatterRenderer.ReleaseGpuFor(this);
+        SceneRenderer.ReleaseAutoInstancingGpuFor(this);
         SceneRenderer.ClearMeshMetadata();
 
         foreach (var kv in _meshes)
@@ -795,6 +797,8 @@ public sealed class ResourceCache : IDisposable
         PlanetGpuGrass.ReleaseGpuFor(this);
         PlanetWholePlanetForest.ReleaseGpuFor(this);
         PlanetGpuTrees.ReleaseGpuFor(this);
+        PlanetScatterRenderer.ReleaseGpuFor(this);
+        SceneRenderer.ReleaseAutoInstancingGpuFor(this);
         foreach (var kv in _meshes)
             kv.Value.GPU.Dispose();
         _meshes.Clear();

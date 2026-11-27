@@ -269,6 +269,401 @@ namespace Game_Engine.Core
             public SkinnedMeshRenderer? Skinned; // non-null for GPU skinned meshes
         }
 
+        // ---------- Automatic Static-Mesh GPU Instancing ----------
+        /// <summary>
+        /// When true, repeated opaque static meshes sharing the same (Mesh, Material) with count &gt;=
+        /// <see cref="AutoInstancingMinBatchSize"/> are automatically batched into a single GPU-instanced
+        /// draw call using <c>Standard.vert.glsl</c> (<c>uInstanced = 2</c>, full per-instance mat4).
+        /// </summary>
+        public static bool EnableAutoInstancing { get; set; } = true;
+
+        /// <summary>Minimum number of identical opaque static draw items required to form a GPU-instanced batch.</summary>
+        public static int AutoInstancingMinBatchSize { get; set; } = 4;
+
+        private readonly record struct AutoInstBatchKey(
+            Mesh Mesh,
+            Material? Mat,
+            byte ColorR,
+            byte ColorG,
+            byte ColorB,
+            byte ColorA,
+            bool DoubleSided,
+            bool InvertFrontFace);
+
+        private sealed class AutoInstGpu
+        {
+            public GL Gl = null!;
+            public uint Vbo;
+            public int GpuCapacityFloats;
+        }
+
+        private static readonly Dictionary<object, AutoInstGpu> s_autoInstGpus = new();
+        [ThreadStatic] private static Dictionary<AutoInstBatchKey, List<DrawItem>>? s_autoInstBuckets;
+        [ThreadStatic] private static List<List<DrawItem>>? s_autoInstListPool;
+        [ThreadStatic] private static List<AutoInstBatchKey>? s_autoInstBucketKeys;
+        [ThreadStatic] private static float[]? s_autoInstMatrixScratch;
+
+        public static void ReleaseAutoInstancingGpuFor(object gpuKey)
+        {
+            if (!s_autoInstGpus.Remove(gpuKey, out var gpu))
+                return;
+            try
+            {
+                if (gpu.Vbo != 0)
+                    gpu.Gl.DeleteBuffer(gpu.Vbo);
+            }
+            catch { }
+            gpu.Vbo = 0;
+            gpu.GpuCapacityFloats = 0;
+        }
+
+        private static bool CanAutoInstance(in DrawItem item)
+        {
+            var mesh = item.MF?.Mesh;
+            if (mesh == null || mesh.HasBones) return false;
+            if (item.IsTransparent || item.Terrain != null || item.Skinned != null || item.Tree != null || item.Water != null)
+                return false;
+            var mat = item.Mat;
+            if (mat != null)
+            {
+                if (mat.Transparent) return false;
+                if (!string.IsNullOrWhiteSpace(mat.ShaderAssetPath)) return false;
+            }
+            return true;
+        }
+
+        private static void DrawOpaqueItemsWithAutoInstancing(
+            GL gl,
+            ShaderProgram shader,
+            ResourceCache cache,
+            List<DrawItem> opaqueItems,
+            in RenderContext renderCtx,
+            bool skipTerrainWithLayers,
+            bool skipAllTerrain,
+            bool isGBufferPass)
+        {
+            int minBatch = Math.Max(2, AutoInstancingMinBatchSize);
+            bool useInstancing = EnableAutoInstancing && opaqueItems.Count >= minBatch;
+
+            if (!useInstancing)
+            {
+                for (int i = 0; i < opaqueItems.Count; i++)
+                {
+                    var item = opaqueItems[i];
+                    if (skipAllTerrain && item.Terrain != null) continue;
+                    if (skipTerrainWithLayers && item.Terrain != null && item.Terrain.Layers.Count > 0) continue;
+
+                    if (isGBufferPass && IsDeferredSurfaceShader(item.Mat, out var absShaderPath, out var surfaceSchema))
+                    {
+                        var gbufSurface = CustomShaderCache.GetOrCompile(absShaderPath!, gl, ShaderPassType.GBuffer, renderCtx.IsES);
+                        if (gbufSurface != null)
+                        {
+                            DrawSurfaceToGBuffer(gl, gbufSurface, surfaceSchema!, cache, item, in renderCtx);
+                            shader.Use();
+                            continue;
+                        }
+                    }
+
+                    DrawMeshItem(gl, shader, cache, item, in renderCtx);
+                }
+                return;
+            }
+
+            var buckets = s_autoInstBuckets ??= new Dictionary<AutoInstBatchKey, List<DrawItem>>(64);
+            var pool = s_autoInstListPool ??= new List<List<DrawItem>>(64);
+            var keys = s_autoInstBucketKeys ??= new List<AutoInstBatchKey>(64);
+            buckets.Clear();
+            keys.Clear();
+
+            try
+            {
+                for (int i = 0; i < opaqueItems.Count; i++)
+                {
+                    var item = opaqueItems[i];
+                    if (skipAllTerrain && item.Terrain != null) continue;
+                    if (skipTerrainWithLayers && item.Terrain != null && item.Terrain.Layers.Count > 0) continue;
+
+                    if (isGBufferPass && IsDeferredSurfaceShader(item.Mat, out var absShaderPath, out var surfaceSchema))
+                    {
+                        var gbufSurface = CustomShaderCache.GetOrCompile(absShaderPath!, gl, ShaderPassType.GBuffer, renderCtx.IsES);
+                        if (gbufSurface != null)
+                        {
+                            DrawSurfaceToGBuffer(gl, gbufSurface, surfaceSchema!, cache, item, in renderCtx);
+                            shader.Use();
+                            continue;
+                        }
+                    }
+
+                    if (!CanAutoInstance(in item))
+                    {
+                        DrawMeshItem(gl, shader, cache, item, in renderCtx);
+                        continue;
+                    }
+
+                    var c = item.MR.Color;
+                    var key = new AutoInstBatchKey(
+                        item.MF.Mesh!,
+                        item.Mat,
+                        c.R, c.G, c.B, c.A,
+                        item.MR.DoubleSided,
+                        item.MR.InvertFrontFace);
+
+                    if (!buckets.TryGetValue(key, out var list))
+                    {
+                        if (pool.Count > 0)
+                        {
+                            list = pool[pool.Count - 1];
+                            pool.RemoveAt(pool.Count - 1);
+                            list.Clear();
+                        }
+                        else
+                        {
+                            list = new List<DrawItem>(16);
+                        }
+                        buckets[key] = list;
+                        keys.Add(key);
+                    }
+                    list.Add(item);
+                }
+
+                for (int k = 0; k < keys.Count; k++)
+                {
+                    var key = keys[k];
+                    var list = buckets[key];
+                    if (list.Count < minBatch)
+                    {
+                        for (int j = 0; j < list.Count; j++)
+                            DrawMeshItem(gl, shader, cache, list[j], in renderCtx);
+                    }
+                    else
+                    {
+                        DrawAutoInstancedBatch(gl, shader, cache, key, list, in renderCtx, isGBufferPass);
+                    }
+                }
+            }
+            finally
+            {
+                for (int k = 0; k < keys.Count; k++)
+                {
+                    if (buckets.TryGetValue(keys[k], out var list))
+                    {
+                        list.Clear();
+                        pool.Add(list);
+                    }
+                }
+                buckets.Clear();
+                keys.Clear();
+            }
+        }
+
+        private static unsafe void DrawAutoInstancedBatch(
+            GL gl,
+            ShaderProgram shader,
+            ResourceCache cache,
+            in AutoInstBatchKey key,
+            List<DrawItem> items,
+            in RenderContext ctx,
+            bool isGBufferPass)
+        {
+            int count = items.Count;
+            if (count <= 0) return;
+
+            var gpuMesh = cache.GetMesh(key.Mesh);
+            if (gpuMesh.IndexCount <= 0) return;
+
+            int needFloats = count * 16;
+            var scratch = s_autoInstMatrixScratch ??= new float[Math.Max(needFloats, 16 * 64)];
+            if (scratch.Length < needFloats)
+            {
+                scratch = new float[Math.Max(needFloats, scratch.Length * 2)];
+                s_autoInstMatrixScratch = scratch;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                var w = items[i].World;
+                int o = i * 16;
+                scratch[o + 0]  = w.M11; scratch[o + 1]  = w.M12; scratch[o + 2]  = w.M13; scratch[o + 3]  = w.M14;
+                scratch[o + 4]  = w.M21; scratch[o + 5]  = w.M22; scratch[o + 6]  = w.M23; scratch[o + 7]  = w.M24;
+                scratch[o + 8]  = w.M31; scratch[o + 9]  = w.M32; scratch[o + 10] = w.M33; scratch[o + 11] = w.M34;
+                scratch[o + 12] = w.M41; scratch[o + 13] = w.M42; scratch[o + 14] = w.M43; scratch[o + 15] = w.M44;
+            }
+
+            if (!s_autoInstGpus.TryGetValue(cache, out var gpu))
+            {
+                gpu = new AutoInstGpu { Gl = gl, Vbo = gl.GenBuffer() };
+                s_autoInstGpus[cache] = gpu;
+            }
+
+            gl.BindBuffer(BufferTargetARB.ArrayBuffer, gpu.Vbo);
+            fixed (float* ptr = scratch)
+            {
+                if (needFloats > gpu.GpuCapacityFloats)
+                {
+                    int cap = Math.Max(needFloats, Math.Max(16 * 64, gpu.GpuCapacityFloats * 3 / 2));
+                    gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(cap * sizeof(float)), null, BufferUsageARB.DynamicDraw);
+                    gpu.GpuCapacityFloats = cap;
+                }
+                gl.BufferSubData(BufferTargetARB.ArrayBuffer, 0, (nuint)(needFloats * sizeof(float)), ptr);
+            }
+
+            shader.Use();
+            if (!isGBufferPass)
+            {
+                if (ctx.CascadedShadow != null || ctx.ShadowFBO?.DepthTexture != null)
+                    BindShadowMapsToShader(shader, ctx.ShadowFBO, ctx.CascadedShadow, 7);
+                BindEnvMapToShader(gl, shader, ctx.CamPos, 12);
+            }
+
+            var mat = key.Mat;
+            float r = 1f, g2 = 1f, b = 1f, a = 1f;
+            float roughness = 0.5f, metallic = 0f, alphaCutoff = 0f;
+            if (mat != null)
+            {
+                r = mat.BaseColor.R / 255f;
+                g2 = mat.BaseColor.G / 255f;
+                b = mat.BaseColor.B / 255f;
+                a = mat.BaseColor.A / 255f;
+                roughness = mat.Roughness;
+                metallic = mat.Metallic;
+                alphaCutoff = mat.AlphaCutoff;
+            }
+
+            r *= key.ColorR / 255f;
+            g2 *= key.ColorG / 255f;
+            b *= key.ColorB / 255f;
+            a *= key.ColorA / 255f;
+
+            shader.SetInt("uInstanced", 2);
+            shader.SetInt("uHasBones", 0);
+            shader.SetVector4("uBaseColor", r, g2, b, a);
+            shader.SetFloat("uRoughness", roughness);
+            shader.SetFloat("uMetallic", metallic);
+            shader.SetFloat("uAlphaCutoff", alphaCutoff);
+            shader.SetInt("uTransparent", 0);
+            shader.SetInt("uDoubleSided", key.DoubleSided ? 1 : 0);
+
+            if (key.DoubleSided)
+                gl.Disable(EnableCap.CullFace);
+            else
+            {
+                gl.Enable(EnableCap.CullFace);
+                gl.CullFace(key.InvertFrontFace ? TriangleFace.Front : TriangleFace.Back);
+            }
+
+            ctx.Globals.UpdateAmbientIfChanged(ctx.Ambient);
+            shader.SetInt("uIsVegetation", 0);
+            shader.SetFloat("uRain", 0f);
+            shader.SetFloat("uWetness", 0f);
+            shader.SetFloat("uSnow", 0f);
+            shader.SetFloat("uCloudiness", 0f);
+            shader.SetFloat("uSunIntensity", 1f);
+            if (!isGBufferPass)
+                SetPlanetPropFill(shader, ctx.CamPos);
+
+            const int opacityTexUnit = 11;
+            bool hasAlbedo = false, hasNormal = false, hasSpec = false, hasMetal = false;
+            bool hasRough = false, hasAO = false, hasEmissiveTex = false, hasOpacity = false;
+
+            if (mat?.Textures != null && mat.Textures.Count > 0)
+            {
+                for (int i = 0; i < mat.Textures.Count; i++)
+                {
+                    var slot = mat.Textures[i];
+                    if (slot is RuntimeTexSlot rts && rts.Texture != null)
+                    {
+                        var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                        if (!hasAlbedo && (usage.Contains("albedo") || usage == "" || usage.Contains("base") || usage.Contains("diff")))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture0); hasAlbedo = true; }
+                        else if (!hasNormal && (usage.Contains("normal") || usage.Contains("bump")))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture1); hasNormal = true; }
+                        else if (!hasSpec && usage.Contains("specular"))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture2); hasSpec = true; }
+                        else if (!hasMetal && (usage.Contains("metallic") || usage.Contains("metalness")))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture3); hasMetal = true; }
+                        else if (!hasRough && usage.Contains("rough"))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture4); hasRough = true; }
+                        else if (!hasAO && (usage.Contains("occlusion") || usage.Contains("ao")))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture5); hasAO = true; }
+                        else if (!hasEmissiveTex && (usage.Contains("emissive") || usage.Contains("emission")))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture6); hasEmissiveTex = true; }
+                        else if (!hasOpacity && (usage.Contains("opacity") || usage.Contains("transparency") || usage == "mask"))
+                        { cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture0 + opacityTexUnit); hasOpacity = true; }
+                    }
+                    else if (slot is MaterialTexture mtex && mtex.Texture != null)
+                    {
+                        switch (mtex.Usage)
+                        {
+                            case MaterialTexture.TexUsage.Albedo when !hasAlbedo:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture0); hasAlbedo = true; break;
+                            case MaterialTexture.TexUsage.Normal when !hasNormal:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture1); hasNormal = true; break;
+                            case MaterialTexture.TexUsage.Specular when !hasSpec:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture2); hasSpec = true; break;
+                            case MaterialTexture.TexUsage.Metallic when !hasMetal:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture3); hasMetal = true; break;
+                            case MaterialTexture.TexUsage.Roughness when !hasRough:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture4); hasRough = true; break;
+                            case MaterialTexture.TexUsage.AmbientOcclusion when !hasAO:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture5); hasAO = true; break;
+                            case MaterialTexture.TexUsage.Emissive when !hasEmissiveTex:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture6); hasEmissiveTex = true; break;
+                            case MaterialTexture.TexUsage.Opacity when !hasOpacity:
+                                cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture0 + opacityTexUnit); hasOpacity = true; break;
+                        }
+                    }
+                }
+            }
+
+            if (!hasAlbedo)
+                cache.GetWhiteTexture().Bind(TextureUnit.Texture0);
+            if (!hasOpacity)
+                cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + opacityTexUnit);
+
+            shader.SetTexture("uAlbedoTex", 0);
+            shader.SetInt("uHasAlbedoTex", hasAlbedo ? 1 : 0);
+            shader.SetTexture("uNormalMap", 1);
+            shader.SetInt("uHasNormalMap", hasNormal ? 1 : 0);
+            shader.SetFloat("uNormalStrength", mat?.NormalStrength ?? 1f);
+            shader.SetTexture("uSpecularTex", 2);
+            shader.SetInt("uHasSpecularTex", hasSpec ? 1 : 0);
+            shader.SetTexture("uMetallicTex", 3);
+            shader.SetInt("uHasMetallicTex", hasMetal ? 1 : 0);
+            shader.SetTexture("uRoughnessTex", 4);
+            shader.SetInt("uHasRoughnessTex", hasRough ? 1 : 0);
+            shader.SetTexture("uAOTex", 5);
+            shader.SetInt("uHasAOTex", hasAO ? 1 : 0);
+            shader.SetTexture("uEmissiveTex", 6);
+            shader.SetInt("uHasEmissiveTex", hasEmissiveTex ? 1 : 0);
+            shader.SetTexture("uOpacityTex", opacityTexUnit);
+            shader.SetInt("uHasOpacityTex", hasOpacity ? 1 : 0);
+            shader.SetFloat("uLumaClip", mat?.LumaClip ?? 0f);
+
+            if (mat != null && (mat.EmissiveIntensity > 0f || hasEmissiveTex))
+            {
+                shader.SetVector3("uEmissiveColor", new SN.Vector3(
+                    mat.EmissiveColor.R / 255f,
+                    mat.EmissiveColor.G / 255f,
+                    mat.EmissiveColor.B / 255f));
+                shader.SetFloat("uEmissiveIntensity", mat.EmissiveIntensity > 0f ? mat.EmissiveIntensity : 1f);
+            }
+            else
+            {
+                shader.SetVector3("uEmissiveColor", SN.Vector3.Zero);
+                shader.SetFloat("uEmissiveIntensity", 0f);
+            }
+
+            try
+            {
+                gpuMesh.DrawInstancedMatrices(gpu.Vbo, count, 64);
+                Profiler.CountBatch();
+            }
+            finally
+            {
+                shader.SetInt("uInstanced", 0);
+            }
+        }
+
         // ---------- Particle rendering ----------
         // Reusable buffers for particle instance data
         [ThreadStatic] private static SN.Vector4[]? s_particlePositions;
@@ -885,24 +1280,15 @@ namespace Game_Engine.Core
 
             // --- BATCH terrain draw items by Terrain reference ---
             // This avoids rebinding splatmap + layer textures for every single chunk.
-            // We first draw all non-terrain opaque items, then group terrain items by terrain.
+            // We first draw all non-terrain opaque items (with automatic static-mesh GPU instancing),
+            // then group terrain items by terrain.
             Terrain? boundTerrain = null;
-            bool terrainShaderActive = false;
 
-            foreach (var item in opaqueItems)
-            {
-                if (item.Terrain != null && terrainShader != null && item.Terrain.Layers.Count > 0)
-                    continue; // terrain items are drawn in a second pass below
-                if (terrainShaderActive)
-                {
-                    standardShader.Use();
-                    if (hasShadow)
-                        BindShadowMapsToShader(standardShader, shadowFBO, cascadedShadow, 7);
-                    BindEnvMapToShader(gl, standardShader, camPos, 12);
-                    terrainShaderActive = false;
-                }
-                DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
-            }
+            DrawOpaqueItemsWithAutoInstancing(
+                gl, standardShader, cache, opaqueItems, in renderCtx,
+                skipTerrainWithLayers: terrainShader != null,
+                skipAllTerrain: false,
+                isGBufferPass: false);
 
             // Now draw ALL terrain items, grouped by terrain to minimize state changes
             if (terrainShader != null)
@@ -923,7 +1309,6 @@ namespace Game_Engine.Core
 
                 gl.Enable(EnableCap.CullFace);
                 gl.CullFace(TriangleFace.Back);
-                terrainShaderActive = true;
 
                 foreach (var item in opaqueItems)
                 {
@@ -2663,26 +3048,11 @@ namespace Game_Engine.Core
                 gl.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Line);
             try
             {
-            foreach (var item in opaqueItems)
-            {
-                // Skip terrain (forward-rendered with splatmap shader)
-                if (item.Terrain != null && item.Terrain.Layers.Count > 0) continue;
-
-                // First-class Surface shaders (opaque + lit): render natively into the G-Buffer!
-                if (IsDeferredSurfaceShader(item.Mat, out var absShaderPath, out var surfaceSchema))
-                {
-                    var gbufSurface = CustomShaderCache.GetOrCompile(absShaderPath!, gl, ShaderPassType.GBuffer, isES);
-                    if (gbufSurface != null)
-                    {
-                        DrawSurfaceToGBuffer(gl, gbufSurface, surfaceSchema!, cache, item, in renderCtx);
-                        gbufferShader.Use();
-                        continue;
-                    }
-                }
-
-                // Standard items (and legacy non-Surface custom shaders as depth/fallback proxy)
-                DrawMeshItem(gl, gbufferShader, cache, item, in renderCtx);
-            }
+                DrawOpaqueItemsWithAutoInstancing(
+                    gl, gbufferShader, cache, opaqueItems, in renderCtx,
+                    skipTerrainWithLayers: true,
+                    skipAllTerrain: false,
+                    isGBufferPass: true);
             }
             finally
             {
@@ -3983,6 +4353,11 @@ namespace Game_Engine.Core
                 gl, standardShader, cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
                 shadowFBO, shadowVP, sunShineDir, renderCtx.LightColor, renderCtx.CascadedShadow);
+            PlanetScatterRenderer.RenderAll(
+                gl, standardShader, cache, view, proj, camPos,
+                lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
+                shadowFBO, shadowVP, sunShineDir, renderCtx.LightColor, renderCtx.CascadedShadow,
+                HdrOutputActive, (int)DebugViewMode);
             RenderPlanetGpuGrassBatches(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, renderCtx.LightColor);
         }
 
@@ -4184,11 +4559,11 @@ namespace Game_Engine.Core
                 IsES = isES
             };
 
-            foreach (var item in opaqueItems)
-            {
-                if (item.Terrain != null) continue;
-                DrawMeshItem(gl, standardShader, cache, item, in renderCtx);
-            }
+            DrawOpaqueItemsWithAutoInstancing(
+                gl, standardShader, cache, opaqueItems, in renderCtx,
+                skipTerrainWithLayers: false,
+                skipAllTerrain: true,
+                isGBufferPass: false);
 
             gl.DepthFunc(DepthFunction.Less);
         }

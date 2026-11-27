@@ -438,15 +438,16 @@ The `AudioManager` provides global audio management:
 | **Global Control** | `PlayOneShot()`, `StopAll()`, `PauseAll()`, `ResumeAll()` |
 
 ### AudioBackend
-Low-level audio playback via **NAudio**:
+Low-level audio playback on Windows via **NAudio 3.0.1** (non-Windows `Engine.Player` builds use OpenAL + PCM WAV where configured):
 
 | Feature | Description |
 |---------|-------------|
-| **Per-sound playback** | Each sound gets its own `WaveOut` |
-| **AudioHandle** | Wraps playback state with volume, pause, resume control |
-| **LoopingReader** | `WaveStream` wrapper for seamless audio looping |
+| **Decoded clip cache** | `AudioClipCache` decodes `.wav`/`.mp3`/`.ogg` once into shared `44.1 kHz` stereo IEEE-float PCM; LRU eviction (`MaxCacheBytes`, default 256 MB); `ClearCache()` on project close / shutdown |
+| **Shared output device** | One `WaveOutEvent` + hierarchical `MixingSampleProvider` bus graph — voices are `CachedSoundSampleProvider` instances, not one `WaveOut` per sound |
+| **Mixer routing** | `AudioSource.MixerGroup` (or `Channel` fallback) routes each voice into named `AudioMixer` groups up to **Master**, then through per-group `AudioMixerGroupProvider` DSP |
+| **AudioHandle** | Wraps playback state with volume, pitch, pan, loop, pause, resume, stop |
 | **Path resolution** | Tries absolute, project-relative, Assets folder, filename search |
-| **Auto-cleanup** | Handles dispose automatically on playback end |
+| **Auto-cleanup** | Active voices remove themselves when playback completes |
 
 ### Spatial Audio
 `AudioSource` components support 3D spatial audio:
@@ -454,9 +455,10 @@ Low-level audio playback via **NAudio**:
 - **Stereo panning** — sounds pan left/right based on the listener's orientation
 - **SpatialBlend** — 0.0 = full 2D (no spatialization), 1.0 = full 3D
 - **Min/Max Distance** — configurable attenuation range
-- **Channel routing** — each source belongs to Master, Music, or SFX channel
+- **Channel routing** — each source belongs to Master, Music, or SFX channel when `MixerGroup` is empty
+- **MixerGroup** — optional group name (`SFX`, `Music`, `Footsteps`, etc.) for hierarchical volume and real-time effects
 
-Volume computation: `finalVolume = sourceVolume × channelVolume × masterVolume × distanceAttenuation`
+Volume computation: `finalVolume = sourceVolume × channelVolume × masterVolume × mixerGroupEffectiveVolume × distanceAttenuation × occlusion`
 
 ### AudioMixer
 Hierarchical audio mixing system with group-based volume control and effects:

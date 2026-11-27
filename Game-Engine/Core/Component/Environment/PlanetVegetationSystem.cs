@@ -288,6 +288,7 @@ public sealed class PlanetVegetationSystem : Behavior
     readonly HashSet<int> _carpetProceduralTreeTokens = new();
     float _treeImportWaitSec;
     int _nextGpuGrassToken = -1;
+    int _nextGpuRockToken = 1;
     int _lastStreamFrame = int.MinValue;
     int _streamTick;
     long _lastStreamWallTicks;
@@ -463,6 +464,7 @@ public sealed class PlanetVegetationSystem : Behavior
         public string ModelPath = "";
         public string TexturePath = "";
         public int GpuGrassToken;
+        public int GpuRockToken;
         public float SeatRadius;
     }
 
@@ -4715,12 +4717,12 @@ public sealed class PlanetVegetationSystem : Behavior
             LastSpawnedThisUpdate++;
         }
 
-        // ── Scatter rocks ──
+        // ── Scatter rocks (GPU-instanced via PlanetScatterRenderer, no per-rock GameObject) ──
         var scatter = GetComponent<PlanetScatterRenderer>();
         var scatterRecipes = scatter?.Recipes;
-        if (scatterRecipes is { Length: > 0 } && spawnBudget > 0)
+        if (scatter != null && scatter.HasRoom && scatterRecipes is { Length: > 0 } && spawnBudget > 0)
         {
-            for (int ri = 0; ri < scatterRecipes.Length && spawnBudget > 0 && currentTotal < hardCap; ri++)
+            for (int ri = 0; ri < scatterRecipes.Length && spawnBudget > 0 && currentTotal < hardCap && scatter.HasRoom; ri++)
             {
                 var recipe = scatterRecipes[ri];
                 if (recipe == null) continue;
@@ -4735,7 +4737,7 @@ public sealed class PlanetVegetationSystem : Behavior
                 bool debris = string.Equals(recipe.ScatterType, "Debris", StringComparison.OrdinalIgnoreCase);
                 float dens = Math.Max(0f, debris ? recipe.DebrisDensity : recipe.RockDensity);
                 int targetRock = Math.Clamp((int)MathF.Round(dens * extraCap), 0, extraCap);
-                while (rockCount < targetRock && spawnBudget > 0 && currentTotal < hardCap)
+                while (rockCount < targetRock && spawnBudget > 0 && currentTotal < hardCap && scatter.HasRoom)
                 {
                     int salt = rockCount + 701 + ri * 17;
                     float u = Random01(HashLeaf(leaf, 11 + salt));
@@ -4747,6 +4749,33 @@ public sealed class PlanetVegetationSystem : Behavior
 
                     var item = ChooseFromItems(rockItems, HashLeaf(leaf, 311 + salt));
                     if (item == null) break;
+
+                    if (TrySpawnGpuInstancedScatterRock(scatter, leaf, biome, item, dir, salt, out int gpuRockToken, out float gpuRockScale, out float gpuRockYaw))
+                    {
+                        entries.Add(new Entry
+                        {
+                            GameObject = null!,
+                            Biome = biome,
+                            BiomeName = biome.Name,
+                            IsGrass = false,
+                            Kind = VegKind.Rock,
+                            BaseScale = gpuRockScale,
+                            SurfaceDir = SafeNormalize(dir, SN.Vector3.UnitY),
+                            YawDeg = gpuRockYaw,
+                            ModelPath = PlanetAssetIO.NormalizeAssetReference(item.ModelPath ?? ""),
+                            TexturePath = "",
+                            PrefabPath = "",
+                            GpuRockToken = gpuRockToken
+                        });
+                        rockCount++;
+                        currentTotal++;
+                        spawnBudget--;
+                        LastSpawnedThisUpdate++;
+                        continue;
+                    }
+                    if (_deferSpawnForTemplate) break;
+
+                    // Fallback for complex prefab rocks (non-model assets)
                     var go = SpawnMeshItemObject(leaf, biome, item, salt, VegKind.Rock, requireDryLand: true, requireGrowthTreeFilters: false, forcedDir: dir);
                     if (_deferSpawnForTemplate) break;
                     if (go == null) { rockCount++; spawnBudget--; continue; }
@@ -4911,6 +4940,96 @@ public sealed class PlanetVegetationSystem : Behavior
         }
     }
 
+    bool TrySpawnGpuInstancedScatterRock(
+        PlanetScatterRenderer scatter,
+        QuadNode leaf,
+        BiomeDefinition biome,
+        VegetationProfileItem item,
+        SN.Vector3 dir,
+        int seedOffset,
+        out int token,
+        out float outScale,
+        out float outYawDeg)
+    {
+        token = 0;
+        outScale = 1f;
+        outYawDeg = 0f;
+        _deferSpawnForTemplate = false;
+
+        if (_terrain?.Config == null || !scatter.HasRoom)
+            return false;
+
+        // Prefabs use the GameObject fallback path.
+        bool isPrefab = !string.IsNullOrWhiteSpace(item.PrefabPath) && IsPrefabPath(item.PrefabPath);
+        if (isPrefab || (!IsSupportedModelPath(item.ModelPath)))
+            return false;
+
+        string? abs = ResolveTreeModelAbsPath(item.ModelPath);
+        if (string.IsNullOrWhiteSpace(abs))
+            return false;
+
+        if (!TryGetGpuTreeTemplateParts(abs, out var parts, out float meshExtent, out _))
+        {
+            RequestTreeTemplateLoad(abs);
+            _deferSpawnForTemplate = true;
+            return false;
+        }
+        if (parts == null || parts.Count == 0)
+            return false;
+
+        dir = SafeNormalize(dir, SN.Vector3.UnitY);
+
+        float minScale = biome.TreeMinScale * Math.Max(0.05f, item.MinScale);
+        float maxScale = biome.TreeMaxScale * Math.Max(0.05f, item.MaxScale);
+        if (maxScale < minScale) (maxScale, minScale) = (minScale, maxScale);
+        float baseScale = minScale + (maxScale - minScale) * Random01(HashLeaf(leaf, 97 + seedOffset));
+
+        // Fit rock scale cleanly to world units (comparable to SpawnMeshItemObject).
+        float desiredSize = Math.Max(1.8f, Math.Clamp(TreeBaseHeight * 0.45f, 1.8f, 6.5f));
+        float worldScale = Math.Max(0.05f, baseScale);
+        if (meshExtent > 1e-4f)
+            worldScale *= Math.Clamp(desiredSize / meshExtent, 0.08f, 40f);
+        worldScale = Math.Clamp(worldScale, 0.15f, 45f);
+        float localScale = _terrain.WorldToLocalLength(worldScale);
+
+        var planetW = GetPlanetWorldMatrix();
+        var radialW = LocalDirectionToWorld(planetW, dir);
+        var surfN = SamplePlanetSurfaceNormal(_terrain, planetW, dir);
+        var placeUpWorld = ResolvePlanetTreeWorldUp(radialW, surfN);
+
+        SN.Vector3 localUp = dir;
+        if (SN.Matrix4x4.Invert(planetW, out var invPlanet))
+        {
+            var upL = SN.Vector3.TransformNormal(placeUpWorld, invPlanet);
+            if (upL.LengthSquared() > 1e-6f)
+                localUp = SN.Vector3.Normalize(upL);
+        }
+
+        // Seat flush into terrain crust so rocks never float on slopes.
+        var localPos = _terrain.SampleVegetationAnchorLocal(dir);
+        float sinkLocal = _terrain.WorldToLocalLength(0.18f);
+        localPos -= dir * sinkLocal;
+
+        float yawDeg = Random01(HashLeaf(leaf, 53 + seedOffset)) * 360f;
+        float yawRad = yawDeg * (MathF.PI / 180f);
+
+        // Use solid opaque backface culling for rock meshes.
+        var rockParts = new List<PlanetGpuTrees.SubmeshPart>(parts.Count);
+        for (int i = 0; i < parts.Count; i++)
+            rockParts.Add(new PlanetGpuTrees.SubmeshPart(parts[i].Mesh, parts[i].Material, DoubleSided: false));
+
+        int rockToken = _nextGpuRockToken++;
+        if (rockToken == 0) rockToken = _nextGpuRockToken++;
+
+        if (!scatter.TryAddGpuInstance(rockToken, rockParts, localPos, localUp, localScale, yawRad, SN.Vector3.One))
+            return false;
+
+        token = rockToken;
+        outScale = worldScale;
+        outYawDeg = yawDeg;
+        return true;
+    }
+
     void RegisterScatterRock(PlanetScatterRenderer? scatter, GameObject go, string? scatterType, string? modelPath)
     {
         if (scatter == null || go == null) return;
@@ -4922,7 +5041,13 @@ public sealed class PlanetVegetationSystem : Behavior
 
     void ForgetScatterRock(Entry e)
     {
-        if (e.Kind != VegKind.Rock || e.GameObject == null) return;
+        if (e.Kind != VegKind.Rock) return;
+        if (e.GpuRockToken != 0)
+        {
+            GetComponent<PlanetScatterRenderer>()?.RemoveGpuInstance(e.GpuRockToken);
+            return;
+        }
+        if (e.GameObject == null) return;
         var pos = SceneGraphUtil.AccumulateWorld(e.GameObject).Translation;
         GetComponent<PlanetScatterRenderer>()?.RemoveNearest(pos);
     }

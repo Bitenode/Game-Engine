@@ -24,10 +24,11 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Decal Projection** — Runtime decal rendering on surfaces with lifetime, fade-out, and projection modes (Forward, Up, Down)
 - **Post-Processing** — Linear HDR scene color (`RGBA16F` `SceneFbo` with RGBA8 fallback), bloom, SSAO, Fog, Color Grading, Tone Mapping (Reinhard/ACES), Scene View **Debug View** modes (including ToneMap Compare), Vignette, FXAA, TAA, SSR, Depth of Field, and underwater effects
 - **Vegetation System** — GPU-instanced grass, rocks, and debris with chunked rendering, distance culling, and terrain-aware placement
+- **Static-Mesh Auto-Instancing** — `SceneRenderer.EnableAutoInstancing` batches repeated opaque props (`AutoInstancingMinBatchSize` 4+) via `GPUMesh.DrawInstancedMatrices` (`Standard` `uInstanced = 2`) in forward, G-buffer, and planet forward passes
 
 ### World Building
 - **Terrain System** — Heightmap terrain with 10 sculpting/painting tools, splatmaps (up to 8 layers), chunking, tunable per-chunk LOD (optional hysteresis), optional **`.terrain.bin`** assets, **`TerrainStreamer`** for camera-centered tile streaming, tree painting, and O(1) heightmap collision
-- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs, fauna/scatter/life output ports, underwater life), async scene-load baking, chunk LOD streaming, GPU grass (per-GL-context uploads, orbit-camera culling, clear zones), expanded fauna/table placement and vegetation streaming, prop/point-lighting on curved surfaces, smoother player stand on LOD seams, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
+- **Planet System** — Cube-sphere worlds with height-cubemap crust, crust-band caves, biome graph authoring (volcanoes, lava lakes, coastal cliffs, fauna/scatter/life output ports, underwater life), async scene-load baking, chunk LOD streaming, GPU grass and **GPU-instanced scatter rocks** (`PlanetScatterRenderer`, 512 Xbox / 1024+ desktop cap), expanded fauna/table placement and vegetation streaming, prop/point-lighting on curved surfaces, smoother player stand on LOD seams, play-mode post-process spawn, and vegetation/weather runtime ([docs](Game-Engine/Docs/13_Planet_System.md))
 - **3D Model Import** — FBX, OBJ, DAE (and glTF where Assimp supports it) via AssimpNet with automatic material extraction, skeleton building, loose FBX animation clips, and FBX pivot-aware bone animation import; shipped **StarterCharacter** learning asset with Idle/Walk/Run/Wave
 - **2D Support** — Camera2D with pixel-perfect rendering, SpriteRenderer, Tilemap with sparse storage and per-tile collision
 - **Navigation** — NavMeshAgent with A* pathfinding, navmesh baking from scene geometry, obstacle avoidance, and auto-repath
@@ -42,8 +43,9 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 - **Inverse Kinematics** — IKConstraint with TwoBone (arms/legs), LookAt (head tracking), and FABRIK (multi-joint chains)
 
 ### Audio & Networking
-- **Audio System** — Cross-platform OpenAL backend (via Silk.NET) with native 3D spatial audio, distance attenuation, Doppler effect, and audio occlusion (raycast-based obstruction detection)
-- **Audio Mixer** — Hierarchical mixer groups (Master > Music/SFX/UI/Voice), 7 effect types (Reverb, Echo, LowPass, HighPass, Chorus, Distortion, Compressor), snapshots with smooth transitions, and 10 reverb zone presets
+- **Audio System** — Windows editor/Player playback via NAudio 3.0.1 (shared `WaveOutEvent` + `MixingSampleProvider`); cross-platform OpenAL path for non-Windows players; 3D spatial audio, distance attenuation, Doppler, and raycast occlusion
+- **Audio Clip Cache** — `AudioClipCache` LRU-decoded PCM (`44.1 kHz` stereo float), cleared on project close; voices read cached buffers concurrently
+- **Audio Mixer** — Hierarchical mixer groups (Master > Music/SFX/UI/Voice), per-group `AudioMixerGroupProvider` DSP for all 7 effect types (Reverb, Echo, LowPass, HighPass, Chorus, Distortion, Compressor), `AudioSource.MixerGroup` routing, snapshots, and 10 reverb zone presets
 - **Networking** — Static `NetworkManager` API (server/client, RPCs, UDP transport with keepalive and idle disconnect) plus Inspector components NetworkIdentity, NetworkTransform (interpolated sync), and NetworkAnimator (state sync); Standard Assets include sample menu/server UI (`MainMenuController`, `ServerHostController` / `Main Menu.scene`, `Server.scene`). The game loop invokes `NetworkManager.Update` automatically in Game View and Engine.Player.
 
 ### Tools & Profiling
@@ -61,7 +63,7 @@ A full-featured 3D game engine and editor built from the ground up in **C# (.NET
 | UI Framework      | Avalonia                               | 12.*      |
 | Rendering         | Silk.NET OpenGL / OpenGL ES 3.0 (ANGLE)| 2.23.0    |
 | Audio Playback    | Silk.NET OpenAL (cross-platform)       | 2.23.0    |
-| Audio Decoding    | NAudio (WAV/MP3/OGG file reading)      | 2.2.1     |
+| Audio Decoding    | NAudio (WAV/MP3/OGG file reading)      | 3.0.1     |
 | 3D Model Import   | AssimpNet                              | 5.0.0-beta1 |
 | Image Loading     | SkiaSharp                              | 2.88.9    |
 | Scripting         | Roslyn (Microsoft.CodeAnalysis.CSharp) | 4.14.0    |

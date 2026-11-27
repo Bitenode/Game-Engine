@@ -850,13 +850,26 @@ Post-processing effects applied as a full-screen pass after scene rendering. Sup
 | `MinDistance`    | `float`        | varies   | Distance at which volume starts attenuating |
 | `MaxDistance`    | `float`        | varies   | Distance at which volume reaches minimum |
 | `DopplerLevel`  | `float`        | varies   | Doppler effect intensity           |
-| `Channel`       | —              | —        | Audio channel: Master, Music, or SFX |
+| `Channel`       | `AudioChannel` | `SFX`    | Audio channel: Master, Music, or SFX |
+| `MixerGroup`    | `string`       | `""`     | Optional `AudioMixer` group name (e.g. `SFX`, `Music`, `Footsteps`, `Weapons`, `Ambient`, `UI`, `Voice`); defaults to `Channel` when empty |
 
-**Volume computation:** Final volume = source volume × channel volume × master volume × distance attenuation
+**Volume computation:** Final volume = source volume × channel volume × master volume × mixer group effective volume × distance attenuation × occlusion
 
 **Pan computation:** Stereo panning based on the dot product of the listener's right vector and the source-to-listener direction.
 
-**Runtime:** Uses `AudioHandle` for playback control (play, pause, resume, stop).
+**Runtime & Backend:**
+- Uses `AudioHandle` for playback control (volume, pitch, pan, loop, pause, resume, stop).
+- **Decoded PCM Clip Cache (`AudioClipCache`):** Decodes `.wav`, `.mp3`, `.ogg`, etc. once into a thread-safe `44.1 kHz` stereo IEEE-float PCM buffer keyed by normalized file path + last-write timestamp (with LRU memory cap and automatic `ClearCache()` on project close / shutdown).
+- **Shared Mixer Output (`AudioBackend`):** On Windows (NAudio), all active voices (`CachedSoundSampleProvider` with volume, stereo pan, linear-resampled pitch, loop, and pause) mix through a single shared `WaveOutEvent` + hierarchical `MixingSampleProvider` bus graph routed by `MixerGroup` up to `Master`, followed by `ReverbZone` processing.
+- **Real-Time `AudioMixer` DSP Effects (`AudioMixerGroupProvider`):** Zero-allocation-per-callback stereo DSP chain wired for all 7 `AudioEffectType`s per mixer group (with parent-bus inheritance up to `Master`):
+  1. `LowPassFilter` — biquad low-pass filter (`CutoffHz`, `Resonance`)
+  2. `HighPassFilter` — biquad high-pass filter (`CutoffHz`, `Resonance`)
+  3. `Echo` — circular stereo delay buffer with feedback (`Delay`, `Feedback`)
+  4. `Reverb` — Schroeder/Freeverb 4-comb + 2-allpass damped feedback network (`DecayTime`, `Density`, `Diffusion`, `RoomSize`, `Damping`)
+  5. `Chorus` — quadrature LFO-modulated short delay line (`Rate`/`RateHz`, `Depth`/`DepthMs`, `DelayMs`)
+  6. `Distortion` — soft-clipping `tanh` waveshaper (`Drive`, `OutputGain`)
+  7. `Compressor` — stereo-linked attack/release envelope follower (`Threshold`, `Ratio`, `AttackMs`, `ReleaseMs`, `MakeupGain`)
+- **NAudio 3.0.1 (contributors):** Custom `ISampleProvider` implementations in `AudioClipCache`, `AudioBackend`, and `AudioMixerGroupProvider` implement `Read(Span<float>)` (required by NAudio 3.x) instead of the legacy `Read(float[], int, int)` overload.
 
 ---
 
@@ -2196,7 +2209,7 @@ Optional Environment companions on the planet root. Graph compile binds flora/sc
 |------|------|
 | `PlanetLifeStreaming` | Shared 18×18 face/UV cell keys with vegetation. `BindRecipe` holds fauna / underwater-life / vein tables for later consumers |
 | `PlanetFloraSpawner` | Caps unique imported tree mesh paths (`MaxUniqueMeshes`, default 24) so the FBX template cache does not thrash |
-| `PlanetScatterRenderer` | Stores scatter recipes and the rock meshes vegetation already placed (`MaxInstances` 8192). Rocks stay scene meshes. `RemoveNearest` drops an instance when that mesh despawns |
+| `PlanetScatterRenderer` | Stores scatter recipes and renders model rocks via GPU instancing (`GPUMesh.DrawInstanced`, `Standard.vert.glsl` `uInstanced = 1`, 48-byte packed instance buffer). `PlanetVegetationSystem` registers spawned rocks on the GPU path (no per-rock `GameObject` when a model is available). Caps: `512` on Xbox UWP / `1024` default on desktop (`MaxInstances` up to `2048` on desktop). Legacy `Instances` / `TryAddInstance` remain for prefab fallbacks; `RemoveNearest` / `RemoveGpuInstance` drop bookkeeping when rocks despawn |
 | `PlanetFaunaTableBehavior` | Play-mode fauna spawner: imports `{Species}_Rig.fbx`, binds Idle/Walk clips, places herds on the stand surface by biome layer density. One animal of each species per streaming cell; animals outside the camera cell ring are removed. `UnderwaterLife.FishDensity` scales aquatic spawns. Locomotion uses `StandRadiusGrid`, never density marches |
 | `PlanetVeinDeposit` | Marker on a spawned vein. `ResourceId`, `Amount` (default 4), and `TryHarvest`. An empty marker is removed. Harvest does not dig the crust |
 | `VegetationClearZone` | Clears GPU grass and streamed trees in a world-space circle around the object (campfires, buildings). `Radius` 0.25–100 m; bumps `Version` when resized |

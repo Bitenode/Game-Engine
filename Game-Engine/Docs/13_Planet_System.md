@@ -226,7 +226,7 @@ The palette also includes authoring nodes that compile into `BiomeGraphResult` /
 
 Runtime companions (optional on the planet GameObject):
 - `PlanetLifeStreaming` — face/UV cell keys + fauna/underwater/vein recipe bind. Fauna keeps one animal of each species per cell and drops animals that leave the camera cell ring.
-- `PlanetScatterRenderer` — stores scatter recipes and the rock meshes vegetation already placed. Rocks stay scene meshes (not camera-facing billboards).
+- `PlanetScatterRenderer` — stores scatter recipes and renders planet scatter rocks via GPU instancing (`GPUMesh.DrawInstanced` + `Standard.vert.glsl` `uInstanced = 1`, 48-byte `(posScale, upYaw, tint)` instance buffer keyed per `ResourceCache` with CPU frustum culling and `XBOX_UWP` 64-instance chunked draws). Eliminates per-rock `GameObject` overhead for model-based rocks and lifts the old 96-rock Xbox cap to `512` (`1024` default on desktop).
 - `PlanetFloraSpawner` — unique imported-mesh cap for trees
 
 `PlanetVegetationSystem` keeps streaming plants; `UseUniversalLandVegetation` defaults to **false** so per-biome `VegetationProfileId` matters. It honors `VegetationPatchiness`, growth temperature/moisture, and tree slope/altitude reject.
@@ -250,7 +250,7 @@ When play mode is active and the biome graph compiled fauna layers, `PlanetFauna
 - Vegetation profiles whose id is **Ocean** (or paths containing `/coral` / `coral_`) are excluded from the land tree carpet.
 - **`UnderwaterLife`** recipes drive kelp (bush items) and coral (tree items) through `PlanetVegetationSystem` with `requireDryLand: false`.
 - Imported reef meshes use **`scaleToTreeHeight: false`** so they are not inflated to tree height; placement respects depth and slope limits near the camera.
-- **`PlanetVegetationSystem`** also spawns bushes, scatter rocks, underwater props, and vein markers from compiled flora/scatter/underwater/vein recipes. Each vein marker gets a `PlanetVeinDeposit` (`ResourceId`, `Amount`, `TryHarvest`). Harvest does not dig the crust. Placed rocks are registered on `PlanetScatterRenderer` so its instance list matches the meshes in the scene.
+- **`PlanetVegetationSystem`** also spawns bushes, scatter rocks, underwater props, and vein markers from compiled flora/scatter/underwater/vein recipes. Each vein marker gets a `PlanetVeinDeposit` (`ResourceId`, `Amount`, `TryHarvest`). Harvest does not dig the crust. Model scatter rocks use `PlanetVegetationSystem.TrySpawnGpuInstancedScatterRock` → `PlanetScatterRenderer.TryAddGpuInstance` (GPU instance list, no per-rock `GameObject`); non-model prefab scatters fall back to `RegisterScatterRock` with a scene `GameObject`.
 
 ### Vegetation clear zones (`VegetationClearZone`)
 

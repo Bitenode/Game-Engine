@@ -175,7 +175,7 @@ Both projects build under all configurations.
 | `AssimpNet` | `5.0.0-beta1` | Import | 3D model loading (FBX, OBJ, glTF 2, DAE). Engine.Player and the Android player still reference `4.1.0` |
 | `SkiaSharp` | `2.88.9` | Image | 2D image decoding (PNG, JPG, BMP) |
 | `Microsoft.CodeAnalysis.CSharp` | `4.14.0` | Scripting | Roslyn C# compiler for runtime script compilation |
-| `NAudio` | `2.2.1` | Audio | Audio playback backend |
+| `NAudio` | `3.0.1` | Audio | Audio playback backend |
 | `System.Reactive` | `6.1.0` | Reactive | Observable-based event programming |
 | `AutoConstructor` | `5.6.0` | Codegen | Source generator for constructor boilerplate |
 
@@ -328,7 +328,7 @@ Same as the editor project **except**:
 | Silk.NET.OpenGL 2.23.0 | |
 | AssimpNet 4.1.0 | |
 | SkiaSharp 2.88.9 | |
-| NAudio 2.2.1 | |
+| NAudio 3.0.1 | |
 | System.Reactive 6.1.0 | |
 | AutoConstructor 5.6.0 | |
 

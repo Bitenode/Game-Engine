@@ -17,6 +17,10 @@ namespace Game_Engine.Core.Audio
         public AudioMixerGroup? Parent { get; set; }
         public List<AudioMixerGroup> Children { get; } = new();
         public List<AudioEffect> Effects { get; } = new();
+        private int _effectsVersion;
+
+        /// <summary>Monotonically incremented whenever effects are added or removed.</summary>
+        internal int EffectsVersion => System.Threading.Volatile.Read(ref _effectsVersion);
 
         /// <summary>Effective volume considering parent chain.</summary>
         public float EffectiveVolume
@@ -45,10 +49,26 @@ namespace Game_Engine.Core.Audio
         }
 
         /// <summary>Add an effect to this group's effects chain.</summary>
-        public void AddEffect(AudioEffect effect) => Effects.Add(effect);
+        public void AddEffect(AudioEffect effect)
+        {
+            if (effect == null) return;
+            lock (Effects)
+            {
+                Effects.Add(effect);
+                System.Threading.Interlocked.Increment(ref _effectsVersion);
+            }
+        }
 
         /// <summary>Remove an effect from this group.</summary>
-        public bool RemoveEffect(AudioEffect effect) => Effects.Remove(effect);
+        public bool RemoveEffect(AudioEffect effect)
+        {
+            lock (Effects)
+            {
+                bool removed = Effects.Remove(effect);
+                if (removed) System.Threading.Interlocked.Increment(ref _effectsVersion);
+                return removed;
+            }
+        }
     }
 
     /// <summary>Type of audio effect.</summary>
@@ -108,6 +128,40 @@ namespace Game_Engine.Core.Audio
             var fx = new AudioEffect { Type = AudioEffectType.HighPassFilter };
             fx.Parameters["CutoffHz"] = cutoffHz;
             fx.Parameters["Resonance"] = resonance;
+            return fx;
+        }
+
+        /// <summary>Thread-safe, zero-allocation parameter lookup with fallback default.</summary>
+        public float GetParameter(string key, float defaultValue)
+        {
+            try
+            {
+                return Parameters.TryGetValue(key, out float value) && float.IsFinite(value)
+                    ? value
+                    : defaultValue;
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>Create a chorus effect.</summary>
+        public static AudioEffect CreateChorus(float rateHz = 1.5f, float depthMs = 3.5f, float wetMix = 0.5f)
+        {
+            var fx = new AudioEffect { Type = AudioEffectType.Chorus, WetMix = wetMix };
+            fx.Parameters["Rate"] = rateHz;
+            fx.Parameters["Depth"] = depthMs;
+            fx.Parameters["DelayMs"] = 15f;
+            return fx;
+        }
+
+        /// <summary>Create a soft-clipping distortion effect.</summary>
+        public static AudioEffect CreateDistortion(float drive = 4f, float wetMix = 0.7f, float outputGain = 1f)
+        {
+            var fx = new AudioEffect { Type = AudioEffectType.Distortion, WetMix = wetMix };
+            fx.Parameters["Drive"] = drive;
+            fx.Parameters["OutputGain"] = outputGain;
             return fx;
         }
 

@@ -346,7 +346,7 @@ public sealed class GPUMesh : IDisposable
         _gl.BindVertexArray(VAO);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, VBO);
         _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, EBO);
-        // Grass leaves locations 2 and 3 instanced. Instanced trees use locations 5, 6, 7.
+        // Grass leaves locations 2 and 3 instanced. Instanced trees/rocks/props use locations 5–8.
         // That state is not always stored on one VAO alone (especially on ANGLE/Xbox), so
         // reset divisors here before non-instanced draws.
         _gl.VertexAttribDivisor(2, 0);
@@ -354,9 +354,11 @@ public sealed class GPUMesh : IDisposable
         _gl.VertexAttribDivisor(5, 0);
         _gl.VertexAttribDivisor(6, 0);
         _gl.VertexAttribDivisor(7, 0);
+        _gl.VertexAttribDivisor(8, 0);
         _gl.DisableVertexAttribArray(5);
         _gl.DisableVertexAttribArray(6);
         _gl.DisableVertexAttribArray(7);
+        _gl.DisableVertexAttribArray(8);
         if (IsPlanet || IsSkinned)
         {
             const uint stride = 64;
@@ -470,6 +472,99 @@ public sealed class GPUMesh : IDisposable
             _gl.DisableVertexAttribArray(5);
             _gl.DisableVertexAttribArray(6);
             _gl.DisableVertexAttribArray(7);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+        }
+    }
+
+    /// <summary>
+    /// Draw triangles using per-instance 4x4 world matrices in <paramref name="instanceVbo"/>
+    /// (for <c>Standard.vert.glsl</c> with <c>uInstanced == 2</c>).
+    /// Instance layout (stride &gt;= 64 bytes, 16 floats per System.Numerics.Matrix4x4):
+    ///   location 5: vec4 col0 (M11..M14)
+    ///   location 6: vec4 col1 (M21..M24)
+    ///   location 7: vec4 col2 (M31..M34)
+    ///   location 8: vec4 col3 (M41..M44)
+    /// Always resets divisors and disables locations 5–8 in a <c>finally</c> block so ANGLE/Xbox
+    /// never leak instanced state onto subsequent non-instanced draws.
+    /// </summary>
+    public unsafe void DrawInstancedMatrices(uint instanceVbo, int instanceCount, int strideBytes = 64, int byteOffset = 0)
+    {
+        if (IndexCount <= 0 || instanceCount <= 0 || VAO == 0 || EBO == 0 || VBO == 0 || instanceVbo == 0)
+            return;
+
+        _gl.BindVertexArray(VAO);
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, VBO);
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, EBO);
+
+        _gl.VertexAttribDivisor(2, 0);
+        _gl.VertexAttribDivisor(3, 0);
+
+        const uint vertStride = 32;
+        _gl.EnableVertexAttribArray(0);
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, vertStride, (void*)0);
+        _gl.EnableVertexAttribArray(1);
+        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, vertStride, (void*)(3 * sizeof(float)));
+        _gl.EnableVertexAttribArray(2);
+        _gl.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, vertStride, (void*)(6 * sizeof(float)));
+        _gl.DisableVertexAttribArray(3);
+        _gl.DisableVertexAttribArray(4);
+
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, instanceVbo);
+        _gl.EnableVertexAttribArray(5);
+        _gl.EnableVertexAttribArray(6);
+        _gl.EnableVertexAttribArray(7);
+        _gl.EnableVertexAttribArray(8);
+        _gl.VertexAttribDivisor(5, 1);
+        _gl.VertexAttribDivisor(6, 1);
+        _gl.VertexAttribDivisor(7, 1);
+        _gl.VertexAttribDivisor(8, 1);
+
+        uint uStride = (uint)Math.Max(64, strideBytes);
+        try
+        {
+#if XBOX_UWP
+            const int group = 64;
+            for (int start = 0; start < instanceCount; start += group)
+            {
+                int count = Math.Min(group, instanceCount - start);
+                int off = byteOffset + start * (int)uStride;
+                _gl.VertexAttribPointer(5, 4, VertexAttribPointerType.Float, false, uStride, (void*)off);
+                _gl.VertexAttribPointer(6, 4, VertexAttribPointerType.Float, false, uStride, (void*)(off + 16));
+                _gl.VertexAttribPointer(7, 4, VertexAttribPointerType.Float, false, uStride, (void*)(off + 32));
+                _gl.VertexAttribPointer(8, 4, VertexAttribPointerType.Float, false, uStride, (void*)(off + 48));
+                _gl.DrawElementsInstanced(
+                    PrimitiveType.Triangles,
+                    (uint)IndexCount,
+                    DrawElementsType.UnsignedInt,
+                    (void*)0,
+                    (uint)count);
+            }
+#else
+            _gl.VertexAttribPointer(5, 4, VertexAttribPointerType.Float, false, uStride, (void*)byteOffset);
+            _gl.VertexAttribPointer(6, 4, VertexAttribPointerType.Float, false, uStride, (void*)(byteOffset + 16));
+            _gl.VertexAttribPointer(7, 4, VertexAttribPointerType.Float, false, uStride, (void*)(byteOffset + 32));
+            _gl.VertexAttribPointer(8, 4, VertexAttribPointerType.Float, false, uStride, (void*)(byteOffset + 48));
+            _gl.DrawElementsInstanced(
+                PrimitiveType.Triangles,
+                (uint)IndexCount,
+                DrawElementsType.UnsignedInt,
+                (void*)0,
+                (uint)instanceCount);
+#endif
+            Profiler.CountDrawCall();
+            Profiler.CountTriangles((IndexCount / 3) * instanceCount);
+            Game_Engine.Core.Rendering.FrameProfile.CountDraw();
+        }
+        finally
+        {
+            _gl.VertexAttribDivisor(5, 0);
+            _gl.VertexAttribDivisor(6, 0);
+            _gl.VertexAttribDivisor(7, 0);
+            _gl.VertexAttribDivisor(8, 0);
+            _gl.DisableVertexAttribArray(5);
+            _gl.DisableVertexAttribArray(6);
+            _gl.DisableVertexAttribArray(7);
+            _gl.DisableVertexAttribArray(8);
             _gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
         }
     }

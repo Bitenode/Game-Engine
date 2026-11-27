@@ -16,7 +16,7 @@ A full-featured 3D game engine and editor built with **C# (.NET 9.0)**, **Avalon
 | 3D Import         | AssimpNet                                     | 5.0.0-beta1 | FBX, OBJ, glTF 2 / GLB, DAE model loading |
 | Image Loading     | SkiaSharp                                     | 2.88.9    | PNG, JPG, BMP texture decoding             |
 | Scripting         | Roslyn (Microsoft.CodeAnalysis.CSharp)        | 4.14.0    | Runtime C# compilation and hot-reload      |
-| Audio             | NAudio                                        | 2.2.1     | Audio playback with spatial 3D sound       |
+| Audio             | NAudio                                        | 3.0.1     | Windows playback, shared mixer, clip cache |
 | Reactive          | System.Reactive                               | 6.1.0     | Event-driven programming patterns          |
 | Code Generation   | AutoConstructor                               | 5.6.0     | Source-generated constructors               |
 
@@ -366,7 +366,7 @@ The scene is a forest of `GameObject` trees. `SceneService.Root` holds the top-l
 | `ExtensionService` | Discovers, loads, and hot-reloads editor extensions from compiled assemblies using collectible `AssemblyLoadContext` |
 | `CommandRegistry` | Central command registration and invocation system for menus and shortcuts |
 | `AudioManager` | Volume channels (Master/Music/SFX), `AudioSource` registry, listener management, global playback control |
-| `AudioBackend` | Windows: NAudio `WaveOut`. Non-Windows player: OpenAL + PCM WAV (`OpenAlAudio`) so Linux/macOS/Android builds are not silent |
+| `AudioBackend` | Windows: NAudio 3.0.1 — `AudioClipCache` + single `WaveOutEvent` / `MixingSampleProvider` bus graph, `AudioMixerGroupProvider` DSP, `AudioSource.MixerGroup` routing. Non-Windows player: OpenAL + PCM WAV (`OpenAlAudio`) so Linux/macOS/Android builds are not silent |
 | `Log` | Global logging with severity levels (Info, Warning, Error, Success, Debug); messages appear in the Console panel |
 | `SceneManager` | Runtime scene loading — deferred to next frame, safe tear-down/rebuild, `SceneLoaded` event |
 | `SceneQuery` | Scene search utilities — `FindByName()` (case-insensitive default), `FindByPath()`, `FindBehaviors<T>()`. Traversal skips disabled GameObjects; `FindBehaviors<T>()` only returns behaviors where `IsActiveAndEnabled` is true |
