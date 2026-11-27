@@ -92,6 +92,9 @@ public partial class InspectorPanel : UserControl
     /// <summary>Serialized <see cref="SceneSerialization.BehaviorDTO"/> from the last Copy Component.</summary>
     static string? _behaviorClipboardJson;
 
+    /// <summary>Raised when a component is added or removed (including via Undo/Redo) so open inspectors rebuild.</summary>
+    static event Action<GameObject>? StructureChanged;
+
     private bool _assetInspectorActive;
 
     /// <summary><see cref="SelectionService.Version"/> last shown by <see cref="BuildUI"/> / <see cref="BuildMultiUI"/> / asset mode.</summary>
@@ -101,6 +104,7 @@ public partial class InspectorPanel : UserControl
     private AssetSelectedHandler _onAssetSelected;
 
     private Action _onSelChanged, _onProjOpened, _onProjClosed, _onProjChanged;
+    private Action<GameObject>? _onStructureChanged;
 
     IEnumerable<PropertyInfo> InspectableProps(Behavior b)
     {
@@ -531,11 +535,13 @@ public partial class InspectorPanel : UserControl
 
     void BeginPropertyEdit(object target, PropertyInfo p)
     {
+        if (UndoService.IsExecuting) return;
         _editStart[(target, p)] = SnapshotValue(p.PropertyType, p.GetValue(target));
     }
 
     void CommitPropertyEdit(object target, PropertyInfo p)
     {
+        if (UndoService.IsExecuting) return;
         var key = (target, p);
         var oldVal = _editStart.TryGetValue(key, out var snap)
             ? snap
@@ -544,10 +550,80 @@ public partial class InspectorPanel : UserControl
         _editStart.Remove(key);
 
         if (!ValueEquals(p.PropertyType, oldVal, newVal))
-            Game_Engine.Core.UndoService.Exec(
-                new Game_Engine.Core.PropertyChangeCmd(target, p, oldVal, newVal));
+            Game_Engine.Core.UndoService.RecordPropertyChange(target, p, oldVal, newVal);
         else
             Game_Engine.Core.SceneService.NotifyChanged();
+    }
+
+    void WireBoolCheckBoxUndo(CheckBox cb, object target, PropertyInfo p)
+    {
+        bool lastVal = (bool)(p.GetValue(target) ?? false);
+        cb.IsCheckedChanged += (_, __) =>
+        {
+            if (UndoService.IsExecuting)
+            {
+                lastVal = (bool)(p.GetValue(target) ?? false);
+                return;
+            }
+            bool curVal = (bool)(p.GetValue(target) ?? false);
+            if (curVal != lastVal)
+            {
+                var oldVal = lastVal;
+                lastVal = curVal;
+                UndoService.RecordPropertyChange(target, p, oldVal, curVal);
+            }
+            else
+            {
+                SceneService.NotifyChanged();
+            }
+        };
+    }
+
+    void AddComponentWithUndo(GameObject go, Behavior b)
+    {
+        int beforeCount = go.Behaviors.Count;
+        go.AddBehavior(b);
+        var added = go.Behaviors.Skip(beforeCount).ToList();
+        if (added.Count == 0) added.Add(b);
+
+        UndoService.RecordAction(
+            $"Add {b.GetType().Name}",
+            undo: () =>
+            {
+                for (int i = added.Count - 1; i >= 0; i--)
+                    go.RemoveBehavior(added[i]);
+                StructureChanged?.Invoke(go);
+            },
+            redo: () =>
+            {
+                for (int i = 0; i < added.Count; i++)
+                    go.AddBehavior(added[i]);
+                StructureChanged?.Invoke(go);
+            });
+
+        RebuildForStructure(go);
+    }
+
+    void RemoveComponentWithUndo(GameObject owner, Behavior b)
+    {
+        int index = owner.Behaviors.IndexOf(b);
+        if (index < 0) return;
+        owner.RemoveBehavior(b);
+
+        UndoService.RecordAction(
+            $"Remove {b.GetType().Name}",
+            undo: () =>
+            {
+                owner.InsertBehavior(index, b);
+                StructureChanged?.Invoke(owner);
+            },
+            redo: () =>
+            {
+                owner.RemoveBehavior(b);
+                StructureChanged?.Invoke(owner);
+            });
+
+        RebuildForStructure(owner);
     }
 
     public InspectorPanel()
@@ -585,6 +661,27 @@ public partial class InspectorPanel : UserControl
         ProjectService.ProjectClosed += _onProjClosed;
         ProjectService.Changed += _onProjChanged;
 
+        _onStructureChanged = go =>
+        {
+            if (_isLocked || _assetInspectorActive) return;
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (_isLocked || _assetInspectorActive) return;
+                var all = SelectionService.Selected;
+                if (all.Count > 1 && all.Contains(go))
+                {
+                    var offset = InspectorScroll.Offset;
+                    BuildMultiUI(new List<GameObject>(all));
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() => InspectorScroll.Offset = offset);
+                }
+                else if (ReferenceEquals(_target, go))
+                {
+                    RebuildForStructure(go);
+                }
+            });
+        };
+        StructureChanged += _onStructureChanged;
+
         // Single tidy cleanup block
         this.Unloaded += (_, __) =>
         {
@@ -593,6 +690,7 @@ public partial class InspectorPanel : UserControl
             if (_onProjOpened != null) ProjectService.ProjectOpened -= _onProjOpened;
             if (_onProjClosed != null) ProjectService.ProjectClosed -= _onProjClosed;
             if (_onProjChanged != null) ProjectService.Changed -= _onProjChanged;
+            if (_onStructureChanged != null) StructureChanged -= _onStructureChanged;
         };
 
         // Prefer showing currently selected asset (if any), else show selection inspector
@@ -752,8 +850,7 @@ public partial class InspectorPanel : UserControl
         enabledCb.Bind(CheckBox.IsCheckedProperty,
             new Binding(nameof(GameObject.Enabled)) { Source = go, Mode = BindingMode.TwoWay });
         var pEnabled = typeof(GameObject).GetProperty(nameof(GameObject.Enabled))!;
-        enabledCb.GotFocus += (_, __) => BeginPropertyEdit(go, pEnabled);
-        enabledCb.IsCheckedChanged += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(go, pEnabled); };
+        WireBoolCheckBoxUndo(enabledCb, go, pEnabled);
         nameRow.Children.Add(enabledCb);
 
         var nameBox = new TextBox { Margin = new Thickness(0, 0, 0, 6), MinWidth = 140 };
@@ -814,8 +911,30 @@ public partial class InspectorPanel : UserControl
             {
                 var dto = JsonSerializer.Deserialize<BehaviorDTO>(_behaviorClipboardJson, SceneSerialization.JsonOptions);
                 if (dto == null) { ShowInfo("Clipboard data is invalid."); return; }
+                int beforeCount = go.Behaviors.Count;
                 SceneSerialization.PasteBehaviorFromClipboard(go, dto);
-                SceneService.NotifyChanged();
+                var added = go.Behaviors.Skip(beforeCount).ToList();
+                if (added.Count > 0)
+                {
+                    UndoService.RecordAction(
+                        $"Paste {added[0].GetType().Name}",
+                        undo: () =>
+                        {
+                            for (int i = added.Count - 1; i >= 0; i--)
+                                go.RemoveBehavior(added[i]);
+                            StructureChanged?.Invoke(go);
+                        },
+                        redo: () =>
+                        {
+                            for (int i = 0; i < added.Count; i++)
+                                go.AddBehavior(added[i]);
+                            StructureChanged?.Invoke(go);
+                        });
+                }
+                else
+                {
+                    SceneService.NotifyChanged();
+                }
                 RebuildForStructure(go);
             }
             catch (Exception ex) { ShowInfo("Paste failed:\n" + ex.Message); }
@@ -869,9 +988,7 @@ public partial class InspectorPanel : UserControl
                     if (ci.Type == null) return;
                     try
                     {
-                        go.AddBehavior((Behavior)Activator.CreateInstance(ci.Type)!);
-                        SceneService.NotifyChanged();
-                        RebuildForStructure(go);
+                        AddComponentWithUndo(go, (Behavior)Activator.CreateInstance(ci.Type)!);
                     }
                     catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
                 };
@@ -896,9 +1013,7 @@ public partial class InspectorPanel : UserControl
                     {
                         try
                         {
-                            go.AddBehavior((Behavior)Activator.CreateInstance(sType)!);
-                            SceneService.NotifyChanged();
-                            RebuildForStructure(go);
+                            AddComponentWithUndo(go, (Behavior)Activator.CreateInstance(sType)!);
                         }
                         catch (Exception ex) { ShowInfo("Failed to add component:\n" + ex.Message); }
                     }
@@ -930,9 +1045,7 @@ public partial class InspectorPanel : UserControl
                 var t = item.Type;
                 rows.Add(($"{kvp.Key} / {item.Display}", () =>
                 {
-                    go.AddBehavior((Behavior)Activator.CreateInstance(t)!);
-                    SceneService.NotifyChanged();
-                    RebuildForStructure(go);
+                    AddComponentWithUndo(go, (Behavior)Activator.CreateInstance(t)!);
                 }));
             }
         }
@@ -952,9 +1065,7 @@ public partial class InspectorPanel : UserControl
                 var t = loaded;
                 rows.Add(($"Scripts / {s.Name}", () =>
                 {
-                    go.AddBehavior((Behavior)Activator.CreateInstance(t)!);
-                    SceneService.NotifyChanged();
-                    RebuildForStructure(go);
+                    AddComponentWithUndo(go, (Behavior)Activator.CreateInstance(t)!);
                 }));
             }
         }
@@ -1062,7 +1173,8 @@ public partial class InspectorPanel : UserControl
             };
             enabledCb.Bind(CheckBox.IsCheckedProperty,
                 new Binding(nameof(GameObject.Enabled)) { Source = go, Mode = BindingMode.TwoWay });
-            enabledCb.IsCheckedChanged += (_, __) => SceneService.NotifyChanged();
+            var pMultiEnabled = typeof(GameObject).GetProperty(nameof(GameObject.Enabled))!;
+            WireBoolCheckBoxUndo(enabledCb, go, pMultiEnabled);
             nameRow.Children.Add(enabledCb);
 
             var nameLabel = new TextBlock
@@ -1077,6 +1189,9 @@ public partial class InspectorPanel : UserControl
             // Small editable name box
             var nameBox = new TextBox { Width = 160, FontSize = 12 };
             nameBox.Bind(TextBox.TextProperty, new Binding("Name") { Source = go, Mode = BindingMode.TwoWay });
+            var pMultiName = typeof(GameObject).GetProperty(nameof(GameObject.Name))!;
+            nameBox.GotFocus += (_, __) => BeginPropertyEdit(go, pMultiName);
+            nameBox.LostFocus += (_, __) => CommitPropertyEdit(go, pMultiName);
             nameRow.Children.Add(nameBox);
 
             Host.Children.Add(nameRow);
@@ -1231,6 +1346,7 @@ public partial class InspectorPanel : UserControl
             layerTb.Text = go.Layer.ToString();
             CommitPropertyEdit(go, pLayer);
         };
+        SyncControlToProperty(go, nameof(GameObject.Layer), layerTb, () => layerTb.Text = go.Layer.ToString());
         var layerRow = InspectorLabeledRow("Layer (0–31)", layerTb);
         ToolTip.SetTip(layerTb, "Each collider uses its GameObject’s layer. Combine with Physics.Raycast(..., layerMask) and CollisionLayerMask on Rigidbody / CharacterController.");
         sp.Children.Add(layerRow);
@@ -1799,8 +1915,7 @@ public partial class InspectorPanel : UserControl
             new Binding(nameof(Behavior.Enabled)) { Source = b, Mode = BindingMode.TwoWay });
 
         var pEnabled = typeof(Behavior).GetProperty(nameof(Behavior.Enabled))!;
-        enabled.GotFocus += (_, __) => BeginPropertyEdit(b, pEnabled);
-        enabled.IsCheckedChanged += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(b, pEnabled); };
+        WireBoolCheckBoxUndo(enabled, b, pEnabled);
 
         var title = new TextBlock { Text = b.GetType().Name, VerticalAlignment = VerticalAlignment.Center };
         title.Classes.Add("insp-card-title");
@@ -1826,9 +1941,7 @@ public partial class InspectorPanel : UserControl
         remove.Classes.Add("insp-remove-btn");
         remove.Click += (_, __) =>
         {
-            owner.RemoveBehavior(b);
-            SceneService.NotifyChanged();
-            RebuildForStructure(owner);
+            RemoveComponentWithUndo(owner, b);
         };
 
         header.Children.Add(enabled);
@@ -6027,8 +6140,7 @@ public partial class InspectorPanel : UserControl
         {
             var cb = new CheckBox();
             cb.Bind(CheckBox.IsCheckedProperty, new Binding(p.Name) { Source = target, Mode = BindingMode.TwoWay });
-            cb.GotFocus += (_, __) => BeginPropertyEdit(target, p);
-            cb.IsCheckedChanged += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(target, p); };
+            WireBoolCheckBoxUndo(cb, target, p);
             return cb;
         }
 
@@ -6037,8 +6149,26 @@ public partial class InspectorPanel : UserControl
         {
             var cb = new ComboBox { ItemsSource = Enum.GetValues(t) };
             cb.Bind(ComboBox.SelectedItemProperty, new Binding(p.Name) { Source = target, Mode = BindingMode.TwoWay });
-            cb.DropDownOpened += (_, __) => BeginPropertyEdit(target, p);
-            cb.SelectionChanged += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(target, p); };
+            object? lastVal = p.GetValue(target);
+            cb.SelectionChanged += (_, __) =>
+            {
+                if (UndoService.IsExecuting)
+                {
+                    lastVal = p.GetValue(target);
+                    return;
+                }
+                var curVal = p.GetValue(target);
+                if (!Equals(lastVal, curVal))
+                {
+                    var oldVal = lastVal;
+                    lastVal = curVal;
+                    UndoService.RecordPropertyChange(target, p, oldVal, curVal);
+                }
+                else
+                {
+                    SceneService.NotifyChanged();
+                }
+            };
             return cb;
         }
 

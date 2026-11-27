@@ -162,6 +162,18 @@ public class GameObject : INotifyPropertyChanged
         OnChanged(nameof(HierarchyChildren));
     }
 
+    public void InsertChild(int index, GameObject child)
+    {
+        if (child == this) return;
+        if (child.IsAncestorOf(this)) return;
+        child.Parent?.Children.Remove(child);
+        child.Parent?.OnChanged(nameof(HierarchyChildren));
+        child.Parent = this;
+        int clamped = System.Math.Clamp(index, 0, Children.Count);
+        Children.Insert(clamped, child);
+        OnChanged(nameof(HierarchyChildren));
+    }
+
     public void RemoveFromParent()
     {
         Parent?.Children.Remove(this);
@@ -184,6 +196,15 @@ public class GameObject : INotifyPropertyChanged
         b.gameObject = this;
         Behaviors.Add(b);
         b.OnEnable();
+        return b;
+    }
+
+    public Behavior InsertBehavior(int index, Behavior b)
+    {
+        b.gameObject = this;
+        int clamped = System.Math.Clamp(index, 0, Behaviors.Count);
+        Behaviors.Insert(clamped, b);
+        if (b.Enabled) b.OnEnable();
         return b;
     }
 

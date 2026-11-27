@@ -220,6 +220,11 @@
 						<MenuItem Header="_Recent"           x:Name="MI_RecentRoot"/>
 					</MenuItem>
 
+					<MenuItem Header="_Edit" x:Name="MI_EditRoot">
+						<MenuItem Header="_Undo" x:Name="MI_EditUndo" InputGesture="Ctrl+Z" IsEnabled="False"/>
+						<MenuItem Header="_Redo" x:Name="MI_EditRedo" InputGesture="Ctrl+Y" IsEnabled="False"/>
+					</MenuItem>
+
 					<MenuItem Header="_Window" x:Name="MI_WindowRoot">
 						<MenuItem Header="Reset Layout" x:Name="ResetLayoutMenu"/>
 						<MenuItem Header="Layout Presets">

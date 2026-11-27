@@ -182,6 +182,14 @@ public partial class MainWindow : Window
         ShaderHotReloader.Start();
         SceneService.DirtyStateChanged += _ => UpdateEditorWindowTitle();
 
+        // --- Edit menu Undo/Redo wiring ---
+        if (this.FindControl<MenuItem>("MI_EditUndo") is { } miUndo)
+            miUndo.Click += (_, __) => UndoService.Undo();
+        if (this.FindControl<MenuItem>("MI_EditRedo") is { } miRedo)
+            miRedo.Click += (_, __) => UndoService.Redo();
+        UndoService.Changed += UpdateUndoRedoMenuItems;
+        UpdateUndoRedoMenuItems();
+
         // --- Extensions + Menus wiring ---
 
         RegisterEditorCommands();
@@ -278,6 +286,32 @@ public partial class MainWindow : Window
         CommandRegistry.Register("editor.scripts.compile", "Scripts: Compile and Reload Extensions", () => _ = CompileScriptsFromPaletteAsync(), HasProject);
         CommandRegistry.Register("editor.revealInProject", "Project: Reveal Selection in Project Panel", RevealInProjectForSelection, HasProject);
         CommandRegistry.Register("editor.game.togglePlay", "Game: Toggle Play / Stop", TogglePlayStopShortcut, HasProject);
+        CommandRegistry.Register("editor.edit.undo", "Edit: Undo", UndoService.Undo, () => UndoService.CanUndo);
+        CommandRegistry.Register("editor.edit.redo", "Edit: Redo", UndoService.Redo, () => UndoService.CanRedo);
+    }
+
+    private void UpdateUndoRedoMenuItems()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(UpdateUndoRedoMenuItems);
+            return;
+        }
+
+        if (this.FindControl<MenuItem>("MI_EditUndo") is { } miUndo)
+        {
+            miUndo.IsEnabled = UndoService.CanUndo;
+            miUndo.Header = UndoService.CanUndo && !string.IsNullOrWhiteSpace(UndoService.UndoLabel)
+                ? $"_Undo {UndoService.UndoLabel}"
+                : "_Undo";
+        }
+        if (this.FindControl<MenuItem>("MI_EditRedo") is { } miRedo)
+        {
+            miRedo.IsEnabled = UndoService.CanRedo;
+            miRedo.Header = UndoService.CanRedo && !string.IsNullOrWhiteSpace(UndoService.RedoLabel)
+                ? $"_Redo {UndoService.RedoLabel}"
+                : "_Redo";
+        }
     }
 
     private void OnGlobalPlayStateChanged()
@@ -694,6 +728,20 @@ public partial class MainWindow : Window
         RestoreDockLayout(data);
     }
 
+    private bool FocusInLocalUndoScope()
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.FocusManager?.GetFocusedElement() is not Control el)
+            return false;
+        for (var c = el; c != null; c = c.Parent as Control)
+        {
+            if (c is TextBox or NumericUpDown or BiomeGraphPanel or BlueprintGraphPanel or ShaderEditorPanel
+                or CodeEditorControl)
+                return true;
+        }
+        return false;
+    }
+
     private void OnEditorShortcutKeyDown(object? sender, KeyEventArgs e)
     {
         var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
@@ -708,6 +756,24 @@ public partial class MainWindow : Window
         }
 
         if (!ctrl) return;
+
+        if (!shift && e.Key == Key.Z)
+        {
+            if (FocusInLocalUndoScope()) return;
+            if (UndoService.CanUndo)
+                UndoService.Undo();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Y || (shift && e.Key == Key.Z))
+        {
+            if (FocusInLocalUndoScope()) return;
+            if (UndoService.CanRedo)
+                UndoService.Redo();
+            e.Handled = true;
+            return;
+        }
 
         if (!shift && e.Key == Key.S)
         {
@@ -864,6 +930,7 @@ public partial class MainWindow : Window
         if (host == null) { Log.Warning("[UI] RebuildExtensionMenus: MainMenu not found"); return; }
 
         var projectRoot = this.FindControl<MenuItem>("MI_ProjectRoot");
+        var editRoot = this.FindControl<MenuItem>("MI_EditRoot");
         var windowRoot = this.FindControl<MenuItem>("MI_WindowRoot");
         var SettingsRoot = this.FindControl<MenuItem>("MI_SettingsRoot");
 
@@ -871,6 +938,7 @@ public partial class MainWindow : Window
         host.Items.Clear();
 
         if (projectRoot != null) host.Items.Add(projectRoot);
+        if (editRoot != null) host.Items.Add(editRoot);
         if (windowRoot != null) host.Items.Add(windowRoot);
         if (SettingsRoot != null) host.Items.Add(SettingsRoot);
 

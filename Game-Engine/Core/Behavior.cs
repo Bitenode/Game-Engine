@@ -175,6 +175,17 @@ namespace Game_Engine.Core
             if (LogLifecycle) LogDebug("OnDestroy");
         }
 
+        internal void __RestoreAfterUndoDelete(bool wasEnabled)
+        {
+            _destroyed = false;
+            if (wasEnabled && !_enabled)
+            {
+                _enabled = true;
+                SafeCall(OnEnable, nameof(OnEnable));
+                if (LogLifecycle) LogDebug("Restored (via Undo)");
+            }
+        }
+
         // -- Overridable ------------------------------------------------------------
 
         public virtual void Awake() { }

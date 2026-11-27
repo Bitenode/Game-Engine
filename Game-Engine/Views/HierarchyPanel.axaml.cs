@@ -64,10 +64,11 @@ namespace Game_Engine.Views
                 SceneService.Root.Add(light);
             }
 
-            public void AddEmpty(GameObject parent = null)
+            public GameObject AddEmpty(GameObject parent = null)
             {
                 var go = new GameObject("GameObject");
                 if (parent == null) Root.Add(go); else parent.AddChild(go);
+                return go;
             }
 
             public void Delete(GameObject go)
@@ -454,29 +455,131 @@ namespace Game_Engine.Views
             _contextTarget = tvi?.DataContext as GameObject;
         }
 
+        // ---------------- Undo helpers for Hierarchy mutations ----------------
+        private static List<(Behavior Behavior, bool WasEnabled)> CaptureBehaviorEnabledStates(GameObject root)
+        {
+            var states = new List<(Behavior, bool)>();
+            Collect(root, states);
+            return states;
+
+            static void Collect(GameObject go, List<(Behavior, bool)> dst)
+            {
+                foreach (var b in go.Behaviors)
+                    dst.Add((b, b.Enabled));
+                foreach (var c in go.Children)
+                    Collect(c, dst);
+            }
+        }
+
+        private static void RestoreBehaviorEnabledStates(List<(Behavior Behavior, bool WasEnabled)> states)
+        {
+            for (int i = 0; i < states.Count; i++)
+                states[i].Behavior.__RestoreAfterUndoDelete(states[i].WasEnabled);
+        }
+
+        private void DetachWithoutDestroy(GameObject go)
+        {
+            if (go.Parent != null)
+                go.RemoveFromParent();
+            else
+                _vm.Root.Remove(go);
+        }
+
+        private void AttachAt(GameObject go, GameObject? parent, int index)
+        {
+            DetachWithoutDestroy(go);
+            if (parent == null)
+            {
+                int clamped = Math.Clamp(index, 0, _vm.Root.Count);
+                _vm.Root.Insert(clamped, go);
+            }
+            else
+            {
+                parent.InsertChild(index, go);
+            }
+        }
+
+        private void RecordCreateObject(GameObject go, string label, List<GameObject>? previousSelection = null)
+        {
+            var parent = go.Parent;
+            int index = parent == null ? _vm.Root.IndexOf(go) : parent.Children.IndexOf(go);
+            var prevSel = previousSelection ?? SelectionService.Selected.ToList();
+            List<(Behavior Behavior, bool WasEnabled)>? savedStates = null;
+
+            UndoService.RecordAction(
+                label,
+                undo: () =>
+                {
+                    savedStates = CaptureBehaviorEnabledStates(go);
+                    SceneService.Destroy(go);
+                    if (prevSel.Count > 1) SelectionService.SetMultiple(prevSel);
+                    else if (prevSel.Count == 1) SelectionService.Set(prevSel[0]);
+                    else SelectionService.Clear();
+                },
+                redo: () =>
+                {
+                    AttachAt(go, parent, index);
+                    if (savedStates != null)
+                        RestoreBehaviorEnabledStates(savedStates);
+                    SelectionService.Set(go);
+                });
+        }
+
+        private List<GameObject> GetActionTargets()
+        {
+            if (_contextTarget == null) return new List<GameObject>();
+            var selected = SelectionService.Selected;
+            List<GameObject> raw = (selected.Count > 1 && selected.Contains(_contextTarget))
+                ? selected.ToList()
+                : new List<GameObject> { _contextTarget };
+
+            // Filter out descendants whose ancestor is already in the target set
+            var set = new HashSet<GameObject>(raw);
+            var topLevel = new List<GameObject>();
+            foreach (var go in raw)
+            {
+                bool hasSelectedAncestor = false;
+                for (var p = go.Parent; p != null; p = p.Parent)
+                {
+                    if (set.Contains(p)) { hasSelectedAncestor = true; break; }
+                }
+                if (!hasSelectedAncestor)
+                    topLevel.Add(go);
+            }
+            return topLevel;
+        }
+
         // ---------------- Context menu handlers ----------------
         private void OnCreateChild(object sender, RoutedEventArgs e)
         {
-            _vm.AddEmpty(_contextTarget);
-            SceneService.NotifyChanged();
+            var prevSel = SelectionService.Selected.ToList();
+            var go = _vm.AddEmpty(_contextTarget);
+            SelectionService.Set(go);
+            RecordCreateObject(go, "Create GameObject", prevSel);
         }
 
         private void OnCreateCube(object sender, RoutedEventArgs e)
         {
-            _vm.AddPrimitiveCube(_contextTarget);
-            SceneService.NotifyChanged();
+            var prevSel = SelectionService.Selected.ToList();
+            var go = _vm.AddPrimitiveCube(_contextTarget);
+            SelectionService.Set(go);
+            RecordCreateObject(go, "Create Cube", prevSel);
         }
 
         private void OnCreateCone(object sender, RoutedEventArgs e)
         {
-            _vm.AddPrimitiveCone(_contextTarget);
-            SceneService.NotifyChanged();
+            var prevSel = SelectionService.Selected.ToList();
+            var go = _vm.AddPrimitiveCone(_contextTarget);
+            SelectionService.Set(go);
+            RecordCreateObject(go, "Create Cone", prevSel);
         }
 
         private void OnCreateCylinder(object sender, RoutedEventArgs e)
         {
-            _vm.AddPrimitiveCylinder(_contextTarget);
-            SceneService.NotifyChanged();
+            var prevSel = SelectionService.Selected.ToList();
+            var go = _vm.AddPrimitiveCylinder(_contextTarget);
+            SelectionService.Set(go);
+            RecordCreateObject(go, "Create Cylinder", prevSel);
         }
 
         private async void OnImportModel(object sender, RoutedEventArgs e)
@@ -513,9 +616,10 @@ namespace Game_Engine.Views
 
                 await EditorJobScheduler.InvokeOnUiAsync(() =>
                 {
+                    var prevSel = SelectionService.Selected.ToList();
                     if (_contextTarget == null) _vm.Root.Add(go); else _contextTarget.AddChild(go);
                     SelectionService.Set(go);
-                    SceneService.NotifyChanged();
+                    RecordCreateObject(go, $"Import {go.Name}", prevSel);
                     Log.Success("Imported model: " + path);
                 });
             }
@@ -527,43 +631,135 @@ namespace Game_Engine.Views
 
         private void OnUnparent(object sender, RoutedEventArgs e)
         {
-            if (_contextTarget == null) return;
-            _vm.Unparent(_contextTarget);
-            SceneService.NotifyChanged();
+            var targets = GetActionTargets().Where(t => t.Parent != null).ToList();
+            if (targets.Count == 0) return;
+
+            string label = targets.Count > 1 ? $"Unparent {targets.Count} Objects" : $"Unparent {targets[0].Name}";
+            using (UndoService.Group(label))
+            {
+                foreach (var go in targets)
+                {
+                    var oldParent = go.Parent!;
+                    int oldIndex = oldParent.Children.IndexOf(go);
+                    _vm.Unparent(go);
+                    int newIndex = _vm.Root.IndexOf(go);
+
+                    UndoService.RecordAction(
+                        $"Unparent {go.Name}",
+                        undo: () => AttachAt(go, oldParent, oldIndex),
+                        redo: () => AttachAt(go, null, newIndex));
+                }
+            }
         }
 
         private void OnDelete(object sender, RoutedEventArgs e)
         {
-            if (_contextTarget == null) return;
-            _vm.Delete(_contextTarget);
-            SceneService.NotifyChanged();
+            var targets = GetActionTargets();
+            if (targets.Count == 0) return;
+
+            var prevSel = SelectionService.Selected.ToList();
+            string label = targets.Count > 1 ? $"Delete {targets.Count} Objects" : $"Delete {targets[0].Name}";
+
+            using (UndoService.Group(label))
+            {
+                foreach (var go in targets)
+                {
+                    var parent = go.Parent;
+                    int index = parent == null ? _vm.Root.IndexOf(go) : parent.Children.IndexOf(go);
+                    var states = CaptureBehaviorEnabledStates(go);
+
+                    _vm.Delete(go);
+
+                    UndoService.RecordAction(
+                        $"Delete {go.Name}",
+                        undo: () =>
+                        {
+                            AttachAt(go, parent, index);
+                            RestoreBehaviorEnabledStates(states);
+                        },
+                        redo: () =>
+                        {
+                            SceneService.Destroy(go);
+                        });
+                }
+
+                // Restore selection on Undo / clear on Redo as part of the same atomic group
+                UndoService.RecordAction(
+                    "Selection",
+                    undo: () =>
+                    {
+                        if (prevSel.Count > 1) SelectionService.SetMultiple(prevSel);
+                        else if (prevSel.Count == 1) SelectionService.Set(prevSel[0]);
+                        else SelectionService.Clear();
+                    },
+                    redo: () => SelectionService.Clear());
+            }
+
+            SelectionService.Clear();
         }
 
         private void OnDuplicate(object? sender, RoutedEventArgs e)
         {
-            if (_contextTarget == null) return;
-            try
+            var targets = GetActionTargets();
+            if (targets.Count == 0) return;
+
+            var prevSel = SelectionService.Selected.ToList();
+            var copies = new List<GameObject>();
+            string label = targets.Count > 1 ? $"Duplicate {targets.Count} Objects" : $"Duplicate {targets[0].Name}";
+
+            using (UndoService.Group(label))
             {
-                var json = SceneSerialization.SerializeGameObjectToJson(_contextTarget, includeAll: true);
-                var copy = SceneSerialization.DeserializeGameObjectFromJson(json);
-                if (copy == null) return;
-                copy.Name = UniqueSiblingName(_contextTarget.Name, _contextTarget.Parent);
-                if (_contextTarget.Parent == null) _vm.Root.Add(copy);
-                else _contextTarget.Parent.AddChild(copy);
-                SelectionService.Set(copy);
-                SceneService.NotifyChanged();
+                foreach (var src in targets)
+                {
+                    try
+                    {
+                        var json = SceneSerialization.SerializeGameObjectToJson(src, includeAll: true);
+                        var copy = SceneSerialization.DeserializeGameObjectFromJson(json);
+                        if (copy == null) continue;
+                        copy.Name = UniqueSiblingName(src.Name, src.Parent);
+                        if (src.Parent == null) _vm.Root.Add(copy);
+                        else src.Parent.AddChild(copy);
+                        copies.Add(copy);
+                        RecordCreateObject(copy, $"Duplicate {src.Name}", prevSel);
+                    }
+                    catch { }
+                }
+
+                if (copies.Count > 1)
+                {
+                    UndoService.RecordAction(
+                        "Selection",
+                        undo: () =>
+                        {
+                            if (prevSel.Count > 1) SelectionService.SetMultiple(prevSel);
+                            else if (prevSel.Count == 1) SelectionService.Set(prevSel[0]);
+                            else SelectionService.Clear();
+                        },
+                        redo: () => SelectionService.SetMultiple(copies));
+                }
             }
-            catch { }
+
+            if (copies.Count > 1)
+                SelectionService.SetMultiple(copies);
+            else if (copies.Count == 1)
+                SelectionService.Set(copies[0]);
         }
 
         private async void OnRename(object? sender, RoutedEventArgs e)
         {
             if (_contextTarget == null) return;
-            var current = _contextTarget.Name ?? "GameObject";
+            var target = _contextTarget;
+            var current = target.Name ?? "GameObject";
             var name = await AskTextAsync("Rename GameObject", "Name:", current);
             if (string.IsNullOrWhiteSpace(name)) return;
-            _contextTarget.Name = name.Trim();
-            SceneService.NotifyChanged();
+            var trimmed = name.Trim();
+            if (string.Equals(current, trimmed, StringComparison.Ordinal)) return;
+
+            UndoService.RecordAction(
+                $"Rename {current}",
+                undo: () => target.Name = current,
+                redo: () => target.Name = trimmed,
+                executeNow: true);
         }
 
         private void OnHierarchyPanelKeyDown(object? sender, KeyEventArgs e)
@@ -721,11 +917,12 @@ namespace Game_Engine.Views
                 return;
             }
 
+            var prevSel = SelectionService.Selected.ToList();
             var instance = prefab.Instantiate(_contextTarget);
             if (instance != null)
             {
                 SelectionService.Set(instance);
-                SceneService.NotifyChanged();
+                RecordCreateObject(instance, $"Instantiate {prefab.Name}", prevSel);
             }
         }
 
@@ -951,10 +1148,23 @@ namespace Game_Engine.Views
                 var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
                 var target = tvi?.DataContext as GameObject;
 
+                if (target != null && (ReferenceEquals(target, dragged) || dragged.IsAncestorOf(target)))
+                {
+                    e.Handled = true;
+                    return;
+                }
+
+                var oldParent = dragged.Parent;
+                int oldIndex = oldParent == null ? _vm.Root.IndexOf(dragged) : oldParent.Children.IndexOf(dragged);
+
                 if (target == null)
                 {
-                    if (dragged.Parent != null)
-                        _vm.Unparent(dragged);
+                    if (dragged.Parent == null)
+                    {
+                        e.Handled = true;
+                        return;
+                    }
+                    _vm.Unparent(dragged);
                 }
                 else
                 {
@@ -964,8 +1174,18 @@ namespace Game_Engine.Views
                     target.AddChild(dragged);
                 }
 
+                var newParent = dragged.Parent;
+                int newIndex = newParent == null ? _vm.Root.IndexOf(dragged) : newParent.Children.IndexOf(dragged);
+
+                if (!ReferenceEquals(oldParent, newParent) || oldIndex != newIndex)
+                {
+                    UndoService.RecordAction(
+                        $"Reparent {dragged.Name}",
+                        undo: () => AttachAt(dragged, oldParent, oldIndex),
+                        redo: () => AttachAt(dragged, newParent, newIndex));
+                }
+
                 e.Handled = true;
-                SceneService.NotifyChanged();
                 return;
             }
 
@@ -1008,11 +1228,12 @@ namespace Game_Engine.Views
                 var dropTvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
                 var dropParent = dropTvi?.DataContext as GameObject;
 
+                var prevSel = SelectionService.Selected.ToList();
                 var instance = prefab.Instantiate(dropParent);
                 if (instance != null)
                 {
                     SelectionService.Set(instance);
-                    SceneService.NotifyChanged();
+                    RecordCreateObject(instance, $"Instantiate {prefab.Name}", prevSel);
                     Log.Success($"Instantiated prefab: {prefab.Name}");
                 }
 

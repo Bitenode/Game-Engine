@@ -310,14 +310,15 @@ public static class PlanetSurfaceUtility
     }
 
     /// <summary>
-    /// True ocean basin only. Cliff-carved drops on the continent stay dry so
-    /// the sea sheet cannot walk up the wall.
+    /// True ocean basin and submerged coastal shelf up to the continent ramp
+    /// (<c>Smooth01(0.50, 0.57, land)</c>) and coastal cliff base (<c>drop</c> up to 0.58).
+    /// Inland continent depressions (<c>land &gt; 0.56</c>) stay dry.
     /// </summary>
     public static bool IsOceanBasinColumn(PlanetConfig config, SN.Vector3 sphereDir)
     {
         if (config.Continents is not { Length: > 0 })
             return true;
-        return SampleContinentLand(config, sphereDir) <= 0.38f;
+        return SampleContinentLand(config, sphereDir) <= 0.56f;
     }
 
     /// <summary>

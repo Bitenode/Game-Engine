@@ -418,8 +418,27 @@ public sealed class PlanetMeshGenerator
             remap[i] = AddVert(positions[i], uvs[i]);
         }
 
-        if (data.Positions.Count < 3)
+        if (data.Positions.Count == 0)
             return null;
+
+        var dryOceanRemap = new int[n * n];
+        Array.Fill(dryOceanRemap, -1);
+
+        int GetQuadCornerVert(int idx, float wr, SN.Vector2 baseUv)
+        {
+            if (wet[idx]) return remap[idx];
+            bool isOceanR = MathF.Abs(wr - oceanFillR) < 1e-3f;
+            if (isOceanR && dryOceanRemap[idx] >= 0)
+                return dryOceanRemap[idx];
+            var p = terrainPos[idx];
+            var dir = p.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(p) : SN.Vector3.UnitY;
+            var uv = baseUv;
+            uv.Y = MathF.Max(0.35f, uv.Y * 0.75f);
+            int vIdx = AddVert(dir * wr, uv);
+            if (isOceanR)
+                dryOceanRemap[idx] = vIdx;
+            return vIdx;
+        }
 
         // Place the shore on the visible terrain-edge / sea-sphere intersection.
         // Direction-lerp onto the sphere misses the stretched biome ramp, so
@@ -455,8 +474,11 @@ public sealed class PlanetMeshGenerator
                 t = Math.Clamp(MathF.Max(t, 0.55f), 0.08f, 0.92f);
             else if (lavaEdge)
                 t = Math.Clamp(t, 0.04f, 0.22f);
-            else if (trD > wr + 2.5f)
-                t = Math.Clamp(MathF.Min(t, 0.12f), 0.04f, 0.12f);
+            else if (trD > wr + 0.02f)
+                // Extend the water sheet to the dry corner at sea radius so it tucks cleanly
+                // into steep cliffs and beaches; the opaque terrain depth-clips it at the exact
+                // intersection with zero gap (even under wave displacement).
+                t = 1f;
 
             var shorePos = ProjectToRadius(SN.Vector3.Lerp(pW, pD, t), wr);
             var uv = uvs[wetIdx];
@@ -498,6 +520,61 @@ public sealed class PlanetMeshGenerator
                     AddTriIds(remap[a], remap[b], remap[c]);
                     AddTriIds(remap[b], remap[d], remap[c]);
                     continue;
+                }
+
+                // For ocean/lake/pond shoreline cells, emit the full 4-corner quad at water
+                // radius instead of marching-squares corner cutoffs. On 1-wet-corner cells,
+                // marching squares skips the opposite dry corner (leaving triangular notches
+                // against diagonal cliffs). Dry corners above water are cleanly depth-clipped
+                // by the opaque terrain mesh at the exact cliff/beach intersection.
+                bool hasRiverOrLava = false;
+                float wrSum = 0f;
+                int wetCount = 0;
+                SN.Vector2 wetUv = default;
+
+                void InspectWetCorner(int idx)
+                {
+                    if (!wet[idx]) return;
+                    if ((int)(uvs[idx].X / 8f) >= 6) hasRiverOrLava = true;
+                    wrSum += waterRAt[idx] > 1e-4f ? waterRAt[idx] : oceanFillR;
+                    if (wetCount == 0) wetUv = uvs[idx];
+                    wetCount++;
+                }
+
+                InspectWetCorner(a);
+                InspectWetCorner(b);
+                InspectWetCorner(c);
+                InspectWetCorner(d);
+
+                if (!hasRiverOrLava && wetCount > 0)
+                {
+                    float cellWr = wrSum / wetCount;
+                    bool DryCornerSafe(int idx)
+                    {
+                        if (wet[idx]) return true;
+                        // Above water: buried inside opaque terrain and depth-clipped cleanly.
+                        if (terrainRAt[idx] >= cellWr - 0.02f) return true;
+                        // Naturally submerged coastal shelf (not a player-dug pit or magma bowl).
+                        if (undugRAt[idx] < cellWr - 0.02f)
+                        {
+                            var p = terrainPos[idx];
+                            var dir = p.LengthSquared() > 1e-8f ? SN.Vector3.Normalize(p) : SN.Vector3.UnitY;
+                            if (PlanetSurfaceUtility.SampleMagmaBowl(_config, dir) <= 0.18f)
+                                return true;
+                        }
+                        return false;
+                    }
+
+                    if (DryCornerSafe(a) && DryCornerSafe(b) && DryCornerSafe(c) && DryCornerSafe(d))
+                    {
+                        int ia = GetQuadCornerVert(a, cellWr, wetUv);
+                        int ib = GetQuadCornerVert(b, cellWr, wetUv);
+                        int ic = GetQuadCornerVert(c, cellWr, wetUv);
+                        int id = GetQuadCornerVert(d, cellWr, wetUv);
+                        AddTriIds(ia, ib, ic);
+                        AddTriIds(ib, id, ic);
+                        continue;
+                    }
                 }
 
                 var poly = new int[8];

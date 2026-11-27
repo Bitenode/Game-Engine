@@ -252,7 +252,7 @@ Each row displays a **type icon** based on attached components (Camera, Light, T
 | **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) with drop-target highlighting |
 | **Expand/Collapse** | Arrow click | Navigate nested GameObjects |
 | **Expand all / Collapse all** | Toolbar buttons or context menu | Expand or collapse the hierarchy tree in one action |
-| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2`, `Ctrl+F`, `Ctrl+Shift+R` | Delete, duplicate, rename selected object; **Ctrl+F** expands and focuses the search bar; **Ctrl+Shift+R** reveals in Project |
+| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2`, `Ctrl+F`, `Ctrl+Shift+R`, `Ctrl+Z` / `Ctrl+Y` | Delete, duplicate, rename selected object; **Ctrl+F** expands and focuses the search bar; **Ctrl+Shift+R** reveals in Project; **Ctrl+Z** / **Ctrl+Y** (**Ctrl+Shift+Z**) undo/redo create, delete, duplicate, reparent, unparent, prefab instantiate, and rename actions (grouped atomically for multi-select) |
 
 For multi-select from the Hierarchy, Scene View focuses the first selected object.
 
@@ -330,7 +330,7 @@ The inspector avoids full tree rebuilds when nothing structural changed:
 | Lock unlock (sync to current selection) | Yes |
 | Add / remove / paste component | Yes (scroll offset preserved) |
 | Typing in a field, sliders, gizmo drag | No — controls update in place |
-| Undo / redo | No full rebuild — `PropertyChangeCmd` raises `PropertyChanged` so bindings and snapshot editors refresh |
+| Undo / redo | Property edits update in place via `PropertyChangeCmd` (`Name`, `Enabled`, `Tag`, `Layer`, `Transform`, reflected properties); add/remove/paste component edits rebuild the component list while preserving scroll offset |
 
 `SelectionService.Touch()` (used after undo and during gizmo drags) re-fires `Changed` but does **not** bump `SelectionService.Version`, so the inspector skips a full rebuild when the selection set is unchanged.
 
@@ -903,8 +903,8 @@ Pads use `IInputBackend`: Windows tries **XInput**, then **SDL2**, and initializ
 | Shortcut | Action |
 |----------|--------|
 | **Ctrl+S** | Save scene |
-| **Ctrl+Z** | Undo |
-| **Ctrl+Y** | Redo |
+| **Ctrl+Z** | Undo (global editor undo/redo via `Edit → Undo`, or local undo inside text boxes and graph/script editors) |
+| **Ctrl+Y** / **Ctrl+Shift+Z** | Redo (`Edit → Redo`) |
 | **Ctrl+B** | Compile scripts |
 | **Delete** | Delete selected object |
 | **F5** | Play / Stop game |

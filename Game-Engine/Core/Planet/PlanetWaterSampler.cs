@@ -348,8 +348,7 @@ public static class PlanetWaterSampler
             if (body.Kind == PlanetWaterBodyKind.Ocean)
             {
                 // Continents stay dry even when the classifier still says Ocean.
-                float land = PlanetSurfaceUtility.SampleContinentLand(config, sphereDir);
-                if (config.Continents is { Length: > 0 } && land > 0.38f)
+                if (!PlanetSurfaceUtility.IsOceanBasinColumn(config, sphereDir))
                     continue;
                 if (alt > 0.11f)
                     continue;
