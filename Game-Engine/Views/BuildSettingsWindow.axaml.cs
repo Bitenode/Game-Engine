@@ -506,7 +506,7 @@ namespace Game_Engine.Views
                 {
                     Text = i.ToString(),
                     Width = 20,
-                    Foreground = new SolidColorBrush(Color.Parse("#555B63")),
+                    Opacity = 0.6,
                     FontSize = 12,
                     VerticalAlignment = VerticalAlignment.Center,
                     TextAlignment = TextAlignment.Right
@@ -517,7 +517,6 @@ namespace Game_Engine.Views
                 {
                     Text = DisplayName(_buildScenes[i]),
                     FontSize = 12,
-                    Foreground = new SolidColorBrush(Color.Parse("#C8CDD4")),
                     VerticalAlignment = VerticalAlignment.Center
                 });
 

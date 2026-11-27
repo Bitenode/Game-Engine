@@ -16,10 +16,11 @@ out vec3 vWorldNormal;
 
 void main()
 {
-    vec4 terrainWorldPos = uModel * vec4(aPosition, 1.0);
-    vec3 radialDir = normalize(terrainWorldPos.xyz - uPlanetCenter);
-    float shellHeight = max(0.0, 0.5 * (uCloudBaseHeight + uCloudTopHeight));
-    vec3 shellPos = uPlanetCenter + radialDir * (uPlanetRadius + shellHeight);
+    vec4 worldBase = uModel * vec4(aPosition, 1.0);
+    vec3 radialDir = normalize(worldBase.xyz - uPlanetCenter);
+    float rTop = uPlanetRadius + max(uCloudTopHeight, uCloudBaseHeight + 1.0);
+    // Slight 0.5% padding so the faceted bounding sphere encloses the analytical outer shell cleanly.
+    vec3 shellPos = uPlanetCenter + radialDir * (rTop * 1.005);
 
     vWorldPos = shellPos;
     vWorldNormal = radialDir;

@@ -2,64 +2,137 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Game_Engine.Views"
              x:Class="Game_Engine.Views.ProfilerPanel">
+	<UserControl.Styles>
+		<Style Selector="ToggleButton.profiler-toggle">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="10,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="FontWeight" Value="SemiBold"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="ToggleButton.profiler-toggle:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.profiler-toggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+	</UserControl.Styles>
+
 	<DockPanel>
-		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="12">
-			<TextBlock Text="Profiler" FontSize="14" VerticalAlignment="Center" />
-			<ToggleButton x:Name="EnableToggle" Content="Enable" IsChecked="False" />
-			<CheckBox x:Name="ScriptSampleToggle" Content="Script costs" IsChecked="True"
-			          VerticalAlignment="Center" />
-			<TextBlock x:Name="FpsLabel" Text="FPS: --" VerticalAlignment="Center" FontWeight="Bold" />
-			<TextBlock x:Name="FrameTimeLabel" Text="Frame: -- ms" VerticalAlignment="Center" />
-		</StackPanel>
+		<Border DockPanel.Dock="Top"
+		        Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+		        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+		        BorderThickness="0,0,0,1"
+		        Padding="8,5">
+			<StackPanel Orientation="Horizontal" Spacing="12">
+				<TextBlock Text="Profiler" FontSize="13" FontWeight="SemiBold"
+				           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
+				           VerticalAlignment="Center" />
+				<ToggleButton x:Name="EnableToggle" Classes="profiler-toggle" Content="Enable" IsChecked="False" />
+				<CheckBox x:Name="ScriptSampleToggle" Content="Script costs" IsChecked="True"
+				          FontSize="11"
+				          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
+				          VerticalAlignment="Center" />
+				<TextBlock x:Name="FpsLabel" Text="FPS: --" VerticalAlignment="Center" FontWeight="Bold"
+				           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+				<TextBlock x:Name="FrameTimeLabel" Text="Frame: -- ms" VerticalAlignment="Center"
+				           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
+			</StackPanel>
+		</Border>
 
 		<Grid Margin="6" RowDefinitions="Auto,Auto,*">
 			<!-- Stats summary -->
-			<Border Grid.Row="0" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
+			<Border Grid.Row="0"
+			        Background="{DynamicResource SystemControlPageBackgroundAltHighBrush}"
+			        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+			        BorderThickness="1"
+			        CornerRadius="6"
+			        Padding="8,6"
+			        Margin="0,0,0,6">
 				<Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
-					<TextBlock Grid.Row="0" Grid.Column="0" x:Name="RenderLabel" Text="Render: -- ms" Margin="4,2" />
-					<TextBlock Grid.Row="0" Grid.Column="1" x:Name="PhysicsLabel" Text="Physics: -- ms" Margin="4,2" />
-					<TextBlock Grid.Row="0" Grid.Column="2" x:Name="ScriptsLabel" Text="Scripts: -- ms" Margin="4,2" />
-					<TextBlock Grid.Row="0" Grid.Column="3" x:Name="AudioLabel" Text="Audio: -- ms" Margin="4,2" />
+					<TextBlock Grid.Row="0" Grid.Column="0" x:Name="RenderLabel" Text="Render: -- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="0" Grid.Column="1" x:Name="PhysicsLabel" Text="Physics: -- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="0" Grid.Column="2" x:Name="ScriptsLabel" Text="Scripts: -- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="0" Grid.Column="3" x:Name="AudioLabel" Text="Audio: -- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
 
-					<TextBlock Grid.Row="1" Grid.Column="0" x:Name="DrawCallsLabel" Text="Draw Calls: --" Margin="4,2" />
-					<TextBlock Grid.Row="1" Grid.Column="1" x:Name="TrianglesLabel" Text="Triangles: --" Margin="4,2" />
-					<TextBlock Grid.Row="1" Grid.Column="2" x:Name="BatchesLabel" Text="Batches: --" Margin="4,2" />
-					<TextBlock Grid.Row="1" Grid.Column="3" x:Name="AnimLabel" Text="Anim: -- ms" Margin="4,2" />
+					<TextBlock Grid.Row="1" Grid.Column="0" x:Name="DrawCallsLabel" Text="Draw Calls: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="1" Grid.Column="1" x:Name="TrianglesLabel" Text="Triangles: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="1" Grid.Column="2" x:Name="BatchesLabel" Text="Batches: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="1" Grid.Column="3" x:Name="AnimLabel" Text="Anim: -- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
 
-					<TextBlock Grid.Row="2" Grid.Column="0" x:Name="GameObjectsLabel" Text="GameObjects: --" Margin="4,2" />
-					<TextBlock Grid.Row="2" Grid.Column="1" x:Name="CollidersLabel" Text="Colliders: --" Margin="4,2" />
-					<TextBlock Grid.Row="2" Grid.Column="2" x:Name="AvgFpsLabel" Text="Avg FPS: --" Margin="4,2" />
-					<TextBlock Grid.Row="2" Grid.Column="3" x:Name="AvgFrameLabel" Text="Avg Frame: -- ms" Margin="4,2" />
+					<TextBlock Grid.Row="2" Grid.Column="0" x:Name="GameObjectsLabel" Text="GameObjects: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="2" Grid.Column="1" x:Name="CollidersLabel" Text="Colliders: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="2" Grid.Column="2" x:Name="AvgFpsLabel" Text="Avg FPS: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="2" Grid.Column="3" x:Name="AvgFrameLabel" Text="Avg Frame: -- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
 
-					<TextBlock Grid.Row="3" Grid.Column="0" x:Name="PlanetCountLabel" Text="Planets: --" Margin="4,2" />
-					<TextBlock Grid.Row="3" Grid.Column="1" x:Name="PlanetChunksLabel" Text="Planet Chunks: --" Margin="4,2" />
-					<TextBlock Grid.Row="3" Grid.Column="2" x:Name="PlanetJobsLabel" Text="Planet Jobs: --/--" Margin="4,2" />
-					<TextBlock Grid.Row="3" Grid.Column="3" x:Name="PlanetMsLabel" Text="Planet LOD/Render: --/-- ms" Margin="4,2" />
+					<TextBlock Grid.Row="3" Grid.Column="0" x:Name="PlanetCountLabel" Text="Planets: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="3" Grid.Column="1" x:Name="PlanetChunksLabel" Text="Planet Chunks: --" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="3" Grid.Column="2" x:Name="PlanetJobsLabel" Text="Planet Jobs: --/--" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+					<TextBlock Grid.Row="3" Grid.Column="3" x:Name="PlanetMsLabel" Text="Planet LOD/Render: --/-- ms" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
 
 					<TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4" x:Name="GcStatsLabel"
-					           Text="Alloc: -- KB/f | Heap: -- MB | GC: --/--/--" Margin="4,2" />
+					           Text="Alloc: -- KB/f | Heap: -- MB | GC: --/--/--" Margin="4,2"
+					           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
 				</Grid>
 			</Border>
 
-			<Border Grid.Row="1" BorderBrush="#40808080" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
+			<Border Grid.Row="1"
+			        Background="{DynamicResource SystemControlPageBackgroundAltHighBrush}"
+			        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+			        BorderThickness="1"
+			        CornerRadius="6"
+			        Padding="8,6"
+			        Margin="0,0,0,6">
 				<Grid ColumnDefinitions="*,16,*">
 					<StackPanel Grid.Column="0" Spacing="2">
-						<TextBlock Text="Scripts this frame" FontWeight="SemiBold" FontSize="11" />
+						<TextBlock Text="Scripts this frame" FontWeight="SemiBold" FontSize="11"
+						           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
 						<TextBlock x:Name="ScriptFrameLabel" Text="Play to sample behavior Update costs."
 						           FontFamily="Cascadia Mono, Consolas, Courier New, monospace"
-						           FontSize="11" TextWrapping="Wrap" />
+						           FontSize="11" TextWrapping="Wrap"
+						           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
 					</StackPanel>
 					<StackPanel Grid.Column="2" Spacing="2">
-						<TextBlock x:Name="ScriptSpikeTitle" Text="Last script spike" FontWeight="SemiBold" FontSize="11" />
+						<TextBlock x:Name="ScriptSpikeTitle" Text="Last script spike" FontWeight="SemiBold" FontSize="11"
+						           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}" />
 						<TextBlock x:Name="ScriptSpikeLabel" Text="No spike over 8 ms yet."
 						           FontFamily="Cascadia Mono, Consolas, Courier New, monospace"
-						           FontSize="11" TextWrapping="Wrap" Foreground="#FFCC88" />
+						           FontSize="11" TextWrapping="Wrap" Foreground="#D97706" />
 					</StackPanel>
 				</Grid>
 			</Border>
 
 			<!-- Frame time graph (drawn in code-behind) -->
-			<Border Grid.Row="2" Background="#20000000" CornerRadius="4">
+			<Border Grid.Row="2"
+			        Background="{DynamicResource SystemControlPageBackgroundAltHighBrush}"
+			        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+			        BorderThickness="1"
+			        CornerRadius="6"
+			        ClipToBounds="True">
 				<Canvas x:Name="GraphCanvas" ClipToBounds="True" />
 			</Border>
 		</Grid>

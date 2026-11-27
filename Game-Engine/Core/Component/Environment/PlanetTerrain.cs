@@ -3047,18 +3047,20 @@ public sealed class PlanetTerrain : Behavior
         string t = (cloudType ?? "Cumulus").Trim();
         if (t.Equals("Stratus", StringComparison.OrdinalIgnoreCase))
         {
+            atmo.CloudScale = 2.6f;
             atmo.CloudDetail = 1.2f;
             atmo.CloudSoftness = 0.48f;
             atmo.CloudSpeed = 0.015f;
         }
         else if (t.Equals("Cirrus", StringComparison.OrdinalIgnoreCase))
         {
+            atmo.CloudScale = 5.0f;
             atmo.CloudDetail = 3.2f;
             atmo.CloudSoftness = 0.22f;
             atmo.CloudSpeed = 0.045f;
             atmo.CloudDensity = Math.Clamp(atmo.CloudDensity * 0.55f, 0.05f, 3f);
         }
-        // Cumulus / default: leave detail/softness/speed as currently set (preset or inspector).
+        // Cumulus / default: leave scale/detail/softness/speed as currently set (preset or inspector).
     }
 
     void ApplyWetlandFloraBoost(Biome.Graph.BiomeGraphResult result)

@@ -3,7 +3,9 @@
              x:Class="Game_Engine.Views.EditorTabBar"
              Height="30">
 
-    <Border BorderThickness="0,0,0,1" BorderBrush="#303030" Background="#252526">
+    <Border BorderThickness="0,0,0,1"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+            Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
         <ScrollViewer HorizontalScrollBarVisibility="Auto"
                       VerticalScrollBarVisibility="Disabled">
             <StackPanel x:Name="TabStack"

@@ -5,10 +5,48 @@
         Width="1280" Height="800"
         Title="Script Editor">
 
+	<Window.Styles>
+		<Style Selector="Button.se-tool-btn">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="Button.se-tool-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.se-tool-toggle">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="ToggleButton.se-tool-toggle:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.se-tool-toggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+	</Window.Styles>
+
 	<Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
 		<!-- Menu -->
-		<Menu Grid.Row="0" Background="#1E1E1E">
-			<MenuItem Header="_File" Foreground="#CCCCCC">
+		<Menu Grid.Row="0" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+			<MenuItem Header="_File">
 				<MenuItem x:Name="MenuFileNew" Header="_New C# Script…" Click="OnMenuNewScript" />
 				<Separator/>
 				<MenuItem Header="_Save" Click="OnMenuSaveClick" />
@@ -20,7 +58,7 @@
 				<Separator/>
 				<MenuItem Header="E_xit" Click="OnMenuExitClick" />
 			</MenuItem>
-			<MenuItem Header="_Edit" Foreground="#CCCCCC">
+			<MenuItem Header="_Edit">
 				<MenuItem Header="_Undo" Click="OnMenuUndoClick" />
 				<MenuItem Header="_Redo" Click="OnMenuRedoClick" />
 				<Separator/>
@@ -35,95 +73,84 @@
 				<Separator/>
 				<MenuItem Header="_Format Document" Click="OnMenuFormatClick" />
 			</MenuItem>
-			<MenuItem Header="_View" Foreground="#CCCCCC">
+			<MenuItem Header="_View">
 				<MenuItem Header="_Minimap" x:Name="MenuViewMinimap" Click="OnMenuViewMinimapClick" />
 				<MenuItem Header="_Line Numbers" x:Name="MenuViewLineNumbers" Click="OnMenuViewLineNumbersClick" />
 				<MenuItem Header="_Word Wrap" x:Name="MenuViewWordWrap" Click="OnMenuViewWordWrapClick" />
 			</MenuItem>
-			<MenuItem Header="_Build" Foreground="#CCCCCC">
+			<MenuItem Header="_Build">
 				<MenuItem Header="Build _All" Click="OnMenuBuildAllClick" />
 			</MenuItem>
 		</Menu>
 
 		<!-- Toolbar -->
-		<Border Grid.Row="1" Background="#2D2D2D" BorderThickness="0,0,0,1" BorderBrush="#3F3F3F" Padding="4,3">
-			<StackPanel Orientation="Horizontal" Spacing="2">
-				<Button x:Name="BtnNewScript" ToolTip.Tip="New C# Script (Ctrl+N)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+		<Border Grid.Row="1"
+				Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+				BorderThickness="0,0,0,1"
+				BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+				Padding="6,4">
+			<StackPanel Orientation="Horizontal" Spacing="4">
+				<Button x:Name="BtnNewScript" Classes="se-tool-btn" ToolTip.Tip="New C# Script (Ctrl+N)">
 					<StackPanel Orientation="Horizontal" Spacing="4">
-						<TextBlock Text="&#x2795;" FontSize="13" VerticalAlignment="Center"/>
+						<TextBlock Text="&#x2795;" FontSize="12" VerticalAlignment="Center"/>
 						<TextBlock Text="New" VerticalAlignment="Center"/>
 					</StackPanel>
 				</Button>
-				<Border Width="1" Background="#505050" Margin="4,2"/>
-				<Button x:Name="BtnSave" ToolTip.Tip="Save (Ctrl+S)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Border Width="1" Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Margin="2,3"/>
+				<Button x:Name="BtnSave" Classes="se-tool-btn" ToolTip.Tip="Save (Ctrl+S)">
 					<StackPanel Orientation="Horizontal" Spacing="4">
-						<TextBlock Text="&#x1F4BE;" FontSize="13" VerticalAlignment="Center"/>
+						<TextBlock Text="&#x1F4BE;" FontSize="12" VerticalAlignment="Center"/>
 						<TextBlock Text="Save" VerticalAlignment="Center"/>
 					</StackPanel>
 				</Button>
-				<Button x:Name="BtnSaveAs" ToolTip.Tip="Save As"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnSaveAs" Classes="se-tool-btn" ToolTip.Tip="Save As">
 					<StackPanel Orientation="Horizontal" Spacing="4">
-						<TextBlock Text="&#x1F4C4;" FontSize="13" VerticalAlignment="Center"/>
+						<TextBlock Text="&#x1F4C4;" FontSize="12" VerticalAlignment="Center"/>
 						<TextBlock Text="Save As" VerticalAlignment="Center"/>
 					</StackPanel>
 				</Button>
-				<Border Width="1" Background="#505050" Margin="4,2"/>
-				<Button x:Name="BtnReload" ToolTip.Tip="Reload from disk"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Border Width="1" Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Margin="2,3"/>
+				<Button x:Name="BtnReload" Classes="se-tool-btn" ToolTip.Tip="Reload from disk">
 					<StackPanel Orientation="Horizontal" Spacing="4">
-						<TextBlock Text="&#x21BB;" FontSize="14" VerticalAlignment="Center"/>
+						<TextBlock Text="&#x21BB;" FontSize="13" VerticalAlignment="Center"/>
 						<TextBlock Text="Reload" VerticalAlignment="Center"/>
 					</StackPanel>
 				</Button>
-				<Button x:Name="BtnFormat" ToolTip.Tip="Format document"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnFormat" Classes="se-tool-btn" ToolTip.Tip="Format document">
 					<TextBlock Text="Format" VerticalAlignment="Center"/>
 				</Button>
-				<Button x:Name="BtnZoomOut" ToolTip.Tip="Smaller code font (Ctrl+− or Ctrl+wheel)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnZoomOut" Classes="se-tool-btn" ToolTip.Tip="Smaller code font (Ctrl+− or Ctrl+wheel)">
 					<TextBlock Text="A−" VerticalAlignment="Center" FontSize="11"/>
 				</Button>
-				<Button x:Name="BtnZoomIn" ToolTip.Tip="Larger code font (Ctrl++ or Ctrl+wheel)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnZoomIn" Classes="se-tool-btn" ToolTip.Tip="Larger code font (Ctrl++ or Ctrl+wheel)">
 					<TextBlock Text="A+" VerticalAlignment="Center" FontSize="11"/>
 				</Button>
-				<Button x:Name="BtnBuild" ToolTip.Tip="Build All (Ctrl+Shift+B)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnBuild" Classes="se-tool-btn" ToolTip.Tip="Build All (Ctrl+Shift+B)">
 					<StackPanel Orientation="Horizontal" Spacing="4">
-						<TextBlock Text="&#x25B6;" FontSize="12" VerticalAlignment="Center" Foreground="#6A9955"/>
+						<TextBlock Text="&#x25B6;" FontSize="11" VerticalAlignment="Center" Foreground="#2E9E47"/>
 						<TextBlock Text="Build All" VerticalAlignment="Center"/>
 					</StackPanel>
 				</Button>
-				<Button x:Name="BtnDefinitionFiles" ToolTip.Tip="Show definition-indexed files (Ctrl+Shift+O)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnDefinitionFiles" Classes="se-tool-btn" ToolTip.Tip="Show definition-indexed files (Ctrl+Shift+O)">
 					<TextBlock Text="Definition Files" VerticalAlignment="Center"/>
 				</Button>
-				<Button x:Name="BtnFindReferences" ToolTip.Tip="Find references (Shift+F12)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnFindReferences" Classes="se-tool-btn" ToolTip.Tip="Find references (Shift+F12)">
 					<TextBlock Text="References" VerticalAlignment="Center"/>
 				</Button>
-				<Button x:Name="BtnRenameSymbol" ToolTip.Tip="Rename symbol (Ctrl+Shift+R)"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Button x:Name="BtnRenameSymbol" Classes="se-tool-btn" ToolTip.Tip="Rename symbol (Ctrl+Shift+R)">
 					<TextBlock Text="Rename Symbol" VerticalAlignment="Center"/>
 				</Button>
-				<ToggleButton x:Name="BtnToggleMinimap" IsChecked="True" ToolTip.Tip="Toggle minimap"
-							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<ToggleButton x:Name="BtnToggleMinimap" Classes="se-tool-toggle" IsChecked="True" ToolTip.Tip="Toggle minimap">
 					<TextBlock Text="Minimap" VerticalAlignment="Center"/>
 				</ToggleButton>
-				<ToggleButton x:Name="BtnToggleLineNumbers" IsChecked="True" ToolTip.Tip="Line numbers"
-							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<ToggleButton x:Name="BtnToggleLineNumbers" Classes="se-tool-toggle" IsChecked="True" ToolTip.Tip="Line numbers">
 					<TextBlock Text="Line numbers" VerticalAlignment="Center"/>
 				</ToggleButton>
-				<ToggleButton x:Name="BtnToggleWordWrap" IsChecked="False" ToolTip.Tip="Word wrap"
-							  Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<ToggleButton x:Name="BtnToggleWordWrap" Classes="se-tool-toggle" IsChecked="False" ToolTip.Tip="Word wrap">
 					<TextBlock Text="Wrap" VerticalAlignment="Center"/>
 				</ToggleButton>
-				<Border Width="1" Background="#505050" Margin="4,2"/>
-				<Button x:Name="BtnClose" ToolTip.Tip="Close editor"
-						Padding="8,4" FontSize="12" Background="Transparent" Foreground="#CCCCCC">
+				<Border Width="1" Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Margin="2,3"/>
+				<Button x:Name="BtnClose" Classes="se-tool-btn" ToolTip.Tip="Close editor">
 					<TextBlock Text="Close" VerticalAlignment="Center"/>
 				</Button>
 			</StackPanel>
@@ -135,7 +162,11 @@
 		<!-- Main split: File tree (left) + editor (right) -->
 		<Grid x:Name="MainSplitGrid" Grid.Row="3" ColumnDefinitions="280,6,*">
 			<!-- Project Scripts Tree -->
-			<Border Grid.Column="0" Margin="8" Padding="6" BorderThickness="1" BorderBrush="#303030">
+			<Border Grid.Column="0" Margin="6,6,0,6" Padding="4"
+					Background="{DynamicResource SystemControlPageBackgroundAltHighBrush}"
+					BorderThickness="1"
+					BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+					CornerRadius="6">
 				<TreeView x:Name="FileTree"/>
 			</Border>
 
@@ -143,21 +174,29 @@
 			<GridSplitter x:Name="MainSplitter" Grid.Column="1"
 						  HorizontalAlignment="Stretch"
 						  VerticalAlignment="Stretch"
-						  Background="#303030"
+						  Background="Transparent"
 						  ShowsPreview="True"/>
 
-			<!-- Custom Code Editor -->
-			<Border Grid.Column="2" Margin="4,4,4,4" BorderThickness="1" BorderBrush="#3F3F3F" CornerRadius="2">
+			<!-- Custom Code Editor (dark syntax-highlighted canvas) -->
+			<Border Grid.Column="2" Margin="0,6,6,6"
+					BorderThickness="1"
+					BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+					CornerRadius="6"
+					ClipToBounds="True">
 				<local:CodeEditorControl x:Name="CodeEditor"/>
 			</Border>
 		</Grid>
 
 		<!-- Diagnostics strip (click = go to first issue; F8 / Shift+F8 = next / prev) -->
-		<Border x:Name="ProblemsStripHost" Grid.Row="4" Background="#1E1E1E" BorderThickness="0,1,0,0" BorderBrush="#3F3F3F" Padding="6,3"
+		<Border x:Name="ProblemsStripHost" Grid.Row="4"
+				Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+				BorderThickness="0,1,0,0"
+				BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+				Padding="8,4"
 				Cursor="Hand" PointerPressed="OnProblemsStripPointerPressed"
 				ToolTip.Tip="Click: jump to first error or warning. F8 / Shift+F8: next / previous diagnostic.">
 			<TextBlock x:Name="StatusProblems"
-					   Foreground="#E8C468"
+					   Foreground="#D97706"
 					   FontSize="11"
 					   TextTrimming="CharacterEllipsis"
 					   VerticalAlignment="Center"
@@ -165,7 +204,7 @@
 		</Border>
 
 		<!-- Status Bar -->
-		<Border Grid.Row="5" Background="#007ACC" Padding="4,2">
+		<Border Grid.Row="5" Background="{DynamicResource SystemControlHighlightAccentBrush}" Padding="6,3">
 			<Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
 				<TextBlock x:Name="Status"
 						   Grid.Column="0"

@@ -155,7 +155,7 @@ public sealed class ViewRenderResources : IDisposable
         PlanetAtmosphere = lib.GetBuiltin(ShaderSources.Paths.PlanetAtmosphereVert, ShaderSources.Paths.PlanetAtmosphereFrag);
 
         if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-cloud");
-        PlanetCloud = lib.GetBuiltin(ShaderSources.Paths.PlanetCloudsVert, ShaderSources.Paths.PlanetCloudsFrag);
+        PlanetCloud = lib.GetBuiltin(ShaderSources.Paths.PlanetCloudsVert, ShaderSources.Paths.PlanetCloudsFrag, throwOnInitialError: false);
 
         if (logProgress) Game_Engine.Core.Log.Info("[Shader] planet-forest-canopy");
         PlanetForestCanopy = lib.GetBuiltin(ShaderSources.Paths.PlanetForestCanopyVert, ShaderSources.Paths.PlanetForestCanopyFrag, throwOnInitialError: false);

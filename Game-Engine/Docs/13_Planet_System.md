@@ -700,7 +700,9 @@ Planet visuals support a dedicated atmosphere workflow via `PlanetAtmosphere`.
 - Add `PlanetAtmosphere` beside `PlanetTerrain` on the planet root object
 - Atmosphere settings are persisted and editable in Inspector
 - Terrain and planet-water shading consume atmosphere uniforms per planet
-- Clouds are rendered in a dedicated planet cloud pass (`PlanetClouds*` shaders)
+- Clouds are rendered in a dedicated volumetric spherical-shell pass (`PlanetClouds*` shaders) using analytic ray-sphere intersection across `[PlanetRadius + CloudBaseHeight, PlanetRadius + CloudTopHeight]`, Beer-Lambert transmittance, sun-direction self-shadowing, Henyey-Greenstein forward scattering (silver lining), and smooth day/night terminator lighting.
+  - Works seamlessly from ground view (interior sky dome), flying through the cloud layer, and orbit view (exterior front-face shell clipped against the solid planet sphere) without requiring a water mesh.
+  - Controlled on `PlanetAtmosphere` via `EnableClouds`, `CloudBaseHeight`, `CloudTopHeight`, `CloudCoverage`, `CloudDensity`, `CloudScale`, `CloudDetail`, `CloudSpeed`, `CloudSoftness`, `CloudLightResponse`, `CloudSilverLining`, `CloudColorR/G/B`, `CloudShadowColorR/G/B`, and `CloudStepCount` (bounded for both Desktop OpenGL 3.3 Core and OpenGL ES 3.0 / Xbox).
 
 Separation contract:
 - Planet atmosphere/clouds are independent from `Skybox`

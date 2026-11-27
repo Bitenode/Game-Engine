@@ -87,12 +87,29 @@ public sealed class PlanetAtmosphere : Behavior
     [Persist] public float CloudTopHeight { get; set; } = 220f;
     [Persist] public float CloudCoverage { get; set; } = 0.46f;
     [Persist] public float CloudDensity { get; set; } = 1.0f;
+    [Persist] public float CloudScale { get; set; } = 3.5f;
     [Persist] public float CloudDetail { get; set; } = 2.0f;
     [Persist] public float CloudSpeed { get; set; } = 0.025f;
     [Persist] public float CloudSoftness { get; set; } = 0.30f;
     [Persist] public float CloudLightResponse { get; set; } = 0.9f;
     [Persist] public float CloudSilverLining { get; set; } = 0.65f;
+    [Persist] public float CloudColorR { get; set; } = 1.0f;
+    [Persist] public float CloudColorG { get; set; } = 0.99f;
+    [Persist] public float CloudColorB { get; set; } = 0.97f;
+    [Persist] public float CloudShadowColorR { get; set; } = 0.36f;
+    [Persist] public float CloudShadowColorG { get; set; } = 0.44f;
+    [Persist] public float CloudShadowColorB { get; set; } = 0.58f;
     [Persist] public int CloudStepCount { get; set; } = 16;
+
+    public SN.Vector3 CloudColor => new(
+        Math.Clamp(CloudColorR, 0f, 2f),
+        Math.Clamp(CloudColorG, 0f, 2f),
+        Math.Clamp(CloudColorB, 0f, 2f));
+
+    public SN.Vector3 CloudShadowColor => new(
+        Math.Clamp(CloudShadowColorR, 0f, 2f),
+        Math.Clamp(CloudShadowColorG, 0f, 2f),
+        Math.Clamp(CloudShadowColorB, 0f, 2f));
 
     public SN.Vector3 ZenithTint => ComputeSkyTint(DayZenithTint, NightZenithTint);
 
@@ -170,10 +187,13 @@ public sealed class PlanetAtmosphere : Behavior
                 CloudTopHeight = 300f;
                 CloudCoverage = 0.25f;
                 CloudDensity = 0.55f;
+                CloudScale = 4.2f;
                 CloudDetail = 2.6f;
                 CloudSoftness = 0.24f;
                 CloudLightResponse = 1.0f;
                 CloudSilverLining = 0.72f;
+                CloudColorR = 1.0f; CloudColorG = 0.99f; CloudColorB = 0.98f;
+                CloudShadowColorR = 0.38f; CloudShadowColorG = 0.46f; CloudShadowColorB = 0.60f;
                 CloudStepCount = 12;
                 break;
             case PlanetAtmospherePreset.EarthLike:
@@ -191,10 +211,13 @@ public sealed class PlanetAtmosphere : Behavior
                 CloudTopHeight = 220f;
                 CloudCoverage = 0.46f;
                 CloudDensity = 0.85f;
+                CloudScale = 3.5f;
                 CloudDetail = 2.0f;
                 CloudSoftness = 0.30f;
                 CloudLightResponse = 0.90f;
                 CloudSilverLining = 0.65f;
+                CloudColorR = 1.0f; CloudColorG = 0.99f; CloudColorB = 0.97f;
+                CloudShadowColorR = 0.36f; CloudShadowColorG = 0.44f; CloudShadowColorB = 0.58f;
                 CloudStepCount = 16;
                 break;
             case PlanetAtmospherePreset.Dense:
@@ -212,11 +235,14 @@ public sealed class PlanetAtmosphere : Behavior
                 CloudTopHeight = 260f;
                 CloudCoverage = 0.66f;
                 CloudDensity = 0.98f;
+                CloudScale = 2.8f;
                 CloudDetail = 1.7f;
                 CloudSoftness = 0.38f;
                 CloudLightResponse = 0.82f;
                 CloudSilverLining = 0.52f;
-                CloudStepCount = 20;
+                CloudColorR = 0.98f; CloudColorG = 0.95f; CloudColorB = 0.90f;
+                CloudShadowColorR = 0.34f; CloudShadowColorG = 0.38f; CloudShadowColorB = 0.46f;
+                CloudStepCount = 16;
                 break;
             case PlanetAtmospherePreset.AlienViolet:
                 Ambient = 0.20f;
@@ -233,11 +259,14 @@ public sealed class PlanetAtmosphere : Behavior
                 CloudTopHeight = 280f;
                 CloudCoverage = 0.52f;
                 CloudDensity = 0.92f;
+                CloudScale = 3.8f;
                 CloudDetail = 2.4f;
                 CloudSoftness = 0.26f;
                 CloudLightResponse = 0.95f;
                 CloudSilverLining = 0.80f;
-                CloudStepCount = 18;
+                CloudColorR = 0.98f; CloudColorG = 0.88f; CloudColorB = 0.98f;
+                CloudShadowColorR = 0.40f; CloudShadowColorG = 0.26f; CloudShadowColorB = 0.54f;
+                CloudStepCount = 16;
                 break;
             case PlanetAtmospherePreset.Custom:
             default:

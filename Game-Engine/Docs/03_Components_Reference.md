@@ -2090,6 +2090,27 @@ Key design rule:
 | `NightSkyHueShiftDegrees` | `float` | `-12` | Additional hue shift applied at night (degrees) |
 | `NightSkyBrightness` | `float` | `0.42` | Night brightness multiplier for sky tint blending |
 
+### Volumetric Cloud Shell
+
+`PlanetAtmosphere` drives a physically lit volumetric spherical cloud shell (`PlanetClouds.vert.glsl` / `PlanetClouds.frag.glsl`) rendered via raymarching across `[PlanetRadius + CloudBaseHeight, PlanetRadius + CloudTopHeight]` from ground, inside-layer, and orbit views:
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `EnableClouds` | `bool` | `true` | Enables the volumetric cloud shell pass |
+| `CloudBaseHeight` | `float` | `120` | Inner cloud shell altitude above planet radius |
+| `CloudTopHeight` | `float` | `220` | Outer cloud shell altitude above planet radius |
+| `CloudCoverage` | `float` | `0.46` | Cloud coverage threshold (`0..1`) |
+| `CloudDensity` | `float` | `1.0` | Volumetric extinction density multiplier |
+| `CloudScale` | `float` | `3.5` | Macro spherical cloud pattern frequency |
+| `CloudDetail` | `float` | `2.0` | Fine edge-erosion FBM detail frequency multiplier |
+| `CloudSpeed` | `float` | `0.025` | Spherical longitude drift and billowing animation speed |
+| `CloudSoftness` | `float` | `0.30` | Edge softness of cloud silhouettes |
+| `CloudLightResponse` | `float` | `0.9` | Direct sunlight + self-shadowing response |
+| `CloudSilverLining` | `float` | `0.65` | Henyey-Greenstein forward-scattering silver lining around the sun |
+| `CloudColorR/G/B` | `float` | `(1.0, 0.99, 0.97)` | Sunlit cloud tint (blends into warm sunset/sunrise along terminator) |
+| `CloudShadowColorR/G/B` | `float` | `(0.36, 0.44, 0.58)` | Shadowed underside and night-side ambient cloud tint |
+| `CloudStepCount` | `int` | `16` | Raymarch steps (clamped to `<= 24` desktop, `<= 10` on ES 3.0 / Xbox) |
+
 ---
 
 ## PlanetWeatherController

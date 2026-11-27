@@ -708,8 +708,11 @@ namespace Game_Engine.Views
             }
         }
 
-        private static readonly IBrush TransformRowBg = new SolidColorBrush(Color.FromRgb(34, 37, 42));
-        private static readonly IBrush TransformLabelBrush = new SolidColorBrush(Color.FromRgb(140, 155, 180));
+        private IBrush ThemeBrush(string key, Color fallback) =>
+            this.TryFindResource(key, ActualThemeVariant, out var res) && res is IBrush b ? b : new SolidColorBrush(fallback);
+
+        private IBrush TransformRowBg => ThemeBrush("SystemControlBackgroundBaseLowBrush", Color.FromRgb(34, 37, 42));
+        private IBrush TransformLabelBrush => ThemeBrush("SystemControlForegroundBaseMediumBrush", Color.FromRgb(140, 155, 180));
 
         // ── Bone Tree Section ──
 
@@ -721,9 +724,9 @@ namespace Game_Engine.Views
         public BoneAnimationClip? CurrentBoneClip => _boneClip;
         public int SelectedBoneIndex => _selectedBoneIndex;
 
-        private static readonly IBrush BoneHeaderBrush = new SolidColorBrush(Color.FromRgb(180, 200, 230));
-        private static readonly IBrush BoneLabelBrush = new SolidColorBrush(Color.FromRgb(140, 160, 185));
-        private static readonly IBrush BoneIndentBrush = new SolidColorBrush(Color.FromRgb(60, 65, 75));
+        private IBrush BoneHeaderBrush => ThemeBrush("SystemControlForegroundBaseHighBrush", Color.FromRgb(180, 200, 230));
+        private IBrush BoneLabelBrush => ThemeBrush("SystemControlForegroundBaseMediumBrush", Color.FromRgb(140, 160, 185));
+        private IBrush BoneIndentBrush => ThemeBrush("SystemControlForegroundBaseLowBrush", Color.FromRgb(60, 65, 75));
 
         /// <summary>
         /// Discover all .boneanim files in the model's _Animations directory.
@@ -1100,10 +1103,10 @@ namespace Game_Engine.Views
         private static readonly IBrush AxisXBrush = new SolidColorBrush(Color.FromRgb(230, 90, 90));
         private static readonly IBrush AxisYBrush = new SolidColorBrush(Color.FromRgb(90, 200, 90));
         private static readonly IBrush AxisZBrush = new SolidColorBrush(Color.FromRgb(90, 150, 240));
-        private static readonly IBrush DefaultLabelBrush = new SolidColorBrush(Color.FromRgb(200, 210, 225));
-        private static readonly IBrush GroupHeaderBrush = new SolidColorBrush(Color.FromRgb(160, 175, 200));
-        private static readonly IBrush GroupBgBrush = new SolidColorBrush(Color.FromRgb(30, 32, 36));
-        private static readonly IBrush GroupBorderBrush = new SolidColorBrush(Color.FromRgb(50, 54, 62));
+        private IBrush DefaultLabelBrush => ThemeBrush("SystemControlForegroundBaseHighBrush", Color.FromRgb(200, 210, 225));
+        private IBrush GroupHeaderBrush => ThemeBrush("SystemControlForegroundBaseMediumBrush", Color.FromRgb(160, 175, 200));
+        private IBrush GroupBgBrush => ThemeBrush("SystemControlBackgroundBaseLowBrush", Color.FromRgb(30, 32, 36));
+        private IBrush GroupBorderBrush => ThemeBrush("SystemControlForegroundBaseLowBrush", Color.FromRgb(50, 54, 62));
 
         public void RefreshTrackList()
         {

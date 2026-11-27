@@ -6,18 +6,21 @@
              VerticalAlignment="Top"
              Margin="0,4,24,0">
 
-    <Border Background="#252526" BorderBrush="#454545" BorderThickness="1"
-            CornerRadius="4" Padding="8" MinWidth="360">
+    <Border Background="{DynamicResource SystemControlPageBackgroundAltHighBrush}"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+            BorderThickness="1"
+            CornerRadius="6" Padding="8" MinWidth="360">
         <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
             <!-- Find row -->
             <TextBox x:Name="FindBox"
                      Grid.Row="0" Grid.Column="0"
-                     Watermark="Find"
+                     PlaceholderText="Find"
                      FontSize="12"
                      Margin="0,0,4,4"/>
             <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
                 <TextBlock x:Name="MatchCount" Text="0 results" FontSize="11"
-                           Foreground="#888888" VerticalAlignment="Center" Margin="4,0"/>
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                           VerticalAlignment="Center" Margin="4,0"/>
                 <Button x:Name="BtnPrev" Content="&#x25B2;" FontSize="10" Padding="6,2" ToolTip.Tip="Previous (Shift+F3)"/>
                 <Button x:Name="BtnNext" Content="&#x25BC;" FontSize="10" Padding="6,2" ToolTip.Tip="Next (F3)"/>
                 <ToggleButton x:Name="BtnCase" Content="Aa" FontSize="10" Padding="6,2" ToolTip.Tip="Match Case"/>
@@ -28,7 +31,7 @@
             <!-- Replace row -->
             <TextBox x:Name="ReplaceBox"
                      Grid.Row="1" Grid.Column="0"
-                     Watermark="Replace"
+                     PlaceholderText="Replace"
                      FontSize="12"
                      Margin="0,0,4,4"
                      IsVisible="{Binding #ReplaceRow.IsVisible}"/>

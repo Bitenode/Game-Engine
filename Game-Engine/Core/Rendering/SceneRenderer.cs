@@ -3941,11 +3941,14 @@ namespace Game_Engine.Core
             public readonly float CloudTopHeight;
             public readonly float CloudCoverage;
             public readonly float CloudDensity;
+            public readonly float CloudScale;
             public readonly float CloudDetail;
             public readonly float CloudSpeed;
             public readonly float CloudSoftness;
             public readonly float CloudLightResponse;
             public readonly float CloudSilverLining;
+            public readonly SN.Vector3 CloudColor;
+            public readonly SN.Vector3 CloudShadowColor;
             public readonly int CloudStepCount;
 
             public PlanetAtmosphereRenderParams(
@@ -3970,11 +3973,14 @@ namespace Game_Engine.Core
                 float cloudTopHeight,
                 float cloudCoverage,
                 float cloudDensity,
+                float cloudScale,
                 float cloudDetail,
                 float cloudSpeed,
                 float cloudSoftness,
                 float cloudLightResponse,
                 float cloudSilverLining,
+                SN.Vector3 cloudColor,
+                SN.Vector3 cloudShadowColor,
                 int cloudStepCount)
             {
                 Enabled = enabled;
@@ -3998,11 +4004,14 @@ namespace Game_Engine.Core
                 CloudTopHeight = cloudTopHeight;
                 CloudCoverage = cloudCoverage;
                 CloudDensity = cloudDensity;
+                CloudScale = cloudScale;
                 CloudDetail = cloudDetail;
                 CloudSpeed = cloudSpeed;
                 CloudSoftness = cloudSoftness;
                 CloudLightResponse = cloudLightResponse;
                 CloudSilverLining = cloudSilverLining;
+                CloudColor = cloudColor;
+                CloudShadowColor = cloudShadowColor;
                 CloudStepCount = cloudStepCount;
             }
         }
@@ -4127,19 +4136,22 @@ namespace Game_Engine.Core
                 zenithTint: zenith,
                 horizonTint: horizon,
                 skyTint: skyTint,
-                cloudBaseHeight: Math.Max(1f, atmo?.CloudBaseHeight ?? 32f),
-                cloudTopHeight: Math.Max(2f, atmo?.CloudTopHeight ?? 88f),
+                cloudBaseHeight: Math.Max(1f, atmo?.CloudBaseHeight ?? 120f),
+                cloudTopHeight: Math.Max(2f, atmo?.CloudTopHeight ?? 220f),
                 cloudCoverage: Math.Clamp(atmo?.CloudCoverage ?? 0.46f, 0f, 1f),
                 cloudDensity: Math.Max(0f, atmo?.CloudDensity ?? 1.0f),
+                cloudScale: Math.Clamp(atmo?.CloudScale ?? 3.5f, 0.25f, 24f),
                 cloudDetail: Math.Max(0.1f, atmo?.CloudDetail ?? 2.0f),
                 cloudSpeed: Math.Max(0f, atmo?.CloudSpeed ?? 0.025f),
                 cloudSoftness: Math.Clamp(atmo?.CloudSoftness ?? 0.30f, 0.01f, 1.0f),
                 cloudLightResponse: Math.Max(0f, atmo?.CloudLightResponse ?? 0.9f),
                 cloudSilverLining: Math.Max(0f, atmo?.CloudSilverLining ?? 0.65f),
+                cloudColor: atmo?.CloudColor ?? new SN.Vector3(1.0f, 0.99f, 0.97f),
+                cloudShadowColor: atmo?.CloudShadowColor ?? new SN.Vector3(0.36f, 0.44f, 0.58f),
 #if XBOX_UWP
-                cloudStepCount: Math.Clamp(Math.Min(atmo?.CloudStepCount ?? 16, 8), 4, 8));
+                cloudStepCount: Math.Clamp(Math.Min(atmo?.CloudStepCount ?? 16, 10), 4, 10));
 #else
-                cloudStepCount: Math.Clamp(atmo?.CloudStepCount ?? 16, 4, 64));
+                cloudStepCount: Math.Clamp(atmo?.CloudStepCount ?? 16, 4, 24));
 #endif
         }
 
@@ -5402,6 +5414,8 @@ namespace Game_Engine.Core
             gl.Disable(EnableCap.Blend);
         }
 
+        private static Mesh? s_planetCloudShellMesh;
+
         public static void RenderPlanetClouds(
             GL gl,
             ShaderProgram cloudShader,
@@ -5415,55 +5429,55 @@ namespace Game_Engine.Core
             float timeSec)
         {
             if (SkipPlanetAtmosphereClouds) return;
-            if (!atmo.Enabled || !atmo.CloudsEnabled || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
+            if (!atmo.Enabled || !atmo.CloudsEnabled || atmo.CloudDensity <= 0.001f || atmo.CloudCoverage <= 0.001f
+                || planet.gameObject == null || !planet.IsActiveAndEnabled || planet.Config == null)
                 return;
 
             GlobalUniforms.ForContext(gl).UpdateFrame(in view, in proj, camPos, timeSec);
+
+            float cloudTopHeight = Math.Max(atmo.CloudBaseHeight + 1.0f, atmo.CloudTopHeight);
+            float outerRadius = atmo.GroundRadius + cloudTopHeight;
+            float camDist = (camPos - planetCenter).Length();
+            bool cameraInsideShell = camDist <= outerRadius * 1.015f;
 
             cloudShader.Use();
             cloudShader.SetVector3("uPlanetCenter", planetCenter);
             cloudShader.SetFloat("uPlanetRadius", atmo.GroundRadius);
             cloudShader.SetFloat("uCloudBaseHeight", atmo.CloudBaseHeight);
-            cloudShader.SetFloat("uCloudTopHeight", Math.Max(atmo.CloudBaseHeight + 0.01f, atmo.CloudTopHeight));
+            cloudShader.SetFloat("uCloudTopHeight", cloudTopHeight);
             cloudShader.SetFloat("uCloudCoverage", atmo.CloudCoverage);
             cloudShader.SetFloat("uCloudDensity", atmo.CloudDensity);
+            cloudShader.SetFloat("uCloudScale", atmo.CloudScale);
             cloudShader.SetFloat("uCloudDetail", atmo.CloudDetail);
             cloudShader.SetFloat("uCloudSpeed", atmo.CloudSpeed);
             cloudShader.SetFloat("uCloudSoftness", atmo.CloudSoftness);
             cloudShader.SetFloat("uCloudLightResponse", atmo.CloudLightResponse);
             cloudShader.SetFloat("uCloudSilverLining", atmo.CloudSilverLining);
+            cloudShader.SetVector3("uCloudColor", atmo.CloudColor);
+            cloudShader.SetVector3("uCloudShadowColor", atmo.CloudShadowColor);
             cloudShader.SetInt("uCloudStepCount", atmo.CloudStepCount);
             cloudShader.SetVector3("uSunDir", atmo.SunDir);
             cloudShader.SetFloat("uSunIntensity", atmo.SunIntensity);
             cloudShader.SetVector3("uSkyTint", atmo.SkyTint);
             cloudShader.SetFloat("uTime", timeSec);
 
+            s_planetCloudShellMesh ??= Mesh.CreateUvSphere(48, 28, 1.0f);
+            cloudShader.SetMatrix4("uModel", SN.Matrix4x4.CreateTranslation(planetCenter));
+
             gl.Enable(EnableCap.Blend);
             gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-            gl.Disable(EnableCap.CullFace);
             gl.DepthMask(false);
-
-            var go = planet.gameObject;
-            var parentWorld = TransformUtil.WorldFromTransform(go.Transform);
-            var shellMf = planet.WaterGO?.Behaviors.OfType<MeshFilter>().FirstOrDefault();
-            if (shellMf?.Mesh != null && planet.WaterGO != null)
-            {
-                var world = TransformUtil.WorldFromTransform(planet.WaterGO.Transform) * parentWorld;
-                cloudShader.SetMatrix4("uModel", world);
-                var gpuMesh = cache.GetMesh(shellMf.Mesh);
-                gpuMesh.Draw();
-            }
-            else
-            {
-                // Terrain leaves as a cloud shell is a second full-planet draw. Need a WaterGO shell.
-                gl.DepthMask(true);
-                gl.Enable(EnableCap.CullFace);
-                gl.Disable(EnableCap.Blend);
-                return;
-            }
-
-            gl.DepthMask(true);
             gl.Enable(EnableCap.CullFace);
+            // Inside or below the cloud shell: draw back faces (sky dome).
+            // Outside in orbit: draw front faces (so depth test passes in front of the planet).
+            gl.CullFace(cameraInsideShell ? TriangleFace.Front : TriangleFace.Back);
+
+            var gpuMesh = cache.GetMesh(s_planetCloudShellMesh);
+            gpuMesh.Draw();
+
+            gl.CullFace(TriangleFace.Back);
+            gl.Enable(EnableCap.CullFace);
+            gl.DepthMask(true);
             gl.Disable(EnableCap.Blend);
         }
 

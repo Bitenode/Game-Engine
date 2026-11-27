@@ -9,11 +9,11 @@
   <Window.Styles>
     <!-- Section card -->
     <Style Selector="Border.section">
-      <Setter Property="Background"      Value="#22252A"/>
-      <Setter Property="CornerRadius"    Value="8"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlPageBackgroundAltHighBrush}"/>
+      <Setter Property="CornerRadius"    Value="6"/>
       <Setter Property="Padding"         Value="14,10"/>
       <Setter Property="Margin"          Value="0,0,0,10"/>
-      <Setter Property="BorderBrush"     Value="#2E3238"/>
+      <Setter Property="BorderBrush"     Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
     </Style>
 
@@ -21,14 +21,14 @@
     <Style Selector="TextBlock.section-header">
       <Setter Property="FontSize"        Value="13"/>
       <Setter Property="FontWeight"      Value="SemiBold"/>
-      <Setter Property="Foreground"      Value="#C8CDD4"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
       <Setter Property="Margin"          Value="0,0,0,8"/>
     </Style>
 
     <!-- Form label -->
     <Style Selector="TextBlock.label">
       <Setter Property="FontSize"        Value="12"/>
-      <Setter Property="Foreground"      Value="#8B929A"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
       <Setter Property="Width"           Value="120"/>
     </Style>
@@ -42,33 +42,30 @@
 
     <!-- Primary action button -->
     <Style Selector="Button.primary">
-      <Setter Property="Background"      Value="#3478F6"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
       <Setter Property="Foreground"      Value="White"/>
       <Setter Property="FontWeight"      Value="SemiBold"/>
-      <Setter Property="Padding"         Value="18,8"/>
-      <Setter Property="CornerRadius"    Value="6"/>
+      <Setter Property="Padding"         Value="16,6"/>
+      <Setter Property="CornerRadius"    Value="4"/>
     </Style>
-    <Style Selector="Button.primary:pointerover">
-      <Setter Property="Background"      Value="#4A8AF7"/>
-    </Style>
-    <Style Selector="Button.primary:pressed">
-      <Setter Property="Background"      Value="#2A6AE0"/>
+    <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background"      Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="Foreground"      Value="White"/>
+      <Setter Property="Opacity"         Value="0.9"/>
     </Style>
 
     <!-- Secondary action button -->
     <Style Selector="Button.secondary">
-      <Setter Property="Background"      Value="#2B2F33"/>
-      <Setter Property="Foreground"      Value="#C8CDD4"/>
-      <Setter Property="Padding"         Value="18,8"/>
-      <Setter Property="CornerRadius"    Value="6"/>
-      <Setter Property="BorderBrush"     Value="#3A3D41"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+      <Setter Property="Padding"         Value="16,6"/>
+      <Setter Property="CornerRadius"    Value="4"/>
+      <Setter Property="BorderBrush"     Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
     </Style>
-    <Style Selector="Button.secondary:pointerover">
-      <Setter Property="Background"      Value="#33383D"/>
-    </Style>
-    <Style Selector="Button.secondary:pressed">
-      <Setter Property="Background"      Value="#3B4147"/>
+    <Style Selector="Button.secondary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background"      Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
     </Style>
 
     <!-- Expander tweaks -->
@@ -78,29 +75,29 @@
     <Style Selector="Expander /template/ ToggleButton">
       <Setter Property="FontSize"        Value="13"/>
       <Setter Property="FontWeight"      Value="SemiBold"/>
-      <Setter Property="Foreground"      Value="#C8CDD4"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
     </Style>
 
     <!-- Progress bar -->
     <Style Selector="ProgressBar.build-progress">
       <Setter Property="Height"          Value="6"/>
       <Setter Property="CornerRadius"    Value="3"/>
-      <Setter Property="Foreground"      Value="#33C759"/>
-      <Setter Property="Background"      Value="#1E2024"/>
+      <Setter Property="Foreground"      Value="#2E9E47"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
       <Setter Property="Margin"          Value="0,6,0,0"/>
     </Style>
 
     <!-- Status text -->
     <Style Selector="TextBlock.status">
       <Setter Property="FontSize"        Value="11"/>
-      <Setter Property="Foreground"      Value="#6B7280"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
       <Setter Property="Margin"          Value="0,4,0,0"/>
     </Style>
 
     <!-- Scene list items -->
     <Style Selector="ListBox.scene-list">
-      <Setter Property="Background"      Value="#1A1D21"/>
-      <Setter Property="BorderBrush"     Value="#2E3238"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlBackgroundAltHighBrush}"/>
+      <Setter Property="BorderBrush"     Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="CornerRadius"    Value="6"/>
       <Setter Property="MinHeight"       Value="90"/>
@@ -111,25 +108,24 @@
       <Setter Property="FontSize"        Value="12"/>
     </Style>
     <Style Selector="ListBox.scene-list ListBoxItem:selected /template/ ContentPresenter">
-      <Setter Property="Background"      Value="#2A3A50"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlHighlightListAccentLowBrush}"/>
     </Style>
 
     <!-- Small icon-style button for scene list toolbar -->
     <Style Selector="Button.scene-btn">
-      <Setter Property="Background"      Value="#2B2F33"/>
-      <Setter Property="Foreground"      Value="#C8CDD4"/>
-      <Setter Property="Padding"         Value="8,5"/>
-      <Setter Property="CornerRadius"    Value="5"/>
+      <Setter Property="Background"      Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+      <Setter Property="Padding"         Value="8,4"/>
+      <Setter Property="CornerRadius"    Value="4"/>
       <Setter Property="FontSize"        Value="12"/>
+      <Setter Property="Height"          Value="26"/>
       <Setter Property="MinWidth"        Value="28"/>
-      <Setter Property="BorderBrush"     Value="#3A3D41"/>
+      <Setter Property="BorderBrush"     Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
     </Style>
-    <Style Selector="Button.scene-btn:pointerover">
-      <Setter Property="Background"      Value="#33383D"/>
-    </Style>
-    <Style Selector="Button.scene-btn:pressed">
-      <Setter Property="Background"      Value="#3B4147"/>
+    <Style Selector="Button.scene-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background"      Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+      <Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
     </Style>
     <Style Selector="Button.scene-btn:disabled">
       <Setter Property="Opacity"         Value="0.4"/>
@@ -139,7 +135,7 @@
     <Style Selector="TextBlock.startup-badge">
       <Setter Property="FontSize"        Value="10"/>
       <Setter Property="FontWeight"      Value="SemiBold"/>
-      <Setter Property="Foreground"      Value="#33C759"/>
+      <Setter Property="Foreground"      Value="#2E9E47"/>
       <Setter Property="Margin"          Value="6,0,0,0"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
@@ -149,9 +145,11 @@
 
     <!-- ─── Title ─── -->
     <StackPanel Grid.Row="0" Spacing="2" Margin="0,0,0,12">
-      <TextBlock Text="Build Settings" FontSize="20" FontWeight="Bold" Foreground="#E4E8EE"/>
+      <TextBlock Text="Build Settings" FontSize="20" FontWeight="Bold"
+                 Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
       <TextBlock Text="Configure and build your project for the target platform."
-                 FontSize="12" Foreground="#6B7280"/>
+                 FontSize="12"
+                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
     </StackPanel>
 
     <!-- ─── Scrollable body ─── -->
@@ -201,35 +199,37 @@
           <StackPanel Spacing="2">
             <TextBlock Classes="section-header" Text="Xbox Game Config"/>
             <TextBlock Text="Maps to MicrosoftGame.config (Partner Center). Written on Xbox GDK builds; saved with build settings for Xbox / Xbox GDK."
-                       FontSize="11" Foreground="#6B7280" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                       FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       Margin="0,0,0,6" TextWrapping="Wrap"/>
 
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Identity Name"/>
-              <TextBox x:Name="GcIdentityNameBox" Width="260" Watermark="Studio.GameName"/>
+              <TextBox x:Name="GcIdentityNameBox" Width="260" PlaceholderText="Studio.GameName"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Display Name"/>
-              <TextBox x:Name="GcDisplayNameBox" Width="260" Watermark="Uses Product Name if empty"/>
+              <TextBox x:Name="GcDisplayNameBox" Width="260" PlaceholderText="Uses Product Name if empty"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Publisher Display"/>
-              <TextBox x:Name="GcPublisherDisplayBox" Width="260" Watermark="Uses Company if empty"/>
+              <TextBox x:Name="GcPublisherDisplayBox" Width="260" PlaceholderText="Uses Company if empty"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Description"/>
-              <TextBox x:Name="GcDescriptionBox" Width="320" Watermark="Short store / shell description"/>
+              <TextBox x:Name="GcDescriptionBox" Width="320" PlaceholderText="Short store / shell description"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Title Id"/>
-              <TextBox x:Name="GdkTitleIdBox" Width="160" Watermark="AABBCCDD"/>
+              <TextBox x:Name="GdkTitleIdBox" Width="160" PlaceholderText="AABBCCDD"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Store Id"/>
-              <TextBox x:Name="GcStoreIdBox" Width="160" Watermark="9NXXXXXXXXXX"/>
+              <TextBox x:Name="GcStoreIdBox" Width="160" PlaceholderText="9NXXXXXXXXXX"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="MSA App Id"/>
-              <TextBox x:Name="GcMsaAppIdBox" Width="200" Watermark="0000000000000000"/>
+              <TextBox x:Name="GcMsaAppIdBox" Width="200" PlaceholderText="0000000000000000"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Device Family"/>
@@ -242,34 +242,38 @@
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Logo 150×150"/>
-              <TextBox x:Name="GcLogo150Box" Width="260" Watermark="Assets\StoreLogo.png"/>
+              <TextBox x:Name="GcLogo150Box" Width="260" PlaceholderText="Assets\StoreLogo.png"/>
             </StackPanel>
             <StackPanel Classes="form-row">
               <TextBlock Classes="label" Text="Logo 44×44"/>
-              <TextBox x:Name="GcLogo44Box" Width="260" Watermark="Assets\StoreLogo.png"/>
+              <TextBox x:Name="GcLogo44Box" Width="260" PlaceholderText="Assets\StoreLogo.png"/>
             </StackPanel>
 
             <StackPanel x:Name="XboxUwpDeployFields" Spacing="2" IsVisible="False" Margin="0,8,0,0">
               <TextBlock Classes="section-header" Text="Xbox Dev Mode deploy"/>
               <TextBlock Text="IP from Dev Home. Written into the UWP launch profile (Remote Machine)."
-                         FontSize="11" Foreground="#6B7280" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                         FontSize="11"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                         Margin="0,0,0,6" TextWrapping="Wrap"/>
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Remote Machine"/>
-                <TextBox x:Name="GcRemoteMachineBox" Width="200" Watermark="192.168.1.5"/>
+                <TextBox x:Name="GcRemoteMachineBox" Width="200" PlaceholderText="192.168.1.5"/>
               </StackPanel>
             </StackPanel>
 
             <StackPanel x:Name="XboxGdkLiveFields" Spacing="2" IsVisible="False" Margin="0,8,0,0">
               <TextBlock Classes="section-header" Text="Xbox Live (GDK)"/>
               <TextBlock Text="Requires Microsoft GDK. SCID is not packed into Assets.dll."
-                         FontSize="11" Foreground="#6B7280" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                         FontSize="11"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                         Margin="0,0,0,6" TextWrapping="Wrap"/>
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="SCID"/>
-                <TextBox x:Name="GdkScidBox" Width="260" Watermark="00000000-0000-0000-0000-000000000000"/>
+                <TextBox x:Name="GdkScidBox" Width="260" PlaceholderText="00000000-0000-0000-0000-000000000000"/>
               </StackPanel>
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Sandbox"/>
-                <TextBox x:Name="GdkSandboxBox" Width="160" Text="XDKS.1" Watermark="XDKS.1"/>
+                <TextBox x:Name="GdkSandboxBox" Width="160" Text="XDKS.1" PlaceholderText="XDKS.1"/>
               </StackPanel>
             </StackPanel>
           </StackPanel>
@@ -280,7 +284,9 @@
           <StackPanel Spacing="4">
             <TextBlock Classes="section-header" Text="Scenes In Build"/>
             <TextBlock Text="The first scene is loaded on startup. Drag or use arrows to reorder."
-                       FontSize="11" Foreground="#6B7280" Margin="0,0,0,6"/>
+                       FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       Margin="0,0,0,6"/>
 
             <ListBox x:Name="SceneList" Classes="scene-list"
                      SelectionMode="Single"/>
@@ -306,15 +312,15 @@
             <StackPanel Spacing="2">
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Product Name"/>
-                <TextBox x:Name="ProductNameBox" Width="260" Watermark="My Game"/>
+                <TextBox x:Name="ProductNameBox" Width="260" PlaceholderText="My Game"/>
               </StackPanel>
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Company"/>
-                <TextBox x:Name="CompanyBox" Width="260" Watermark="Studio"/>
+                <TextBox x:Name="CompanyBox" Width="260" PlaceholderText="Studio"/>
               </StackPanel>
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Version"/>
-                <TextBox x:Name="VersionBox" Width="140" Text="1.0.0" Watermark="1.0.0"/>
+                <TextBox x:Name="VersionBox" Width="140" Text="1.0.0" PlaceholderText="1.0.0"/>
               </StackPanel>
               <StackPanel Classes="form-row">
                 <TextBlock Classes="label" Text="Rendering"/>
@@ -384,7 +390,7 @@
         <TextBlock x:Name="BuildProgressPercent"
                    Text="0%"
                    FontSize="11" FontWeight="SemiBold"
-                   Foreground="#C8CDD4"
+                   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
                    HorizontalAlignment="Right"
                    VerticalAlignment="Center"
                    Margin="0,-2,2,0"/>
