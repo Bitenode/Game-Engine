@@ -6,14 +6,39 @@ using SN = System.Numerics;
 
 namespace Game_Engine.Core.Physics
 {
-    /// Central registry + BVH broadphase with mesh-accurate narrow phase.
+    /// Central registry + static/dynamic BVH broadphase with mesh-accurate narrow phase.
     public static class CollisionWorld
     {
+        private struct StaticEntry
+        {
+            public Component.Collider Collider;
+            public SN.Vector3 Min;
+            public SN.Vector3 Max;
+        }
+
+        const float StaticAabbEpsilon = 1e-4f;
+
         static readonly List<Component.Collider> _colliders = new List<Component.Collider>();
-        static readonly BVH _bvh = new();
-        static readonly List<Component.Collider> _bvhBuild = new(256);
+        static readonly BVH _staticBvh = new();
+        static readonly BVH _dynamicBvh = new();
+        static readonly List<Component.Collider> _staticBuild = new(256);
+        static readonly List<Component.Collider> _dynamicBuild = new(32);
+        static readonly List<StaticEntry> _cachedStatic = new(256);
         static readonly List<Component.Collider> _queryScratch = new(64);
         static int _bvhFrame = -1;
+        static bool _staticDirty = true;
+
+        /// <summary>Number of static colliders in the broadphase after the most recent update.</summary>
+        public static int LastStaticColliderCount { get; private set; }
+
+        /// <summary>Number of dynamic colliders in the broadphase after the most recent update.</summary>
+        public static int LastDynamicColliderCount { get; private set; }
+
+        /// <summary>Total number of times the static BVH has been rebuilt.</summary>
+        public static int StaticBvhRebuildCount { get; private set; }
+
+        /// <summary>Force the static BVH to rebuild on the next broadphase update.</summary>
+        public static void MarkStaticBroadphaseDirty() => _staticDirty = true;
 
         internal static void Register(Component.Collider c)
         {
@@ -28,23 +53,39 @@ namespace Game_Engine.Core.Physics
         /// Return all colliders whose world AABB overlaps the given AABB.
         public static IEnumerable<Component.Collider> QueryAABB(SN.Vector3 min, SN.Vector3 max, int layerMask = -1)
         {
-            for (int i = 0; i < _colliders.Count; i++)
+            var results = new List<Component.Collider>();
+            QueryAABB(min, max, results, layerMask);
+            return results;
+        }
+
+        /// Populate <paramref name="results"/> with all colliders whose world AABB overlaps the given AABB.
+        public static void QueryAABB(SN.Vector3 min, SN.Vector3 max, List<Component.Collider> results, int layerMask = -1)
+        {
+            RebuildBroadphaseIfNeeded();
+            _queryScratch.Clear();
+            _staticBvh.QueryAABB(min, max, _queryScratch);
+            _dynamicBvh.QueryAABB(min, max, _queryScratch);
+            for (int i = 0; i < _queryScratch.Count; i++)
             {
-                var c = _colliders[i];
+                var c = _queryScratch[i];
                 if (!c.IsActiveAndEnabled) continue;
                 if (!PhysicsLayerMask.Includes(layerMask, c.gameObject.Layer)) continue;
                 var a = c.GetWorldAABB();
-                if (Overlaps(a.Min, a.Max, min, max)) yield return c;
+                if (Overlaps(a.Min, a.Max, min, max)) results.Add(c);
             }
         }
 
         /// Very basic “is anything inside me?” helper for triggers, etc.
         public static bool AnyOverlap(Component.Collider col, out Component.Collider other)
         {
+            RebuildBroadphaseIfNeeded();
             var a = col.GetWorldAABB();
-            for (int i = 0; i < _colliders.Count; i++)
+            _queryScratch.Clear();
+            _staticBvh.QueryAABB(a.Min, a.Max, _queryScratch);
+            _dynamicBvh.QueryAABB(a.Min, a.Max, _queryScratch);
+            for (int i = 0; i < _queryScratch.Count; i++)
             {
-                var c = _colliders[i];
+                var c = _queryScratch[i];
                 if (ReferenceEquals(c, col) || !c.IsActiveAndEnabled) continue;
                 var b = c.GetWorldAABB();
                 if (Overlaps(a.Min, a.Max, b.Min, b.Max)) { other = c; return true; }
@@ -58,14 +99,44 @@ namespace Game_Engine.Core.Physics
                (aMin.Y <= bMax.Y && aMax.Y >= bMin.Y) &&
                (aMin.Z <= bMax.Z && aMax.Z >= bMin.Z);
 
+        static bool IsDynamicCollider(Component.Collider c)
+        {
+            var go = c.gameObject;
+            if (go == null) return false;
+            var behaviors = go.Behaviors;
+            for (int i = 0; i < behaviors.Count; i++)
+            {
+                var b = behaviors[i];
+                if (b is Component.Rigidbody rb && rb.IsActiveAndEnabled && !rb.IsKinematic)
+                    return true;
+                if (b is Component.CharacterController cc && cc.IsActiveAndEnabled)
+                    return true;
+            }
+            return false;
+        }
+
+        static bool AabbChanged(SN.Vector3 prevMin, SN.Vector3 prevMax, SN.Vector3 curMin, SN.Vector3 curMax)
+            => MathF.Abs(prevMin.X - curMin.X) > StaticAabbEpsilon
+            || MathF.Abs(prevMin.Y - curMin.Y) > StaticAabbEpsilon
+            || MathF.Abs(prevMin.Z - curMin.Z) > StaticAabbEpsilon
+            || MathF.Abs(prevMax.X - curMax.X) > StaticAabbEpsilon
+            || MathF.Abs(prevMax.Y - curMax.Y) > StaticAabbEpsilon
+            || MathF.Abs(prevMax.Z - curMax.Z) > StaticAabbEpsilon;
+
         public static IReadOnlyList<Component.Collider> All => _colliders;
 
         internal static void RebuildBroadphaseIfNeeded()
         {
             int frame = Time.frameCount;
-            if (frame == _bvhFrame) return;
+            if (frame == _bvhFrame && !_staticDirty) return;
             _bvhFrame = frame;
-            _bvhBuild.Clear();
+
+            _staticBuild.Clear();
+            _dynamicBuild.Clear();
+
+            bool staticNeedsRebuild = _staticDirty;
+            int staticIndex = 0;
+
             for (int i = 0; i < _colliders.Count; i++)
             {
                 var c = _colliders[i];
@@ -75,9 +146,53 @@ namespace Game_Engine.Core.Physics
                     && PhysicsCache.IsTerrainAssociated(c.gameObject)
                     && !Component.TreeTrunk.IsOn(c.gameObject))
                     continue;
-                _bvhBuild.Add(c);
+
+                if (IsDynamicCollider(c))
+                {
+                    _dynamicBuild.Add(c);
+                    continue;
+                }
+
+                _staticBuild.Add(c);
+
+                if (!staticNeedsRebuild)
+                {
+                    if (staticIndex >= _cachedStatic.Count || !ReferenceEquals(_cachedStatic[staticIndex].Collider, c))
+                    {
+                        staticNeedsRebuild = true;
+                    }
+                    else
+                    {
+                        var aabb = c.GetWorldAABB();
+                        var prev = _cachedStatic[staticIndex];
+                        if (AabbChanged(prev.Min, prev.Max, aabb.Min, aabb.Max))
+                            staticNeedsRebuild = true;
+                    }
+                }
+                staticIndex++;
             }
-            _bvh.Build(_bvhBuild);
+
+            if (!staticNeedsRebuild && staticIndex != _cachedStatic.Count)
+                staticNeedsRebuild = true;
+
+            if (staticNeedsRebuild)
+            {
+                _staticDirty = false;
+                _cachedStatic.Clear();
+                for (int i = 0; i < _staticBuild.Count; i++)
+                {
+                    var c = _staticBuild[i];
+                    var aabb = c.GetWorldAABB();
+                    _cachedStatic.Add(new StaticEntry { Collider = c, Min = aabb.Min, Max = aabb.Max });
+                }
+                _staticBvh.Build(_staticBuild);
+                StaticBvhRebuildCount++;
+            }
+
+            _dynamicBvh.Build(_dynamicBuild);
+
+            LastStaticColliderCount = _staticBuild.Count;
+            LastDynamicColliderCount = _dynamicBuild.Count;
         }
 
         static bool IncludeCollider(Component.Collider c, int layerMask, QueryTriggerInteraction triggers)
@@ -97,7 +212,8 @@ namespace Game_Engine.Core.Physics
             var end = origin + SN.Vector3.Normalize(direction) * maxDist;
             var min = SN.Vector3.Min(origin, end) - new SN.Vector3(radius);
             var max = SN.Vector3.Max(origin, end) + new SN.Vector3(radius);
-            _bvh.QueryAABB(min, max, _queryScratch);
+            _staticBvh.QueryAABB(min, max, _queryScratch);
+            _dynamicBvh.QueryAABB(min, max, _queryScratch);
         }
 
         // ── Raycast API ──
@@ -205,7 +321,8 @@ namespace Game_Engine.Core.Physics
         {
             RebuildBroadphaseIfNeeded();
             _queryScratch.Clear();
-            _bvh.OverlapSphere(center, radius, _queryScratch);
+            _staticBvh.OverlapSphere(center, radius, _queryScratch);
+            _dynamicBvh.OverlapSphere(center, radius, _queryScratch);
             var results = new List<Component.Collider>();
             for (int i = 0; i < _queryScratch.Count; i++)
             {

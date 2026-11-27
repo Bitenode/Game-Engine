@@ -1,4 +1,7 @@
 #version 330 core
+#ifdef GL_ES
+precision highp sampler2DArray;
+#endif
 
 in vec3 vWorldPos;
 in vec3 vWorldNormal;
@@ -7,8 +10,11 @@ in vec4 vShadowCoord;
 flat in ivec4 vBlendIdx;
 in vec4 vBlendWt;
 
+// Global UBOs + 4-cascade CSM shadows (units 7..10)
 #include "Common/FrameGlobals.glsl"
 #include "Common/LightingGlobals.glsl"
+#define SHADOW_CASCADES
+#include "Common/Shadows.glsl"
 
 uniform vec3 uPlanetCenter;
 uniform int uAtmoEnabled;
@@ -28,21 +34,15 @@ uniform vec3 uAtmoZenithTint;
 uniform vec3 uAtmoHorizonTint;
 uniform vec3 uAtmoSkyTint;
 
-// One dedicated sampler per biome/splat layer (units 0-7), splat atlases on 8-9, shadow on 15
-uniform sampler2D uBiomeTex0;
-uniform sampler2D uBiomeTex1;
-uniform sampler2D uBiomeTex2;
-uniform sampler2D uBiomeTex3;
-uniform sampler2D uBiomeTex4;
-uniform sampler2D uBiomeTex5;
-uniform sampler2D uBiomeTex6;
-uniform sampler2D uBiomeTex7;
-
-// Under / cliff albedo (biome graph UnderTexture). Units 10-13 for biomes 0-3.
-uniform sampler2D uBiomeUnderTex0;
-uniform sampler2D uBiomeUnderTex1;
-uniform sampler2D uBiomeUnderTex2;
-uniform sampler2D uBiomeUnderTex3;
+// Texture-unit layout (9 total units: 0, 1, 2, 3, 4, 7, 8, 9, 10):
+//   unit 0     : uBiomeTexArray  (sampler2DArray, 8 top biome layers)
+//   unit 1     : uUnderTexArray  (sampler2DArray, 4 under/cliff layers)
+//   unit 2     : uPlanetSplat0   (sampler2D, 3x2 cubemap atlas layers 0-3)
+//   unit 3     : uPlanetSplat1   (sampler2D, 3x2 cubemap atlas layers 4-7)
+//   unit 4     : uPlanetDigAtlas (sampler2D, 3x2 dig height delta atlas, non-Xbox)
+//   unit 7..10 : uShadowMap, uShadowMapC1..C3 (sampler2D, 4-cascade CSM)
+uniform sampler2DArray uBiomeTexArray;
+uniform sampler2DArray uUnderTexArray;
 uniform float uBiomeHasUnder[8];
 
 uniform sampler2D uPlanetSplat0;
@@ -50,7 +50,7 @@ uniform sampler2D uPlanetSplat1;
 uniform int uUsePlanetSplat;
 
 #ifndef TARGET_XBOX
-// Dig depth atlas (same 3x2 layout as splat). R = height delta (negative when dug). Unit 14.
+// Dig depth atlas (same 3x2 layout as splat). R = height delta (negative when dug). Unit 4.
 uniform sampler2D uPlanetDigAtlas;
 uniform int uUsePlanetDig;
 #endif
@@ -59,8 +59,6 @@ uniform float uBiomeTiling[8];
 uniform float uBiomeUnderTiling[8];
 uniform vec3  uBiomeBaseColor[8];
 uniform vec3  uBiomeUnderColor[8];
-
-uniform sampler2D uShadowMap;
 
 uniform float uPlanetRadius;
 uniform float uWetness;
@@ -153,15 +151,15 @@ vec3 evalAtmosphere(vec3 worldPos, vec3 viewDir, vec3 radialDir)
 #ifdef TARGET_XBOX
 
 // ANGLE-friendly unrolled biome sampling path for Xbox UWP so HLSL link returns quickly.
-vec3 faceProject(sampler2D tex, vec3 p, vec3 dir)
+vec3 faceProjectArray(sampler2DArray texArr, float layer, vec3 p, vec3 dir)
 {
     vec3 a = abs(dir);
-    if (a.x >= a.y && a.x >= a.z) return texture(tex, p.yz).rgb;
-    if (a.z >= a.y) return texture(tex, p.xy).rgb;
-    return texture(tex, p.xz).rgb;
+    if (a.x >= a.y && a.x >= a.z) return texture(texArr, vec3(p.yz, layer)).rgb;
+    if (a.z >= a.y) return texture(texArr, vec3(p.xy, layer)).rgb;
+    return texture(texArr, vec3(p.xz, layer)).rgb;
 }
 
-vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 radial, vec3 vertexN, float t)
+vec3 triplanarArray(sampler2DArray texArr, int layer, vec3 worldPos, vec3 radial, vec3 vertexN, float t)
 {
     float meters = max(uPlanetRadius, 1.0) / max(t, 0.25);
     vec3 p = (worldPos - uPlanetCenter) / meters;
@@ -169,7 +167,7 @@ vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 radial, vec3 vertexN, float t)
     // across a coarse triangle and that is the remaining smear.
     float align = abs(dot(normalize(vertexN), normalize(radial)));
     vec3 dir = align > 0.55 ? radial : vertexN;
-    return faceProject(tex, p, dir);
+    return faceProjectArray(texArr, float(layer), p, dir);
 }
 
 vec3 painted(vec3 texCol, vec3 baseCol)
@@ -200,15 +198,6 @@ float addSlot(int slot, int idx, float wt)
     // them into the last albedo; without that those hills paint empty.
     int c = clamp(idx, 0, 7);
     return c == slot ? max(wt, 0.0) : 0.0;
-}
-
-float shadowFactor(vec4 sc)
-{
-    if (uHasShadow == 0) return 1.0;
-    vec3 p = sc.xyz / sc.w;
-    p = p * 0.5 + 0.5;
-    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return 1.0;
-    return p.z - 0.004 > texture(uShadowMap, p.xy).r ? 0.55 : 1.0;
 }
 
 void main()
@@ -247,26 +236,26 @@ void main()
         w7 = addSlot(7, vBlendIdx.x, vBlendWt.x) + addSlot(7, vBlendIdx.y, vBlendWt.y) + addSlot(7, vBlendIdx.z, vBlendWt.z) + addSlot(7, vBlendIdx.w, vBlendWt.w);
     }
 
-    vec3 t0 = painted(triplanar(uBiomeTex0, vWorldPos, radialDir, vertexN, uBiomeTiling[0]), uBiomeBaseColor[0]);
-    vec3 t1 = painted(triplanar(uBiomeTex1, vWorldPos, radialDir, vertexN, uBiomeTiling[1]), uBiomeBaseColor[1]);
-    vec3 t2 = painted(triplanar(uBiomeTex2, vWorldPos, radialDir, vertexN, uBiomeTiling[2]), uBiomeBaseColor[2]);
-    vec3 t3 = painted(triplanar(uBiomeTex3, vWorldPos, radialDir, vertexN, uBiomeTiling[3]), uBiomeBaseColor[3]);
-    vec3 t4 = painted(triplanar(uBiomeTex4, vWorldPos, radialDir, vertexN, uBiomeTiling[4]), uBiomeBaseColor[4]);
-    vec3 t5 = painted(triplanar(uBiomeTex5, vWorldPos, radialDir, vertexN, uBiomeTiling[5]), uBiomeBaseColor[5]);
-    vec3 t6 = painted(triplanar(uBiomeTex6, vWorldPos, radialDir, vertexN, uBiomeTiling[6]), uBiomeBaseColor[6]);
-    vec3 t7 = painted(triplanar(uBiomeTex7, vWorldPos, radialDir, vertexN, uBiomeTiling[7]), uBiomeBaseColor[7]);
+    vec3 t0 = painted(triplanarArray(uBiomeTexArray, 0, vWorldPos, radialDir, vertexN, uBiomeTiling[0]), uBiomeBaseColor[0]);
+    vec3 t1 = painted(triplanarArray(uBiomeTexArray, 1, vWorldPos, radialDir, vertexN, uBiomeTiling[1]), uBiomeBaseColor[1]);
+    vec3 t2 = painted(triplanarArray(uBiomeTexArray, 2, vWorldPos, radialDir, vertexN, uBiomeTiling[2]), uBiomeBaseColor[2]);
+    vec3 t3 = painted(triplanarArray(uBiomeTexArray, 3, vWorldPos, radialDir, vertexN, uBiomeTiling[3]), uBiomeBaseColor[3]);
+    vec3 t4 = painted(triplanarArray(uBiomeTexArray, 4, vWorldPos, radialDir, vertexN, uBiomeTiling[4]), uBiomeBaseColor[4]);
+    vec3 t5 = painted(triplanarArray(uBiomeTexArray, 5, vWorldPos, radialDir, vertexN, uBiomeTiling[5]), uBiomeBaseColor[5]);
+    vec3 t6 = painted(triplanarArray(uBiomeTexArray, 6, vWorldPos, radialDir, vertexN, uBiomeTiling[6]), uBiomeBaseColor[6]);
+    vec3 t7 = painted(triplanarArray(uBiomeTexArray, 7, vWorldPos, radialDir, vertexN, uBiomeTiling[7]), uBiomeBaseColor[7]);
     vec3 topCol = t0 * w0 + t1 * w1 + t2 * w2 + t3 * w3 + t4 * w4 + t5 * w5 + t6 * w6 + t7 * w7;
 
-    vec3 u0 = painted(triplanar(uBiomeUnderTex0, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[0]), uBiomeUnderColor[0]);
-    vec3 u1 = painted(triplanar(uBiomeUnderTex1, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[1]), uBiomeUnderColor[1]);
-    vec3 u2 = painted(triplanar(uBiomeUnderTex2, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[2]), uBiomeUnderColor[2]);
-    vec3 u3 = painted(triplanar(uBiomeUnderTex3, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[3]), uBiomeUnderColor[3]);
+    vec3 u0 = painted(triplanarArray(uUnderTexArray, 0, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[0]), uBiomeUnderColor[0]);
+    vec3 u1 = painted(triplanarArray(uUnderTexArray, 1, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[1]), uBiomeUnderColor[1]);
+    vec3 u2 = painted(triplanarArray(uUnderTexArray, 2, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[2]), uBiomeUnderColor[2]);
+    vec3 u3 = painted(triplanarArray(uUnderTexArray, 3, vWorldPos, radialDir, vertexN, uBiomeUnderTiling[3]), uBiomeUnderColor[3]);
     vec3 underCol = u0 * w0 + u1 * w1 + u2 * w2 + u3 * w3
         + uBiomeUnderColor[4] * w4 + uBiomeUnderColor[5] * w5
         + uBiomeUnderColor[6] * w6 + uBiomeUnderColor[7] * w7;
     float wSum = w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7;
     if (wSum > 0.001) { topCol /= wSum; underCol /= wSum; }
-    else topCol = painted(triplanar(uBiomeTex0, vWorldPos, radialDir, vertexN, uBiomeTiling[0]), uBiomeBaseColor[0]);
+    else topCol = painted(triplanarArray(uBiomeTexArray, 0, vWorldPos, radialDir, vertexN, uBiomeTiling[0]), uBiomeBaseColor[0]);
 
     vec3 cliffCol = mix(underCol, topCol * 0.62, 0.22);
     vec3 finalColor = mix(cliffCol, topCol, slopeBlend);
@@ -285,7 +274,7 @@ void main()
     vec3 H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 32.0) * 0.06 * slopeBlend;
     spec += pow(max(dot(N, H), 0.0), 28.0) * wetAmt * groundFlat * 0.18;
-    float shadow = shadowFactor(vShadowCoord);
+    float shadow = SampleShadowCascaded(vWorldPos, vertexN, uLightDir, 0.004, 0.04);
     float ao = mix(1.0, 0.35, clamp(-dot(N, radialDir), 0.0, 1.0));
     vec3 lit = finalColor * (uAmbient + diffuse * shadow) * ao + vec3(spec) * shadow;
 
@@ -299,38 +288,29 @@ void main()
 
 #else
 
-vec3 triplanar(sampler2D tex, vec3 worldPos, vec3 dir, float t)
+vec3 triplanarArray(sampler2DArray texArr, int layer, vec3 worldPos, vec3 dir, float t)
 {
     // One cube face. Blending the other two stretched a second copy of the
     // albedo across hillsides where no axis was dominant.
     float meters = max(uPlanetRadius, 1.0) / max(t, 0.25);
     vec3 p = (worldPos - uPlanetCenter) / meters;
     vec3 a = abs(dir);
-    if (a.x >= a.y && a.x >= a.z) return texture(tex, p.yz).rgb;
-    if (a.z >= a.y) return texture(tex, p.xy).rgb;
-    return texture(tex, p.xz).rgb;
+    float fl = float(layer);
+    if (a.x >= a.y && a.x >= a.z) return texture(texArr, vec3(p.yz, fl)).rgb;
+    if (a.z >= a.y) return texture(texArr, vec3(p.xy, fl)).rgb;
+    return texture(texArr, vec3(p.xz, fl)).rgb;
 }
 
 vec3 sampleBiome(int idx, vec3 wp, vec3 ba, float t)
 {
-    if (idx == 0) return triplanar(uBiomeTex0, wp, ba, t);
-    if (idx == 1) return triplanar(uBiomeTex1, wp, ba, t);
-    if (idx == 2) return triplanar(uBiomeTex2, wp, ba, t);
-    if (idx == 3) return triplanar(uBiomeTex3, wp, ba, t);
-    if (idx == 4) return triplanar(uBiomeTex4, wp, ba, t);
-    if (idx == 5) return triplanar(uBiomeTex5, wp, ba, t);
-    if (idx == 6) return triplanar(uBiomeTex6, wp, ba, t);
-    return triplanar(uBiomeTex7, wp, ba, t);
+    return triplanarArray(uBiomeTexArray, clamp(idx, 0, 7), wp, ba, t);
 }
 
 vec3 sampleBiomeUnder(int idx, vec3 wp, vec3 ba, float t)
 {
-    // Hardware sampler budget: under maps for biomes 0-3 (unit 14 = dig atlas).
-    if (idx == 0) return triplanar(uBiomeUnderTex0, wp, ba, t);
-    if (idx == 1) return triplanar(uBiomeUnderTex1, wp, ba, t);
-    if (idx == 2) return triplanar(uBiomeUnderTex2, wp, ba, t);
-    if (idx == 3) return triplanar(uBiomeUnderTex3, wp, ba, t);
-    return uBiomeUnderColor[idx];
+    if (idx >= 0 && idx < 4)
+        return triplanarArray(uUnderTexArray, idx, wp, ba, t);
+    return uBiomeUnderColor[clamp(idx, 0, 7)];
 }
 
 float sampleDigDepthMeters(vec3 radialDir)
@@ -365,23 +345,6 @@ void samplePlanetSplat(vec3 radialDir, out float w[8])
     }
     float inv = 1.0 / sum;
     for (int i = 0; i < 8; i++) w[i] = max(w[i], 0.0) * inv;
-}
-
-float shadowFactor(vec4 sc)
-{
-    if (uHasShadow == 0) return 1.0;
-    vec3 projCoords = sc.xyz / sc.w;
-    projCoords = projCoords * 0.5 + 0.5;
-    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
-        return 1.0;
-    float bias = 0.004 + (1.0 - max(dot(normalize(vWorldNormal), normalize(-uLightDir)), 0.0)) * 0.02;
-    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
-    float visibility = 0.0;
-    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2(-0.6, -0.6) * texel).r) ? 0.55 : 1.0;
-    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2( 0.6, -0.6) * texel).r) ? 0.55 : 1.0;
-    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2(-0.6,  0.6) * texel).r) ? 0.55 : 1.0;
-    visibility += (projCoords.z - bias > texture(uShadowMap, projCoords.xy + vec2( 0.6,  0.6) * texel).r) ? 0.55 : 1.0;
-    return visibility * 0.25;
 }
 
 vec3 evalBiome(int idx, vec3 worldPos, vec3 ba, float slopeBlend, float nDotRadial, float digBlend)
@@ -535,7 +498,7 @@ void main()
     vec3 skyRefCol = mix(uAtmoHorizonTint, uAtmoZenithTint, clamp(R.y * 0.5 + 0.5, 0.0, 1.0));
     float skyRef = pow(max(dot(normalize(R), radialDir), 0.0), 1.4) * puddle * 0.42;
 
-    float shadow = shadowFactor(vShadowCoord);
+    float shadow = SampleShadowCascaded(vWorldPos, N, uLightDir, 0.004, 0.04);
     float ao = mix(1.0, 0.35, clamp(-nDotRadial, 0.0, 1.0));
     float ambient = uAmbient * mix(1.0, 0.7, interior);
     vec3 lit = finalColor * (ambient + diffuse * shadow) * ao;

@@ -150,26 +150,27 @@ The primary shader for most objects. Full feature set:
 Specialized shader for terrain objects with splatmap-based multi-material blending.
 
 **Features:**
-- **Up to 8 texture layers** — weighted by 2 RGBA splatmap textures
-- **Per-layer UV tiling** — independent texture repetition scale per layer
-- **Sampler budget** — Scene View, Game View, and `ViewRenderResources` compile `TerrainFragForUnits` from `GL_MAX_TEXTURE_IMAGE_UNITS`. Normals 0–4 always fit. Normals 5–7, then dedicated height maps, are compiled only when units remain
-- **Parallax** — dedicated height map when that sampler exists and a texture is bound; otherwise normal-map alpha
-- **Triplanar projection** — on steep cliff faces (where the surface normal is mostly horizontal), texture is projected from the side to prevent stretching
-- **Full shadow support** — same PCF shadow sampling as the Standard shader
+- **Up to 8 texture layers via `GL_TEXTURE_2D_ARRAY`** — weighted by 2 RGBA splatmap textures (`uSplatmap0/1` on units 0–1), with all 8 albedo layers packed into `uLayerAlbedos` (unit 2) and all 8 tangent-space normal maps packed into `uLayerNormals` (unit 3). Layers are resampled on CPU and cached per-`ResourceCache` via `GetOrCreateTexture2DArray` (capped at 512 on ES/Xbox, 1024 on desktop)
+- **Per-layer UV tiling & PBR scalars** — independent UV tiling, roughness, and metallic values per layer
+- **Parallax** — driven by normal-map alpha for any active normal-mapped layer
+- **4-cascade CSM shadows** — uses `Common/Shadows.glsl` (`SampleShadowCascaded`, units 7–10) matching `Standard.frag.glsl` and `DeferredLighting.frag.glsl`, plus `uHdrOutput` for linear HDR scene targets
+- **Total texture-unit budget:** **8 units** (`0, 1, 2, 3, 7, 8, 9, 10`) — well below the 16-sampler OpenGL ES 3.0 / ANGLE limit, with all 8 normal-mapped layers active on every platform
 - **Fallback** — uses standard material color when no layers are defined
 
 **Additional uniforms:**
 
-| Uniform        | Type       | Description                         |
-|----------------|------------|-------------------------------------|
-| `uSplatmap0`   | sampler2D  | Layer weights 0-3 (RGBA float)     |
-| `uSplatmap1`   | sampler2D  | Layer weights 4-7 (RGBA float)     |
-| `uLayerCount`  | int        | Number of active layers (0-8)      |
-| `uLayer0..7`   | sampler2D  | Layer albedo textures               |
-| `uTiling0..7`  | float      | Per-layer UV tiling scale           |
-| `uNormalLayer0..N` | sampler2D | Tangent normals. N is 4 on a 16-unit context, up to 7 when units remain |
-| `uHeightLayer0..N` | sampler2D | Parallax height. Absent when the budget is 0 |
-| `uHasNormal0..7` / `uHasHeight0..7` | int | 1 when that layer has a bound map |
+| Uniform        | Type            | Unit  | Description                                         |
+|----------------|-----------------|-------|-----------------------------------------------------|
+| `uSplatmap0`   | sampler2D       | 0     | Layer weights 0–3 (RGBA float)                      |
+| `uSplatmap1`   | sampler2D       | 1     | Layer weights 4–7 (RGBA float)                      |
+| `uLayerAlbedos`| sampler2DArray  | 2     | 8-layer terrain albedo array (`GL_TEXTURE_2D_ARRAY`)|
+| `uLayerNormals`| sampler2DArray  | 3     | 8-layer tangent-space normal array (alpha = height) |
+| `uShadowMap`, `uShadowMapC1..C3` | sampler2D | 7–10 | 4-cascade CSM shadow maps (`Common/Shadows.glsl`) |
+| `uLayerCount`  | int             | —     | Number of active layers (0–8)                       |
+| `uTiling0..7`  | float           | —     | Per-layer UV tiling scale                           |
+| `uRough0..7` / `uMetal0..7` | float | —  | Per-layer PBR roughness / metallic                  |
+| `uHasNormal0..7` | int           | —     | 1 when that layer has a bound normal map            |
+| `uHdrOutput`   | int             | —     | 1 when writing linear HDR to `SceneFbo`             |
 
 ### Water Shader (WaterVert + WaterFrag)
 
@@ -638,7 +639,7 @@ Planet atmosphere rendering is now an isolated path and does not depend on `Skyb
 
 - **Planet data source:** `PlanetTerrain` + `PlanetAtmosphere` component state
 - **Resolver:** `SceneRenderer.ResolvePlanetAtmosphere(...)` produces per-planet render params
-- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing). **Splat atlases** (`uPlanetSplat0/1`, units 8–9) drive eight biome weights when the surface cubemap is fully baked (`HasBaseHeights`). **Dig atlas** (`uPlanetDigAtlas`, unit 14) samples height deltas for cliff/under-material blending. While a graph bake is still pending and only a scratch cubemap exists, splat atlases are skipped (`uUsePlanetSplat = 0`) and per-vertex biome blend weights from mesh generation are used instead — so the first dig cannot flatten the planet to a single dirt layer. **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls. **Weather overlays** (`uWetness` / `uSnowCoverage` / `uWeatherEnabled`) tint and add puddle spec / light snow on the **lit texel** — they never replace grass with a flat color. Wetness is resolved every frame in `SceneRenderer.ResolveWeatherOverlays` (including live `RainIntensity`, not only held `Wetness`). Puddles use tangent-space **FBM** (`wetFbm`) at meter scale — not per-pixel hash noise — with `groundFlat = smoothstep(0.18, 0.58, slope)` so planet mesh normals still receive wet sheen. Pooled water adds spec/Fresnel and a simple sky reflection from `uAtmoHorizonTint` / `uAtmoZenithTint`. On OpenGL ES / ANGLE, avoid GLSL identifiers named `flat` (reserved); the terrain shader uses `groundFlat` instead. Overlays are off while any player is planet-submerged. The renderer always binds **8** biome albedo slots (white + default tiling when a layer is missing)
+- **Terrain pass:** `PlanetTerrainFrag` applies atmosphere blend on top of biome lighting (radial slope for cave-wall rock texturing) and uses **`GL_TEXTURE_2D_ARRAY`** + **4-cascade CSM shadows** in **9 texture units** (`0, 1, 2, 3, 4, 7, 8, 9, 10`; 8 units on Xbox without dig atlas): `uBiomeTexArray` (unit 0, 8 top biome layers), `uUnderTexArray` (unit 1, 4 under/cliff layers), **splat atlases** (`uPlanetSplat0/1`, units 2–3), **dig atlas** (`uPlanetDigAtlas`, unit 4), and **4-cascade CSM** (`uShadowMap`, `uShadowMapC1..C3`, units 7–10 via `Common/Shadows.glsl` `SampleShadowCascaded`). While a graph bake is still pending and only a scratch cubemap exists, splat atlases are skipped (`uUsePlanetSplat = 0`) and per-vertex biome blend weights from mesh generation are used instead — so the first dig cannot flatten the planet to a single dirt layer. **Triplanar albedo** blends projection axes by slope: flat ground uses **radial** axes (stable at cube-face poles); steep faces use the **surface normal** so top-layer textures do not smear along cliff walls. Below the crust, atmosphere tint is skipped; inward cave faces keep biome under-color; cavity AO darkens ceilings and enclosed walls. **Weather overlays** (`uWetness` / `uSnowCoverage` / `uWeatherEnabled`) tint and add puddle spec / light snow on the **lit texel** — they never replace grass with a flat color. Wetness is resolved every frame in `SceneRenderer.ResolveWeatherOverlays` (including live `RainIntensity`, not only held `Wetness`). Puddles use tangent-space **FBM** (`wetFbm`) at meter scale — not per-pixel hash noise — with `groundFlat = smoothstep(0.18, 0.58, slope)` so planet mesh normals still receive wet sheen. Pooled water adds spec/Fresnel and a simple sky reflection from `uAtmoHorizonTint` / `uAtmoZenithTint`. On OpenGL ES / ANGLE, avoid GLSL identifiers named `flat` (reserved); the terrain shader uses `groundFlat` instead. Overlays are off while any player is planet-submerged. Missing biome slots default to solid white in `uBiomeTexArray` / `uUnderTexArray` so unused layers never sample garbage
 - **Crust-band rendering:** when `CameraBelowCrust` or the camera is clearly inside the planet, backface culling may be disabled for cave interiors; on the outer crust, terrain chunks are frustum-culled like other meshes
 - **Planet shadows:** renderable planet leaf meshes are drawn in the shadow depth pass (`RenderPlanetLeafShadows`) unless `SkipPlanetLeafShadows` is set (Scene View during Play). Crust-band `GeneratedCaveMesh` draws in the shadow pass only when `CameraBelowCrust`
 - **Atmosphere/cloud proxy:** when no dedicated atmosphere shell mesh exists, the renderer does **not** fall back to drawing all terrain leaves as a cloud shell (removed — that duplicated a full planet draw)

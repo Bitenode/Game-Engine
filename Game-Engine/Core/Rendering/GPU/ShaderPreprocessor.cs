@@ -298,12 +298,12 @@ public static class ShaderPreprocessor
         {
             return glsl.Replace(
                 "#version 330 core",
-                "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;\n#define TARGET_ES 1");
+                "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp sampler2DArray;\nprecision highp samplerCube;\n#define TARGET_ES 1");
         }
 
         if (!glsl.StartsWith("#version", StringComparison.Ordinal))
         {
-            return "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;\n#define TARGET_ES 1\n" + glsl;
+            return "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp sampler2DArray;\nprecision highp samplerCube;\n#define TARGET_ES 1\n" + glsl;
         }
 
         return glsl;
@@ -345,6 +345,7 @@ public static class ShaderPreprocessor
             AppendMappedLine("precision highp float;", "<preamble>", preambleLine++);
             AppendMappedLine("precision highp int;", "<preamble>", preambleLine++);
             AppendMappedLine("precision highp sampler2D;", "<preamble>", preambleLine++);
+            AppendMappedLine("precision highp sampler2DArray;", "<preamble>", preambleLine++);
             AppendMappedLine("precision highp samplerCube;", "<preamble>", preambleLine++);
             AppendMappedLine("#define TARGET_ES 1", "<preamble>", preambleLine++);
         }

@@ -332,7 +332,7 @@ Each `GameObject` has **`Layer`** (0–31), editable in the Inspector next to **
 
 - **`Physics.Raycast`**, **`RaycastAll`**, **`SphereCast`**, **`CapsuleCast`**, **`OverlapSphere`**, and **`CollisionWorld.QueryAABB`** accept an optional **`layerMask`** (`int`) and **`QueryTriggerInteraction`**. Set bit `1 << layer` to include that layer; **`-1`** means all layers (default). Use `PhysicsLayerMask.Includes(mask, layer)` if you build masks in code.
 - **`CollisionWorld.CapsuleCast`** also accepts optional **`ignore: Collider?`** to skip one collider (for example the caster's own `CapsuleCollider` during planet locomotion sweeps).
-- Broadphase uses a **BVH** rebuilt once per frame (`CollisionWorld.RebuildBroadphaseIfNeeded`). Narrow phase: **mesh colliders** run Möller–Trumbore triangle tests; other colliders use AABB. **`PlanetCollider`** is skipped — use `PlanetTerrain` density casts.
+- Broadphase uses a **static / dynamic BVH split** (`CollisionWorld.RebuildBroadphaseIfNeeded`): `_staticBvh` caches static/kinematic colliders and their world AABBs and only rebuilds when the static set changes or any static AABB moves beyond `1e-4` (or via `CollisionWorld.MarkStaticBroadphaseDirty()`), while `_dynamicBvh` rebuilds per frame for active non-kinematic `Rigidbody` and `CharacterController` colliders. All queries (`Raycast`, `RaycastAll`, `SphereCast`, `CapsuleCast`, `OverlapSphere`, `QueryAABB`, `AnyOverlap`) search both trees. Narrow phase: **mesh colliders** run Möller–Trumbore triangle tests; other colliders use AABB. **`PlanetCollider`** is skipped — use `PlanetTerrain` density casts.
 - **`Rigidbody.CollisionLayerMask`** and **`CharacterController.CollisionLayerMask`** (default **`-1`**) restrict which layers that body collides against when resolving overlaps, mesh tests, and triggers.
 
 ---
@@ -443,7 +443,10 @@ The engine supports five joint constraint types defined in `PhysicsJoint`:
 
 ## Bounding Volume Hierarchy (BVH)
 
-The `BVH` class provides spatial acceleration for collision queries. Instead of testing every collider linearly, the BVH organizes colliders into a tree structure for O(log n) query performance. `CollisionWorld.RebuildBroadphaseIfNeeded()` rebuilds it once per frame.
+The `BVH` class provides spatial acceleration for collision queries. Instead of testing every collider linearly, the BVH organizes colliders into a tree structure for O(log n) query performance. `CollisionWorld.RebuildBroadphaseIfNeeded()` maintains a **static / dynamic BVH split**:
+- **Static BVH (`_staticBvh`):** Holds static and kinematic colliders. Each static collider's world AABB `(Min, Max)` is cached; steady-state frames perform **0 static rebuilds**, rebuilding only when the static collider list changes, any static AABB shifts by more than `1e-4`, or `CollisionWorld.MarkStaticBroadphaseDirty()` is called.
+- **Dynamic BVH (`_dynamicBvh`):** Rebuilt once per frame for active non-kinematic `Rigidbody` and `CharacterController` colliders.
+- **Diagnostics:** `CollisionWorld.LastStaticColliderCount`, `CollisionWorld.LastDynamicColliderCount`, and `CollisionWorld.StaticBvhRebuildCount` expose broadphase counts and rebuild totals.
 
 **Mesh narrow phase:** After broad-phase AABB overlap, `Rigidbody` uses `MeshSpatialIndex.QueryWorldAabb` for triangle tests. `Mesh.GetLocalBounds()` caches axis-aligned bounds per geometry version for frustum and query expansion.
 

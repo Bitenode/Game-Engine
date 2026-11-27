@@ -26,12 +26,21 @@ namespace Game_Engine.Core.Component
         /// <summary>World-distance at which Lod3 is used. Ignored if Lod3 is null or threshold ≤ 0.</summary>
         [Persist, HideInInspector] public float Lod3Distance { get; set; } = 90f;
 
+        /// <summary>
+        /// Fractional hysteresis deadband around LOD distance thresholds (e.g. 0.1 = ±10%).
+        /// Switching to a coarser LOD requires <c>dist &gt;= threshold * (1 + Hysteresis)</c>,
+        /// while switching back to a finer LOD requires <c>dist &lt; threshold * (1 - Hysteresis)</c>.
+        /// Values &lt;= 0 disable hysteresis.
+        /// </summary>
+        [Persist] public float Hysteresis { get; set; } = 0.1f;
+
         /// <summary>0 = Lod0 (or base mesh), 1–3 = explicit LOD slot used last frame.</summary>
         [HideInInspector]
         public int CurrentLodLevel { get; private set; }
 
         private Mesh? _capturedBaseMesh;
         private Mesh? _lastAssigned;
+        private bool _hasInitializedLod;
 
         /// <summary>
         /// Select mesh by distance from <paramref name="cameraPos"/> and assign to <see cref="MeshFilter"/>.
@@ -56,6 +65,7 @@ namespace Game_Engine.Core.Component
 
             Mesh? pick = PickMesh(dist, out int level);
             CurrentLodLevel = level;
+            _hasInitializedLod = true;
 
             if (pick == null) return;
             if (!ReferenceEquals(_lastAssigned, pick))
@@ -67,20 +77,34 @@ namespace Game_Engine.Core.Component
 
         Mesh? PickMesh(float dist, out int level)
         {
-            if (Lod3Distance > 0f && Lod3 != null && dist >= Lod3Distance)
+            float h = _hasInitializedLod ? Math.Clamp(Hysteresis, 0f, 0.95f) : 0f;
+
+            if (Lod3Distance > 0f && Lod3 != null)
             {
-                level = 3;
-                return Lod3;
+                float thresh3 = Lod3Distance * (CurrentLodLevel >= 3 ? (1f - h) : (1f + h));
+                if (dist >= thresh3)
+                {
+                    level = 3;
+                    return Lod3;
+                }
             }
-            if (Lod2Distance > 0f && Lod2 != null && dist >= Lod2Distance)
+            if (Lod2Distance > 0f && Lod2 != null)
             {
-                level = 2;
-                return Lod2;
+                float thresh2 = Lod2Distance * (CurrentLodLevel >= 2 ? (1f - h) : (1f + h));
+                if (dist >= thresh2)
+                {
+                    level = 2;
+                    return Lod2;
+                }
             }
-            if (Lod1Distance > 0f && Lod1 != null && dist >= Lod1Distance)
+            if (Lod1Distance > 0f && Lod1 != null)
             {
-                level = 1;
-                return Lod1;
+                float thresh1 = Lod1Distance * (CurrentLodLevel >= 1 ? (1f - h) : (1f + h));
+                if (dist >= thresh1)
+                {
+                    level = 1;
+                    return Lod1;
+                }
             }
             if (Lod0 != null)
             {

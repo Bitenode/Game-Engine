@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -770,11 +771,10 @@ namespace Game_Engine.Core
         // to avoid cross-GL-context issues between SceneView and GameView.
 
         // Static string arrays for terrain shader uniforms (avoid per-draw-call allocation)
-        private static readonly string[] s_layerNames = { "uLayer0", "uLayer1", "uLayer2", "uLayer3", "uLayer4", "uLayer5", "uLayer6", "uLayer7" };
         private static readonly string[] s_tilingNames = { "uTiling0", "uTiling1", "uTiling2", "uTiling3", "uTiling4", "uTiling5", "uTiling6", "uTiling7" };
-        /// <summary>Normal map samplers for terrain layers 0–4 (texture units 12–16; layers 5–7 use geometry normal only).</summary>
-        private static readonly string[] s_terrainNormalLayerNames = { "uNormalLayer0", "uNormalLayer1", "uNormalLayer2", "uNormalLayer3", "uNormalLayer4", "uNormalLayer5", "uNormalLayer6", "uNormalLayer7" };
-        private static readonly string[] s_terrainHeightLayerNames = { "uHeightLayer0", "uHeightLayer1", "uHeightLayer2", "uHeightLayer3", "uHeightLayer4", "uHeightLayer5", "uHeightLayer6", "uHeightLayer7" };
+        private static readonly string[] s_roughNames = { "uRough0", "uRough1", "uRough2", "uRough3", "uRough4", "uRough5", "uRough6", "uRough7" };
+        private static readonly string[] s_metalNames = { "uMetal0", "uMetal1", "uMetal2", "uMetal3", "uMetal4", "uMetal5", "uMetal6", "uMetal7" };
+        private static readonly string[] s_hasNormalNames = { "uHasNormal0", "uHasNormal1", "uHasNormal2", "uHasNormal3", "uHasNormal4", "uHasNormal5", "uHasNormal6", "uHasNormal7" };
 
         public static void RenderGPU(
             GL gl,
@@ -910,18 +910,16 @@ namespace Game_Engine.Core
                 // Restore scene ambient in case last non-terrain item was foliage
                 globals.UpdateAmbientIfChanged(ambient);
                 terrainShader.Use();
+                terrainShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
                 terrainShader.SetFloat("uParallaxStrength", 0.035f);
-
-                if (hasShadow)
-                {
-                    terrainShader.SetFloat("uShadowBias", 0.008f);
-                    terrainShader.SetVector3("uSunDir", sunShineDir);
-                    var terrainShadowTex = cascadedShadow != null
-                        ? cascadedShadow.Cascades[0].FBO.DepthTexture
-                        : shadowFBO?.DepthTexture;
-                    terrainShadowTex?.Bind(TextureUnit.Texture2);
-                    terrainShader.SetTexture("uShadowMap", 2);
-                }
+                terrainShader.SetFloat("uShadowBias", 0.008f);
+                terrainShader.SetVector3("uSunDir", sunShineDir);
+                BindShadowMapsToShader(
+                    terrainShader,
+                    hasShadow ? shadowFBO : null,
+                    hasShadow ? cascadedShadow : null,
+                    7,
+                    cache);
 
                 gl.Enable(EnableCap.CullFace);
                 gl.CullFace(TriangleFace.Back);
@@ -1170,6 +1168,11 @@ namespace Game_Engine.Core
                 csm.Cascades[i].FBO.DepthTexture?.Bind(TextureUnit.Texture0 + unit);
                 shader.SetTexture(s_cascadeSamplerNames[i], unit);
             }
+            // Assign any unused cascade samplers to the last valid cascade unit so none stay on unit 0
+            // (prevents sampler2D vs sampler2DArray collisions on unit 0 under OpenGL ES / ANGLE).
+            int fallbackUnit = baseTextureUnit + count - 1;
+            for (int i = count; i < 4; i++)
+                shader.SetTexture(s_cascadeSamplerNames[i], fallbackUnit);
 
             // Upload per-cascade VP matrices and split distances into LightingGlobals UBO
             var vp0 = csm.LightVPs[0];
@@ -1188,12 +1191,15 @@ namespace Game_Engine.Core
 
         /// <summary>
         /// Bind either all 4 CSM cascades (units 7..10) or a single shadow map (unit 7) to <paramref name="shader"/>.
+        /// Always assigns <c>uShadowMap</c> and <c>uShadowMapC1..C3</c> to <paramref name="baseUnit"/>..+3 so no
+        /// <c>sampler2D</c> shadow uniform can remain at default unit 0 (which ANGLE rejects if unit 0 holds a <c>sampler2DArray</c>).
         /// </summary>
         internal static void BindShadowMapsToShader(
             ShaderProgram shader,
             GPUFramebuffer? shadowFBO,
             CascadedShadowMap? csm,
-            int baseUnit = 7)
+            int baseUnit = 7,
+            ResourceCache? fallbackCache = null)
         {
             if (csm != null)
             {
@@ -1202,6 +1208,14 @@ namespace Game_Engine.Core
             else if (shadowFBO?.DepthTexture != null)
             {
                 shadowFBO.DepthTexture.Bind(TextureUnit.Texture0 + baseUnit);
+                shader.SetTexture("uShadowMap", baseUnit);
+                shader.SetTexture("uShadowMapC1", baseUnit);
+                shader.SetTexture("uShadowMapC2", baseUnit);
+                shader.SetTexture("uShadowMapC3", baseUnit);
+            }
+            else
+            {
+                fallbackCache?.GetWhiteTexture().Bind(TextureUnit.Texture0 + baseUnit);
                 shader.SetTexture("uShadowMap", baseUnit);
                 shader.SetTexture("uShadowMapC1", baseUnit);
                 shader.SetTexture("uShadowMapC2", baseUnit);
@@ -2382,73 +2396,53 @@ namespace Game_Engine.Core
                 cache.SetTerrainSplatVersion(terrain, terrain.SplatmapVersion);
             }
 
-            // Bind splatmaps on units 0,1
+            // Bind splatmaps on units 0, 1
             splat0.Bind(TextureUnit.Texture0);
             shader.SetTexture("uSplatmap0", 0);
             splat1.Bind(TextureUnit.Texture1);
             shader.SetTexture("uSplatmap1", 1);
 
-            // Layer count + textures — bound ONCE for all chunks of this terrain
+            // Layer count + per-layer scalars + GL_TEXTURE_2D_ARRAY bindings (units 2 & 3)
             int layerCount = Math.Min(terrain.Layers.Count, 8);
             shader.SetInt("uLayerCount", layerCount);
 
-            for (int i = 0; i < layerCount; i++)
-            {
-                var layer = terrain.Layers[i];
-                int texUnit = 3 + i;
-
-                Texture2D? layerTex = null;
-                if (!string.IsNullOrEmpty(layer.TexturePath))
-                    layerTex = TryLoadLayerTexture(layer.TexturePath);
-
-                if (layerTex != null)
-                    cache.GetTexture(layerTex).Bind(TextureUnit.Texture0 + texUnit);
-                else
-                    cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + texUnit);
-
-                shader.SetTexture(s_layerNames[i], texUnit);
-                shader.SetFloat(s_tilingNames[i], layer.Tiling);
-                shader.SetFloat("uRough" + i, layer.Roughness);
-                shader.SetFloat("uMetal" + i, layer.Metallic);
-            }
-
-            // Units 0–1 splat, 2 shadow, 3–10 albedo, 11–15 normals 0–4.
-            // That is 16 samplers. Normals 5–7 then height maps use later units only when the shader was built with them.
-            int maxUnits = gl.GetInteger(GLEnum.MaxTextureImageUnits);
-            var budget = ShaderSources.TerrainBudget(maxUnits);
-            if (maxUnits < 16) maxUnits = 16;
+            var albedoTextures = new Texture2D?[8];
+            var normalTextures = new Texture2D?[8];
 
             for (int i = 0; i < 8; i++)
             {
-                int nUnit = 11 + i;
-                bool unitOk = i < budget.NormalLayers && nUnit < maxUnits;
-                int hasLayer = i < layerCount ? 1 : 0;
-                string? npath = hasLayer != 0 ? terrain.Layers[i].NormalMapPath : null;
-                Texture2D? ntex = unitOk && !string.IsNullOrEmpty(npath) ? TryLoadLayerTexture(npath!) : null;
-                if (unitOk)
+                if (i < layerCount)
                 {
-                    if (ntex != null)
-                        cache.GetTexture(ntex).Bind(TextureUnit.Texture0 + nUnit);
-                    else
-                        cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + nUnit);
-                    shader.SetTexture(s_terrainNormalLayerNames[i], nUnit);
-                }
-                shader.SetInt("uHasNormal" + i, (ntex != null) ? 1 : 0);
+                    var layer = terrain.Layers[i];
+                    if (!string.IsNullOrEmpty(layer.TexturePath))
+                        albedoTextures[i] = TryLoadLayerTexture(layer.TexturePath);
+                    if (!string.IsNullOrEmpty(layer.NormalMapPath))
+                        normalTextures[i] = TryLoadLayerTexture(layer.NormalMapPath);
 
-                int hUnit = 11 + budget.NormalLayers + i;
-                bool heightOk = i < budget.HeightLayers && hUnit < maxUnits;
-                string? hpath = hasLayer != 0 ? terrain.Layers[i].HeightMapPath : null;
-                Texture2D? htex = heightOk && !string.IsNullOrEmpty(hpath) ? TryLoadLayerTexture(hpath!) : null;
-                if (heightOk)
-                {
-                    if (htex != null)
-                        cache.GetTexture(htex).Bind(TextureUnit.Texture0 + hUnit);
-                    else
-                        cache.GetWhiteTexture().Bind(TextureUnit.Texture0 + hUnit);
-                    shader.SetTexture(s_terrainHeightLayerNames[i], hUnit);
+                    shader.SetFloat(s_tilingNames[i], layer.Tiling);
+                    shader.SetFloat(s_roughNames[i], layer.Roughness);
+                    shader.SetFloat(s_metalNames[i], layer.Metallic);
+                    shader.SetInt(s_hasNormalNames[i], normalTextures[i] != null ? 1 : 0);
                 }
-                shader.SetInt("uHasHeight" + i, (htex != null) ? 1 : 0);
+                else
+                {
+                    shader.SetInt(s_hasNormalNames[i], 0);
+                }
             }
+
+            // Units: 0..1 splatmaps, 2 albedo array (8 layers), 3 normal array (8 layers), 7..10 CSM shadows = 8 units total.
+            int targetSize = cache.IsESContext ? 512 : 1024;
+            string keyPrefix = $"terrain:{RuntimeHelpers.GetHashCode(terrain)}";
+
+            var albedoArray = cache.GetOrCreateTexture2DArray(
+                keyPrefix + ":albedo", albedoTextures, targetSize, 255, 255, 255, 255);
+            albedoArray.Bind(TextureUnit.Texture2);
+            shader.SetTexture("uLayerAlbedos", 2);
+
+            var normalArray = cache.GetOrCreateTexture2DArray(
+                keyPrefix + ":normal", normalTextures, targetSize, 128, 128, 255, 255);
+            normalArray.Bind(TextureUnit.Texture3);
+            shader.SetTexture("uLayerNormals", 3);
         }
 
         /// <summary>
@@ -2980,18 +2974,16 @@ namespace Game_Engine.Core
                 gl.Enable(EnableCap.PolygonOffsetFill);
                 gl.PolygonOffset(-1f, -1f);
                 terrainShader.Use();
+                terrainShader.SetInt("uHdrOutput", HdrOutputActive ? 1 : 0);
                 terrainShader.SetFloat("uParallaxStrength", 0.035f);
-
-                if (hasShadow)
-                {
-                    terrainShader.SetFloat("uShadowBias", 0.008f);
-                    terrainShader.SetVector3("uSunDir", sunShineDir);
-                    var terrainShadowTex = cascadedShadow != null
-                        ? cascadedShadow.Cascades[0].FBO.DepthTexture
-                        : shadowFBO?.DepthTexture;
-                    terrainShadowTex?.Bind(TextureUnit.Texture2);
-                    terrainShader.SetTexture("uShadowMap", 2);
-                }
+                terrainShader.SetFloat("uShadowBias", 0.008f);
+                terrainShader.SetVector3("uSunDir", sunShineDir);
+                BindShadowMapsToShader(
+                    terrainShader,
+                    hasShadow ? shadowFBO : null,
+                    hasShadow ? cascadedShadow : null,
+                    7,
+                    cache);
 
                 gl.Enable(EnableCap.CullFace);
                 gl.CullFace(TriangleFace.Back);
@@ -4214,7 +4206,8 @@ namespace Game_Engine.Core
             SN.Vector3 camPos,
             SN.Vector3 planetCenter,
             GPUFramebuffer? shadowFBO,
-            in SN.Matrix4x4 shadowVP)
+            in SN.Matrix4x4 shadowVP,
+            CascadedShadowMap? cascadedShadow = null)
         {
             if (planet.Config == null || planet.gameObject == null || !planet.IsActiveAndEnabled)
                 return;
@@ -4227,7 +4220,7 @@ namespace Game_Engine.Core
             ExtractFrustumPlanes(vp, out var frustumPlanes);
 
             var globals = GlobalUniforms.ForContext(gl);
-            bool hasShadow = shadowFBO != null;
+            bool hasShadow = cascadedShadow != null || shadowFBO != null;
             globals.UpdateFrame(in view, in proj, camPos, WindSystem.Time);
             globals.UpdateLighting(
                 lightDir, diffuseK, SN.Vector3.One, atmo.Ambient,
@@ -4262,12 +4255,14 @@ namespace Game_Engine.Core
             planetShader.SetVector3("uAtmoHorizonTint", atmo.HorizonTint);
             planetShader.SetVector3("uAtmoSkyTint", atmo.SkyTint);
 
-            if (hasShadow)
-            {
-                gl.ActiveTexture(TextureUnit.Texture15);
-                gl.BindTexture(TextureTarget.Texture2D, shadowFBO!.DepthTexture?.Handle ?? 0);
-                planetShader.SetTexture("uShadowMap", 15);
-            }
+            // Units 7..10: 4-cascade CSM shadows (or single shadowFBO / safe 2D fallback so
+            // no sampler2D shadow uniform remains on unit 0 where uBiomeTexArray is sampler2DArray).
+            BindShadowMapsToShader(
+                planetShader,
+                hasShadow ? shadowFBO : null,
+                hasShadow ? cascadedShadow : null,
+                7,
+                cache);
 
             BindBiomeTextures(gl, planetShader, cache, planet.Config.Biomes);
             BindPlanetSplatAtlases(planetShader, cache, planet);
@@ -4327,9 +4322,21 @@ namespace Game_Engine.Core
 
         static void BindPlanetSplatAtlases(ShaderProgram shader, ResourceCache cache, PlanetTerrain planet)
         {
+            // Units 2, 3, 4: uPlanetSplat0, uPlanetSplat1, uPlanetDigAtlas.
+            // Always assign these sampler2D uniforms away from unit 0 (which holds sampler2DArray uBiomeTexArray)
+            // even on early-return paths so OpenGL ES 3.0 / ANGLE never sees a sampler type collision on unit 0.
             var surface = planet.SurfaceCubemap;
             if (surface == null)
             {
+                var white = cache.GetWhiteTexture();
+                white.Bind(TextureUnit.Texture2);
+                shader.SetTexture("uPlanetSplat0", 2);
+                white.Bind(TextureUnit.Texture3);
+                shader.SetTexture("uPlanetSplat1", 3);
+#if !XBOX_UWP
+                cache.GetBlackTexture().Bind(TextureUnit.Texture4);
+                shader.SetTexture("uPlanetDigAtlas", 4);
+#endif
                 shader.SetInt("uUsePlanetSplat", 0);
                 shader.SetInt("uUsePlanetDig", 0);
                 return;
@@ -4342,10 +4349,10 @@ namespace Game_Engine.Core
             if (!surface.HasBaseHeights || surface.Splat0 == null || surface.Splat1 == null)
             {
                 var white = cache.GetWhiteTexture();
-                white.Bind(TextureUnit.Texture8);
-                shader.SetTexture("uPlanetSplat0", 8);
-                white.Bind(TextureUnit.Texture9);
-                shader.SetTexture("uPlanetSplat1", 9);
+                white.Bind(TextureUnit.Texture2);
+                shader.SetTexture("uPlanetSplat0", 2);
+                white.Bind(TextureUnit.Texture3);
+                shader.SetTexture("uPlanetSplat1", 3);
                 shader.SetInt("uUsePlanetSplat", 0);
                 return;
             }
@@ -4380,19 +4387,19 @@ namespace Game_Engine.Core
                 else
                 {
                     var pendingWhite = cache.GetWhiteTexture();
-                    pendingWhite.Bind(TextureUnit.Texture8);
-                    shader.SetTexture("uPlanetSplat0", 8);
-                    pendingWhite.Bind(TextureUnit.Texture9);
-                    shader.SetTexture("uPlanetSplat1", 9);
+                    pendingWhite.Bind(TextureUnit.Texture2);
+                    shader.SetTexture("uPlanetSplat0", 2);
+                    pendingWhite.Bind(TextureUnit.Texture3);
+                    shader.SetTexture("uPlanetSplat1", 3);
                     shader.SetInt("uUsePlanetSplat", 0);
                     return;
                 }
             }
 
-            xboxSplat0.Bind(TextureUnit.Texture8);
-            shader.SetTexture("uPlanetSplat0", 8);
-            xboxSplat1.Bind(TextureUnit.Texture9);
-            shader.SetTexture("uPlanetSplat1", 9);
+            xboxSplat0.Bind(TextureUnit.Texture2);
+            shader.SetTexture("uPlanetSplat0", 2);
+            xboxSplat1.Bind(TextureUnit.Texture3);
+            shader.SetTexture("uPlanetSplat1", 3);
             shader.SetInt("uUsePlanetSplat", 1);
             return;
 #else
@@ -4400,6 +4407,11 @@ namespace Game_Engine.Core
             // keep vertex biome blends so the first dig cannot paint the planet dirt.
             if (!surface.HasBaseHeights)
             {
+                var pendingWhite = cache.GetWhiteTexture();
+                pendingWhite.Bind(TextureUnit.Texture2);
+                shader.SetTexture("uPlanetSplat0", 2);
+                pendingWhite.Bind(TextureUnit.Texture3);
+                shader.SetTexture("uPlanetSplat1", 3);
                 shader.SetInt("uUsePlanetSplat", 0);
                 int pendingHeightVersion = surface.HeightVersion;
                 var (pendingDig, pendingDigUpload) = cache.GetPlanetHeightTexture(planet, pendingHeightVersion);
@@ -4408,8 +4420,8 @@ namespace Game_Engine.Core
                     pendingDig.UploadRedFloatFaces(surface.HeightDelta, surface.Resolution);
                     cache.SetPlanetHeightVersion(planet, pendingHeightVersion);
                 }
-                pendingDig.Bind(TextureUnit.Texture14);
-                shader.SetTexture("uPlanetDigAtlas", 14);
+                pendingDig.Bind(TextureUnit.Texture4);
+                shader.SetTexture("uPlanetDigAtlas", 4);
                 shader.SetInt("uUsePlanetDig", 1);
                 return;
             }
@@ -4424,10 +4436,10 @@ namespace Game_Engine.Core
                 cache.SetPlanetSplatVersion(planet, splatVersion);
             }
 
-            splat0.Bind(TextureUnit.Texture8);
-            shader.SetTexture("uPlanetSplat0", 8);
-            splat1.Bind(TextureUnit.Texture9);
-            shader.SetTexture("uPlanetSplat1", 9);
+            splat0.Bind(TextureUnit.Texture2);
+            shader.SetTexture("uPlanetSplat0", 2);
+            splat1.Bind(TextureUnit.Texture3);
+            shader.SetTexture("uPlanetSplat1", 3);
             shader.SetInt("uUsePlanetSplat", 1);
 
             int heightVersion = surface.HeightVersion;
@@ -4438,8 +4450,8 @@ namespace Game_Engine.Core
                 digAtlas.UploadRedFloatFaces(surface.HeightDelta, res);
                 cache.SetPlanetHeightVersion(planet, heightVersion);
             }
-            digAtlas.Bind(TextureUnit.Texture14);
-            shader.SetTexture("uPlanetDigAtlas", 14);
+            digAtlas.Bind(TextureUnit.Texture4);
+            shader.SetTexture("uPlanetDigAtlas", 4);
             shader.SetInt("uUsePlanetDig", 1);
 #endif
         }
@@ -4791,23 +4803,26 @@ namespace Game_Engine.Core
             }
 #endif
 
+            // Unit 0: 8-layer biome top albedo texture array (GL_TEXTURE_2D_ARRAY)
+            // Unit 1: 4-layer biome under/cliff albedo texture array (GL_TEXTURE_2D_ARRAY)
+            int targetSize = cache.IsESContext ? 512 : 1024;
+            var topTextures = new Texture2D?[8];
             for (int i = 0; i < 8; i++)
-            {
-                var tex2d = i < biomes.Length ? _boundBiomeTex2D![i] : null;
-                var gpu = tex2d != null ? cache.GetTexture(tex2d) : cache.GetWhiteTexture();
-                gpu.Bind((TextureUnit)((int)TextureUnit.Texture0 + i));
-                shader.SetTexture($"uBiomeTex{i}", i);
-            }
+                topTextures[i] = i < biomes.Length ? _boundBiomeTex2D![i] : null;
 
-            // Units 10-13: under maps for biomes 0-3 (unit 14 = dig atlas, 15 = shadow).
+            var topArray = cache.GetOrCreateTexture2DArray(
+                "planet:biome_top", topTextures, targetSize, 255, 255, 255, 255);
+            topArray.Bind(TextureUnit.Texture0);
+            shader.SetTexture("uBiomeTexArray", 0);
+
+            var underTextures = new Texture2D?[MaxBoundUnderBiomes];
             for (int i = 0; i < MaxBoundUnderBiomes; i++)
-            {
-                var under2d = _boundBiomeUnderTex2D![i];
-                var gpu = under2d != null ? cache.GetTexture(under2d) : cache.GetWhiteTexture();
-                int unit = 10 + i;
-                gpu.Bind((TextureUnit)((int)TextureUnit.Texture0 + unit));
-                shader.SetTexture($"uBiomeUnderTex{i}", unit);
-            }
+                underTextures[i] = _boundBiomeUnderTex2D![i];
+
+            var underArray = cache.GetOrCreateTexture2DArray(
+                "planet:biome_under", underTextures, targetSize, 255, 255, 255, 255);
+            underArray.Bind(TextureUnit.Texture1);
+            shader.SetTexture("uUnderTexArray", 1);
 
             for (int i = 0; i < 8; i++)
             {

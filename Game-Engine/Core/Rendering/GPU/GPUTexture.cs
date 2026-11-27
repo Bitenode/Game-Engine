@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using BCnEncoder.Shared;
 using BCnEncoder.Shared.ImageFiles;
@@ -9,7 +10,7 @@ using Silk.NET.OpenGL;
 namespace Game_Engine.Core.Rendering.GPU;
 
 /// <summary>
-/// Wraps an OpenGL 2D texture. Uploads Texture2D RGBA data to GPU memory.
+/// Wraps an OpenGL texture (2D, 2D array, or cubemap). Uploads RGBA/float/compressed data to GPU memory.
 /// </summary>
 public sealed class GPUTexture : IDisposable
 {
@@ -17,6 +18,8 @@ public sealed class GPUTexture : IDisposable
     public uint Handle { get; private set; }
     public int Width { get; private set; }
     public int Height { get; private set; }
+    public int Layers { get; private set; } = 1;
+    public TextureTarget Target { get; private set; } = TextureTarget.Texture2D;
 
     public GPUTexture(GL gl)
     {
@@ -526,7 +529,7 @@ public sealed class GPUTexture : IDisposable
     public void Bind(TextureUnit unit = TextureUnit.Texture0)
     {
         _gl.ActiveTexture(unit);
-        _gl.BindTexture(TextureTarget.Texture2D, Handle);
+        _gl.BindTexture(Target, Handle);
     }
 
     /// <summary>Normalized R8 atlases (tile meta / light indices), GLES-friendly.</summary>
@@ -607,11 +610,123 @@ public sealed class GPUTexture : IDisposable
         _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
 
+    /// <summary>
+    /// Allocate and upload a <c>GL_TEXTURE_2D_ARRAY</c> (RGBA8, core in OpenGL 3.3 and OpenGL ES 3.0).
+    /// Layers whose byte buffers are null or smaller than <c>width * height * 4</c> are filled with
+    /// the fallback RGBA color (<paramref name="defaultR"/>, <paramref name="defaultG"/>, <paramref name="defaultB"/>, <paramref name="defaultA"/>).
+    /// </summary>
+    public unsafe void CreateTexture2DArrayRgba8(
+        int width,
+        int height,
+        int layers,
+        IReadOnlyList<byte[]?> layerPixels,
+        bool generateMipmaps = true,
+        byte defaultR = 255,
+        byte defaultG = 255,
+        byte defaultB = 255,
+        byte defaultA = 255)
+    {
+        width = Math.Max(1, width);
+        height = Math.Max(1, height);
+        layers = Math.Max(1, layers);
+
+        Width = width;
+        Height = height;
+        Layers = layers;
+        Target = TextureTarget.Texture2DArray;
+
+        _gl.BindTexture(TextureTarget.Texture2DArray, Handle);
+        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
+
+        _gl.TexImage3D(
+            TextureTarget.Texture2DArray,
+            0,
+            InternalFormat.Rgba8,
+            (uint)width,
+            (uint)height,
+            (uint)layers,
+            0,
+            PixelFormat.Rgba,
+            PixelType.UnsignedByte,
+            null);
+
+        int expectedBytes = width * height * 4;
+        byte[]? fallback = null;
+
+        for (int i = 0; i < layers; i++)
+        {
+            byte[]? src = (layerPixels != null && i < layerPixels.Count) ? layerPixels[i] : null;
+            if (src != null && src.Length >= expectedBytes)
+            {
+                fixed (byte* ptr = src)
+                {
+                    _gl.TexSubImage3D(
+                        TextureTarget.Texture2DArray,
+                        0,
+                        0, 0, i,
+                        (uint)width,
+                        (uint)height,
+                        1,
+                        PixelFormat.Rgba,
+                        PixelType.UnsignedByte,
+                        ptr);
+                }
+            }
+            else
+            {
+                if (fallback == null)
+                {
+                    fallback = new byte[expectedBytes];
+                    for (int p = 0; p < expectedBytes; p += 4)
+                    {
+                        fallback[p] = defaultR;
+                        fallback[p + 1] = defaultG;
+                        fallback[p + 2] = defaultB;
+                        fallback[p + 3] = defaultA;
+                    }
+                }
+                fixed (byte* ptr = fallback)
+                {
+                    _gl.TexSubImage3D(
+                        TextureTarget.Texture2DArray,
+                        0,
+                        0, 0, i,
+                        (uint)width,
+                        (uint)height,
+                        1,
+                        PixelFormat.Rgba,
+                        PixelType.UnsignedByte,
+                        ptr);
+                }
+            }
+        }
+
+        _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureWrapS,
+            (int)TextureWrapMode.Repeat);
+        _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureWrapT,
+            (int)TextureWrapMode.Repeat);
+        _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureMinFilter,
+            generateMipmaps ? (int)TextureMinFilter.LinearMipmapLinear : (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureMagFilter,
+            (int)TextureMagFilter.Linear);
+
+        const TextureParameterName GL_TEXTURE_MAX_ANISOTROPY = (TextureParameterName)0x84FE;
+        try { _gl.TexParameter(TextureTarget.Texture2DArray, GL_TEXTURE_MAX_ANISOTROPY, 16.0f); }
+        catch { }
+
+        if (generateMipmaps)
+            _gl.GenerateMipmap(TextureTarget.Texture2DArray);
+
+        _gl.BindTexture(TextureTarget.Texture2DArray, 0);
+    }
+
     /// <summary>Allocate an RGBA8 cubemap (empty). Faces are size×size.</summary>
     public unsafe void CreateCubemapRgba8(int faceSize)
     {
         Width = faceSize;
         Height = faceSize;
+        Layers = 6;
+        Target = TextureTarget.TextureCubeMap;
         _gl.BindTexture(TextureTarget.TextureCubeMap, Handle);
         for (int i = 0; i < 6; i++)
         {
@@ -639,6 +754,8 @@ public sealed class GPUTexture : IDisposable
     {
         Width = 1;
         Height = 1;
+        Layers = 6;
+        Target = TextureTarget.TextureCubeMap;
         byte* pixel = stackalloc byte[4] { r, g, b, a };
         _gl.BindTexture(TextureTarget.TextureCubeMap, Handle);
         for (int i = 0; i < 6; i++)

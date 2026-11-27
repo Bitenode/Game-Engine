@@ -74,9 +74,9 @@ public static class ShaderSources
         => ShaderPreprocessor.AdaptSource(glsl, isES);
 
     /// <summary>
-    /// How many splat normal and height samplers fit after the terrain shader's
-    /// required maps (2 splats, 8 albedos, 1 shadow, normals 0–4 = 16).
-    /// A 16-unit context keeps that set. Later units add normals 5–7, then height maps.
+    /// Terrain sampler budget summary. With <c>GL_TEXTURE_2D_ARRAY</c> (<c>uLayerAlbedos</c> +
+    /// <c>uLayerNormals</c>), all 8 layers fit in 8 texture units (0, 1, 2, 3, 7..10) on every
+    /// OpenGL 3.3 / OpenGL ES 3.0 device.
     /// </summary>
     public readonly struct TerrainSamplerBudget
     {
@@ -86,45 +86,22 @@ public static class ShaderSources
 
     public static TerrainSamplerBudget TerrainBudget(int maxTextureUnits)
     {
-        if (maxTextureUnits < 16) maxTextureUnits = 16;
-        int extra = maxTextureUnits - 16;
-        int extraNormals = extra > 3 ? 3 : extra;
-        int height = extra - extraNormals;
-        if (height > 8) height = 8;
-        if (height < 0) height = 0;
         return new TerrainSamplerBudget
         {
-            NormalLayers = 5 + extraNormals,
-            HeightLayers = height
+            NormalLayers = 8,
+            HeightLayers = 0
         };
     }
 
     /// <summary>Build the preprocessor variant key for <c>Terrain/Terrain.frag.glsl</c>.</summary>
     public static ShaderVariantKey TerrainVariantForUnits(int maxTextureUnits)
-    {
-        var budget = TerrainBudget(maxTextureUnits);
-        return ShaderVariantKey.Of(
-            ("TERRAIN_NORMAL_LAYERS", budget.NormalLayers.ToString()),
-            ("TERRAIN_HEIGHT_LAYERS", budget.HeightLayers.ToString()));
-    }
+        => ShaderVariantKey.Empty;
 
     /// <summary>
-    /// Terrain fragment source limited to <paramref name="maxTextureUnits"/> samplers.
+    /// Terrain fragment source (all 8 layers always fit via <c>sampler2DArray</c>).
     /// </summary>
     public static string TerrainFragForUnits(int maxTextureUnits)
-    {
-        var budget = TerrainBudget(maxTextureUnits);
-        var opts = new ShaderCompileOptions
-        {
-            IsES = false,
-            Defines = new Dictionary<string, string?>
-            {
-                ["TERRAIN_NORMAL_LAYERS"] = budget.NormalLayers.ToString(),
-                ["TERRAIN_HEIGHT_LAYERS"] = budget.HeightLayers.ToString()
-            }
-        };
-        return ShaderPreprocessor.PreprocessBuiltin(Paths.TerrainFrag, opts).Source;
-    }
+        => ShaderPreprocessor.PreprocessBuiltin(Paths.TerrainFrag, ShaderCompileOptions.Desktop).Source;
 
     private static string LoadDesktop(string logicalPath)
         => ShaderPreprocessor.PreprocessBuiltin(logicalPath, ShaderCompileOptions.Desktop).Source;

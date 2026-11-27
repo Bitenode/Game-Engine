@@ -147,7 +147,7 @@ The Biome Graph editor (`BiomeGraphPanel`) is a node-based authoring tool that w
   - `ShoreClimateBias` — `ApplyShoreSand` scales sand bands by local moisture
   - Optional `UseFlowAccumulationRivers` (default **false**) — one-shot D8 flow bake on the height LUT; noise rivers stay the default
 - `RecipeHash` from compile keys the in-memory chunk mesh cache (`PlanetChunkMeshCache`)
-- Up to **16** biome layers (`Layer0`...`Layer15`) in the graph. The crust shader still binds **8** albedo slots (`uBiomeTex0–7`); extra layers share slot 7 for splat. Each layer has:
+- Up to **16** biome layers (`Layer0`...`Layer15`) in the graph. The crust shader packs **8** top albedo layers into `uBiomeTexArray` (unit 0) and **4** under/cliff layers into `uUnderTexArray` (unit 1) via `GL_TEXTURE_2D_ARRAY`; extra layers share layer 7 for splat. Each layer has:
   - Albedo/normal paths
   - Base color
   - Tiling
@@ -349,7 +349,7 @@ When the camera is inside or just under the crust:
 - `QuadNode.CameraPriorityDistance` samples the patch at the camera radius
 - `SceneRenderer` disables backface culling in the crust band (`camRadial < 1.08 × radius`)
 - Draws `GeneratedMesh` (shell) and `GeneratedCaveMesh` (crust caves)
-- Planet terrain shader samples **splat atlases** (3×2 face layout) by world direction and blends up to 8 layer albedos (triplanar detail); `uBiomeTex0–7` are splat layer textures. Extra graph layers beyond 8 share slot 7.
+- Planet terrain shader samples **splat atlases** (`uPlanetSplat0/1`, units 2–3, 3×2 face layout) by world direction and blends up to 8 layer albedos (triplanar detail) from `uBiomeTexArray` (unit 0, 8 layers) and `uUnderTexArray` (unit 1, 4 layers), plus `uPlanetDigAtlas` (unit 4) and **4-cascade CSM shadows** (`uShadowMap`, `uShadowMapC1..C3`, units 7–10) — **9 texture units total** (down from 16/16). Extra graph layers beyond 8 share layer 7.
 - **Form shadows:** `RenderPlanetLeafShadows` draws shell + cave meshes into the depth pass
 
 ### Transvoxel LOD seams

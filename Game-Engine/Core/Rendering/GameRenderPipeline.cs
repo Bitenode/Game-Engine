@@ -183,7 +183,7 @@ public static class GameRenderPipeline
                 var pc = tp != null ? new SN.Vector3((float)tp.X, (float)tp.Y, (float)tp.Z) : SN.Vector3.Zero;
                 var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackSun, ambient);
                 SceneRenderer.RenderPlanetTerrain(g, res.PlanetTerrain, res.Cache, view, proj, planet, atmo,
-                    lightDir, diffuseK, camPos, pc, shadowFbo, shadowVP);
+                    lightDir, diffuseK, camPos, pc, shadowFbo, shadowVP, cascadedShadow: cascadedShadow);
             }
             FrameProfile.Enter(FrameProfile.Part.PlanetPlants);
             SceneRenderer.RenderPlanetVegetationAfterTerrain(g, res.Standard, res.Cache, view, proj, camPos,

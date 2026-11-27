@@ -157,6 +157,29 @@ Controls how a mesh is rendered. References materials and configures rendering s
 
 ---
 
+## MeshLodGroup
+
+Distance-based mesh LOD switcher for static meshes. Attach to the same GameObject as `MeshFilter` and `MeshRenderer`. Uses world-space position (`SceneGraphUtil.AccumulateWorld`) for accurate distances on nested hierarchy objects.
+
+| Property       | Type    | Default | Description                                                                                 |
+|----------------|---------|---------|---------------------------------------------------------------------------------------------|
+| `Lod0`         | `Mesh?` | `null`  | Highest-detail mesh (if null, captures the initial `MeshFilter.Mesh`)                       |
+| `Lod1`         | `Mesh?` | `null`  | Medium-detail mesh used beyond `Lod1Distance`                                               |
+| `Lod2`         | `Mesh?` | `null`  | Low-detail mesh used beyond `Lod2Distance`                                                  |
+| `Lod3`         | `Mesh?` | `null`  | Lowest-detail mesh used beyond `Lod3Distance`                                               |
+| `Lod1Distance` | `float` | `20`    | World-unit threshold for LOD 1                                                              |
+| `Lod2Distance` | `float` | `45`    | World-unit threshold for LOD 2                                                              |
+| `Lod3Distance` | `float` | `90`    | World-unit threshold for LOD 3                                                              |
+| `Hysteresis`   | `float` | `0.1`   | Fractional deadband around thresholds (±10% default) to prevent boundary popping; `<= 0` disables |
+
+**Runtime properties:**
+- `CurrentLodLevel` — active LOD slot (`0`–`3`)
+
+**Methods:**
+- `UpdateLOD(cameraPos)` — computes world-space distance and swaps `MeshFilter.Mesh` with hysteresis (`threshold * (1 + Hysteresis)` when switching coarser, `threshold * (1 - Hysteresis)` when switching finer)
+
+---
+
 ## SkinnedMeshRenderer
 
 GPU-accelerated bone skinning for skeletal animation. Replaces `MeshRenderer` for animated meshes.

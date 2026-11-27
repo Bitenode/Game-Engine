@@ -114,6 +114,18 @@ public sealed class ResourceCache : IDisposable
     private readonly Dictionary<Terrain, (GPUTexture Splat0, GPUTexture Splat1, int Version)> _terrainSplatTextures = new();
     private readonly Dictionary<object, (GPUTexture Splat0, GPUTexture Splat1, int Version)> _planetSplatTextures = new();
     private readonly Dictionary<object, (GPUTexture Height, int Version)> _planetHeightTextures = new();
+    private readonly Dictionary<string, Texture2DArrayEntry> _textureArrays = new(StringComparer.Ordinal);
+
+    private sealed class Texture2DArrayEntry
+    {
+        public GPUTexture Texture = null!;
+        public Texture2D?[] LayerRefs = Array.Empty<Texture2D?>();
+        public byte[]?[] LayerBuffers = Array.Empty<byte[]?>();
+        public int[] LayerWidths = Array.Empty<int>();
+        public int[] LayerHeights = Array.Empty<int>();
+        public int TargetSize;
+        public uint DefaultRgba;
+    }
 
     private struct GPUMeshEntry
     {
@@ -184,6 +196,10 @@ public sealed class ResourceCache : IDisposable
         foreach (var kv in _planetHeightTextures)
             kv.Value.Height.Dispose();
         _planetHeightTextures.Clear();
+
+        foreach (var kv in _textureArrays)
+            kv.Value.Texture.Dispose();
+        _textureArrays.Clear();
 
         _whiteTex?.Dispose();
         _whiteTex = null;
@@ -558,6 +574,221 @@ public sealed class ResourceCache : IDisposable
             _planetHeightTextures[planetKey] = (entry.Height, version);
     }
 
+    /// <summary>True when this cache's GL context is OpenGL ES (ANGLE / mobile / Xbox).</summary>
+    public bool IsESContext
+    {
+        get
+        {
+#if XBOX_UWP
+            return true;
+#else
+            if (ShaderLibrary.TryGet(_gl, out var lib) && lib != null)
+                return lib.IsES;
+            var ver = _gl.GetStringS(StringName.Version);
+            return ver != null && ver.Contains("OpenGL ES", StringComparison.OrdinalIgnoreCase);
+#endif
+        }
+    }
+
+    /// <summary>
+    /// Get or create a cached <c>GL_TEXTURE_2D_ARRAY</c> built from <paramref name="textures"/>.
+    /// Automatically invalidates and re-uploads if any layer's <see cref="Texture2D"/> reference,
+    /// backing pixel buffer, or dimensions change. Layers whose dimensions differ from the array's
+    /// size are resampled on the CPU; null layers are filled with the given default RGBA color.
+    /// Pass <paramref name="targetSize"/> &lt;= 0 to auto-cap at 512 on ES/Xbox or 1024 on desktop.
+    /// </summary>
+    public GPUTexture GetOrCreateTexture2DArray(
+        string cacheKey,
+        IReadOnlyList<Texture2D?> textures,
+        int targetSize,
+        byte defaultR,
+        byte defaultG,
+        byte defaultB,
+        byte defaultA)
+    {
+        int layers = Math.Max(1, textures?.Count ?? 0);
+        int resolvedCap = targetSize > 0 ? targetSize : (IsESContext ? 512 : 1024);
+        uint packedDefault = ((uint)defaultR << 24) | ((uint)defaultG << 16) | ((uint)defaultB << 8) | defaultA;
+
+        if (_textureArrays.TryGetValue(cacheKey, out var existing)
+            && existing.LayerRefs.Length == layers
+            && existing.TargetSize == resolvedCap
+            && existing.DefaultRgba == packedDefault)
+        {
+            bool match = true;
+            for (int i = 0; i < layers; i++)
+            {
+                var t = (textures != null && i < textures.Count) ? textures[i] : null;
+                if (!ReferenceEquals(existing.LayerRefs[i], t))
+                {
+                    match = false;
+                    break;
+                }
+                if (t != null && (!ReferenceEquals(existing.LayerBuffers[i], t.Rgba)
+                    || existing.LayerWidths[i] != t.Width
+                    || existing.LayerHeights[i] != t.Height))
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return existing.Texture;
+        }
+
+        long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        int maxW = 0, maxH = 0;
+        for (int i = 0; i < layers; i++)
+        {
+            var t = (textures != null && i < textures.Count) ? textures[i] : null;
+            if (t != null && t.Rgba != null && t.Width > 0 && t.Height > 0)
+            {
+                if (t.Width > maxW) maxW = t.Width;
+                if (t.Height > maxH) maxH = t.Height;
+            }
+        }
+
+        int arrayW = maxW > 0 ? Math.Clamp(maxW, 1, resolvedCap) : 1;
+        int arrayH = maxH > 0 ? Math.Clamp(maxH, 1, resolvedCap) : 1;
+
+        var layerPixels = new byte[]?[layers];
+        var layerRefs = new Texture2D?[layers];
+        var layerBuffers = new byte[]?[layers];
+        var layerWidths = new int[layers];
+        var layerHeights = new int[layers];
+
+        for (int i = 0; i < layers; i++)
+        {
+            var t = (textures != null && i < textures.Count) ? textures[i] : null;
+            layerRefs[i] = t;
+            if (t != null && t.Rgba != null && t.Width > 0 && t.Height > 0)
+            {
+                layerBuffers[i] = t.Rgba;
+                layerWidths[i] = t.Width;
+                layerHeights[i] = t.Height;
+                layerPixels[i] = ResampleRgba(t.Rgba, t.Width, t.Height, arrayW, arrayH);
+            }
+        }
+
+        var gpuTex = existing?.Texture ?? new GPUTexture(_gl);
+        gpuTex.CreateTexture2DArrayRgba8(
+            arrayW,
+            arrayH,
+            layers,
+            layerPixels,
+            generateMipmaps: arrayW > 1 || arrayH > 1,
+            defaultR: defaultR,
+            defaultG: defaultG,
+            defaultB: defaultB,
+            defaultA: defaultA);
+
+        _textureArrays[cacheKey] = new Texture2DArrayEntry
+        {
+            Texture = gpuTex,
+            LayerRefs = layerRefs,
+            LayerBuffers = layerBuffers,
+            LayerWidths = layerWidths,
+            LayerHeights = layerHeights,
+            TargetSize = resolvedCap,
+            DefaultRgba = packedDefault
+        };
+
+        FrameProfile.CountTextureUpload(System.Diagnostics.Stopwatch.GetTimestamp() - startedAt);
+        return gpuTex;
+    }
+
+    private static byte[] ResampleRgba(byte[] src, int srcW, int srcH, int dstW, int dstH)
+    {
+        if (srcW == dstW && srcH == dstH && src.Length >= dstW * dstH * 4)
+            return src;
+
+        var dst = new byte[dstW * dstH * 4];
+
+        // Box-average downscale when shrinking on either axis to avoid aliasing.
+        if (srcW > dstW || srcH > dstH)
+        {
+            for (int y = 0; y < dstH; y++)
+            {
+                int sy0 = y * srcH / dstH;
+                int sy1 = Math.Max(sy0 + 1, (y + 1) * srcH / dstH);
+                if (sy1 > srcH) sy1 = srcH;
+
+                for (int x = 0; x < dstW; x++)
+                {
+                    int sx0 = x * srcW / dstW;
+                    int sx1 = Math.Max(sx0 + 1, (x + 1) * srcW / dstW);
+                    if (sx1 > srcW) sx1 = srcW;
+
+                    int r = 0, g = 0, b = 0, a = 0, n = 0;
+                    for (int sy = sy0; sy < sy1; sy++)
+                    {
+                        int row = sy * srcW * 4;
+                        for (int sx = sx0; sx < sx1; sx++)
+                        {
+                            int idx = row + sx * 4;
+                            if (idx + 3 < src.Length)
+                            {
+                                r += src[idx];
+                                g += src[idx + 1];
+                                b += src[idx + 2];
+                                a += src[idx + 3];
+                                n++;
+                            }
+                        }
+                    }
+                    if (n == 0) n = 1;
+                    int o = (y * dstW + x) * 4;
+                    dst[o]     = (byte)(r / n);
+                    dst[o + 1] = (byte)(g / n);
+                    dst[o + 2] = (byte)(b / n);
+                    dst[o + 3] = (byte)(a / n);
+                }
+            }
+            return dst;
+        }
+
+        // Bilinear upscale when expanding.
+        for (int y = 0; y < dstH; y++)
+        {
+            float v = (y + 0.5f) * srcH / dstH - 0.5f;
+            int y0 = (int)MathF.Floor(v);
+            float fy = v - y0;
+            int y1 = Math.Clamp(y0 + 1, 0, srcH - 1);
+            y0 = Math.Clamp(y0, 0, srcH - 1);
+
+            int row0 = y0 * srcW * 4;
+            int row1 = y1 * srcW * 4;
+
+            for (int x = 0; x < dstW; x++)
+            {
+                float u = (x + 0.5f) * srcW / dstW - 0.5f;
+                int x0 = (int)MathF.Floor(u);
+                float fx = u - x0;
+                int x1 = Math.Clamp(x0 + 1, 0, srcW - 1);
+                x0 = Math.Clamp(x0, 0, srcW - 1);
+
+                int i00 = row0 + x0 * 4;
+                int i10 = row0 + x1 * 4;
+                int i01 = row1 + x0 * 4;
+                int i11 = row1 + x1 * 4;
+
+                float w00 = (1f - fx) * (1f - fy);
+                float w10 = fx * (1f - fy);
+                float w01 = (1f - fx) * fy;
+                float w11 = fx * fy;
+
+                int o = (y * dstW + x) * 4;
+                for (int c = 0; c < 4; c++)
+                {
+                    float val = src[i00 + c] * w00 + src[i10 + c] * w10 + src[i01 + c] * w01 + src[i11 + c] * w11;
+                    dst[o + c] = (byte)Math.Clamp((int)(val + 0.5f), 0, 255);
+                }
+            }
+        }
+        return dst;
+    }
+
     public void Dispose()
     {
         GpuMeshReleaseQueue.Unregister(this);
@@ -590,6 +821,10 @@ public sealed class ResourceCache : IDisposable
         foreach (var kv in _planetHeightTextures)
             kv.Value.Height?.Dispose();
         _planetHeightTextures.Clear();
+
+        foreach (var kv in _textureArrays)
+            kv.Value.Texture?.Dispose();
+        _textureArrays.Clear();
 
         _whiteTex?.Dispose();
         _whiteTex = null;

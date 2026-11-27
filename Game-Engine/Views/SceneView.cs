@@ -2015,7 +2015,7 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     var atmo = SceneRenderer.ResolvePlanetAtmosphere(planet, light, fallbackPlanetSunDir, Ambient);
                     SceneRenderer.RenderPlanetTerrain(g, res.PlanetTerrain, res.Cache,
                         view, proj, planet, atmo, SN.Vector3.Normalize(-L), DiffuseK, camPos,
-                        pc, shadowFBO, shadowVP);
+                        pc, shadowFBO, shadowVP, cascadedShadow: activeCsm);
                 }
                 SceneRenderer.RenderPlanetVegetationAfterTerrain(g, res.Standard!, res.Cache,
                     view, proj, camPos,
