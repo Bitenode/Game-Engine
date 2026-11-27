@@ -2,76 +2,214 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Game_Engine.Views"
              x:Class="Game_Engine.Views.BiomeGraphPanel">
+
+	<UserControl.Styles>
+		<Style Selector="Button.biome-tool-btn">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="Button.biome-tool-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+		</Style>
+		<Style Selector="Button.biome-tool-btn:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+
+		<Style Selector="Button.biome-accent-btn">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="10,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="FontWeight" Value="SemiBold"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="White"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="Button.biome-accent-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="Opacity" Value="0.92"/>
+		</Style>
+
+		<Style Selector="Button.biome-danger-btn">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="#D94A4A"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="Button.biome-danger-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#20D94A4A"/>
+		</Style>
+
+		<Style Selector="ComboBox.biome-node-combo">
+			<Setter Property="MinHeight" Value="26"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+
+		<Style Selector="Border.biome-toolbar-strip">
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="0,0,0,1"/>
+		</Style>
+
+		<Style Selector="Border.biome-editor-panel">
+			<Setter Property="Background" Value="{DynamicResource SystemControlPageBackgroundAltHighBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="ClipToBounds" Value="True"/>
+		</Style>
+
+		<Style Selector="TextBlock.biome-hint">
+			<Setter Property="FontSize" Value="10"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+			<Setter Property="TextWrapping" Value="Wrap"/>
+		</Style>
+	</UserControl.Styles>
+
 	<DockPanel>
-		<!-- Toolbar -->
-		<StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6" Spacing="8">
-			<TextBlock Text="Biome Graph" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
-			<ComboBox x:Name="NodeTypeCombo" Width="168" SelectedIndex="0">
-				<ComboBoxItem Content="Noise" />
-				<ComboBoxItem Content="Coordinate" />
-				<ComboBoxItem Content="Temperature" />
-				<ComboBoxItem Content="Moisture" />
-				<ComboBoxItem Content="Biome Select" />
-				<ComboBoxItem Content="Biome Layer" />
-				<ComboBoxItem Content="Blend" />
-				<ComboBoxItem Content="Math" />
-				<ComboBoxItem Content="Height" />
-				<ComboBoxItem Content="Cave" />
-				<ComboBoxItem Content="Altitude" />
-				<ComboBoxItem Content="Slope" />
-				<ComboBoxItem Content="Erosion" />
-				<ComboBoxItem Content="Mask" />
-				<ComboBoxItem Content="River" />
-				<ComboBoxItem Content="Water Body" />
-				<ComboBoxItem Content="Water Path" />
-				<ComboBoxItem Content="Shore" />
-				<ComboBoxItem Content="Water Merge" />
-				<ComboBoxItem Content="Continent" />
-				<ComboBoxItem Content="Crater" />
-				<ComboBoxItem Content="Volcano" />
-				<ComboBoxItem Content="Cliff" />
-				<ComboBoxItem Content="Domain Warp" />
-				<ComboBoxItem Content="Climate" />
-				<ComboBoxItem Content="Rain Shadow" />
-				<ComboBoxItem Content="Season" />
-				<ComboBoxItem Content="Latitude Band" />
-				<ComboBoxItem Content="Flora Layer" />
-				<ComboBoxItem Content="Scatter Layer" />
-				<ComboBoxItem Content="Fauna Layer" />
-				<ComboBoxItem Content="Underwater Life" />
-				<ComboBoxItem Content="Resource Vein" />
-				<ComboBoxItem Content="Atmosphere" />
-				<ComboBoxItem Content="Weather Profile" />
-				<ComboBoxItem Content="Cloud Layer" />
-				<ComboBoxItem Content="Ice Sheet" />
-				<ComboBoxItem Content="Wetland" />
-			</ComboBox>
-			<Button x:Name="AddNodeBtn" Content="Add Node" Padding="8,4" />
-			<Button x:Name="DeleteNodeBtn" Content="Delete" Padding="8,4" />
-			<Separator Width="1" Margin="4,0" />
-			<Button x:Name="SaveBtn" Content="Save" Padding="8,4" />
-			<Button x:Name="LoadBtn" Content="Load" Padding="8,4" />
-			<Button x:Name="CompileBtn" Content="Compile" Padding="8,4" />
-			<Button x:Name="NewDefaultBtn" Content="New Default" Padding="8,4" />
-			<Separator Width="1" Margin="4,0" />
-			<Button x:Name="PreviewBtn" Content="Preview" Padding="8,4" />
-			<Button x:Name="ValidateBtn" Content="Validate" Padding="8,4" />
-			<Button x:Name="UndoBtn" Content="Undo" Padding="8,4" />
-			<Button x:Name="RedoBtn" Content="Redo" Padding="8,4" />
-		</StackPanel>
+		<!-- Document path strip -->
+		<Border Classes="biome-toolbar-strip" DockPanel.Dock="Top" Padding="8,6">
+			<Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*">
+				<TextBlock Grid.Row="0" Grid.Column="0"
+						   Text="Graph"
+						   FontSize="11"
+						   FontWeight="SemiBold"
+						   VerticalAlignment="Center"
+						   Margin="0,0,8,2"
+						   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+				<TextBlock x:Name="TxtGraphPath"
+						   Grid.Row="0" Grid.Column="1"
+						   Text="(unsaved — use Save or Load)"
+						   FontSize="11"
+						   VerticalAlignment="Center"
+						   Margin="0,0,0,2"
+						   TextTrimming="CharacterEllipsis"
+						   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+				<TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+						   Classes="biome-hint"
+						   Text="Ctrl+wheel zoom · middle-drag pan · right-click canvas to add/search nodes · Ctrl+Z / Ctrl+Y undo redo"/>
+			</Grid>
+		</Border>
 
-		<Grid ColumnDefinitions="*,250">
-			<!-- Graph Canvas -->
-			<Canvas Grid.Column="0" x:Name="GraphCanvas" Background="#1E1E2E" ClipToBounds="True" />
+		<!-- Action toolbar -->
+		<Border Classes="biome-toolbar-strip" DockPanel.Dock="Top" Padding="6,4">
+			<ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+				<StackPanel Orientation="Horizontal" Spacing="6">
+					<TextBlock Text="Node"
+							   FontSize="11"
+							   VerticalAlignment="Center"
+							   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+					<ComboBox x:Name="NodeTypeCombo"
+							  Classes="biome-node-combo"
+							  Width="168"
+							  SelectedIndex="0">
+						<ComboBoxItem Content="Noise" />
+						<ComboBoxItem Content="Coordinate" />
+						<ComboBoxItem Content="Temperature" />
+						<ComboBoxItem Content="Moisture" />
+						<ComboBoxItem Content="Biome Select" />
+						<ComboBoxItem Content="Biome Layer" />
+						<ComboBoxItem Content="Blend" />
+						<ComboBoxItem Content="Math" />
+						<ComboBoxItem Content="Height" />
+						<ComboBoxItem Content="Cave" />
+						<ComboBoxItem Content="Altitude" />
+						<ComboBoxItem Content="Slope" />
+						<ComboBoxItem Content="Erosion" />
+						<ComboBoxItem Content="Mask" />
+						<ComboBoxItem Content="River" />
+						<ComboBoxItem Content="Water Body" />
+						<ComboBoxItem Content="Water Path" />
+						<ComboBoxItem Content="Shore" />
+						<ComboBoxItem Content="Water Merge" />
+						<ComboBoxItem Content="Continent" />
+						<ComboBoxItem Content="Crater" />
+						<ComboBoxItem Content="Volcano" />
+						<ComboBoxItem Content="Cliff" />
+						<ComboBoxItem Content="Domain Warp" />
+						<ComboBoxItem Content="Climate" />
+						<ComboBoxItem Content="Rain Shadow" />
+						<ComboBoxItem Content="Season" />
+						<ComboBoxItem Content="Latitude Band" />
+						<ComboBoxItem Content="Flora Layer" />
+						<ComboBoxItem Content="Scatter Layer" />
+						<ComboBoxItem Content="Fauna Layer" />
+						<ComboBoxItem Content="Underwater Life" />
+						<ComboBoxItem Content="Resource Vein" />
+						<ComboBoxItem Content="Atmosphere" />
+						<ComboBoxItem Content="Weather Profile" />
+						<ComboBoxItem Content="Cloud Layer" />
+						<ComboBoxItem Content="Ice Sheet" />
+						<ComboBoxItem Content="Wetland" />
+					</ComboBox>
+					<Button x:Name="AddNodeBtn" Classes="biome-accent-btn" Content="Add Node"/>
+					<Button x:Name="DeleteNodeBtn" Classes="biome-danger-btn" Content="Delete"/>
 
-			<!-- Properties Panel -->
-			<Border Grid.Column="1" BorderBrush="#40808080" BorderThickness="1,0,0,0">
-				<ScrollViewer>
-					<StackPanel x:Name="PropsPanel" Margin="8" Spacing="6">
-						<TextBlock Text="Properties" FontWeight="SemiBold" />
-						<TextBlock x:Name="PropsNodeName" Text="No node selected" Foreground="#808080" />
-					</StackPanel>
-				</ScrollViewer>
+					<Border Width="1" Height="22" VerticalAlignment="Center"
+							Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Opacity="0.5"/>
+
+					<Button x:Name="SaveBtn" Classes="biome-tool-btn" Content="Save"/>
+					<Button x:Name="LoadBtn" Classes="biome-tool-btn" Content="Load"/>
+					<Button x:Name="CompileBtn" Classes="biome-accent-btn" Content="Compile"/>
+					<Button x:Name="NewDefaultBtn" Classes="biome-tool-btn" Content="New Default"/>
+
+					<Border Width="1" Height="22" VerticalAlignment="Center"
+							Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Opacity="0.5"/>
+
+					<Button x:Name="PreviewBtn" Classes="biome-tool-btn" Content="Preview"/>
+					<Button x:Name="ValidateBtn" Classes="biome-tool-btn" Content="Validate"/>
+					<Button x:Name="UndoBtn" Classes="biome-tool-btn" Content="Undo"/>
+					<Button x:Name="RedoBtn" Classes="biome-tool-btn" Content="Redo"/>
+				</StackPanel>
+			</ScrollViewer>
+		</Border>
+
+		<Grid Margin="6" ColumnDefinitions="*,268">
+			<!-- Graph canvas (dark surface for node contrast) -->
+			<Border Grid.Column="0" Classes="biome-editor-panel" Padding="0">
+				<Canvas x:Name="GraphCanvas"
+						Background="#14161C"
+						ClipToBounds="True"
+						Focusable="True"/>
+			</Border>
+
+			<!-- Properties -->
+			<Border Grid.Column="1" Classes="biome-editor-panel" Padding="0" Margin="6,0,0,0">
+				<DockPanel>
+					<Border DockPanel.Dock="Top"
+							Padding="10,8"
+							BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+							BorderThickness="0,0,0,1">
+						<StackPanel Spacing="2">
+							<TextBlock Text="Properties"
+									   FontSize="12"
+									   FontWeight="SemiBold"
+									   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+							<TextBlock x:Name="PropsNodeName"
+									   Text="No node selected"
+									   FontSize="11"
+									   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+						</StackPanel>
+					</Border>
+					<ScrollViewer Padding="8,6">
+						<StackPanel x:Name="PropsPanel" Spacing="6"/>
+					</ScrollViewer>
+				</DockPanel>
 			</Border>
 		</Grid>
 	</DockPanel>

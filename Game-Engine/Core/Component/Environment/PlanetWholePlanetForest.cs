@@ -53,6 +53,7 @@ public static class PlanetWholePlanetForest
         public int BakedHeightVersion = -1;
         public int BakedSplatVersion = -1;
         public ulong BakedRecipeHash;
+        public ulong BakedDensityHash;
         public int FullRevision;
         public int EditRevision;
         public int DirtyMin = int.MaxValue;
@@ -124,10 +125,12 @@ public static class PlanetWholePlanetForest
         int hv = cubemap.HeightVersion;
         int sv = cubemap.SplatVersion;
         ulong rh = cubemap.RecipeHash;
+        var biomes = config.Biomes ?? Array.Empty<BiomeDefinition>();
+        ulong dh = ComputeBiomeTreeHash(biomes);
 
         lock (state.Lock)
         {
-            if (state.BakedHeightVersion == hv && state.BakedSplatVersion == sv && state.BakedRecipeHash == rh)
+            if (state.BakedHeightVersion == hv && state.BakedSplatVersion == sv && state.BakedRecipeHash == rh && state.BakedDensityHash == dh)
                 return;
             if (state.Baking)
             {
@@ -142,13 +145,20 @@ public static class PlanetWholePlanetForest
         bool enableWater = terrain.EnableWater;
         float planetRadius = MathF.Max(1f, config.Radius);
         float seaLevel = config.SeaLevel;
-        var biomes = config.Biomes ?? Array.Empty<BiomeDefinition>();
-        // Snapshot lightweight biome specs so background worker never races with Inspector edits.
-        var biomeSpecs = new BiomeTreeSpec[Math.Max(PlanetSurfaceCubemap.SplatLayerCount, biomes.Length)];
-        for (int i = 0; i < biomes.Length && i < biomeSpecs.Length; i++)
+        // Snapshot lightweight biome specs keyed by splat slot (BiomeIndex clamped 0..7)
+        // to match PlanetCubemapBaker.WriteNormalizedSplat exactly.
+        var biomeSpecs = new BiomeTreeSpec[PlanetSurfaceCubemap.SplatLayerCount];
+        var slotPopulated = new bool[PlanetSurfaceCubemap.SplatLayerCount];
+        for (int i = 0; i < biomes.Length; i++)
         {
             var b = biomes[i];
-            biomeSpecs[i] = BuildBiomeSpec(b);
+            if (b == null) continue;
+            int slot = Math.Clamp((int)b.BiomeIndex, 0, PlanetSurfaceCubemap.SplatLayerCount - 1);
+            if (!slotPopulated[slot] || b.BiomeIndex == slot)
+            {
+                biomeSpecs[slot] = BuildBiomeSpec(b);
+                slotPopulated[slot] = true;
+            }
         }
 
         // Snapshot cubemap arrays references (replaced wholesale on rebake; safe to read).
@@ -176,7 +186,8 @@ public static class PlanetWholePlanetForest
                     biomeSpecs,
                     hv,
                     sv,
-                    rh);
+                    rh,
+                    dh);
             }
             catch (Exception ex)
             {
@@ -185,6 +196,22 @@ public static class PlanetWholePlanetForest
                     state.Baking = false;
             }
         });
+    }
+
+    static ulong ComputeBiomeTreeHash(BiomeDefinition[] biomes)
+    {
+        ulong h = 14695981039346656037UL;
+        for (int i = 0; i < biomes.Length; i++)
+        {
+            var b = biomes[i];
+            if (b == null) continue;
+            h = (h ^ b.BiomeIndex) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeDensity)) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeMinScale)) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeMaxScale)) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeMaxSlope)) * 1099511628211UL;
+        }
+        return h;
     }
 
     readonly struct BiomeTreeSpec
@@ -255,19 +282,16 @@ public static class PlanetWholePlanetForest
         BiomeTreeSpec[] biomeSpecs,
         int heightVersion,
         int splatVersion,
-        ulong recipeHash)
+        ulong recipeHash,
+        ulong densityHash)
     {
-        var packed = new float[MaxInstances * FloatsPerInstance];
-        int count = 0;
-
         float texelArc = MathF.Max(0.25f, (MathF.PI * 0.5f * planetRadius) / MathF.Max(1, res - 1));
         float invTwoTexel = 1f / (2f * texelArc);
         float shoreMargin = MathF.Max(1.2f, planetRadius * 0.0012f);
         // Match Tier 1 tree visual height (~14-18m) while staying proportional on tiny moons.
         float worldTreeH = Math.Clamp(Math.Max(12f, treeBaseHeight * 2.0f), 6f, MathF.Max(10f, planetRadius * 0.045f));
 
-        // Check if any biome has positive TreeDensity; if a custom planet left all at 0,
-        // still allow light temperate canopy on dry non-steep land only when biomes exist.
+        // Strictly respect biome TreeDensity: if no biome has TreeDensity > 0.001f, bake 0 canopies.
         bool anyBiomeHasTrees = false;
         for (int i = 0; i < biomeSpecs.Length; i++)
         {
@@ -277,6 +301,29 @@ public static class PlanetWholePlanetForest
                 break;
             }
         }
+        if (!anyBiomeHasTrees)
+        {
+            lock (state.Lock)
+            {
+                state.Instances = Array.Empty<float>();
+                state.InstanceCount = 0;
+                Array.Clear(state.FaceStart, 0, 6);
+                Array.Clear(state.FaceCount, 0, 6);
+                state.BakedHeightVersion = heightVersion;
+                state.BakedSplatVersion = splatVersion;
+                state.BakedRecipeHash = recipeHash;
+                state.BakedDensityHash = densityHash;
+                state.FullRevision++;
+                state.EditRevision = state.FullRevision;
+                state.DirtyMin = int.MaxValue;
+                state.DirtyMax = -1;
+                state.Baking = false;
+            }
+            return;
+        }
+
+        var packed = new float[MaxInstances * FloatsPerInstance];
+        int count = 0;
 
         int grid = CellsPerFace;
         float invGrid = 1f / grid;
@@ -355,21 +402,17 @@ public static class PlanetWholePlanetForest
                     }
                     else
                     {
-                        density = anyBiomeHasTrees ? 0f : 0.15f;
-                        minScale = 0.85f;
-                        maxScale = 1.25f;
-                        maxSlopeTan = 0.55f;
-                        tint = new SN.Vector3(0.20f, 0.42f, 0.17f);
+                        density = 0f;
                     }
 
-                    if (density <= 0.01f || slopeTan > MathF.Min(0.68f, maxSlopeTan))
+                    if (density <= 0.001f || slopeTan > MathF.Min(0.68f, maxSlopeTan))
                         continue;
 
                     seed = Hash32(seed ^ 0x85EBCA6Bu);
                     float probRoll = (seed & 0xFFFF) * (1f / 65536f);
-                    // Slight boost so forested biomes form cohesive continuous canopies from orbit.
-                    float prob = Math.Clamp(density * 1.25f, 0f, 0.94f);
-                    if (probRoll > prob)
+                    // Scale canopy probability strictly proportional to biome TreeDensity.
+                    float prob = Math.Clamp(density, 0f, 1f);
+                    if (probRoll >= prob)
                         continue;
 
                     var dir = CubeSphereMath.CubemapTexelDirection(face, u, v);
@@ -418,6 +461,7 @@ public static class PlanetWholePlanetForest
             state.BakedHeightVersion = heightVersion;
             state.BakedSplatVersion = splatVersion;
             state.BakedRecipeHash = recipeHash;
+            state.BakedDensityHash = densityHash;
             state.FullRevision++;
             state.EditRevision = state.FullRevision;
             state.DirtyMin = int.MaxValue;

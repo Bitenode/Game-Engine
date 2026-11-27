@@ -249,6 +249,16 @@ public static class PlanetSurfaceUtility
                 for (int i = 0; i < cliffs.Length; i++)
                 {
                     var cl = cliffs[i];
+                    // Regional coastline mask so cliffs only form along select rocky headlands (~30-35% of coasts),
+                    // leaving the rest of the ocean shoreline as natural gentle beaches.
+                    float regionFreq = MathF.Max(0.0006f, cl.Frequency * 0.28f) * config.Radius * 0.55f;
+                    float regionNoise = n.Noise3D(
+                        sphereDir.X * regionFreq - 14.3f + i * 7.1f,
+                        sphereDir.Y * regionFreq + 8.9f - i * 4.3f,
+                        sphereDir.Z * regionFreq - 6.2f + i * 5.7f) * 0.5f + 0.5f;
+                    float regionMask = Smooth01(0.54f, 0.76f, regionNoise);
+                    if (regionMask <= 0.001f) continue;
+
                     float freq = MathF.Max(0.001f, cl.Frequency) * config.Radius * 0.55f;
                     float n0 = n.Noise3D(
                         sphereDir.X * freq + 9.1f,
@@ -262,7 +272,7 @@ public static class PlanetSurfaceUtility
                     detail = detail * detail;
                     float drop = 1f - Smooth01(0.42f, 0.58f, land);
                     float lip = Smooth01(0.50f, 0.64f, land) * (1f - Smooth01(0.64f, 0.78f, land));
-                    float wall = cl.Strength * cl.SlopeBias * cliffFade;
+                    float wall = cl.Strength * cl.SlopeBias * cliffFade * regionMask;
                     height -= drop * wall * (11f + detail * 3.5f);
                     height += lip * wall * (8f + detail * 4.5f);
                 }

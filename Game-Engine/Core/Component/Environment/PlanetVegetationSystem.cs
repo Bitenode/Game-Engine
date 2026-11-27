@@ -177,9 +177,11 @@ public sealed class PlanetVegetationSystem : Behavior
     }
 
     /// <summary>
+    /// <summary>
     /// Compute the planet-local anchor and inner/outer crossfade radii for Tier 2 whole-planet
-    /// canopies so they scale down smoothly inside the Tier 1 near-ring 3D tree radius, and
-    /// return <c>outerLocal = 0</c> in orbit so 100% of the planet has canopies with zero bald spot.
+    /// canopies so they are completely hidden inside the Tier 1 near-ring 3D tree radius and
+    /// fade in smoothly at the far edge, returning <c>outerLocal = 0</c> in orbit so 100% of
+    /// the planet has canopies with zero bald spot.
     /// </summary>
     public void GetNearForestCrossfade(
         SN.Vector3 worldCam,
@@ -194,33 +196,39 @@ public sealed class PlanetVegetationSystem : Behavior
         if (_carpetTreeDirs.Count == 0 && PlanetGpuTrees.TreeCount(this) == 0)
             return;
 
-        // In Play Mode, anchor crossfade to the player camera if the Scene View camera is far away.
-        var anchorWorld = worldCam;
-        if (SceneService.PlayMode)
-        {
-            var play = ResolveCameraPosition();
-            if ((worldCam - play).LengthSquared() > 80f * 80f)
-                anchorWorld = play;
-        }
-
-        var camLocal = _terrain.WorldToLocal(anchorWorld);
-        float camLen = camLocal.Length();
-        if (camLen < 1e-5f) return;
-        var camDir = camLocal / camLen;
-        // PlanetWholePlanetForest positions live in planet-local space (radius = Config.Radius).
-        float localRadius = Math.Max(1f, _terrain.Config.Radius);
-        float worldRadius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
-        float altLocal = camLen - localRadius;
-        if (altLocal > _terrain.WorldToLocalLength(550f))
+        float tier1RadiusLocal = GetTier1TreeRenderRadiusLocal(worldCam);
+        if (tier1RadiusLocal <= 0f)
             return;
 
-        float outerWorld = ConsoleTight
-            ? Math.Clamp(worldRadius * 0.16f, 100f, 140f)
-            : Math.Clamp(worldRadius * 0.20f, 130f, 180f);
-        float outerLocalDist = _terrain.WorldToLocalLength(outerWorld);
-        nearAnchorLocal = camDir * localRadius;
-        innerLocal = outerLocalDist * 0.68f;
-        outerLocal = outerLocalDist * 0.98f;
+        // Use the exact same planet-local camera position that PlanetGpuTrees uses for Tier 1
+        // distance culling so Tier 1 and Tier 2 share an identical coordinate space and origin.
+        nearAnchorLocal = _terrain.WorldToLocal(worldCam);
+        float minInnerLocal = _terrain.WorldToLocalLength(ConsoleTight ? 160f : 195f);
+        float minBandLocal = _terrain.WorldToLocalLength(45f);
+        innerLocal = Math.Max(tier1RadiusLocal * 0.92f, minInnerLocal);
+        outerLocal = Math.Max(tier1RadiusLocal * 1.22f, innerLocal + minBandLocal);
+    }
+
+    /// <summary>
+    /// Maximum planet-local distance from the camera to draw pre-built Tier 1 GPU-instanced trees.
+    /// Returns a negative value when the camera is in orbit (Tier 2 canopies cover 100% of the planet).
+    /// </summary>
+    public float GetTier1TreeRenderRadiusLocal(SN.Vector3 worldCam)
+    {
+        if (_terrain?.Config == null) return -1f;
+        var camLocal = _terrain.WorldToLocal(worldCam);
+        float camLen = camLocal.Length();
+        if (camLen < 1e-5f) return -1f;
+        float localRadius = Math.Max(1f, _terrain.Config.Radius);
+        float altLocal = camLen - localRadius;
+        if (altLocal > _terrain.WorldToLocalLength(550f))
+            return -1f;
+
+        float worldRadius = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+        float tier1World = ConsoleTight
+            ? Math.Clamp(worldRadius * 0.18f, 165f, 210f)
+            : Math.Clamp(worldRadius * 0.24f, 210f, 280f);
+        return _terrain.WorldToLocalLength(tier1World);
     }
 
     public int ActiveLeafGroups => _leafEntries.Count;
@@ -438,6 +446,15 @@ public sealed class PlanetVegetationSystem : Behavior
     float _clearZoneRefreshSec;
     float[] _grassDensityByBiome = Array.Empty<float>();
     BiomeDefinition[]? _grassDensitySource;
+    ulong _grassDensityHash;
+    float[] _treeDensityByBiome = Array.Empty<float>();
+    BiomeDefinition[]? _treeDensitySource;
+    ulong _treeDensityHash;
+    int _prebuiltTreeHeightVer = -1;
+    int _prebuiltTreeSplatVer = -1;
+    ulong _prebuiltTreeRecipeHash;
+    ulong _prebuiltTreeDensityHash;
+    bool _prebuiltTreesReady;
 
     enum VegKind
     {
@@ -532,6 +549,8 @@ public sealed class PlanetVegetationSystem : Behavior
             UsePlanetAssetPlacements = true;
         if (AutoSpawn && UsePlanetAssetPlacements && _assetPlacements.Count > 0)
             WarmSpawnAfterDeferredImport();
+        PlanetWholePlanetForest.EnsureBaked(_terrain, this);
+        EnsurePrebuiltWholePlanetTrees();
     }
 
     public override void Start()
@@ -543,6 +562,8 @@ public sealed class PlanetVegetationSystem : Behavior
         PruneSubmergedAssetPlacements();
         if (UsePlanetAssetPlacements && _assetPlacements.Count > 0 && AutoSpawn)
             WarmSpawnAfterDeferredImport();
+        PlanetWholePlanetForest.EnsureBaked(_terrain, this);
+        EnsurePrebuiltWholePlanetTrees();
     }
 
     /// <summary>
@@ -651,19 +672,39 @@ public sealed class PlanetVegetationSystem : Behavior
         _lastStreamDt = dt;
 
         PlanetWholePlanetForest.EnsureBaked(_terrain, this);
+        EnsurePrebuiltWholePlanetTrees();
 
         RefreshClearZones(dt, Math.Max(1.7f, ResolveGpuGrassHeight(1f) * 0.38f));
         NoteSurfaceEpoch();
         // Carpet must run every frame. The asset-stream interval (0.10s+)
         // is what made walking grass trickle in.
         TickLocalGpuGrassCarpet(cameraPos, dt);
+
+        // In Scene View (editor mode), moving the camera must NOT create/spawn or destroy trees
+        // on the fly: Tier 1 and Tier 2 trees are already pre-built once from BiomeMap at start,
+        // and only frustum/distance culled during rendering.
+        if (!SceneService.PlayMode)
+            return;
+
 #if XBOX_UWP
         // Trees, coral, and placed models are the imports that stacked on the
         // ground-texture decode. Grass cards stay; the models wait one beat.
         if (SceneRenderer.BiomeTexturesStreaming)
             return;
 #endif
-        TickLocalTrees(cameraPos, dt);
+        if (UseGpuInstancedTrees && _prebuiltTreesReady)
+        {
+            var camLocalT = _terrain.WorldToLocal(cameraPos);
+            if (camLocalT.LengthSquared() > 1e-6f)
+            {
+                float radiusT = Math.Max(1f, _terrain.Config.EffectiveWorldRadius);
+                UpdatePooledTreeColliders(SN.Vector3.Normalize(camLocalT), radiusT);
+            }
+        }
+        else
+        {
+            TickLocalTrees(cameraPos, dt);
+        }
         ReseatQueuedAssets();
         TickUnderwaterCoral(cameraPos, dt);
 
@@ -1998,7 +2039,7 @@ public sealed class PlanetVegetationSystem : Behavior
                     band.Undecided = true;
                     continue;
                 }
-                if (CarpetCellRoll(token) >= density || !TryPrepareCarpetClump(dir, out var center, out var upLocal, out var surfN))
+                if (density <= 0.001f || CarpetCellRoll(token) >= density || !TryPrepareCarpetClump(dir, out var center, out var upLocal, out var surfN))
                 {
                     _carpetRejected.Add(token);
                     continue;
@@ -2223,47 +2264,119 @@ public sealed class PlanetVegetationSystem : Behavior
         var table = GrassDensityTable();
         float sum = 0f;
         float dens = 0f;
-        AccumulateGrassDensity(table, idx.X, wt.X, ref sum, ref dens);
-        AccumulateGrassDensity(table, idx.Y, wt.Y, ref sum, ref dens);
-        AccumulateGrassDensity(table, idx.Z, wt.Z, ref sum, ref dens);
-        AccumulateGrassDensity(table, idx.W, wt.W, ref sum, ref dens);
-        return sum > 1e-4f ? Math.Clamp(dens / sum, 0f, 1f) : 1f;
+        AccumulateDensity(table, idx.X, wt.X, ref sum, ref dens);
+        AccumulateDensity(table, idx.Y, wt.Y, ref sum, ref dens);
+        AccumulateDensity(table, idx.Z, wt.Z, ref sum, ref dens);
+        AccumulateDensity(table, idx.W, wt.W, ref sum, ref dens);
+        return sum > 1e-4f ? Math.Clamp(dens / sum, 0f, 1f) : 0f;
     }
 
-    static void AccumulateGrassDensity(float[] table, float index, float weight, ref float sum, ref float dens)
+    /// <summary>
+    /// Tree coverage 0..1 at <paramref name="dir"/> from the biome blend (biome Tree Density).
+    /// Returns 0 when TreeDensity is 0 (no trees spawned).
+    /// </summary>
+    float CarpetTreeDensity(SN.Vector3 dir)
+    {
+        var table = TreeDensityTable();
+        if (_terrain!.TrySampleSurfaceBiomeBlend(dir, out var idx, out var wt))
+        {
+            float sum = 0f;
+            float dens = 0f;
+            AccumulateDensity(table, idx.X, wt.X, ref sum, ref dens);
+            AccumulateDensity(table, idx.Y, wt.Y, ref sum, ref dens);
+            AccumulateDensity(table, idx.Z, wt.Z, ref sum, ref dens);
+            AccumulateDensity(table, idx.W, wt.W, ref sum, ref dens);
+            return sum > 1e-4f ? Math.Clamp(dens / sum, 0f, 1f) : 0f;
+        }
+        var b = SampleBiomeAtDir(dir);
+        return b != null ? Math.Clamp(b.TreeDensity, 0f, 1f) : 0f;
+    }
+
+    static void AccumulateDensity(float[] table, float index, float weight, ref float sum, ref float dens)
     {
         if (weight <= 1e-3f)
             return;
         int i = (int)MathF.Round(index);
-        dens += weight * ((uint)i < (uint)table.Length ? table[i] : 1f);
+        dens += weight * ((uint)i < (uint)table.Length ? table[i] : 0f);
         sum += weight;
     }
 
-    /// <summary>Vegetation Density per <see cref="BiomeDefinition.BiomeIndex"/>; all 1 when no biome sets one.</summary>
+    static ulong ComputeGrassDensityHash(BiomeDefinition[]? biomes)
+    {
+        ulong h = 14695981039346656037UL;
+        if (biomes == null) return h;
+        for (int i = 0; i < biomes.Length; i++)
+        {
+            var b = biomes[i];
+            if (b == null) continue;
+            h = (h ^ b.BiomeIndex) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.VegetationDensity)) * 1099511628211UL;
+        }
+        return h;
+    }
+
+    static ulong ComputeTreeDensityHash(BiomeDefinition[]? biomes)
+    {
+        ulong h = 14695981039346656037UL;
+        if (biomes == null) return h;
+        for (int i = 0; i < biomes.Length; i++)
+        {
+            var b = biomes[i];
+            if (b == null) continue;
+            h = (h ^ b.BiomeIndex) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeDensity)) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeMinScale)) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeMaxScale)) * 1099511628211UL;
+            h = (h ^ (uint)BitConverter.SingleToInt32Bits(b.TreeMaxSlope)) * 1099511628211UL;
+        }
+        return h;
+    }
+
+    /// <summary>Vegetation Density per <see cref="BiomeDefinition.BiomeIndex"/>; strictly 0 when a biome sets 0.</summary>
     float[] GrassDensityTable()
     {
         var biomes = _terrain?.Config?.Biomes;
-        if (ReferenceEquals(biomes, _grassDensitySource) && _grassDensityByBiome.Length > 0)
+        ulong hash = ComputeGrassDensityHash(biomes);
+        if (ReferenceEquals(biomes, _grassDensitySource) && _grassDensityByBiome.Length > 0 && hash == _grassDensityHash)
             return _grassDensityByBiome;
         _grassDensitySource = biomes;
+        _grassDensityHash = hash;
         var table = new float[256];
-        Array.Fill(table, 1f);
-        bool any = false;
+        Array.Fill(table, 0f);
         if (biomes != null)
         {
             for (int i = 0; i < biomes.Length; i++)
-                any |= biomes[i] != null && biomes[i].VegetationDensity > 0f;
-            if (any)
             {
-                for (int i = 0; i < biomes.Length; i++)
-                {
-                    var b = biomes[i];
-                    if (b != null)
-                        table[b.BiomeIndex] = Math.Max(0f, b.VegetationDensity);
-                }
+                var b = biomes[i];
+                if (b != null)
+                    table[b.BiomeIndex] = Math.Max(0f, b.VegetationDensity);
             }
         }
         _grassDensityByBiome = table;
+        return table;
+    }
+
+    /// <summary>Tree Density per <see cref="BiomeDefinition.BiomeIndex"/>; strictly 0 when a biome sets 0.</summary>
+    float[] TreeDensityTable()
+    {
+        var biomes = _terrain?.Config?.Biomes;
+        ulong hash = ComputeTreeDensityHash(biomes);
+        if (ReferenceEquals(biomes, _treeDensitySource) && _treeDensityByBiome.Length > 0 && hash == _treeDensityHash)
+            return _treeDensityByBiome;
+        _treeDensitySource = biomes;
+        _treeDensityHash = hash;
+        var table = new float[256];
+        Array.Fill(table, 0f);
+        if (biomes != null)
+        {
+            for (int i = 0; i < biomes.Length; i++)
+            {
+                var b = biomes[i];
+                if (b != null)
+                    table[b.BiomeIndex] = Math.Max(0f, b.TreeDensity);
+            }
+        }
+        _treeDensityByBiome = table;
         return table;
     }
 
@@ -2891,6 +3004,302 @@ public sealed class PlanetVegetationSystem : Behavior
         }
     }
 
+    /// <summary>
+    /// Deterministically pre-build all Tier 1 GPU-instanced trees across the entire planet once
+    /// from the baked <see cref="PlanetSurfaceCubemap"/> and <see cref="BiomeMap"/> densities.
+    /// Completely independent of camera position so flying around in Scene View or Play Mode
+    /// never creates or mutates trees on the fly — rendering simply distance- and frustum-culls.
+    /// </summary>
+    public void EnsurePrebuiltWholePlanetTrees()
+    {
+        EnsureInitialized();
+        if (!UseGpuInstancedTrees || _terrain == null || !_terrain.HasBakedStandSurface)
+            return;
+        var cubemap = _terrain.SurfaceCubemap;
+        var config = _terrain.Config;
+        if (cubemap == null || config == null)
+            return;
+
+        EnsureLocalTreeModels();
+        if (!WaitForProfileTreeFbxs())
+            return;
+
+        int hv = cubemap.HeightVersion;
+        int sv = cubemap.SplatVersion;
+        ulong rh = cubemap.RecipeHash;
+        var biomes = config.Biomes ?? Array.Empty<BiomeDefinition>();
+        ulong dh = ComputeTreeDensityHash(biomes);
+
+        if (_prebuiltTreesReady
+            && _prebuiltTreeHeightVer == hv
+            && _prebuiltTreeSplatVer == sv
+            && _prebuiltTreeRecipeHash == rh
+            && _prebuiltTreeDensityHash == dh
+            && !_carpetUsedFallbackTrees)
+        {
+            return;
+        }
+
+        // Clear any prior tree instances before rebuilding deterministically.
+        foreach (var go in _carpetTrees.Values)
+            ReleaseSpawned(go);
+        _carpetTrees.Clear();
+        ClearPooledTreeColliders();
+        _gpuCarpetTrees.Clear();
+        PlanetGpuTrees.ClearOwner(this);
+        _carpetTreeDirs.Clear();
+        _carpetProceduralTreeTokens.Clear();
+        _treeShellR.Clear();
+        _carpetUsedFallbackTrees = false;
+
+        // Build per-splat-slot biome specs matching PlanetCubemapBaker.WriteNormalizedSplat.
+        const int slotCount = PlanetSurfaceCubemap.SplatLayerCount;
+        var slotDensity = new float[slotCount];
+        var slotMinScale = new float[slotCount];
+        var slotMaxScale = new float[slotCount];
+        var slotMaxSlopeTan = new float[slotCount];
+        var slotPopulated = new bool[slotCount];
+        bool anyBiomeHasTrees = false;
+        for (int i = 0; i < biomes.Length; i++)
+        {
+            var b = biomes[i];
+            if (b == null) continue;
+            int slot = Math.Clamp((int)b.BiomeIndex, 0, slotCount - 1);
+            if (!slotPopulated[slot] || b.BiomeIndex == slot)
+            {
+                float d = Math.Clamp(b.TreeDensity, 0f, 1f);
+                float minS = Math.Clamp(b.TreeMinScale > 0.05f ? b.TreeMinScale : 0.85f, 0.35f, 3f);
+                float maxS = Math.Clamp(b.TreeMaxScale >= minS ? b.TreeMaxScale : minS + 0.35f, minS, 4f);
+                float maxSlopeDeg = Math.Clamp(b.TreeMaxSlope > 1f ? b.TreeMaxSlope : 34f, 8f, 60f);
+                slotDensity[slot] = d;
+                slotMinScale[slot] = minS;
+                slotMaxScale[slot] = maxS;
+                slotMaxSlopeTan[slot] = MathF.Tan(maxSlopeDeg * (MathF.PI / 180f));
+                slotPopulated[slot] = true;
+                if (d > 0.001f)
+                    anyBiomeHasTrees = true;
+            }
+        }
+
+        if (!anyBiomeHasTrees)
+        {
+            _prebuiltTreeHeightVer = hv;
+            _prebuiltTreeSplatVer = sv;
+            _prebuiltTreeRecipeHash = rh;
+            _prebuiltTreeDensityHash = dh;
+            _prebuiltTreesReady = true;
+            return;
+        }
+
+        int res = cubemap.Resolution;
+        var heightFaces = cubemap.Height;
+        var deltaFaces = cubemap.HeightDelta;
+        var splat0Faces = cubemap.Splat0;
+        var splat1Faces = cubemap.Splat1;
+
+        float localRadius = MathF.Max(1f, config.Radius);
+        float worldRadius = MathF.Max(1f, config.EffectiveWorldRadius);
+        float seaLevel = config.SeaLevel;
+        bool enableWater = _terrain.EnableWater;
+        float texelArc = MathF.Max(0.25f, (MathF.PI * 0.5f * localRadius) / MathF.Max(1, res - 1));
+        float invTwoTexel = 1f / (2f * texelArc);
+        float shoreMargin = MathF.Max(1.2f, localRadius * 0.0012f);
+
+        int cells = ConsoleTight
+            ? Math.Clamp((int)MathF.Round(worldRadius * (MathF.PI * 0.5f) / 36f), 14, 34)
+            : Math.Clamp((int)MathF.Round(worldRadius * (MathF.PI * 0.5f) / 22f), 20, 64);
+        int maxTrees = ConsoleTight ? 2400 : 12000;
+        float invCells = 1f / cells;
+
+        float grassWorldH = Math.Clamp(Math.Max(GrassBaseHeight, 4.5f), 4.5f, 7.2f);
+        float desiredHeight = Math.Max(16f, Math.Max(TreeBaseHeight * 2.2f, grassWorldH * 2.5f));
+        float sinkLocal = _terrain.WorldToLocalLength(0.28f);
+        float normalBlend = Math.Clamp(TreeSurfaceNormalBlend, 0f, 1f);
+        float maxTiltRad = Math.Clamp(TreeMaxTiltFromRadialDegrees, 0f, 60f) * (MathF.PI / 180f);
+        float minCosTilt = MathF.Cos(maxTiltRad);
+
+        // Cache resolved GPU parts per model path for fast bulk registration.
+        var partsCache = new Dictionary<string, (List<PlanetGpuTrees.SubmeshPart> Parts, float Extent)>(StringComparer.OrdinalIgnoreCase);
+        List<PlanetGpuTrees.SubmeshPart>? procParts = null;
+        float procExtent = 1f;
+
+        int count = 0;
+        for (int face = 0; face < 6 && count < maxTrees; face++)
+        {
+            var hArr = heightFaces[face];
+            var dArr = deltaFaces[face];
+            var s0Arr = splat0Faces[face];
+            var s1Arr = splat1Faces[face];
+            if (hArr == null || dArr == null || s0Arr == null || s1Arr == null)
+                continue;
+
+            for (int gy = 0; gy < cells && count < maxTrees; gy++)
+            {
+                for (int gx = 0; gx < cells && count < maxTrees; gx++)
+                {
+                    int token = unchecked((int)0xC0000000) | ((TreeCellBand & 3) << 27) | ((face & 7) << 24) | ((gx & 0xFFF) << 12) | (gy & 0xFFF);
+                    if (_felledCarpet.Contains(token))
+                        continue;
+
+                    uint hSeed = CellHash((uint)token);
+                    float ju = 0.15f + 0.70f * ((hSeed & 0xFFFF) * (1f / 65536f));
+                    float jv = 0.15f + 0.70f * ((hSeed >> 16) * (1f / 65536f));
+                    float u = Math.Clamp((gx + ju) * invCells, 0f, 1f);
+                    float v = Math.Clamp((gy + jv) * invCells, 0f, 1f);
+
+                    int tx = Math.Clamp((int)(u * (res - 1)), 0, res - 1);
+                    int ty = Math.Clamp((int)(v * (res - 1)), 0, res - 1);
+                    int idx = ty * res + tx;
+
+                    float h = hArr[idx] + dArr[idx];
+                    float surfR = localRadius + h;
+                    if (enableWater && surfR <= seaLevel + shoreMargin)
+                        continue;
+
+                    int txL = Math.Max(0, tx - 1);
+                    int txR = Math.Min(res - 1, tx + 1);
+                    int tyD = Math.Max(0, ty - 1);
+                    int tyU = Math.Min(res - 1, ty + 1);
+                    float dhdx = ((hArr[ty * res + txR] + dArr[ty * res + txR]) - (hArr[ty * res + txL] + dArr[ty * res + txL])) * invTwoTexel;
+                    float dhdy = ((hArr[tyU * res + tx] + dArr[tyU * res + tx]) - (hArr[tyD * res + tx] + dArr[tyD * res + tx])) * invTwoTexel;
+                    float slopeTan = MathF.Sqrt(dhdx * dhdx + dhdy * dhdy);
+
+                    int sIdx = idx * 4;
+                    float wSum = 0f, density = 0f, minScale = 0f, maxScale = 0f, maxSlopeTan = 0f;
+                    for (int s = 0; s < 4; s++)
+                    {
+                        float w = s0Arr[sIdx + s];
+                        if (w > 0.001f && slotPopulated[s])
+                        {
+                            density += slotDensity[s] * w;
+                            minScale += slotMinScale[s] * w;
+                            maxScale += slotMaxScale[s] * w;
+                            maxSlopeTan += slotMaxSlopeTan[s] * w;
+                            wSum += w;
+                        }
+                    }
+                    for (int s = 0; s < 4; s++)
+                    {
+                        float w = s1Arr[sIdx + s];
+                        int slot = s + 4;
+                        if (w > 0.001f && slotPopulated[slot])
+                        {
+                            density += slotDensity[slot] * w;
+                            minScale += slotMinScale[slot] * w;
+                            maxScale += slotMaxScale[slot] * w;
+                            maxSlopeTan += slotMaxSlopeTan[slot] * w;
+                            wSum += w;
+                        }
+                    }
+
+                    if (wSum > 1e-4f)
+                    {
+                        float invW = 1f / wSum;
+                        density *= invW;
+                        minScale *= invW;
+                        maxScale *= invW;
+                        maxSlopeTan *= invW;
+                    }
+                    else
+                    {
+                        density = 0f;
+                    }
+
+                    if (density <= 0.001f || slopeTan > MathF.Min(0.68f, maxSlopeTan))
+                        continue;
+
+                    float prob = Math.Clamp(density, 0f, 1f);
+                    if (CarpetCellRoll(token ^ 0x5A17B3C9) >= prob)
+                        continue;
+
+                    var dir = CubeSphereMath.CubemapTexelDirection(face, u, v);
+                    if (InsideClearZone(dir) || IsFelledNear(dir))
+                        continue;
+
+                    string? modelPath = PickReadyLocalTreeModel(token);
+                    List<PlanetGpuTrees.SubmeshPart>? parts = null;
+                    float meshExtent = 1f;
+                    if (!string.IsNullOrWhiteSpace(modelPath))
+                    {
+                        if (!partsCache.TryGetValue(modelPath, out var cached))
+                        {
+                            string? abs = ResolveTreeModelAbsPath(modelPath);
+                            if (!string.IsNullOrWhiteSpace(abs) && TryGetGpuTreeTemplateParts(abs, out var p, out var ext, out _))
+                            {
+                                cached = (p, ext);
+                                partsCache[modelPath] = cached;
+                            }
+                            else
+                            {
+                                if (!string.IsNullOrWhiteSpace(abs))
+                                    RequestTreeTemplateLoad(abs);
+                                continue;
+                            }
+                        }
+                        parts = cached.Parts;
+                        meshExtent = cached.Extent;
+                    }
+                    else if (_localTreeModels.Count == 0)
+                    {
+                        procParts ??= GetOrCreateProceduralGpuTreeParts(out procExtent);
+                        parts = procParts;
+                        meshExtent = procExtent;
+                        _carpetUsedFallbackTrees = true;
+                        _carpetProceduralTreeTokens.Add(token);
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    if (parts == null || parts.Count == 0)
+                        continue;
+
+                    float rScale = (CellHash((uint)token ^ 0x3C6EF372u) & 0xFFFF) * (1f / 65536f);
+                    float baseScale = minScale + (maxScale - minScale) * rScale;
+                    float treePad = GetTreeRadialOutwardPadding(baseScale);
+
+                    float worldScale = Math.Max(0.01f, baseScale);
+                    if (meshExtent > 1e-4f)
+                    {
+                        float fit = desiredHeight / meshExtent;
+                        worldScale *= Math.Clamp(fit, 0.12f, 200f);
+                        float projected = meshExtent * worldScale;
+                        if (projected < desiredHeight * 0.5f)
+                            worldScale = (desiredHeight * 0.92f) / meshExtent;
+                    }
+                    worldScale = Math.Clamp(worldScale, 0.35f, 240f);
+                    float localScale = _terrain.WorldToLocalLength(worldScale);
+
+                    var localPos = dir * (surfR + _terrain.WorldToLocalLength(treePad) - sinkLocal);
+
+                    // Subtle terrain-slope tilt clamped to TreeMaxTiltFromRadialDegrees.
+                    var localUp = dir;
+                    if (normalBlend > 0.001f && slopeTan > 0.01f)
+                    {
+                        CarpetTangentBasis(dir, out var tanU, out var tanV);
+                        var slopeN = SafeNormalize(dir - tanU * dhdx - tanV * dhdy, dir);
+                        var blended = SafeNormalize(SN.Vector3.Lerp(dir, slopeN, normalBlend), dir);
+                        if (SN.Vector3.Dot(blended, dir) >= minCosTilt)
+                            localUp = blended;
+                    }
+
+                    float yawRad = CarpetCellYaw(token) * (MathF.PI / 180f);
+                    PlanetGpuTrees.AddOrUpdateTree(this, token, parts, localPos, localUp, localScale, yawRad, SN.Vector3.One);
+                    _gpuCarpetTrees[token] = new GpuTreeRecord(dir, localPos, localUp, localScale, yawRad, baseScale, modelPath, treePad);
+                    _carpetTreeDirs[token] = dir;
+                    count++;
+                }
+            }
+        }
+
+        _prebuiltTreeHeightVer = hv;
+        _prebuiltTreeSplatVer = sv;
+        _prebuiltTreeRecipeHash = rh;
+        _prebuiltTreeDensityHash = dh;
+        _prebuiltTreesReady = true;
+    }
+
     void TickLocalTrees(SN.Vector3 cameraPos, float dt)
     {
         if (_terrain?.Config == null) return;
@@ -3005,7 +3414,8 @@ public sealed class PlanetVegetationSystem : Behavior
                 if (dc2 < keepOut * keepOut || dc2 > reach * reach || InsideClearZone(dir))
                     continue;
                 samplesLeft--;
-                if (!IsCheapDryLandForCarpet(dir))
+                float treeDensity = CarpetTreeDensity(dir);
+                if (treeDensity <= 0.001f || CarpetCellRoll(token ^ 0x5A17B3C9) >= treeDensity || !IsCheapDryLandForCarpet(dir))
                 {
                     _carpetRejected.Add(token);
                     continue;
@@ -3070,6 +3480,8 @@ public sealed class PlanetVegetationSystem : Behavior
         _carpetProceduralTreeTokens.Clear();
         _treeShellR.Clear();
         _carpetUsedFallbackTrees = false;
+        _prebuiltTreesReady = false;
+        _prebuiltTreeHeightVer = -1;
     }
 
     void ClearPooledTreeColliders()
@@ -4452,25 +4864,12 @@ public sealed class PlanetVegetationSystem : Behavior
             : MaxGrassClumpsPerLeaf;
         if (PlayPerfLimited && !_manualSpawnPass)
             treeCapPerLeaf = Math.Min(treeCapPerLeaf, 4);
-        int targetTrees = Math.Clamp((int)MathF.Round(biome.TreeDensity * treeDensityMul * treeCapPerLeaf), 0, treeCapPerLeaf);
-        int targetGrass = Math.Clamp((int)MathF.Round(biome.VegetationDensity * grassDensityMul * grassCapPerLeaf), 0, grassCapPerLeaf);
-        bool hasTreeItems = GetUsableTreeItems(profile).Count > 0;
-        bool hasGrassItems = profile?.GrassItems?.Any(it => it != null && it.Weight > 0f) == true;
-        if (ShouldSpawnVegetationAt(leafDir))
-        {
-            // Land with a vegetation profile should fill the leaf, not leave a couple of hidden plants.
-            if (hasTreeItems && treeCapPerLeaf > 0)
-                targetTrees = treeCapPerLeaf;
-            if (hasGrassItems && grassCapPerLeaf > 0)
-                targetGrass = grassCapPerLeaf;
-        }
-        if (_manualSpawnPass)
-        {
-            if (targetTrees <= 0 && hasTreeItems && treeCapPerLeaf > 0)
-                targetTrees = treeCapPerLeaf;
-            if (targetGrass <= 0 && hasGrassItems && grassCapPerLeaf > 0)
-                targetGrass = grassCapPerLeaf;
-        }
+        int targetTrees = biome.TreeDensity <= 0.001f
+            ? 0
+            : Math.Clamp((int)MathF.Round(biome.TreeDensity * treeDensityMul * treeCapPerLeaf), 0, treeCapPerLeaf);
+        int targetGrass = biome.VegetationDensity <= 0.001f
+            ? 0
+            : Math.Clamp((int)MathF.Round(biome.VegetationDensity * grassDensityMul * grassCapPerLeaf), 0, grassCapPerLeaf);
 
         int treeCount = 0;
         int grassCount = 0;
@@ -7391,17 +7790,16 @@ public sealed class PlanetVegetationSystem : Behavior
         if (!ShouldSpawnVegetationAt(dir))
             return sampled;
 
-        float veg = Math.Max(sampled.VegetationDensity, 2f);
-        float trees = Math.Max(sampled.TreeDensity, sampled.Name.Equals("Ocean", StringComparison.OrdinalIgnoreCase) ? 0f : 1f);
+        // Strictly preserve the biome's authored VegetationDensity and TreeDensity (never inflate 0 -> 1 or 2).
         if (UseUniversalLandVegetation && !string.IsNullOrWhiteSpace(UniversalVegetationProfileId))
         {
             return new BiomeDefinition
             {
                 Name = sampled.Name,
                 BiomeIndex = sampled.BiomeIndex,
-                VegetationDensity = veg,
-                TreeDensity = trees,
-                BushDensity = Math.Max(sampled.BushDensity, 0f),
+                VegetationDensity = Math.Max(0f, sampled.VegetationDensity),
+                TreeDensity = Math.Max(0f, sampled.TreeDensity),
+                BushDensity = Math.Max(0f, sampled.BushDensity),
                 VegetationProfileId = UniversalVegetationProfileId,
                 GrassMinScale = sampled.GrassMinScale,
                 GrassMaxScale = sampled.GrassMaxScale,
@@ -7410,11 +7808,7 @@ public sealed class PlanetVegetationSystem : Behavior
             };
         }
 
-        if (sampled.VegetationDensity > 0.05f || sampled.TreeDensity > 0.05f)
-            return sampled;
-        return ResolveBiomeByName("Grassland")
-            ?? ResolveBiomeByName("Forest")
-            ?? sampled;
+        return sampled;
     }
 
     bool IsWaterPlanet()
@@ -7504,9 +7898,16 @@ public sealed class PlanetVegetationSystem : Behavior
                     if (!hasGrass && !hasTrees)
                         continue;
 
-                    if (hasGrass)
+                    int cellGrass = biome.VegetationDensity <= 0.001f
+                        ? 0
+                        : Math.Clamp((int)MathF.Round(grassPerCell * Math.Clamp(biome.VegetationDensity, 0f, 1f)), 0, grassPerCell);
+                    int cellTrees = biome.TreeDensity <= 0.001f
+                        ? 0
+                        : Math.Clamp((int)MathF.Round(treePerCell * Math.Clamp(biome.TreeDensity, 0f, 1f)), 0, treePerCell);
+
+                    if (hasGrass && cellGrass > 0)
                     {
-                        for (int g = 0; g < grassPerCell && _assetPlacements.Count < cap; g++)
+                        for (int g = 0; g < cellGrass && _assetPlacements.Count < cap; g++)
                         {
                             var placeDir = JitterCellDirection(face, iu, iv, cells, salt + 97 + g * 19);
                             var p = BuildPlacementAtDirection(placeDir, biome, isGrass: true, salt + g * 19, profile);
@@ -7516,9 +7917,9 @@ public sealed class PlanetVegetationSystem : Behavior
                         }
                     }
 
-                    if (hasTrees && ShouldSpawnVegetationAt(dir) && PassesGrowthAndPatchiness(biome, dir, isTree: true))
+                    if (hasTrees && cellTrees > 0 && ShouldSpawnVegetationAt(dir) && PassesGrowthAndPatchiness(biome, dir, isTree: true))
                     {
-                        for (int t = 0; t < treePerCell && _assetPlacements.Count < cap; t++)
+                        for (int t = 0; t < cellTrees && _assetPlacements.Count < cap; t++)
                         {
                             var placeDir = JitterCellDirection(face, iu, iv, cells, salt + 221 + t * 31);
                             var p = BuildPlacementAtDirection(placeDir, biome, isGrass: false, salt + 40 + t * 31, profile);

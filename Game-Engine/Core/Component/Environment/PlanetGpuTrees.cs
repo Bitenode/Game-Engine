@@ -242,6 +242,12 @@ public static class PlanetGpuTrees
         if (owner == null || standardShader == null || s_batches.Count == 0)
             return;
 
+        // Distance-cull Tier 1 detailed 3D trees to the near-ring radius around the camera;
+        // when in orbit (< 0), Tier 2 whole-planet canopies cover 100% of the planet.
+        float maxRenderDistLocal = owner.GetTier1TreeRenderRadiusLocal(camPos);
+        if (maxRenderDistLocal < 0f)
+            return;
+
         // Quick check whether this owner has any active batches.
         bool any = false;
         for (int i = 0; i < s_batches.Count; i++)
@@ -322,6 +328,8 @@ public static class PlanetGpuTrees
         var localViewProj = planetWorld * view * proj;
         var planes = s_frustumPlanes ??= new FrustumPlane[6];
         ExtractFrustumPlanes(in localViewProj, planes);
+        var camLocal = SN.Vector3.Transform(camPos, invWorld);
+        float maxDistSq = maxRenderDistLocal > 0f ? maxRenderDistLocal * maxRenderDistLocal : 0f;
 
         gl.Enable(EnableCap.DepthTest);
         gl.DepthMask(true);
@@ -339,7 +347,7 @@ public static class PlanetGpuTrees
                 if (gpuMesh.IndexCount <= 0)
                     continue;
 
-                int visibleCount = CullAndPackVisible(batch, planes, out var visibleData);
+                int visibleCount = CullAndPackVisible(batch, planes, camLocal, maxDistSq, out var visibleData);
                 if (visibleCount <= 0)
                     continue;
 
@@ -400,7 +408,7 @@ public static class PlanetGpuTrees
         return batch.MeshBoundRadius;
     }
 
-    static int CullAndPackVisible(TreeBatch batch, FrustumPlane[] planes, out float[] scratch)
+    static int CullAndPackVisible(TreeBatch batch, FrustumPlane[] planes, SN.Vector3 camLocal, float maxDistSq, out float[] scratch)
     {
         int total = batch.Count;
         int needFloats = total * FloatsPerInstance;
@@ -421,10 +429,22 @@ public static class PlanetGpuTrees
             if (scale <= 0.0001f)
                 continue;
 
+            float px = src[o + 0];
+            float py = src[o + 1];
+            float pz = src[o + 2];
+            if (maxDistSq > 0f)
+            {
+                float dx = px - camLocal.X;
+                float dy = py - camLocal.Y;
+                float dz = pz - camLocal.Z;
+                if (dx * dx + dy * dy + dz * dz > maxDistSq)
+                    continue;
+            }
+
             float halfH = scale * meshR * 0.5f;
-            float cx = src[o + 0] + src[o + 4] * halfH;
-            float cy = src[o + 1] + src[o + 5] * halfH;
-            float cz = src[o + 2] + src[o + 6] * halfH;
+            float cx = px + src[o + 4] * halfH;
+            float cy = py + src[o + 5] * halfH;
+            float cz = pz + src[o + 6] * halfH;
             float r = MathF.Max(scale * meshR * 1.15f, 4f);
 
             bool inside = true;

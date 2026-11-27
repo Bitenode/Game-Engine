@@ -2012,7 +2012,8 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
                     lightIsPoint, lightPosW, lightRange,
                     shadowFBO, shadowVP, sunSD,
                     lightColor: lightColorNorm,
-                    cascadedShadow: activeCsm);
+                    cascadedShadow: activeCsm,
+                    allowWholePlanetForestCanopies: true);
                 SceneRenderer.RenderForwardSceneOpaques(g, res.Standard!, res.Cache,
                     view, proj, camPos,
                     SN.Vector3.Normalize(-L), DiffuseK, Ambient,

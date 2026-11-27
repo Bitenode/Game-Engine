@@ -785,6 +785,8 @@ Located in `Standard Assets/Shader/`:
 
 The Biome Graph panel provides a node-based biome authoring workflow for `PlanetTerrain`.
 
+The panel uses the same theme-aware toolbar and rounded `editor-panel` framing as the rest of the editor: a **Graph** path strip (filename + full-path tooltip), a compact action toolbar (horizontally scrollable when the window is narrow), a dark node canvas for contrast, and a framed **Properties** sidebar.
+
 ### Features
 - **Node graph editing** — add/move/connect biome nodes on a zoomable canvas
 - **Undo/Redo** — graph-level history (`Ctrl+Z` / `Ctrl+Y`)

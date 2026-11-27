@@ -4165,7 +4165,8 @@ namespace Game_Engine.Core
             SN.Vector3 sunShineDir,
             bool isES = true,
             SN.Vector3 lightColor = default,
-            CascadedShadowMap? cascadedShadow = null)
+            CascadedShadowMap? cascadedShadow = null,
+            bool allowWholePlanetForestCanopies = false)
         {
             // Instanced grass, near-ring GPU trees, and whole-planet canopies are not scene meshes.
             // The dedicated pass also draws GameObject tree meshes; with that pass off, GameObject
@@ -4173,7 +4174,8 @@ namespace Game_Engine.Core
             if (!PlanetVegetationSystem.AnyUseDedicatedRenderPass)
             {
                 var effLightColor = lightColor == default ? new SN.Vector3(1f, 1f, 1f) : lightColor;
-                RenderPlanetWholePlanetForest(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, effLightColor);
+                if (allowWholePlanetForestCanopies)
+                    RenderPlanetWholePlanetForest(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, effLightColor);
                 RenderPlanetGpuTreeBatches(
                     gl, standardShader, cache, view, proj, camPos,
                     lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
@@ -4208,7 +4210,7 @@ namespace Game_Engine.Core
             RenderPlanetVegetation(
                 gl, standardShader, cache, view, proj, planes, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
-                shadowFBO, shadowVP, sunShineDir, in renderCtx);
+                shadowFBO, shadowVP, sunShineDir, in renderCtx, allowWholePlanetForestCanopies);
         }
 
         static void RenderPlanetVegetation(
@@ -4228,7 +4230,8 @@ namespace Game_Engine.Core
             GPUFramebuffer? shadowFBO,
             in SN.Matrix4x4 shadowVP,
             SN.Vector3 sunShineDir,
-            in RenderContext renderCtx)
+            in RenderContext renderCtx,
+            bool allowWholePlanetForestCanopies)
         {
             if (!PlanetVegetationSystem.AnyUseDedicatedRenderPass)
                 return;
@@ -4323,7 +4326,8 @@ namespace Game_Engine.Core
             }
             }
 
-            RenderPlanetWholePlanetForest(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, renderCtx.LightColor);
+            if (allowWholePlanetForestCanopies)
+                RenderPlanetWholePlanetForest(gl, cache, view, proj, camPos, lightDir, ambient, diffuseK, renderCtx.LightColor);
             RenderPlanetGpuTreeBatches(
                 gl, standardShader, cache, view, proj, camPos,
                 lightDir, diffuseK, ambient, lightIsPoint, lightPosW, lightRange,
@@ -4354,7 +4358,14 @@ namespace Game_Engine.Core
             for (int p = 0; p < planets.Count; p++)
             {
                 var terrain = planets[p];
-                if (terrain?.gameObject == null || !terrain.IsActiveAndEnabled || !terrain.HasBakedStandSurface)
+                if (terrain?.gameObject == null || terrain.Config == null || !terrain.IsActiveAndEnabled || !terrain.HasBakedStandSurface)
+                    continue;
+
+                // Tier 2 low-poly canopies are only for very long-range / orbital SceneView inspection.
+                float planetWorldRadius = Math.Max(1f, terrain.Config.EffectiveWorldRadius) * Math.Max(0.0001f, terrain.GetWorldRadiusScale());
+                float camAltitude = (camPos - terrain.GetWorldCenter()).Length() - planetWorldRadius;
+                float minOrbitalAltitude = MathF.Min(450f, planetWorldRadius * 0.45f);
+                if (camAltitude < minOrbitalAltitude)
                     continue;
 
                 PlanetVegetationSystem? veg = null;
@@ -4404,6 +4415,7 @@ namespace Game_Engine.Core
                 var sys = systems[s];
                 if (sys?.TerrainGameObject == null || !sys.IsActiveAndEnabled)
                     continue;
+                sys.EnsurePrebuiltWholePlanetTrees();
                 var planetWorld = TransformUtil.WorldFromTransform(sys.TerrainGameObject.Transform);
                 PlanetGpuTrees.Render(
                     gl, standardShader, cache, sys, planetWorld, view, proj, camPos,

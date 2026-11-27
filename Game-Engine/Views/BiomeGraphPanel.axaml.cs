@@ -22,6 +22,7 @@ public partial class BiomeGraphPanel : UserControl
     Canvas? _worldCanvas;
     StackPanel? _propsPanel;
     TextBlock? _propsNodeName;
+    TextBlock? _txtGraphPath;
     ComboBox? _nodeTypeCombo;
     bool _loadedOnce;
     string _currentGraphPath = "";
@@ -64,6 +65,7 @@ public partial class BiomeGraphPanel : UserControl
         _canvas = this.FindControl<Canvas>("GraphCanvas");
         _propsPanel = this.FindControl<StackPanel>("PropsPanel");
         _propsNodeName = this.FindControl<TextBlock>("PropsNodeName");
+        _txtGraphPath = this.FindControl<TextBlock>("TxtGraphPath");
         _nodeTypeCombo = this.FindControl<ComboBox>("NodeTypeCombo");
 
         var addBtn = this.FindControl<Button>("AddNodeBtn");
@@ -103,7 +105,23 @@ public partial class BiomeGraphPanel : UserControl
         _graph = BiomeGraph.CreateDefault();
         LoadVegetationProfiles();
         CaptureUndo();
+        RefreshGraphPathLabel();
         Redraw();
+    }
+
+    void RefreshGraphPathLabel()
+    {
+        if (_txtGraphPath == null) return;
+        if (string.IsNullOrWhiteSpace(_currentGraphPath))
+        {
+            _txtGraphPath.Text = "(unsaved — use Save or Load)";
+            ToolTip.SetTip(_txtGraphPath, null);
+            return;
+        }
+
+        string name = System.IO.Path.GetFileName(_currentGraphPath);
+        _txtGraphPath.Text = name;
+        ToolTip.SetTip(_txtGraphPath, _currentGraphPath);
     }
 
     // ── Undo/Redo ──
@@ -752,6 +770,7 @@ public partial class BiomeGraphPanel : UserControl
         {
             _currentGraphPath = file.Path.LocalPath;
             _graph.SaveToFile(_currentGraphPath);
+            RefreshGraphPathLabel();
         }
     }
 
@@ -777,6 +796,7 @@ public partial class BiomeGraphPanel : UserControl
             _undoStack.Clear();
             _redoStack.Clear();
             CaptureUndo();
+            RefreshGraphPathLabel();
             Redraw();
             UpdateProperties();
         }
@@ -871,8 +891,8 @@ public partial class BiomeGraphPanel : UserControl
     {
         if (_propsPanel == null) return;
 
-        while (_propsPanel.Children.Count > 2)
-            _propsPanel.Children.RemoveAt(2);
+        while (_propsPanel.Children.Count > 0)
+            _propsPanel.Children.RemoveAt(0);
 
         _propsNodeName!.Text = title;
 
@@ -965,8 +985,8 @@ public partial class BiomeGraphPanel : UserControl
             }
 
             if (_propsPanel == null) return;
-            while (_propsPanel.Children.Count > 2)
-                _propsPanel.Children.RemoveAt(2);
+            while (_propsPanel.Children.Count > 0)
+                _propsPanel.Children.RemoveAt(0);
 
             _propsNodeName!.Text = "Biome Preview";
 
@@ -1259,8 +1279,8 @@ public partial class BiomeGraphPanel : UserControl
     {
         if (_propsPanel == null || _propsNodeName == null) return;
 
-        while (_propsPanel.Children.Count > 2)
-            _propsPanel.Children.RemoveAt(2);
+        while (_propsPanel.Children.Count > 0)
+            _propsPanel.Children.RemoveAt(0);
 
         if (_selectedNode == null)
         {
