@@ -4,32 +4,325 @@
              x:Class="Game_Engine.Views.ProjectPanel"
              x:CompileBindings="False"
              x:DataType="local:ProjectPanel">
+
+	<UserControl.Resources>
+		<local:ProjectIconConverter x:Key="ProjectIcon"/>
+		<local:ProjectFileStemConverter x:Key="ProjectFileStem"/>
+		<local:ProjectFileExtConverter x:Key="ProjectFileExt"/>
+	</UserControl.Resources>
+
+	<UserControl.Styles>
+		<!-- Compact toolbar buttons -->
+		<Style Selector="Button.proj-tool-btn">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="MinHeight" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="BorderBrush" Value="Transparent"/>
+			<Setter Property="HorizontalContentAlignment" Value="Center"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+		</Style>
+		<Style Selector="Button.proj-tool-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="Button.proj-tool-btn:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+
+		<Style Selector="Button.proj-icon-btn">
+			<Setter Property="Width" Value="26"/>
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="MinHeight" Value="26"/>
+			<Setter Property="Padding" Value="0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="BorderBrush" Value="Transparent"/>
+			<Setter Property="HorizontalContentAlignment" Value="Center"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+		</Style>
+		<Style Selector="Button.proj-icon-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="Button.proj-icon-btn:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+
+		<!-- Tiny inline clear button inside search pill -->
+		<Style Selector="Button.proj-inline-btn">
+			<Setter Property="Width" Value="20"/>
+			<Setter Property="Height" Value="20"/>
+			<Setter Property="Padding" Value="0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+			<Setter Property="HorizontalContentAlignment" Value="Center"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+		</Style>
+		<Style Selector="Button.proj-inline-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+
+		<!-- Search pill surface (matches HierarchyPanel) -->
+		<Style Selector="Border.proj-search-pill">
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="Padding" Value="6,1,3,1"/>
+		</Style>
+		<Style Selector="Border.proj-search-pill:focus-within">
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+		</Style>
+
+		<!-- Borderless TextBox inside search pill -->
+		<Style Selector="TextBox.proj-search-input">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+			<Setter Property="MinHeight" Value="22"/>
+			<Setter Property="Padding" Value="4,3"/>
+			<Setter Property="FontSize" Value="12"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="TextBox.proj-search-input:pointerover /template/ Border#PART_BorderElement">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+		</Style>
+		<Style Selector="TextBox.proj-search-input:focus /template/ Border#PART_BorderElement">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+		</Style>
+
+		<!-- Framed tree surface (matches editor-panel treatment in MainWindow) -->
+		<Style Selector="Border#TreeHostBorder">
+			<Setter Property="Background" Value="{DynamicResource SystemControlPageBackgroundAltHighBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="ClipToBounds" Value="True"/>
+		</Style>
+	</UserControl.Styles>
+
 	<DockPanel>
 		<!-- Header / toolbar -->
-		<StackPanel DockPanel.Dock="Top" Margin="8,6" Spacing="6">
-			<!-- was: Text="{Binding ProjectTitle}" -->
-			<TextBlock x:Name="TitleText" FontSize="14" />
-			<TextBox x:Name="FilterText" Watermark="Filter by file or folder name… (Ctrl+F)"
-					 FontSize="12" />
-			<StackPanel Orientation="Horizontal" Spacing="6">
-				<Button x:Name="BtnRefresh" Content="Refresh"/>
-				<Button x:Name="BtnAdd"     Content="+" Width="28" MinHeight="28"
-						ToolTip.Tip="Create or Import"/>
+		<StackPanel DockPanel.Dock="Top" Margin="6,6,6,4" Spacing="6">
+			<!-- Title row: folder glyph + bold project name + dimmed truncated path -->
+			<Grid ColumnDefinitions="Auto,*" VerticalAlignment="Center">
+				<Viewbox Grid.Column="0" Width="15" Height="15" Margin="2,0,7,0" VerticalAlignment="Center">
+					<Canvas Width="24" Height="24">
+						<Path Data="M3,6 C3,4.9 3.9,4 5,4 L9.5,4 L11.5,6.5 L19,6.5 C20.1,6.5 21,7.4 21,8.5 L21,18 C21,19.1 20.1,20 19,20 L5,20 C3.9,20 3,19.1 3,18 Z"
+							  Stroke="{DynamicResource SystemControlHighlightAccentBrush}"
+							  StrokeThickness="1.8"
+							  StrokeLineCap="Round"
+							  StrokeJoin="Round"
+							  Fill="Transparent"/>
+					</Canvas>
+				</Viewbox>
+				<StackPanel Grid.Column="1" Spacing="0" VerticalAlignment="Center">
+					<TextBlock x:Name="TitleText"
+							   FontSize="14"
+							   FontWeight="SemiBold"
+							   TextTrimming="CharacterEllipsis"
+							   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+					<TextBlock x:Name="ProjectPathText"
+							   FontSize="11"
+							   TextTrimming="CharacterEllipsis"
+							   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+							   IsVisible="False"/>
+				</StackPanel>
+			</Grid>
+
+			<!-- Search pill -->
+			<Border Classes="proj-search-pill">
+				<Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+					<!-- Leading search glyph -->
+					<Viewbox Grid.Column="0" Width="12" Height="12" Margin="0,0,4,0" VerticalAlignment="Center">
+						<Canvas Width="24" Height="24">
+							<Path Data="M10.5,4 A6.5,6.5 0 1,0 10.5,17 A6.5,6.5 0 1,0 10.5,4 M15.5,15.5 L20.5,20.5"
+								  Stroke="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+								  StrokeThickness="2.2"
+								  StrokeLineCap="Round"/>
+						</Canvas>
+					</Viewbox>
+
+					<!-- Filter input -->
+					<TextBox x:Name="FilterText"
+							 Grid.Column="1"
+							 Classes="proj-search-input"
+							 Watermark="Filter by file or folder name… (Ctrl+F)"/>
+
+					<!-- Trailing clear button -->
+					<Button x:Name="BtnClearFilter"
+							Grid.Column="2"
+							Classes="proj-inline-btn"
+							IsVisible="False"
+							ToolTip.Tip="Clear filter"
+							Click="OnClearFilterClick">
+						<Viewbox Width="10" Height="10">
+							<Canvas Width="24" Height="24">
+								<Path Data="M6,6 L18,18 M18,6 L6,18"
+									  Stroke="{Binding $parent[Button].Foreground}"
+									  StrokeThickness="2.4"
+									  StrokeLineCap="Round"/>
+							</Canvas>
+						</Viewbox>
+					</Button>
+				</Grid>
+			</Border>
+
+			<!-- Compact toolbar -->
+			<StackPanel Orientation="Horizontal" Spacing="4">
+				<Button x:Name="BtnRefresh"
+						Classes="proj-tool-btn"
+						ToolTip.Tip="Refresh project tree">
+					<StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+						<Viewbox Width="13" Height="13" VerticalAlignment="Center">
+							<Canvas Width="24" Height="24">
+								<Path Data="M20,12 A8,8 0 1,1 17.5,6.2 M20,4 L20,8.5 L15.5,8.5"
+									  Stroke="{Binding $parent[Button].Foreground}"
+									  StrokeThickness="2"
+									  StrokeLineCap="Round"
+									  StrokeJoin="Round"
+									  Fill="Transparent"/>
+							</Canvas>
+						</Viewbox>
+						<TextBlock Text="Refresh" FontSize="12" VerticalAlignment="Center"/>
+					</StackPanel>
+				</Button>
+
+				<Button x:Name="BtnAdd"
+						Classes="proj-icon-btn"
+						ToolTip.Tip="Create or Import">
+					<Button.Flyout>
+						<MenuFlyout>
+							<MenuItem Header="Create">
+								<MenuItem Header="_New Folder"    Click="OnNewFolderClick"/>
+								<MenuItem Header="New _C# Script" Click="OnNewScriptClick"/>
+								<MenuItem Header="New _Scene"     Click="OnNewSceneClick"/>
+								<MenuItem Header="New _Material"  Click="OnNewMaterialClick"/>
+							</MenuItem>
+							<Separator/>
+							<MenuItem Header="_Import Files…" Click="OnImportFilesClick"/>
+						</MenuFlyout>
+					</Button.Flyout>
+					<Viewbox Width="13" Height="13">
+						<Canvas Width="24" Height="24">
+							<Path Data="M12,5 L12,19 M5,12 L19,12"
+								  Stroke="{Binding $parent[Button].Foreground}"
+								  StrokeThickness="2.2"
+								  StrokeLineCap="Round"/>
+						</Canvas>
+					</Viewbox>
+				</Button>
 			</StackPanel>
 		</StackPanel>
 
-		<!-- Tree of project folders/files -->
-		<Border Margin="6" BorderThickness="1" CornerRadius="6" Padding="6">
-			<TreeView x:Name="Tree"
-					  ItemsSource="{Binding Roots}">
-				<TreeView.ItemTemplate>
-					<TreeDataTemplate ItemsSource="{Binding Children}">
-						<StackPanel Orientation="Horizontal" Spacing="6">
-							<TextBlock Text="{Binding Name}"/>
-						</StackPanel>
-					</TreeDataTemplate>
-				</TreeView.ItemTemplate>
-			</TreeView>
+		<!-- Framed tree of project folders/files + empty state -->
+		<Border x:Name="TreeHostBorder" Margin="6,2,6,6" Padding="4">
+			<Grid>
+				<TreeView x:Name="Tree"
+						  ItemsSource="{Binding Roots}">
+					<TreeView.Styles>
+						<Style Selector="TreeViewItem">
+							<Setter Property="MinHeight" Value="24"/>
+							<Setter Property="Padding" Value="4,1"/>
+							<Setter Property="Margin" Value="0,1"/>
+							<Setter Property="FontSize" Value="12.5"/>
+						</Style>
+						<Style Selector="TreeViewItem /template/ Border#PART_LayoutRoot">
+							<Setter Property="CornerRadius" Value="4"/>
+							<Setter Property="BorderThickness" Value="1"/>
+							<Setter Property="BorderBrush" Value="Transparent"/>
+						</Style>
+						<Style Selector="TreeViewItem:pointerover /template/ Border#PART_LayoutRoot">
+							<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+						</Style>
+						<Style Selector="TreeViewItem:selected /template/ Border#PART_LayoutRoot">
+							<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListAccentLowBrush}"/>
+						</Style>
+						<Style Selector="TreeViewItem:selected:pointerover /template/ Border#PART_LayoutRoot">
+							<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListAccentMediumBrush}"/>
+						</Style>
+						<Style Selector="TreeViewItem:selected:focus /template/ Border#PART_LayoutRoot">
+							<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListAccentMediumBrush}"/>
+						</Style>
+						<Style Selector="TreeViewItem.drop-target /template/ Border#PART_LayoutRoot">
+							<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListAccentLowBrush}"/>
+							<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+							<Setter Property="BorderThickness" Value="1.5"/>
+						</Style>
+					</TreeView.Styles>
+
+					<TreeView.ItemTemplate>
+						<TreeDataTemplate ItemsSource="{Binding Children}">
+							<Grid ColumnDefinitions="Auto,*" VerticalAlignment="Center" Margin="0,1">
+								<!-- Typed vector glyph -->
+								<Viewbox Grid.Column="0"
+										 Width="14"
+										 Height="14"
+										 Margin="0,0,6,0"
+										 VerticalAlignment="Center">
+									<Canvas Width="24" Height="24">
+										<Path Data="{Binding Converter={StaticResource ProjectIcon}}"
+											  Stroke="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+											  StrokeThickness="1.8"
+											  StrokeLineCap="Round"
+											  StrokeJoin="Round"
+											  Fill="Transparent"/>
+									</Canvas>
+								</Viewbox>
+
+								<!-- Stem + dimmed extension -->
+								<StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+									<TextBlock Text="{Binding Converter={StaticResource ProjectFileStem}}"
+											   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
+											   VerticalAlignment="Center"/>
+									<TextBlock Text="{Binding Converter={StaticResource ProjectFileExt}}"
+											   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+											   FontSize="11.5"
+											   VerticalAlignment="Center"/>
+								</StackPanel>
+							</Grid>
+						</TreeDataTemplate>
+					</TreeView.ItemTemplate>
+				</TreeView>
+
+				<!-- Empty-state hint (hit-test transparent so right-click and drops still work) -->
+				<StackPanel x:Name="EmptyStateOverlay"
+							IsVisible="False"
+							IsHitTestVisible="False"
+							HorizontalAlignment="Center"
+							VerticalAlignment="Center"
+							Spacing="8"
+							Margin="16">
+					<Viewbox Width="28" Height="28" HorizontalAlignment="Center" Opacity="0.45">
+						<Canvas Width="24" Height="24">
+							<Path Data="M3,6 C3,4.9 3.9,4 5,4 L9.5,4 L11.5,6.5 L19,6.5 C20.1,6.5 21,7.4 21,8.5 L21,18 C21,19.1 20.1,20 19,20 L5,20 C3.9,20 3,19.1 3,18 Z"
+								  Stroke="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+								  StrokeThickness="1.6"
+								  StrokeLineCap="Round"
+								  StrokeJoin="Round"
+								  Fill="Transparent"/>
+						</Canvas>
+					</Viewbox>
+					<TextBlock x:Name="EmptyStateText"
+							   Text="No assets yet.&#x0a;Use + to create or import."
+							   TextAlignment="Center"
+							   TextWrapping="Wrap"
+							   FontSize="12"
+							   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+				</StackPanel>
+			</Grid>
 		</Border>
 	</DockPanel>
 </UserControl>

@@ -1,15 +1,195 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Game_Engine.Views.InspectorPanel">
+
+  <UserControl.Styles>
+    <!-- Header selection summary -->
+    <Style Selector="TextBlock.insp-selection-summary">
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+      <Setter Property="Margin" Value="2,0,8,0"/>
+    </Style>
+
+    <!-- Compact rounded Lock pill -->
+    <Style Selector="ToggleButton.insp-lock-pill">
+      <Setter Property="Height" Value="24"/>
+      <Setter Property="Padding" Value="8,0"/>
+      <Setter Property="CornerRadius" Value="12"/>
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+    <Style Selector="ToggleButton.insp-lock-pill:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+    </Style>
+    <Style Selector="ToggleButton.insp-lock-pill:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListAccentLowBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+    </Style>
+    <Style Selector="ToggleButton.insp-lock-pill:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListAccentMediumBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+    </Style>
+    <Style Selector="ToggleButton.insp-lock-pill TextBlock.insp-lock-text-locked">
+      <Setter Property="IsVisible" Value="False"/>
+    </Style>
+    <Style Selector="ToggleButton.insp-lock-pill:checked TextBlock.insp-lock-text-unlocked">
+      <Setter Property="IsVisible" Value="False"/>
+    </Style>
+    <Style Selector="ToggleButton.insp-lock-pill:checked TextBlock.insp-lock-text-locked">
+      <Setter Property="IsVisible" Value="True"/>
+    </Style>
+
+    <!-- Component cards -->
+    <Style Selector="Border.insp-card">
+      <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="6"/>
+      <Setter Property="Padding" Value="8"/>
+    </Style>
+    <Style Selector="TextBlock.insp-card-title">
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="FontSize" Value="12.5"/>
+    </Style>
+    <Style Selector="Button.insp-header-btn">
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Padding" Value="7,2"/>
+      <Setter Property="MinHeight" Value="22"/>
+      <Setter Property="CornerRadius" Value="4"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+    <Style Selector="Button.insp-header-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+    </Style>
+    <Style Selector="Button.insp-remove-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#33D94A4A"/>
+      <Setter Property="BorderBrush" Value="#B0D94A4A"/>
+    </Style>
+
+    <!-- Section fold headers (Object / Transform) -->
+    <Style Selector="StackPanel.insp-section-header">
+      <Setter Property="Margin" Value="0,2,0,2"/>
+    </Style>
+
+    <!-- Scoped control styling inside Inspector Host -->
+    <Style Selector="StackPanel#Host Expander">
+      <Setter Property="CornerRadius" Value="6"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+      <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+    </Style>
+    <Style Selector="StackPanel#Host TextBox">
+      <Setter Property="CornerRadius" Value="4"/>
+      <Setter Property="MinHeight" Value="26"/>
+      <Setter Property="Padding" Value="6,3"/>
+      <Setter Property="FontSize" Value="12"/>
+    </Style>
+    <Style Selector="StackPanel#Host NumericUpDown">
+      <Setter Property="CornerRadius" Value="4"/>
+      <Setter Property="MinHeight" Value="26"/>
+      <Setter Property="FontSize" Value="12"/>
+    </Style>
+    <Style Selector="StackPanel#Host ComboBox">
+      <Setter Property="CornerRadius" Value="4"/>
+      <Setter Property="MinHeight" Value="26"/>
+      <Setter Property="Padding" Value="8,3"/>
+      <Setter Property="FontSize" Value="12"/>
+    </Style>
+    <Style Selector="StackPanel#Host Button">
+      <Setter Property="CornerRadius" Value="4"/>
+      <Setter Property="FontSize" Value="12"/>
+    </Style>
+    <Style Selector="StackPanel#Host Separator">
+      <Setter Property="Background" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+      <Setter Property="Height" Value="1"/>
+      <Setter Property="Opacity" Value="0.6"/>
+    </Style>
+
+    <!-- Primary Add Component button -->
+    <Style Selector="Button.insp-primary-btn">
+      <Setter Property="CornerRadius" Value="5"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Foreground" Value="White"/>
+    </Style>
+    <Style Selector="Button.insp-primary-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="Opacity" Value="0.88"/>
+    </Style>
+    <Style Selector="Button.insp-primary-btn:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="Opacity" Value="0.76"/>
+    </Style>
+
+    <!-- Secondary action buttons (Quick Add / Paste) -->
+    <Style Selector="Button.insp-secondary-btn">
+      <Setter Property="CornerRadius" Value="5"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+    <Style Selector="Button.insp-secondary-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+    </Style>
+  </UserControl.Styles>
+
   <DockPanel>
-    <!-- Header with Lock toggle -->
-    <DockPanel DockPanel.Dock="Top" Margin="8,6">
-      <ToggleButton x:Name="LockToggle" Content="Lock" DockPanel.Dock="Right"/>
-      <TextBlock Text="Inspector" FontSize="14"/>
+    <!-- Compact Header Toolbar with Selection Summary & Lock Pill -->
+    <DockPanel DockPanel.Dock="Top" Margin="6,5,6,4" LastChildFill="True">
+      <ToggleButton x:Name="LockToggle"
+                    Classes="insp-lock-pill"
+                    DockPanel.Dock="Right"
+                    ToolTip.Tip="Lock inspector to current selection">
+        <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+          <Path Data="M4,6 V4.5 C4,2.8 5.3,1.5 7,1.5 C8.7,1.5 10,2.8 10,4.5 V6 M3,6 H11 C11.6,6 12,6.4 12,7 V12 C12,12.6 11.6,13 11,13 H3 C2.4,13 2,12.6 2,12 V7 C2,6.4 2.4,6 3,6 Z"
+                Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                StrokeThickness="1.3"
+                StrokeLineCap="Round"
+                StrokeJoin="Round"
+                Width="14" Height="14"
+                Stretch="Uniform"
+                VerticalAlignment="Center"/>
+          <TextBlock Text="Lock" Classes="insp-lock-text-unlocked" VerticalAlignment="Center"/>
+          <TextBlock Text="Locked" Classes="insp-lock-text-locked" VerticalAlignment="Center"/>
+        </StackPanel>
+      </ToggleButton>
+
+      <TextBlock x:Name="SelectionSummaryText"
+                 Text="No selection"
+                 Classes="insp-selection-summary"/>
     </DockPanel>
 
-    <ScrollViewer x:Name="InspectorScroll" Margin="6">
-      <StackPanel x:Name="Host" Spacing="12"/>
-    </ScrollViewer>
+    <!-- Framed Scroll Surface -->
+    <Border Margin="6,0,6,6"
+            CornerRadius="6"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+            Background="{DynamicResource SystemControlPageBackgroundAltHighBrush}"
+            ClipToBounds="True">
+      <ScrollViewer x:Name="InspectorScroll" Padding="8,8,10,10">
+        <StackPanel x:Name="Host" Spacing="10"/>
+      </ScrollViewer>
+    </Border>
   </DockPanel>
 </UserControl>

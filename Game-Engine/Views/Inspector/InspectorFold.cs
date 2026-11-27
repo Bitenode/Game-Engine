@@ -59,6 +59,7 @@ static class InspectorFold
             Margin = new Thickness(0, 6, 0, 2)
         };
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        header.Classes.Add("insp-section-header");
         header.Children.Add(chevron);
         header.Children.Add(label);
 

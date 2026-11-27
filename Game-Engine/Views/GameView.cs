@@ -72,16 +72,6 @@ namespace Game_Engine.Views
         int _fpsFrames;
         double _fpsDisplay;
 
-        public static readonly DirectProperty<GameView, string> FpsTextProperty =
-            AvaloniaProperty.RegisterDirect<GameView, string>(nameof(FpsText), o => o.FpsText);
-
-        private string _fpsText = "0 FPS";
-        public string FpsText
-        {
-            get => _fpsText;
-            private set => SetAndRaise(FpsTextProperty, ref _fpsText, value);
-        }
-
         bool _awakened, _started, _collidersWarm, _needsWarm;
         bool _registeredAsPlaying;
 
@@ -196,18 +186,6 @@ namespace Game_Engine.Views
             // or property changes can cause transient focus shifts.  Mouse look is released
             // by Escape or when the game stops (OnStateChanged).
             DetachedFromVisualTree += (_, __) => ExitLookAndClear();
-
-            // FPS toolbar text update via timer (avoids layout cascades during render)
-            var fpsDisplayTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-            fpsDisplayTimer.Tick += (_, __) =>
-            {
-                if (!_fpsWindow.IsRunning || _fpsWindow.ElapsedMilliseconds < 400) return;
-                double fps = _fpsDisplay;
-                if (fps < 0.5 && _msFrameEma > 0.01)
-                    fps = 1000.0 / _msFrameEma;
-                FpsText = fps < 10 ? $"{fps:0.0} FPS" : $"{fps:F0} FPS";
-            };
-            fpsDisplayTimer.Start();
 
             AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
             AddHandler(InputElement.KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);

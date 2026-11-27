@@ -127,6 +127,8 @@ namespace Game_Engine.Views
         private bool _syncingSelection;
         private bool _filterRebuild;
         private bool _filterStripExpanded = true;
+        private bool _componentFilterExpanded;
+        private TreeViewItem? _currentDropTargetItem;
 
         public HierarchyPanel()
         {
@@ -137,9 +139,12 @@ namespace Game_Engine.Views
 
             _vm = new HierarchyViewModel();
             DataContext = _vm;
+            _vm.Root.CollectionChanged += (_, __) => UpdateEmptyStateVisibility();
 
             FilterName.TextChanged += (_, __) => OnHierarchyFilterChanged();
             FilterComponent.TextChanged += (_, __) => OnHierarchyFilterChanged();
+            FilterName.KeyDown += OnFilterBoxKeyDown;
+            FilterComponent.KeyDown += OnFilterBoxKeyDown;
             MatchList.SelectionChanged += OnMatchListSelectionChanged;
             SceneService.Changed += OnSceneChangedRefreshHierarchyFilter;
 
@@ -236,6 +241,7 @@ namespace Game_Engine.Views
 
             // DnD target handling
             Tree.AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Bubble);
+            Tree.AddHandler(DragDrop.DragLeaveEvent, OnDragLeave, RoutingStrategies.Bubble);
             Tree.AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Bubble);
             Tree.AddHandler(KeyDownEvent, OnTreeKeyDown, RoutingStrategies.Tunnel);
             AddHandler(KeyDownEvent, OnHierarchyPanelKeyDown, RoutingStrategies.Tunnel);
@@ -244,6 +250,7 @@ namespace Game_Engine.Views
             Tree.AddHandler(Control.ContextRequestedEvent, OnContextRequested, RoutingStrategies.Tunnel);
 
             OnHierarchyFilterChanged();
+            UpdateEmptyStateVisibility();
         }
 
         private void ApplyHierarchyFilterToggleAccent()
@@ -252,12 +259,12 @@ namespace Game_Engine.Views
             var brush = new SolidColorBrush(accent);
             ToggleFilterRing.Stroke = brush;
             ToggleFilterDot.Fill = brush;
-            BtnToggleFilters.BorderBrush = new SolidColorBrush(Color.FromArgb(0x99, accent.R, accent.G, accent.B));
         }
 
         private void SyncFilterStripToggleUi()
         {
             ToggleFilterDot.IsVisible = !_filterStripExpanded;
+            BtnToggleFilters.Classes.Set("active", _filterStripExpanded);
             ToolTip.SetTip(BtnToggleFilters,
                 _filterStripExpanded
                     ? "Hide search filters (more space for the tree)"
@@ -272,13 +279,48 @@ namespace Game_Engine.Views
             OnHierarchyFilterChanged();
         }
 
+        private void OnToggleComponentFilterClick(object? sender, RoutedEventArgs e)
+        {
+            _componentFilterExpanded = !_componentFilterExpanded;
+            FilterComponentRow.IsVisible = _componentFilterExpanded;
+            BtnToggleComponentFilter.Classes.Set("active", _componentFilterExpanded);
+            if (_componentFilterExpanded)
+                FilterComponent.Focus();
+            else if (!string.IsNullOrEmpty(FilterComponent.Text))
+                FilterComponent.Text = "";
+        }
+
+        private void OnClearFilterClick(object? sender, RoutedEventArgs e)
+        {
+            FilterName.Text = "";
+            FilterComponent.Text = "";
+            OnHierarchyFilterChanged();
+            FilterName.Focus();
+        }
+
+        private void OnFilterBoxKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape && (!string.IsNullOrEmpty(FilterName.Text) || !string.IsNullOrEmpty(FilterComponent.Text)))
+            {
+                OnClearFilterClick(sender, new RoutedEventArgs());
+                e.Handled = true;
+            }
+        }
+
         private void OnSceneChangedRefreshHierarchyFilter()
         {
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
+                UpdateEmptyStateVisibility();
                 if (IsHierarchyFilterActive())
                     RebuildHierarchyMatchList();
             });
+        }
+
+        private void UpdateEmptyStateVisibility()
+        {
+            if (EmptyStateOverlay == null) return;
+            EmptyStateOverlay.IsVisible = _vm.Root.Count == 0 && !IsHierarchyFilterActive();
         }
 
         private bool IsHierarchyFilterActive()
@@ -291,9 +333,22 @@ namespace Game_Engine.Views
 
         private void OnHierarchyFilterChanged()
         {
+            var hasName = !string.IsNullOrEmpty(FilterName.Text);
+            var hasComp = !string.IsNullOrEmpty(FilterComponent.Text);
+            BtnClearFilter.IsVisible = hasName || hasComp;
+            if (hasComp && !_componentFilterExpanded)
+            {
+                _componentFilterExpanded = true;
+                FilterComponentRow.IsVisible = true;
+                BtnToggleComponentFilter.Classes.Set("active", true);
+            }
+
             var active = IsHierarchyFilterActive();
-            Tree.IsVisible = !active;
+            MatchListOverlay.IsVisible = active;
             MatchList.IsVisible = active;
+            Tree.Opacity = active ? 0.35 : 1.0;
+            UpdateEmptyStateVisibility();
+
             if (active)
                 RebuildHierarchyMatchList();
             else
@@ -716,8 +771,22 @@ namespace Game_Engine.Views
             Prefab.Unpack(_contextTarget);
         }
 
-        private void OnExpandAll(object sender, RoutedEventArgs e) => SetExpandedForScope(true);
-        private void OnCollapseAll(object sender, RoutedEventArgs e) => SetExpandedForScope(false);
+        private void OnCreateFlyoutOpening(object? sender, EventArgs e)
+        {
+            _contextTarget = SelectionService.Current;
+        }
+
+        private void OnExpandAll(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button) _contextTarget = null;
+            SetExpandedForScope(true);
+        }
+
+        private void OnCollapseAll(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button) _contextTarget = null;
+            SetExpandedForScope(false);
+        }
 
         private void OnRevealInProject(object? sender, RoutedEventArgs e)
         {
@@ -791,6 +860,29 @@ namespace Game_Engine.Views
         }
 
         // ---------------- DnD parenting + prefab drop ----------------
+        private void SetDropTargetVisual(TreeViewItem? targetItem, bool isRootTarget)
+        {
+            if (!ReferenceEquals(_currentDropTargetItem, targetItem))
+            {
+                _currentDropTargetItem?.Classes.Set("drop-target", false);
+                _currentDropTargetItem = targetItem;
+                _currentDropTargetItem?.Classes.Set("drop-target", true);
+            }
+            TreeHostBorder.Classes.Set("drop-target-root", isRootTarget);
+        }
+
+        private void ClearDropTargetVisual()
+        {
+            _currentDropTargetItem?.Classes.Set("drop-target", false);
+            _currentDropTargetItem = null;
+            TreeHostBorder.Classes.Set("drop-target-root", false);
+        }
+
+        private void OnDragLeave(object? sender, DragEventArgs e)
+        {
+            ClearDropTargetVisual();
+        }
+
         private void OnDragOver(object sender, DragEventArgs e)
         {
             // Accept internal GO reparenting
@@ -807,6 +899,11 @@ namespace Game_Engine.Views
                         ok = false;
                 }
 
+                if (ok)
+                    SetDropTargetVisual(tvi, tvi == null);
+                else
+                    ClearDropTargetVisual();
+
                 e.DragEffects = ok ? DragDropEffects.Move : DragDropEffects.None;
                 e.Handled = true;
                 return;
@@ -818,6 +915,8 @@ namespace Game_Engine.Views
                 var files = e.Payload().GetFilePaths()?.ToList();
                 if (files != null && files.Any(f => f.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
                 {
+                    var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+                    SetDropTargetVisual(tvi, tvi == null);
                     e.DragEffects = DragDropEffects.Copy;
                     e.Handled = true;
                     return;
@@ -830,15 +929,21 @@ namespace Game_Engine.Views
                 var path = e.Payload().GetProjectNodePath();
                 if (path != null && path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                 {
+                    var tvi = (e.Source as Visual)?.FindAncestorOfType<TreeViewItem>();
+                    SetDropTargetVisual(tvi, tvi == null);
                     e.DragEffects = DragDropEffects.Copy;
                     e.Handled = true;
                     return;
                 }
             }
+
+            ClearDropTargetVisual();
         }
 
         private void OnDrop(object sender, DragEventArgs e)
         {
+            ClearDropTargetVisual();
+
             // Internal GO reparenting
             var dragged = e.Payload().GetGameObject();
             if (dragged != null)
@@ -962,6 +1067,53 @@ namespace Game_Engine.Views
             if (!string.IsNullOrEmpty(prefabId)) return PrefabBrush;
 
             return AvaloniaProperty.UnsetValue;
+        }
+    }
+
+    /// <summary>
+    /// Selects a crisp 24x24 vector icon geometry for a GameObject row based on its attached components.
+    /// Values[0] = GameObject, Values[1] = Behaviors.Count (trigger), Values[2] = PrefabId (trigger).
+    /// </summary>
+    public class HierarchyTypeIconConverter : IMultiValueConverter
+    {
+        public static readonly HierarchyTypeIconConverter Instance = new();
+
+        private static readonly Geometry CameraGeom   = Geometry.Parse("M3,7 L15,7 L15,17 L3,17 Z M15,10 L21,7 L21,17 L15,14 Z");
+        private static readonly Geometry LightGeom    = Geometry.Parse("M12,8 A4,4 0 1,0 12,16 A4,4 0 1,0 12,8 M12,2 L12,5 M12,19 L12,22 M2,12 L5,12 M19,12 L22,12 M4.9,4.9 L7,7 M17,17 L19.1,19.1 M19.1,4.9 L17,7 M7,17 L4.9,19.1");
+        private static readonly Geometry TerrainGeom  = Geometry.Parse("M2,19 L9,7 L14,15 L17,11 L22,19 Z");
+        private static readonly Geometry AudioGeom    = Geometry.Parse("M4,9 L8,9 L13,5 L13,19 L8,15 L4,15 Z M16,9 C17.5,10.5 17.5,13.5 16,15 M18.5,6.5 C21,9.5 21,14.5 18.5,17.5");
+        private static readonly Geometry ParticleGeom = Geometry.Parse("M12,3 L13.8,9.2 L20,11 L13.8,12.8 L12,19 L10.2,12.8 L4,11 L10.2,9.2 Z");
+        private static readonly Geometry UiGeom       = Geometry.Parse("M3,4 L21,4 L21,20 L3,20 Z M3,9 L21,9 M9,9 L9,20");
+        private static readonly Geometry MeshGeom     = Geometry.Parse("M12,3 L20,7.5 L20,16.5 L12,21 L4,16.5 L4,7.5 Z M12,12 L20,7.5 M12,12 L4,7.5 M12,12 L12,21");
+        private static readonly Geometry EmptyGeom    = Geometry.Parse("M12,4 L20,12 L12,20 L4,12 Z");
+
+        public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture)
+        {
+            if (values.Count == 0 || values[0] is not GameObject go)
+                return EmptyGeom;
+
+            bool hasMesh = false;
+            bool hasAudio = false;
+            bool hasParticle = false;
+            bool hasUi = false;
+
+            foreach (var b in go.Behaviors)
+            {
+                if (b is Camera || b is Camera2D) return CameraGeom;
+                if (b is Light) return LightGeom;
+                if (b is Terrain || b is PlanetTerrain) return TerrainGeom;
+                if (b is AudioSource || b is AudioListener) hasAudio = true;
+                else if (b is ParticleEmitter) hasParticle = true;
+                else if (b is Game_Engine.Core.Component.UI.Canvas || b is Game_Engine.Core.Component.UI.UIElement) hasUi = true;
+                else if (b is MeshFilter || b is MeshRenderer || b is SkinnedMeshRenderer || b is SpriteRenderer) hasMesh = true;
+            }
+
+            if (hasMesh) return MeshGeom;
+            if (hasUi) return UiGeom;
+            if (hasParticle) return ParticleGeom;
+            if (hasAudio) return AudioGeom;
+            if (!string.IsNullOrEmpty(go.PrefabId)) return MeshGeom;
+            return EmptyGeom;
         }
     }
 }

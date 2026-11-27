@@ -306,6 +306,11 @@ public partial class MainWindow : Window
         RefreshProjectUI();
     }
 
+    private void OnTopBarBuild_Click(object? sender, RoutedEventArgs e)
+    {
+        _ = OpenBuildSettingsAsync();
+    }
+
     private void UpdateEditorWindowTitle()
     {
         if (!Dispatcher.UIThread.CheckAccess())
@@ -315,13 +320,37 @@ public partial class MainWindow : Window
         }
 
         var playing = Game_Engine.Views.GameView.IsAnyViewPlaying;
-        var dirty = SceneService.IsDirty && ProjectService.Current is not null;
-        var core = ProjectService.Current is { } p
+        var project = ProjectService.Current;
+        var dirty = SceneService.IsDirty && project is not null;
+        var core = project is { } p
             ? $"{p.Name} — Game Engine"
             : "Game Engine";
         var prefix = playing ? "▶ " : "";
         var dirtyMark = dirty ? "* " : "";
         Title = $"{prefix}{dirtyMark}{core}";
+
+        // Sync top-bar Project / Status pill
+        if (ProjectStatusText is not null)
+        {
+            ProjectStatusText.Text = project is { } active
+                ? (dirty ? $"{active.Name} •" : active.Name)
+                : "No Project";
+        }
+        if (ProjectStatusDot is not null)
+        {
+            if (playing)
+                ProjectStatusDot.Fill = new SolidColorBrush(Color.Parse("#2E7D32"));
+            else if (dirty)
+                ProjectStatusDot.Fill = new SolidColorBrush(Color.Parse("#D97706"));
+            else if (project is not null)
+                ProjectStatusDot.Fill = new SolidColorBrush(Color.Parse("#2563EB"));
+            else
+                ProjectStatusDot.ClearValue(Avalonia.Controls.Shapes.Shape.FillProperty);
+        }
+        if (PlayModeBadge is not null)
+            PlayModeBadge.IsVisible = playing;
+        if (TopBarBuildButton is not null)
+            TopBarBuildButton.IsEnabled = project is not null;
     }
 
     private void TogglePlayStopShortcut() => TryToggleFirstGamePanelPlay();

@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Data.Converters;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -11,6 +12,7 @@ using Game_Engine.Core;
 using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -42,6 +44,7 @@ public sealed partial class ProjectPanel : UserControl
     private Point _pressPt;
     private ProjectNode? _pressNode;
     private PointerPressedEventArgs? _pressArgs;
+    private TreeViewItem? _dropTargetItem;
 
     public ProjectPanel()
     {
@@ -50,15 +53,18 @@ public sealed partial class ProjectPanel : UserControl
 
         // Toolbar
         BtnRefresh.Click += (_, __) => Refresh();
-        BtnAdd.Click += OnAddClicked;
-        FilterText.TextChanged += (_, __) => Refresh();
+        FilterText.TextChanged += (_, __) =>
+        {
+            if (BtnClearFilter is not null)
+                BtnClearFilter.IsVisible = !string.IsNullOrEmpty(FilterText.Text);
+            Refresh();
+        };
 
         AddHandler(KeyDownEvent, OnProjectPanelKeyDown, RoutingStrategies.Tunnel);
 
         // Tree interactions
         Tree.DoubleTapped += OnTreeDoubleTapped;
         Tree.SelectionChanged += OnTreeSelectionChanged;
-        
 
         // Start internal drag
         Tree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel);
@@ -67,6 +73,7 @@ public sealed partial class ProjectPanel : UserControl
         // Enable drops + handlers (internal moves & OS file drops)
         DragDrop.SetAllowDrop(Tree, true); // <- attached property
         Tree.AddHandler(DragDrop.DragOverEvent, OnTreeDragOver, RoutingStrategies.Tunnel);
+        Tree.AddHandler(DragDrop.DragLeaveEvent, OnTreeDragLeave, RoutingStrategies.Tunnel);
         Tree.AddHandler(DragDrop.DropEvent, OnTreeDrop, RoutingStrategies.Tunnel);
 
         // Context menu for the tree
@@ -114,12 +121,17 @@ public sealed partial class ProjectPanel : UserControl
         return mi;
     }
 
-    private void OnAddClicked(object? s, RoutedEventArgs e)
+    private void OnClearFilterClick(object? s, RoutedEventArgs e)
     {
-        if (_addMenu is null) return;
-        _addMenu.PlacementTarget = BtnAdd;
-        _addMenu.Open(BtnAdd);
+        FilterText.Text = "";
+        FilterText.Focus();
     }
+
+    private async void OnNewFolderClick(object? s, RoutedEventArgs e) => await NewFolder();
+    private async void OnNewScriptClick(object? s, RoutedEventArgs e) => await NewScript();
+    private async void OnNewSceneClick(object? s, RoutedEventArgs e) => await NewScene();
+    private async void OnNewMaterialClick(object? s, RoutedEventArgs e) => await NewMaterial();
+    private async void OnImportFilesClick(object? s, RoutedEventArgs e) => await ImportFiles();
 
     private Window? OwnerWindow => this.GetVisualRoot() as Window;
 
@@ -129,10 +141,24 @@ public sealed partial class ProjectPanel : UserControl
     {
         Roots.Clear();
 
-        if (TitleText is not null) TitleText.Text = ProjectTitle;
-
         var p = ProjectService.Current;
-        if (p is null) return;
+        if (TitleText is not null)
+        {
+            TitleText.Text = p is not null ? p.Name : "No project open";
+            ToolTip.SetTip(TitleText, p is not null ? $"{p.Name}\n{p.RootPath}" : "No project open");
+        }
+        if (ProjectPathText is not null)
+        {
+            ProjectPathText.Text = p?.RootPath ?? "";
+            ProjectPathText.IsVisible = p is not null && !string.IsNullOrWhiteSpace(p.RootPath);
+            ToolTip.SetTip(ProjectPathText, p?.RootPath);
+        }
+
+        if (p is null)
+        {
+            UpdateEmptyState();
+            return;
+        }
 
         EnsureFolder(p.AssetsPath);
         EnsureFolder(p.ScenesPath);
@@ -161,6 +187,38 @@ public sealed partial class ProjectPanel : UserControl
             AddIfAny(p.PackagesPath, "Packages");
             AddIfAny(p.BuildsPath, "Builds");
         }
+
+        UpdateEmptyState();
+    }
+
+    private void UpdateEmptyState()
+    {
+        if (EmptyStateOverlay is null || EmptyStateText is null) return;
+
+        var p = ProjectService.Current;
+        if (p is null)
+        {
+            EmptyStateText.Text = "No project open.";
+            EmptyStateOverlay.IsVisible = true;
+            return;
+        }
+
+        if (Roots.Count == 0)
+        {
+            EmptyStateText.Text = "No matching files or folders.";
+            EmptyStateOverlay.IsVisible = true;
+            return;
+        }
+
+        bool hasAnyAsset = Roots.Any(r => r.Children.Count > 0);
+        if (!hasAnyAsset && string.IsNullOrWhiteSpace(FilterText?.Text))
+        {
+            EmptyStateText.Text = "No assets yet.\nUse + to create or import.";
+            EmptyStateOverlay.IsVisible = true;
+            return;
+        }
+
+        EmptyStateOverlay.IsVisible = false;
     }
 
     /// <summary>Focus the project filter field and select all text (e.g. Ctrl+F).</summary>
@@ -749,23 +807,59 @@ public sealed partial class ProjectPanel : UserControl
     }
 
 
+    private void SetDropTarget(TreeViewItem? item)
+    {
+        if (_dropTargetItem == item) return;
+        _dropTargetItem?.Classes.Remove("drop-target");
+        _dropTargetItem = item;
+        _dropTargetItem?.Classes.Add("drop-target");
+    }
+
+    private TreeViewItem? FindTreeViewItemForNode(ProjectNode node)
+    {
+        return Tree.GetVisualDescendants()
+            .OfType<TreeViewItem>()
+            .FirstOrDefault(tvi => ReferenceEquals(tvi.DataContext, node));
+    }
+
+    private void OnTreeDragLeave(object? s, DragEventArgs e)
+    {
+        SetDropTarget(null);
+    }
+
     private void OnTreeDragOver(object? s, DragEventArgs e)
     {
         var target = NodeFromObject(e.Source);
         var targetFolder = GetDropFolder(target);
-        if (targetFolder is null) { e.DragEffects = DragDropEffects.None; return; }
+        if (targetFolder is null)
+        {
+            e.DragEffects = DragDropEffects.None;
+            SetDropTarget(null);
+            return;
+        }
 
         // Internal move?
         if (e.Payload().GetProjectNodePath() != null)
         {
             var src = e.Payload().GetProjectNodePath();
-            if (string.IsNullOrWhiteSpace(src)) { e.DragEffects = DragDropEffects.None; return; }
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                e.DragEffects = DragDropEffects.None;
+                SetDropTarget(null);
+                return;
+            }
 
             // cannot drop into itself or descendant
             if (IsSameOrDescendant(src, targetFolder.FullPath))
+            {
                 e.DragEffects = DragDropEffects.None;
+                SetDropTarget(null);
+            }
             else
+            {
                 e.DragEffects = DragDropEffects.Move;
+                SetDropTarget(FindTreeViewItemForNode(targetFolder));
+            }
 
             e.Handled = true;
             return;
@@ -775,15 +869,18 @@ public sealed partial class ProjectPanel : UserControl
         if (e.Payload().HasFiles)
         {
             e.DragEffects = DragDropEffects.Copy;
+            SetDropTarget(FindTreeViewItemForNode(targetFolder));
             e.Handled = true;
             return;
         }
 
         e.DragEffects = DragDropEffects.None;
+        SetDropTarget(null);
     }
 
     private async void OnTreeDrop(object? s, DragEventArgs e)
     {
+        SetDropTarget(null);
         var target = NodeFromObject(e.Source);
         var targetFolder = GetDropFolder(target);
         if (targetFolder is null) return;
@@ -988,6 +1085,86 @@ public sealed partial class ProjectPanel : UserControl
         };
         await win.ShowDialog(OwnerWindow);
     }
+}
 
-   
+/// <summary>Maps a ProjectNode to a vector icon Geometry based on folder/file extension.</summary>
+public sealed class ProjectIconConverter : IValueConverter
+{
+    private static readonly Geometry FolderGeom   = Geometry.Parse("M3,6 C3,4.9 3.9,4 5,4 L9.5,4 L11.5,6.5 L19,6.5 C20.1,6.5 21,7.4 21,8.5 L21,18 C21,19.1 20.1,20 19,20 L5,20 C3.9,20 3,19.1 3,18 Z");
+    private static readonly Geometry SceneGeom    = Geometry.Parse("M3,6 L21,6 L21,19 L3,19 Z M3,10 L21,10 M7,6 L9,10 M13,6 L15,10");
+    private static readonly Geometry PrefabGeom   = Geometry.Parse("M12,3 L20,7.5 L20,16.5 L12,21 L4,16.5 L4,7.5 Z M12,12 L20,7.5 M12,12 L4,7.5 M12,12 L12,21");
+    private static readonly Geometry ScriptGeom   = Geometry.Parse("M8,7 L3,12 L8,17 M16,7 L21,12 L16,17 M14,5 L10,19");
+    private static readonly Geometry MaterialGeom = Geometry.Parse("M12,4 A8,8 0 1,0 12,20 A8,8 0 1,0 12,4 M12,4 C9,7 9,17 12,20 M4,12 L20,12");
+    private static readonly Geometry ImageGeom    = Geometry.Parse("M3,5 L21,5 L21,19 L3,19 Z M4,17 L9.5,11.5 L14,16 L16.5,13.5 L20,17 M8.5,9 A1.2,1.2 0 1,0 8.5,11.4 A1.2,1.2 0 1,0 8.5,9");
+    private static readonly Geometry ModelGeom    = Geometry.Parse("M12,3 L20,8 L12,13 L4,8 Z M4,12.5 L12,17.5 L20,12.5 M4,16.5 L12,21.5 L20,16.5");
+    private static readonly Geometry AudioGeom    = Geometry.Parse("M4,9 L8,9 L13,5 L13,19 L8,15 L4,15 Z M16,9 C17.5,10.5 17.5,13.5 16,15 M18.5,6.5 C21,9.5 21,14.5 18.5,17.5");
+    private static readonly Geometry FileGeom     = Geometry.Parse("M6,3 L14,3 L19,8 L19,21 L6,21 Z M14,3 L14,8 L19,8");
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not ProjectPanel.ProjectNode node)
+            return FileGeom;
+
+        if (node.IsFolder)
+            return FolderGeom;
+
+        var ext = Path.GetExtension(node.Name).ToLowerInvariant();
+        return ext switch
+        {
+            ".scene" => SceneGeom,
+            ".prefab" => PrefabGeom,
+            ".cs" or ".shader" or ".hlsl" or ".glsl" => ScriptGeom,
+            ".material" or ".mat" => MaterialGeom,
+            ".png" or ".jpg" or ".jpeg" or ".bmp" or ".tga" or ".webp" or ".gif" or ".hdr" or ".exr" or ".dds" or ".tif" or ".tiff" => ImageGeom,
+            ".fbx" or ".obj" or ".gltf" or ".glb" or ".dae" or ".stl" or ".3ds" or ".blend" or ".mesh" => ModelGeom,
+            ".wav" or ".mp3" or ".ogg" or ".flac" or ".aiff" or ".aif" => AudioGeom,
+            _ => FileGeom
+        };
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Returns the file name stem (without extension) for files, or the full name for folders.</summary>
+public sealed class ProjectFileStemConverter : IValueConverter
+{
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not ProjectPanel.ProjectNode node)
+            return value?.ToString() ?? "";
+
+        if (node.IsFolder)
+            return node.Name;
+
+        var ext = Path.GetExtension(node.Name);
+        if (string.IsNullOrEmpty(ext))
+            return node.Name;
+
+        var stem = Path.GetFileNameWithoutExtension(node.Name);
+        return string.IsNullOrEmpty(stem) ? node.Name : stem;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Returns the file extension (e.g. ".cs") for files, or empty string for folders.</summary>
+public sealed class ProjectFileExtConverter : IValueConverter
+{
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not ProjectPanel.ProjectNode node || node.IsFolder)
+            return "";
+
+        var ext = Path.GetExtension(node.Name);
+        if (string.IsNullOrEmpty(ext))
+            return "";
+
+        var stem = Path.GetFileNameWithoutExtension(node.Name);
+        return string.IsNullOrEmpty(stem) ? "" : ext;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
 }

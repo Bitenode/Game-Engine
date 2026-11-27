@@ -1,13 +1,15 @@
 ﻿using System;
 using System.Globalization;
+using Avalonia;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
+using Avalonia.Styling;
 using Game_Engine.Core;
 
 namespace Game_Engine.Views
 {
     /// <summary>
-    /// Maps LogSeverity -> Brush. Kind picks the palette (chip background, border, or text).
+    /// Maps LogSeverity -> theme-aware Brush. Kind picks the palette (chip background, border, or message text).
     /// </summary>
     public sealed class SeverityToBrushConverter : IValueConverter
     {
@@ -16,16 +18,36 @@ namespace Game_Engine.Views
         public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
             var sev = value is LogSeverity s ? s : LogSeverity.Info;
+            var isLight = Application.Current?.ActualThemeVariant == ThemeVariant.Light;
 
-            // Colors matched to "chip" look
+            // Badge background & border are saturated so white badge text meets WCAG AA in both themes.
+            // Message text adapts to Light vs Dark theme for high contrast.
             (Color bg, Color border, Color text) palette = sev switch
             {
-                LogSeverity.Info => (Color.Parse("#223b6b"), Color.Parse("#8ab4f8"), Color.Parse("#cfe3ff")),
-                LogSeverity.Warning => (Color.Parse("#3f3310"), Color.Parse("#fbbc04"), Color.Parse("#ffd87a")),
-                LogSeverity.Error => (Color.Parse("#3f1e1c"), Color.Parse("#ea4335"), Color.Parse("#ff9a92")),
-                LogSeverity.Success => (Color.Parse("#203824"), Color.Parse("#34a853"), Color.Parse("#9be2b0")),
-                LogSeverity.Debug => (Color.Parse("#2b2140"), Color.Parse("#c58af9"), Color.Parse("#e2c7ff")),
-                _ => (Colors.Black, Colors.Gray, Colors.White)
+                LogSeverity.Info => (
+                    Color.Parse("#1E64B8"),
+                    Color.Parse("#3B82F6"),
+                    isLight ? Color.Parse("#1E293B") : Color.Parse("#E2E8F0")),
+                LogSeverity.Warning => (
+                    Color.Parse("#B45309"),
+                    Color.Parse("#D97706"),
+                    isLight ? Color.Parse("#92400E") : Color.Parse("#FCD34D")),
+                LogSeverity.Error => (
+                    Color.Parse("#C81E1E"),
+                    Color.Parse("#EF4444"),
+                    isLight ? Color.Parse("#B91C1C") : Color.Parse("#FCA5A5")),
+                LogSeverity.Success => (
+                    Color.Parse("#15803D"),
+                    Color.Parse("#22C55E"),
+                    isLight ? Color.Parse("#166534") : Color.Parse("#86EFAC")),
+                LogSeverity.Debug => (
+                    Color.Parse("#4B5563"),
+                    Color.Parse("#6B7280"),
+                    isLight ? Color.Parse("#475569") : Color.Parse("#CBD5E1")),
+                _ => (
+                    Color.Parse("#4B5563"),
+                    Color.Parse("#6B7280"),
+                    isLight ? Color.Parse("#1E293B") : Color.Parse("#E2E8F0"))
             };
 
             return Kind switch

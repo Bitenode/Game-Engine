@@ -85,13 +85,6 @@
 						  Click="OnStopClicked">■</ToggleButton>
 
 				<Separator Margin="5,0"/>
-
-				<!-- FPS counter -->
-				<TextBlock Text="{Binding ElementName=Game, Path=FpsText}"
-						   Foreground="#8899AA" FontSize="11"
-						   VerticalAlignment="Center" Opacity="0.85"/>
-
-				<Separator Margin="5,0"/>
 				<CheckBox Content="Shadows" Foreground="#8899AA" FontSize="11"
 						  VerticalAlignment="Center"
 						  IsChecked="{Binding ElementName=Game, Path=ShowShadows, Mode=TwoWay}" />

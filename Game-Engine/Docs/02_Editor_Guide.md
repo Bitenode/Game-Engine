@@ -209,39 +209,43 @@ During play mode, the Game View captures input and feeds it to the `Input` syste
 
 ## Hierarchy Panel
 
-Shows the scene as a tree of GameObjects with expand/collapse nodes for the parent-child hierarchy.
+Shows the scene as a tree of GameObjects with expand/collapse nodes for the parent-child hierarchy. When a scene has no objects, a centered empty-state hint prompts you to right-click or press **+** to create one.
 
-### Search & filter strip
+### Header toolbar & search strip
 
-Below the title row, optional controls help you find objects in large scenes:
+At the top of the panel, a compact toolbar provides quick actions without duplicating the dock tab title:
 
 | Control | Purpose |
 |---------|---------|
-| **Filter by object name** | Substring match on `GameObject.Name` (case-insensitive). |
-| **Component type contains** | Optional second filter: any behavior whose **CLR type name** contains the typed substring matches (e.g. `Mesh`, `Camera`). |
-| **Match list** | When either filter has text, the tree is hidden and a flat list shows matching objects as **hierarchy paths** (`Parent/Child/Target`). Selecting a row selects that object and requests a Scene View frame. |
-| **Circular toggle** (right of the **Hierarchy** title) | **Hide or show** the entire filter strip (both text boxes and the match list). When hidden, filters are not applied: the tree stays visible and filter text is ignored until you show the strip again. The icon is a ring; a **filled dot** inside means the strip is **collapsed**. Tooltip: *Hide search filters* / *Show search filters*. |
+| **Create (`+`)** | Opens the Create menu (**Empty Child**, **Cube**, **Cone**, **Cylinder**, **Import Model**) targeting the current selection (or scene root if nothing is selected). |
+| **Expand All / Collapse All** | Expand or collapse the full hierarchy tree in one click. |
+| **Filter toggle (funnel icon)** | **Hide or show** the search strip. When hidden, filters are not applied and the tree stays visible; a dot indicator appears on the funnel icon when collapsed. |
+| **Search objects (`Ctrl+F`)** | Rounded search pill with a leading search icon, substring match on `GameObject.Name` (case-insensitive), a clear (`×`) button (`Escape` also clears), and an inline **component filter** toggle (`</>`) that reveals the optional **Component type contains** field (matches any behavior whose CLR type name contains the substring, e.g. `Mesh`, `Camera`). |
+| **Match dropdown** | When either filter has text, a floating dropdown panel appears over the top of the tree showing matching objects as **hierarchy paths** (`Parent/Child/Target`). Selecting a row selects that object and requests a Scene View frame. |
 
-Clear both filter fields to return to the normal tree view.
+Clear the search field (via `×` or `Escape`) to dismiss the match dropdown.
 
 ### Visual Indicators
-| Color | Meaning |
-|-------|---------|
+Each row displays a **type icon** based on attached components (Camera, Light, Terrain/Planet, Mesh, UI, Particles, Audio, or empty node) alongside the object name.
+
+| Indicator | Meaning |
+|-----------|---------|
 | **Default (theme)** | Normal active GameObject |
-| **Blue** (`#5599FF`) | Prefab instance (has a `PrefabId`) |
-| **Red** (`#DD4444`) | Disabled GameObject — either its own `Enabled` is `false`, or an ancestor is disabled. The entire subtree under a disabled object appears in red. |
+| **Blue (`#5599FF`) + `P` badge** | Prefab instance (has a `PrefabId`) |
+| **Red (`#DD4444`)** | Disabled GameObject — either its own `Enabled` is `false`, or an ancestor is disabled. The entire subtree under a disabled object appears in red. |
+| **Accent highlight on drag** | Highlights the target row (or tree border for root) when dragging a GameObject to reparent or dropping a `.prefab` asset. |
 
 ### Actions
 | Action | Input | Description |
 |--------|-------|-------------|
 | **Select** | Click | Select the object (shown in Inspector, highlighted in Scene View) |
 | **Auto-frame in Scene View** | Click in Hierarchy | Focuses Scene View on the selected object |
-| **Context menu** | Right-click | Create objects, import models, delete, **Reveal in Project** |
-| **Reveal in Project** | Hierarchy context menu or command palette | Selects the corresponding asset in the Project panel when the selection maps to a project file (e.g. model or prefab path) |
-| **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) |
+| **Context menu** | Right-click | Grouped **Create** and **Prefab** submenus, object actions, expand/collapse, and **Reveal in Project** |
+| **Reveal in Project** | Hierarchy context menu (`Ctrl+Shift+R`) or command palette | Selects the corresponding asset in the Project panel when the selection maps to a project file (e.g. model or prefab path) |
+| **Reparent** | Drag and drop | Move objects in the hierarchy (updates parent-child relationships) with drop-target highlighting |
 | **Expand/Collapse** | Arrow click | Navigate nested GameObjects |
-| **Expand all / Collapse all** | Buttons in Hierarchy header | Expand or collapse the full hierarchy tree in one action |
-| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2`, `Ctrl+F` | Delete selected object, duplicate selected object, rename selected object; **Ctrl+F** expands the filter strip (if hidden) and focuses the **name** filter |
+| **Expand all / Collapse all** | Toolbar buttons or context menu | Expand or collapse the hierarchy tree in one action |
+| **Keyboard shortcuts** | `Delete`, `Ctrl+D`, `F2`, `Ctrl+F`, `Ctrl+Shift+R` | Delete, duplicate, rename selected object; **Ctrl+F** expands and focuses the search bar; **Ctrl+Shift+R** reveals in Project |
 
 For multi-select from the Hierarchy, Scene View focuses the first selected object.
 
@@ -254,19 +258,14 @@ Opening/creating/closing projects now checks for unsaved scene changes and promp
 ### Context Menu
 | Option | Description |
 |--------|-------------|
-| **Empty** | Create an empty GameObject |
-| **Cube** | Create a cube primitive |
-| **Cone** | Create a cone primitive |
-| **Cylinder** | Create a cylinder primitive |
-| **Sphere** | Create a UV sphere primitive |
-| **Quad** | Create a single-face quad |
-| **Plane** | Create a subdivided plane |
-| **Camera** | Create a camera object |
-| **Light** | Create a directional light |
-| **Terrain** | Create a heightmap terrain (129x129 default) |
-| **Import Model** | Open file dialog for FBX, OBJ, glTF, GLB, DAE |
-| **Delete** | Remove the selected object from the scene |
-| **Reveal in Project** | Jump to the Project panel entry for the selected object’s asset, when resolvable |
+| **Create ▸** | **Empty Child**, **Cube**, **Cone**, **Cylinder**, and **Import Model** (FBX, OBJ, glTF, GLB, DAE) |
+| **Prefab ▸** | **Create Prefab**, **Instantiate Prefab**, **Apply to Prefab**, **Revert to Prefab**, and **Unpack Prefab** |
+| **Unparent** | Move the object to the scene root |
+| **Duplicate (`Ctrl+D`)** | Clone the selected object |
+| **Rename (`F2`)** | Rename the selected object |
+| **Delete (`Delete`)** | Remove the selected object from the scene |
+| **Expand All / Collapse All** | Expand or collapse the selected subtree (or full tree when clicked on empty space) |
+| **Reveal in Project (`Ctrl+Shift+R`)** | Jump to the Project panel entry for the selected object’s asset, when resolvable |
 
 ### Default Scene
 When a new project is opened with no existing scene, a default scene is created with:
@@ -283,15 +282,15 @@ When a new project is opened with no existing scene, a default scene is created 
 
 Displays and edits properties of the selected GameObject. Supports single and multi-selection. The panel is a thin **shell** (`InspectorPanel.axaml` + code-behind) that builds UI on demand; heavy helpers live under `Views/Inspector/` (see **Architecture** below).
 
-### Lock
-The **Lock** toggle in the header freezes the current inspector view (selection or material asset). While locked, selection changes do not rebuild the panel until you unlock it.
+### Lock & Header
+The compact header bar shows the active selection summary (object name, multi-selection count, material asset name, or **No selection**) alongside a rounded **Lock** pill toggle. While **Locked**, selection changes do not rebuild the panel until you unlock it.
 
 ### Layout (single selection)
 1. **Name** — enabled checkbox + editable name
 2. **Object** — foldable Tag / Layer section
-3. **Transform** — foldable Position / Rotation / Scale (always the mandatory `GameObject.Transform`, not duplicated in the component list)
-4. **Components** — one bordered block per `Behavior` in `GameObject.Behaviors`
-5. **Add Component bar** — Paste, Quick Add, and **+ Add Component** at the **bottom**
+3. **Transform** — foldable Position / Rotation / Scale with color-coded **X / Y / Z** axis badges (always the mandatory `GameObject.Transform`, not duplicated in the component list)
+4. **Components** — one rounded card per `Behavior` in `GameObject.Behaviors`
+5. **Add Component bar** — Paste, Quick Add, and accent-styled **+ Add Component** at the **bottom**
 
 ### Folds
 **Object**, **Transform**, and each component header use a **▾ / ▸** chevron. Click the chevron to collapse or expand that section. Fold state is remembered per GameObject while it stays in memory (same selection session). Component headers still expose **Enabled**, **Copy**, and **Remove** when collapsed.
@@ -447,10 +446,15 @@ Opened from **DialogueRunner → Open Dialogue Editor**. Hosts the full dialogue
 
 File browser for the project directory with asset management capabilities.
 
+- **Header**: Displays a folder glyph, the project name in bold, and the project root path in a dimmed, ellipsis-truncated line with a full-path tooltip.
+- **Toolbar**: Compact **Refresh** button (icon + label) and **+** button (`Create or Import` flyout with **Create** → Folder, C# Script, Scene, Material, and **Import Files…**).
+- **Typed icons & dimmed extensions**: Tree rows show vector icons by asset type (folder, scene, prefab, script, material, texture/image, model/mesh, audio, generic file) with dimmed file extensions and a drop-target highlight when dragging files or folders onto a folder row.
+- **Empty state**: Displays a centered hint when no project is open, no assets exist yet, or a filter matches nothing.
+
 For keyboard-driven access to many of the same file types from anywhere in the editor, use **Quick open** (**Ctrl+P**) on the main window (see **Global shortcuts** under Editor Layout).
 
 ### Search filter
-- The **Filter** field above the tree narrows entries by **file or folder name** (case-insensitive substring). Empty filter shows the full **Assets**, **Scenes**, **Packages**, and **Builds** roots.
+- The rounded **Filter** search pill above the tree narrows entries by **file or folder name** (case-insensitive substring) and includes a clear (**×**) button when text is entered. Empty filter shows the full **Assets**, **Scenes**, **Packages**, and **Builds** roots.
 - **Ctrl+F** while the Project panel (or its children) has focus focuses the filter and selects its text.
 
 ### Folder Structure
@@ -491,10 +495,11 @@ ProjectRoot/
 
 Displays log messages from the engine, scripts, and extensions.
 
-### Filters and search
-- Toggle **Info / Warning / Error / …** chips to show or hide severities.
-- Use the **search** box to filter visible lines by substring (combined with severity toggles).
-- Use **Clear**, **Copy Selected**, and **Auto-scroll** controls above the filter row for faster log triage.
+### Toolbar, search, and severity filters
+- Use the compact icon-and-label toolbar (**Clear**, **Copy Selected**, and the accent-highlighted **Auto-scroll** toggle) for quick log triage.
+- Use the rounded **search** pill (with inline clear button) to filter visible lines by substring, combined with the severity toggles.
+- Toggle the color-coded **Info / Warn / Error / OK / Debug** chips to show or hide severities.
+- Log entries are displayed in a framed, theme-aware list with dimmed timestamps, pill severity badges, subtle row separators, and high-contrast message text in both Light and Dark themes.
 - **Ctrl+L** (while the Console panel or its children have focus) clears the log output, same as **Clear**.
 
 ### Open log location in Script Editor

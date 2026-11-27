@@ -2,131 +2,383 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Game_Engine.MainWindow"
         Title="Game Engine" Width="1400" Height="900">
+	<Window.Styles>
+		<!-- Top Menu Bar: top-level MenuItems -->
+		<Style Selector="Menu#MainMenu">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="Padding" Value="0"/>
+		</Style>
+		<Style Selector="Menu#MainMenu > MenuItem">
+			<Setter Property="Padding" Value="10,5"/>
+			<Setter Property="Margin" Value="1,0"/>
+			<Setter Property="MinHeight" Value="28"/>
+			<Setter Property="CornerRadius" Value="5"/>
+			<Setter Property="FontSize" Value="13"/>
+			<Setter Property="FontWeight" Value="Medium"/>
+			<Setter Property="VerticalAlignment" Value="Center"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="Menu#MainMenu > MenuItem:pointerover /template/ Border#PART_LayoutRoot">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="CornerRadius" Value="5"/>
+		</Style>
+		<Style Selector="Menu#MainMenu > MenuItem:selected /template/ Border#PART_LayoutRoot">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="CornerRadius" Value="5"/>
+		</Style>
+		<Style Selector="Menu#MainMenu > MenuItem:open /template/ Border#PART_LayoutRoot">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+			<Setter Property="CornerRadius" Value="5"/>
+		</Style>
+
+		<!-- Dropdown submenu items & separators -->
+		<Style Selector="Menu#MainMenu MenuItem MenuItem">
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="Margin" Value="4,1"/>
+			<Setter Property="Padding" Value="8,5"/>
+			<Setter Property="FontSize" Value="12.5"/>
+		</Style>
+		<Style Selector="Menu#MainMenu Separator">
+			<Setter Property="Margin" Value="8,4"/>
+			<Setter Property="Opacity" Value="0.55"/>
+		</Style>
+
+		<!-- Brand & Status pills -->
+		<Style Selector="Border.brand-pill">
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="Padding" Value="8,4"/>
+		</Style>
+		<Style Selector="Border.status-pill">
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="12"/>
+			<Setter Property="Padding" Value="10,4"/>
+		</Style>
+
+		<!-- Compact top-bar quick action button -->
+		<Style Selector="Button.topbar-action">
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="Padding" Value="9,4"/>
+			<Setter Property="MinHeight" Value="26"/>
+			<Setter Property="FontSize" Value="12"/>
+			<Setter Property="FontWeight" Value="Medium"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="Button.topbar-action:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+		</Style>
+		<Style Selector="Button.topbar-action:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+
+		<!-- Dockable panel framing -->
+		<Style Selector="Border.editor-panel">
+			<Setter Property="Background" Value="{DynamicResource SystemControlPageBackgroundAltHighBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="ClipToBounds" Value="True"/>
+		</Style>
+
+		<!-- Subtle workspace splitters -->
+		<Style Selector="GridSplitter.editor-splitter">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="HorizontalAlignment" Value="Stretch"/>
+			<Setter Property="VerticalAlignment" Value="Stretch"/>
+			<Setter Property="ShowsPreview" Value="True"/>
+		</Style>
+		<Style Selector="GridSplitter.editor-splitter-v">
+			<Setter Property="Template">
+				<ControlTemplate>
+					<Border Background="Transparent">
+						<Border x:Name="PART_Grip"
+								Width="2"
+								Height="36"
+								CornerRadius="1"
+								HorizontalAlignment="Center"
+								VerticalAlignment="Center"
+								Background="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+								Opacity="0"/>
+					</Border>
+				</ControlTemplate>
+			</Setter>
+		</Style>
+		<Style Selector="GridSplitter.editor-splitter-h">
+			<Setter Property="Template">
+				<ControlTemplate>
+					<Border Background="Transparent">
+						<Border x:Name="PART_Grip"
+								Width="36"
+								Height="2"
+								CornerRadius="1"
+								HorizontalAlignment="Center"
+								VerticalAlignment="Center"
+								Background="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+								Opacity="0"/>
+					</Border>
+				</ControlTemplate>
+			</Setter>
+		</Style>
+		<Style Selector="GridSplitter.editor-splitter:pointerover /template/ Border#PART_Grip">
+			<Setter Property="Opacity" Value="0.85"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+		</Style>
+		<Style Selector="GridSplitter.editor-splitter:pressed /template/ Border#PART_Grip">
+			<Setter Property="Opacity" Value="1"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+		</Style>
+	</Window.Styles>
+
 	<DockPanel LastChildFill="True">
 
-		<!-- Menu -->
-		<Menu DockPanel.Dock="Top" x:Name="MainMenu">
-			<MenuItem Header="_Project" x:Name="MI_ProjectRoot">
-				<MenuItem Header="_New Project..."   x:Name="MI_NewProject"/>
-				<MenuItem Header="_Open Project..."  x:Name="MI_OpenProject"/>
-				<MenuItem Header="Project _hub…"     x:Name="MI_WelcomeHub"/>
-				<Separator/>
-				<MenuItem Header="_Save Scene"
-						  x:Name="MI_SaveScene"
-						  IsEnabled="False"
-						  Click="OnMenuSaveScene_Click" />
-				<MenuItem Header="_Load Scene"
-						  x:Name="MI_LoadScene"
-						  IsEnabled="False"
-						  Click="OnMenuLoadScene_Click" />
-				<MenuItem Header="Recent _Scenes" x:Name="MI_RecentScenesRoot" IsEnabled="False"/>
-				<Separator/>
-				<MenuItem Header="_Autosave" x:Name="MI_AutosaveRoot" IsEnabled="False">
-					<MenuItem Header="_Enable Autosave" x:Name="MI_AutosaveEnabled"/>
-					<Separator/>
-					<MenuItem Header="_1 minute" x:Name="MI_Autosave1"/>
-					<MenuItem Header="_5 minutes" x:Name="MI_Autosave5"/>
-					<MenuItem Header="_10 minutes" x:Name="MI_Autosave10"/>
-				</MenuItem>
-				<Separator/>
-				<MenuItem Header="_Build Settings..."
-						  x:Name="MI_BuildSettings"
-						  IsEnabled="False" />
-				<MenuItem Header="_Validate Project" x:Name="MI_ValidateProject" IsEnabled="False"/>
-				<Separator/>
-				<MenuItem Header="_Close Project"    x:Name="MI_CloseProject"/>
-				<Separator/>
-				<MenuItem Header="Reveal in _Explorer" x:Name="MI_RevealInExplorer"/>
-				<Separator/>
-				<MenuItem Header="_Recent"           x:Name="MI_RecentRoot"/>
-			</MenuItem>
+		<!-- Top Header / Main Menu Bar -->
+		<Border DockPanel.Dock="Top"
+				x:Name="TopMenuBarBorder"
+				Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+				BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+				BorderThickness="0,0,0,1"
+				Padding="10,5">
+			<Grid ColumnDefinitions="Auto,Auto,*,Auto" VerticalAlignment="Center">
 
-			<MenuItem Header="_Window" x:Name="MI_WindowRoot">
-				<MenuItem Header="Reset Layout" x:Name="ResetLayoutMenu"/>
-				<MenuItem Header="Layout Presets">
-					<MenuItem Header="Save Preset _1" x:Name="LayoutSave1"/>
-					<MenuItem Header="Save Preset _2" x:Name="LayoutSave2"/>
-					<MenuItem Header="Save Preset _3" x:Name="LayoutSave3"/>
-					<Separator/>
-					<MenuItem Header="Load Preset _1" x:Name="LayoutLoad1"/>
-					<MenuItem Header="Load Preset _2" x:Name="LayoutLoad2"/>
-					<MenuItem Header="Load Preset _3" x:Name="LayoutLoad3"/>
-				</MenuItem>
-				<MenuItem Header="New">
-					<MenuItem Header="New Scene Tab"     x:Name="NewSceneTab"/>
-					<MenuItem Header="New Game Tab"      x:Name="NewGameTab"/>
-					<MenuItem Header="New Inspector Tab" x:Name="NewInspectorTab"/>
-					<MenuItem Header="New Hierarchy Tab" x:Name="NewHierarchyTab"/>
-					<MenuItem Header="New Project Tab"   x:Name="NewProjectTab"/>
-					<MenuItem Header="New Console Tab"   x:Name="NewConsoleTab"/>
-					<MenuItem Header="New Animation Tab" x:Name="NewAnimationTab"/>
-					<MenuItem Header="New Timeline Tab"  x:Name="NewTimelineTab"/>
-					<Separator/>
-					<MenuItem Header="New Profiler Tab"       x:Name="NewProfilerTab"/>
-					<MenuItem Header="New Shader Editor Tab"  x:Name="NewShaderEditorTab"/>
-					<MenuItem Header="New Biome Graph Tab"    x:Name="NewBiomeGraphTab"/>
-					<MenuItem Header="New Blueprint Tab"      x:Name="NewBlueprintTab"/>
-					<MenuItem Header="New Extensions Status Tab" x:Name="NewExtensionsStatusTab"/>
-					<Separator/>
-					<MenuItem Header="Add-on panels" x:Name="MI_AddonPanelsRoot"/>
-				</MenuItem>
-			</MenuItem>
+				<!-- Brand Pill -->
+				<Border Grid.Column="0"
+						Classes="brand-pill"
+						Margin="0,0,6,0"
+						VerticalAlignment="Center">
+					<StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+						<Viewbox Width="15" Height="15" VerticalAlignment="Center">
+							<Canvas Width="24" Height="24">
+								<Path Data="M12,2 L21,7 L21,17 L12,22 L3,17 L3,7 Z"
+									  Fill="{DynamicResource SystemControlHighlightAccentBrush}"
+									  Opacity="0.22"/>
+								<Path Data="M12,2 L21,7 L21,17 L12,22 L3,17 L3,7 Z M12,2 L12,12 M12,12 L21,7 M12,12 L3,7 M12,12 L12,22"
+									  Stroke="{DynamicResource SystemControlHighlightAccentBrush}"
+									  StrokeThickness="2"
+									  StrokeLineCap="Round"
+									  StrokeJoin="Round"/>
+							</Canvas>
+						</Viewbox>
+						<TextBlock Text="Game Engine"
+								   FontSize="12.5"
+								   FontWeight="SemiBold"
+								   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
+								   VerticalAlignment="Center"/>
+					</StackPanel>
+				</Border>
 
-			<MenuItem Header="_Settings" x:Name="MI_SettingsRoot">
-				<MenuItem Header="Input Remapping" x:Name="InputRemappingMenu"/>
-				<MenuItem Header="Clear Console on Play" x:Name="MI_ClearConsoleOnPlay" ToggleType="CheckBox"/>
-				<MenuItem Header="Script editor: line numbers" x:Name="MI_ScriptLineNumbers" ToggleType="CheckBox"/>
-				<MenuItem Header="Script editor: word wrap" x:Name="MI_ScriptWordWrap" ToggleType="CheckBox"/>
-			</MenuItem>
-		</Menu>
+				<!-- Subtle Divider -->
+				<Border Grid.Column="1"
+						Width="1"
+						Height="18"
+						Margin="2,0,8,0"
+						Background="{DynamicResource SystemControlForegroundBaseLowBrush}"
+						VerticalAlignment="Center"/>
+
+				<!-- Menu -->
+				<Menu Grid.Column="2" x:Name="MainMenu" VerticalAlignment="Center">
+					<MenuItem Header="_Project" x:Name="MI_ProjectRoot">
+						<MenuItem Header="_New Project..."   x:Name="MI_NewProject"/>
+						<MenuItem Header="_Open Project..."  x:Name="MI_OpenProject"/>
+						<MenuItem Header="Project _hub…"     x:Name="MI_WelcomeHub"/>
+						<Separator/>
+						<MenuItem Header="_Save Scene"
+								  x:Name="MI_SaveScene"
+								  IsEnabled="False"
+								  Click="OnMenuSaveScene_Click" />
+						<MenuItem Header="_Load Scene"
+								  x:Name="MI_LoadScene"
+								  IsEnabled="False"
+								  Click="OnMenuLoadScene_Click" />
+						<MenuItem Header="Recent _Scenes" x:Name="MI_RecentScenesRoot" IsEnabled="False"/>
+						<Separator/>
+						<MenuItem Header="_Autosave" x:Name="MI_AutosaveRoot" IsEnabled="False">
+							<MenuItem Header="_Enable Autosave" x:Name="MI_AutosaveEnabled"/>
+							<Separator/>
+							<MenuItem Header="_1 minute" x:Name="MI_Autosave1"/>
+							<MenuItem Header="_5 minutes" x:Name="MI_Autosave5"/>
+							<MenuItem Header="_10 minutes" x:Name="MI_Autosave10"/>
+						</MenuItem>
+						<Separator/>
+						<MenuItem Header="_Build Settings..."
+								  x:Name="MI_BuildSettings"
+								  IsEnabled="False" />
+						<MenuItem Header="_Validate Project" x:Name="MI_ValidateProject" IsEnabled="False"/>
+						<Separator/>
+						<MenuItem Header="_Close Project"    x:Name="MI_CloseProject"/>
+						<Separator/>
+						<MenuItem Header="Reveal in _Explorer" x:Name="MI_RevealInExplorer"/>
+						<Separator/>
+						<MenuItem Header="_Recent"           x:Name="MI_RecentRoot"/>
+					</MenuItem>
+
+					<MenuItem Header="_Window" x:Name="MI_WindowRoot">
+						<MenuItem Header="Reset Layout" x:Name="ResetLayoutMenu"/>
+						<MenuItem Header="Layout Presets">
+							<MenuItem Header="Save Preset _1" x:Name="LayoutSave1"/>
+							<MenuItem Header="Save Preset _2" x:Name="LayoutSave2"/>
+							<MenuItem Header="Save Preset _3" x:Name="LayoutSave3"/>
+							<Separator/>
+							<MenuItem Header="Load Preset _1" x:Name="LayoutLoad1"/>
+							<MenuItem Header="Load Preset _2" x:Name="LayoutLoad2"/>
+							<MenuItem Header="Load Preset _3" x:Name="LayoutLoad3"/>
+						</MenuItem>
+						<MenuItem Header="New">
+							<MenuItem Header="New Scene Tab"     x:Name="NewSceneTab"/>
+							<MenuItem Header="New Game Tab"      x:Name="NewGameTab"/>
+							<MenuItem Header="New Inspector Tab" x:Name="NewInspectorTab"/>
+							<MenuItem Header="New Hierarchy Tab" x:Name="NewHierarchyTab"/>
+							<MenuItem Header="New Project Tab"   x:Name="NewProjectTab"/>
+							<MenuItem Header="New Console Tab"   x:Name="NewConsoleTab"/>
+							<MenuItem Header="New Animation Tab" x:Name="NewAnimationTab"/>
+							<MenuItem Header="New Timeline Tab"  x:Name="NewTimelineTab"/>
+							<Separator/>
+							<MenuItem Header="New Profiler Tab"       x:Name="NewProfilerTab"/>
+							<MenuItem Header="New Shader Editor Tab"  x:Name="NewShaderEditorTab"/>
+							<MenuItem Header="New Biome Graph Tab"    x:Name="NewBiomeGraphTab"/>
+							<MenuItem Header="New Blueprint Tab"      x:Name="NewBlueprintTab"/>
+							<MenuItem Header="New Extensions Status Tab" x:Name="NewExtensionsStatusTab"/>
+							<Separator/>
+							<MenuItem Header="Add-on panels" x:Name="MI_AddonPanelsRoot"/>
+						</MenuItem>
+					</MenuItem>
+
+					<MenuItem Header="_Settings" x:Name="MI_SettingsRoot">
+						<MenuItem Header="Input Remapping" x:Name="InputRemappingMenu"/>
+						<MenuItem Header="Clear Console on Play" x:Name="MI_ClearConsoleOnPlay" ToggleType="CheckBox"/>
+						<MenuItem Header="Script editor: line numbers" x:Name="MI_ScriptLineNumbers" ToggleType="CheckBox"/>
+						<MenuItem Header="Script editor: word wrap" x:Name="MI_ScriptWordWrap" ToggleType="CheckBox"/>
+					</MenuItem>
+				</Menu>
+
+				<!-- Right-aligned Project / Status Pill & Quick Build -->
+				<StackPanel Grid.Column="3"
+							Orientation="Horizontal"
+							Spacing="8"
+							Margin="8,0,0,0"
+							VerticalAlignment="Center">
+					<Border x:Name="ProjectStatusPill"
+							Classes="status-pill"
+							VerticalAlignment="Center">
+						<StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+							<Ellipse x:Name="ProjectStatusDot"
+									 Width="7"
+									 Height="7"
+									 Fill="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+									 VerticalAlignment="Center"/>
+							<TextBlock x:Name="ProjectStatusText"
+									   Text="No Project"
+									   FontSize="12"
+									   FontWeight="Medium"
+									   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+									   VerticalAlignment="Center"/>
+							<Border x:Name="PlayModeBadge"
+									IsVisible="False"
+									CornerRadius="8"
+									Padding="6,1"
+									Margin="2,0,0,0"
+									Background="#2E7D32"
+									VerticalAlignment="Center">
+								<TextBlock Text="PLAYING"
+										   FontSize="10"
+										   FontWeight="Bold"
+										   Foreground="White"
+										   LetterSpacing="0.5"/>
+							</Border>
+						</StackPanel>
+					</Border>
+
+					<Button x:Name="TopBarBuildButton"
+							Classes="topbar-action"
+							IsEnabled="False"
+							ToolTip.Tip="Build Settings…"
+							Click="OnTopBarBuild_Click">
+						<StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+							<Viewbox Width="13" Height="13" VerticalAlignment="Center">
+								<Canvas Width="24" Height="24">
+									<Path Data="M21,16.5 C21,16.88 20.79,17.21 20.47,17.38 L12.57,21.82 C12.41,21.94 12.21,22 12,22 C11.79,22 11.59,21.94 11.43,21.82 L3.53,17.38 C3.21,17.21 3,16.88 3,16.5 L3,7.5 C3,7.12 3.21,6.79 3.53,6.62 L11.43,2.18 C11.59,2.06 11.79,2 12,2 C12.21,2 12.41,2.06 12.57,2.18 L20.47,6.62 C20.79,6.79 21,7.12 21,7.5 Z M12,4.15 L6.04,7.5 L12,10.85 L17.96,7.5 Z M5,15.91 L11,19.29 L11,12.58 L5,9.21 Z M19,15.91 L19,9.21 L13,12.58 L13,19.29 Z"
+										  Fill="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+								</Canvas>
+							</Viewbox>
+							<TextBlock Text="Build" VerticalAlignment="Center"/>
+						</StackPanel>
+					</Button>
+				</StackPanel>
+
+			</Grid>
+		</Border>
 
 
 
 		<!-- Main layout -->
-		<Grid>
-			<Grid.ColumnDefinitions>
-				<ColumnDefinition Width="280"/>
-				<ColumnDefinition Width="6"/>
-				<ColumnDefinition Width="*"/>
-				<ColumnDefinition Width="6"/>
-				<ColumnDefinition Width="360"/>
-			</Grid.ColumnDefinitions>
-			<Grid.RowDefinitions>
-				<RowDefinition Height="*"/>
-				<RowDefinition Height="6"/>
-				<RowDefinition Height="260"/>
-			</Grid.RowDefinitions>
-
-			<!-- Left tools -->
-			<TabControl x:Name="LeftTabs" Grid.Row="0" Grid.Column="0"/>
-			<GridSplitter Grid.Row="0" Grid.Column="1" ResizeDirection="Columns" ShowsPreview="True"/>
-
-			<!-- Center documents (split: Scene + Game) -->
-			<Grid Grid.Row="0" Grid.Column="2">
+		<Border x:Name="WorkspaceBackdrop"
+				Background="{DynamicResource SystemControlPageBackgroundChromeLowBrush}"
+				Padding="6">
+			<Grid>
 				<Grid.ColumnDefinitions>
-					<ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="280"/>
 					<ColumnDefinition Width="6"/>
 					<ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="6"/>
+					<ColumnDefinition Width="360"/>
 				</Grid.ColumnDefinitions>
+				<Grid.RowDefinitions>
+					<RowDefinition Height="*"/>
+					<RowDefinition Height="6"/>
+					<RowDefinition Height="260"/>
+				</Grid.RowDefinitions>
 
-				<TabControl x:Name="CenterTabs" Grid.Column="0"/>
-				<GridSplitter Grid.Column="1" ResizeDirection="Columns" ShowsPreview="True"/>
-				<TabControl x:Name="CenterGameTabs" Grid.Column="2"/>
+				<!-- Left tools -->
+				<Border Classes="editor-panel" Grid.Row="0" Grid.Column="0">
+					<TabControl x:Name="LeftTabs"/>
+				</Border>
+				<GridSplitter Classes="editor-splitter editor-splitter-v" Grid.Row="0" Grid.Column="1" ResizeDirection="Columns"/>
+
+				<!-- Center documents (split: Scene + Game) -->
+				<Grid Grid.Row="0" Grid.Column="2">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="*"/>
+						<ColumnDefinition Width="6"/>
+						<ColumnDefinition Width="*"/>
+					</Grid.ColumnDefinitions>
+
+					<Border Classes="editor-panel" Grid.Column="0">
+						<TabControl x:Name="CenterTabs"/>
+					</Border>
+					<GridSplitter Classes="editor-splitter editor-splitter-v" Grid.Column="1" ResizeDirection="Columns"/>
+					<Border Classes="editor-panel" Grid.Column="2">
+						<TabControl x:Name="CenterGameTabs"/>
+					</Border>
+				</Grid>
+
+				<GridSplitter Classes="editor-splitter editor-splitter-v" Grid.Row="0" Grid.Column="3" ResizeDirection="Columns"/>
+
+				<!-- Right tools -->
+				<Border Classes="editor-panel" Grid.Row="0" Grid.Column="4">
+					<TabControl x:Name="RightTabs"/>
+				</Border>
+
+				<!-- Split above bottom band -->
+				<GridSplitter Classes="editor-splitter editor-splitter-h" Grid.Row="1" Grid.ColumnSpan="5" ResizeDirection="Rows"/>
+
+				<!-- Bottom-left tools (Project) -->
+				<Border Classes="editor-panel" Grid.Row="2" Grid.Column="0">
+					<TabControl x:Name="BottomLeftTabs"/>
+				</Border>
+
+				<!-- Bottom tools (Console) (spans center+right) -->
+				<Border Classes="editor-panel" Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="3">
+					<TabControl x:Name="BottomTabs"/>
+				</Border>
 			</Grid>
-
-			<GridSplitter Grid.Row="0" Grid.Column="3" ResizeDirection="Columns" ShowsPreview="True"/>
-
-			<!-- Right tools -->
-			<TabControl x:Name="RightTabs" Grid.Row="0" Grid.Column="4"/>
-
-			<!-- Split above bottom band -->
-			<GridSplitter Grid.Row="1" Grid.ColumnSpan="5" ResizeDirection="Rows" ShowsPreview="True"/>
-
-			<!-- Bottom-left tools (Project) -->
-			<TabControl x:Name="BottomLeftTabs" Grid.Row="2" Grid.Column="0"/>
-
-			<!-- Bottom tools (Console) (spans center+right) -->
-			<TabControl x:Name="BottomTabs" Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="3"/>
-		</Grid>
+		</Border>
 	</DockPanel>
 </Window>

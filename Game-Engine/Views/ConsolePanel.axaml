@@ -11,66 +11,316 @@
 		<local:SeverityToBrushConverter x:Key="SeverityText"   Kind="Text"/>
 	</UserControl.Resources>
 
+	<UserControl.Styles>
+		<!-- Compact icon + label toolbar buttons -->
+		<Style Selector="Button.console-tool-btn">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="Button.console-tool-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="Button.console-tool-btn:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+
+		<!-- Auto-scroll toggle button with accent checked state -->
+		<Style Selector="ToggleButton.console-tool-toggle">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="ToggleButton.console-tool-toggle:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.console-tool-toggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+		<Style Selector="ToggleButton.console-tool-toggle:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+			<Setter Property="Foreground" Value="White"/>
+			<Setter Property="Opacity" Value="0.9"/>
+		</Style>
+
+		<!-- Search pill surface -->
+		<Style Selector="Border.console-search-pill">
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="Padding" Value="7,1,4,1"/>
+		</Style>
+		<Style Selector="Border.console-search-pill:focus-within">
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+		</Style>
+
+		<!-- Borderless TextBox inside search pill -->
+		<Style Selector="TextBox.console-search-input">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+			<Setter Property="MinHeight" Value="24"/>
+			<Setter Property="Padding" Value="5,3"/>
+			<Setter Property="FontSize" Value="12"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="TextBox.console-search-input:pointerover /template/ Border#PART_BorderElement">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+		</Style>
+		<Style Selector="TextBox.console-search-input:focus /template/ Border#PART_BorderElement">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+		</Style>
+
+		<!-- Inline clear button inside search pill -->
+		<Style Selector="Button.console-inline-btn">
+			<Setter Property="Width" Value="20"/>
+			<Setter Property="Height" Value="20"/>
+			<Setter Property="Padding" Value="0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+			<Setter Property="HorizontalContentAlignment" Value="Center"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+		</Style>
+		<Style Selector="Button.console-inline-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+
+		<!-- Severity filter chips -->
+		<Style Selector="ToggleButton.console-chip">
+			<Setter Property="Height" Value="22"/>
+			<Setter Property="Padding" Value="9,0"/>
+			<Setter Property="CornerRadius" Value="11"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="FontWeight" Value="SemiBold"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="ToggleButton.console-chip:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+
+		<!-- Checked chip states -->
+		<Style Selector="ToggleButton.console-chip.chip-info:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#1E64B8"/>
+			<Setter Property="BorderBrush" Value="#3B82F6"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+		<Style Selector="ToggleButton.console-chip.chip-warn:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#B45309"/>
+			<Setter Property="BorderBrush" Value="#D97706"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+		<Style Selector="ToggleButton.console-chip.chip-error:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#C81E1E"/>
+			<Setter Property="BorderBrush" Value="#EF4444"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+		<Style Selector="ToggleButton.console-chip.chip-ok:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#15803D"/>
+			<Setter Property="BorderBrush" Value="#22C55E"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+		<Style Selector="ToggleButton.console-chip.chip-debug:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#4B5563"/>
+			<Setter Property="BorderBrush" Value="#6B7280"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+
+		<!-- Framed log list surface matching editor-panel cards -->
+		<Style Selector="Border#LogListHost">
+			<Setter Property="Background" Value="{DynamicResource SystemControlPageBackgroundAltHighBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="ClipToBounds" Value="True"/>
+		</Style>
+
+		<!-- Subtle row separators on log items -->
+		<Style Selector="ListBox#List ListBoxItem">
+			<Setter Property="Padding" Value="8,4"/>
+			<Setter Property="MinHeight" Value="24"/>
+			<Setter Property="BorderThickness" Value="0,0,0,1"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+		</Style>
+	</UserControl.Styles>
+
 	<DockPanel>
-		<TextBlock DockPanel.Dock="Top" Text="Console" FontSize="14" Margin="8,6" />
+		<!-- Toolbar + Search + Severity Chips -->
+		<StackPanel DockPanel.Dock="Top" Margin="6,6,6,4" Spacing="6">
+			<!-- Row 1: Action toolbar -->
+			<WrapPanel Orientation="Horizontal">
+				<Button x:Name="BtnClear" Classes="console-tool-btn" Margin="0,0,6,0" ToolTip.Tip="Clear console (Ctrl+L)">
+					<StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+						<Viewbox Width="12" Height="12">
+							<Canvas Width="16" Height="16">
+								<Path Data="M3,4 H13 M6,4 V2.5 H10 V4 M4.5,4 L5.2,13.5 H10.8 L11.5,4"
+									  Stroke="{Binding $parent[Button].Foreground}"
+									  StrokeThickness="1.4"
+									  StrokeLineCap="Round"
+									  StrokeJoin="Round"/>
+							</Canvas>
+						</Viewbox>
+						<TextBlock Text="Clear" VerticalAlignment="Center"/>
+					</StackPanel>
+				</Button>
 
-		<!-- Filters -->
-		<Border DockPanel.Dock="Top" Margin="6,0,6,4" Padding="6" CornerRadius="4" Background="#2A2C30">
-			<StackPanel Spacing="4">
-				<WrapPanel Orientation="Horizontal">
-					<Button x:Name="BtnClear" Content="Clear" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
-					<Button x:Name="BtnCopy" Content="Copy Selected" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
-					<ToggleButton x:Name="ChkAutoScroll" Content="Auto-scroll" IsChecked="True" Padding="8,2" FontSize="11"/>
-				</WrapPanel>
-				<TextBox x:Name="FilterText"
-						 Watermark="Search messages…"
-						 FontSize="11" />
-				<WrapPanel Orientation="Horizontal">
-					<ToggleButton x:Name="ChkInfo" Content="Info" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
-					<ToggleButton x:Name="ChkWarn" Content="Warn" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
-					<ToggleButton x:Name="ChkError" Content="Error" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
-					<ToggleButton x:Name="ChkSuccess" Content="OK" IsChecked="True" Margin="0,0,6,0" Padding="8,2" FontSize="11"/>
-					<ToggleButton x:Name="ChkDebug" Content="Debug" IsChecked="True" Padding="8,2" FontSize="11"/>
-				</WrapPanel>
-			</StackPanel>
-		</Border>
+				<Button x:Name="BtnCopy" Classes="console-tool-btn" Margin="0,0,6,0" ToolTip.Tip="Copy selected log line">
+					<StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+						<Viewbox Width="12" Height="12">
+							<Canvas Width="16" Height="16">
+								<Path Data="M5.5,5.5 H12.5 V13.5 H5.5 Z M3.5,10.5 H2.5 V2.5 H10.5 V3.5"
+									  Stroke="{Binding $parent[Button].Foreground}"
+									  StrokeThickness="1.4"
+									  StrokeLineCap="Round"
+									  StrokeJoin="Round"/>
+							</Canvas>
+						</Viewbox>
+						<TextBlock Text="Copy Selected" VerticalAlignment="Center"/>
+					</StackPanel>
+				</Button>
 
-		<Grid Margin="6" RowDefinitions="*,Auto" ColumnDefinitions="*,Auto">
-			<ListBox x:Name="List"
-					 Grid.Row="0" Grid.ColumnSpan="2"
-					 ItemsSource="{Binding VisibleLogs}">
-				<ListBox.ItemTemplate>
-					<DataTemplate x:DataType="core:LogItem">
-						<Grid ColumnDefinitions="Auto,Auto,*" Margin="0,2">
-							<TextBlock Grid.Column="0"
-									   Text="{Binding Timestamp, StringFormat=HH:mm:ss}"
-									   Margin="0,0,8,0"
-									   Opacity="0.7"/>
-							<Border Grid.Column="1" Padding="6,1" CornerRadius="10"
-									Margin="0,0,8,0"
-									Background="{Binding Severity, Converter={StaticResource SeverityBg}}"
-									BorderBrush="{Binding Severity, Converter={StaticResource SeverityBorder}}"
-									BorderThickness="1">
-								<TextBlock Text="{Binding Severity}"
-										   FontWeight="Bold"
-										   Foreground="White"/>
-							</Border>
-							<TextBlock Grid.Column="2"
-									   Text="{Binding Message}"
-									   TextWrapping="Wrap"
-									   Foreground="{Binding Severity, Converter={StaticResource SeverityText}}"/>
-						</Grid>
-					</DataTemplate>
-				</ListBox.ItemTemplate>
-			</ListBox>
+				<ToggleButton x:Name="ChkAutoScroll" Classes="console-tool-toggle" IsChecked="True" ToolTip.Tip="Automatically scroll to newest log line">
+					<StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+						<Viewbox Width="12" Height="12">
+							<Canvas Width="16" Height="16">
+								<Path Data="M8,2.5 V11.5 M4.5,8.5 L8,12 L11.5,8.5 M3.5,14 H12.5"
+									  Stroke="{Binding $parent[ToggleButton].Foreground}"
+									  StrokeThickness="1.4"
+									  StrokeLineCap="Round"
+									  StrokeJoin="Round"/>
+							</Canvas>
+						</Viewbox>
+						<TextBlock Text="Auto-scroll" VerticalAlignment="Center"/>
+					</StackPanel>
+				</ToggleButton>
+			</WrapPanel>
+
+			<!-- Row 2: Theme-aware search pill -->
+			<Border Classes="console-search-pill">
+				<Grid ColumnDefinitions="Auto,*,Auto">
+					<Viewbox Grid.Column="0" Width="13" Height="13" VerticalAlignment="Center" Opacity="0.7">
+						<Canvas Width="16" Height="16">
+							<Path Data="M7,2.5 A4.5,4.5 0 1 0 7,11.5 A4.5,4.5 0 1 0 7,2.5 Z M10.5,10.5 L14,14"
+								  Stroke="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+								  StrokeThickness="1.5"
+								  StrokeLineCap="Round"/>
+						</Canvas>
+					</Viewbox>
+
+					<TextBox x:Name="FilterText"
+							 Grid.Column="1"
+							 Classes="console-search-input"
+							 Watermark="Search messages…" />
+
+					<Button x:Name="BtnClearSearch"
+							Grid.Column="2"
+							Classes="console-inline-btn"
+							IsVisible="False"
+							ToolTip.Tip="Clear search">
+						<Viewbox Width="10" Height="10">
+							<Canvas Width="16" Height="16">
+								<Path Data="M4,4 L12,12 M12,4 L4,12"
+									  Stroke="{Binding $parent[Button].Foreground}"
+									  StrokeThickness="1.8"
+									  StrokeLineCap="Round"/>
+							</Canvas>
+						</Viewbox>
+					</Button>
+				</Grid>
+			</Border>
+
+			<!-- Row 3: Severity toggle chips -->
+			<WrapPanel Orientation="Horizontal">
+				<ToggleButton x:Name="ChkInfo"    Classes="console-chip chip-info"  Content="Info"  IsChecked="True" Margin="0,0,5,0"/>
+				<ToggleButton x:Name="ChkWarn"    Classes="console-chip chip-warn"  Content="Warn"  IsChecked="True" Margin="0,0,5,0"/>
+				<ToggleButton x:Name="ChkError"   Classes="console-chip chip-error" Content="Error" IsChecked="True" Margin="0,0,5,0"/>
+				<ToggleButton x:Name="ChkSuccess" Classes="console-chip chip-ok"    Content="OK"    IsChecked="True" Margin="0,0,5,0"/>
+				<ToggleButton x:Name="ChkDebug"   Classes="console-chip chip-debug" Content="Debug" IsChecked="True"/>
+			</WrapPanel>
+		</StackPanel>
+
+		<!-- Framed Log List + Command Input -->
+		<Grid Margin="6,2,6,6" RowDefinitions="*,Auto" ColumnDefinitions="*,Auto">
+			<Border x:Name="LogListHost" Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,6">
+				<ListBox x:Name="List"
+						 Background="Transparent"
+						 BorderThickness="0"
+						 ItemsSource="{Binding VisibleLogs}">
+					<ListBox.ItemTemplate>
+						<DataTemplate x:DataType="core:LogItem">
+							<Grid ColumnDefinitions="Auto,Auto,*">
+								<TextBlock Grid.Column="0"
+										   Text="{Binding Timestamp, StringFormat=HH:mm:ss}"
+										   FontSize="11"
+										   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+										   VerticalAlignment="Center"
+										   Margin="0,0,8,0"/>
+								<Border Grid.Column="1"
+										Padding="7,1"
+										MinWidth="56"
+										CornerRadius="9"
+										Margin="0,0,8,0"
+										VerticalAlignment="Center"
+										Background="{Binding Severity, Converter={StaticResource SeverityBg}}"
+										BorderBrush="{Binding Severity, Converter={StaticResource SeverityBorder}}"
+										BorderThickness="1">
+									<TextBlock Text="{Binding Severity}"
+											   FontSize="10"
+											   FontWeight="Bold"
+											   HorizontalAlignment="Center"
+											   Foreground="White"/>
+								</Border>
+								<TextBlock Grid.Column="2"
+										   Text="{Binding Message}"
+										   FontSize="12"
+										   VerticalAlignment="Center"
+										   TextWrapping="Wrap"
+										   Foreground="{Binding Severity, Converter={StaticResource SeverityText}}"/>
+							</Grid>
+						</DataTemplate>
+					</ListBox.ItemTemplate>
+				</ListBox>
+			</Border>
 
 			<TextBox x:Name="Input"
 					 Grid.Row="1" Grid.Column="0"
-					 Watermark="> enter command..." />
+					 CornerRadius="4"
+					 FontSize="12"
+					 Watermark="&gt; enter command..." />
 
 			<Button x:Name="RunButton"
 					Grid.Row="1" Grid.Column="1"
-					Content="Run" Margin="6,0,0,0" />
+					Classes="console-tool-btn"
+					Content="Run"
+					Margin="6,0,0,0" />
 		</Grid>
 	</DockPanel>
 </UserControl>

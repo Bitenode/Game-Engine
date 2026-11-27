@@ -88,11 +88,10 @@
 					</Button.Flyout>
 				</Button>
 
-
 				<TextBlock Text="  " />
 
-				<!-- FPS counter -->
-				<TextBlock Text="{Binding ElementName=Scene, Path=FpsText}"
+				<!-- Stats overlay -->
+				<TextBlock Text="{Binding ElementName=Scene, Path=StatsText}"
 						   Foreground="#8899AA" FontSize="11"
 						   VerticalAlignment="Center" Opacity="0.85"/>
 

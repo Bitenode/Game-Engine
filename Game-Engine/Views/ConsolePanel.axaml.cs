@@ -45,7 +45,17 @@ public partial class ConsolePanel : UserControl
         BtnClear.Click += (_, __) => ClearConsoleContent();
         AddHandler(KeyDownEvent, OnConsolePanelKeyDown, RoutingStrategies.Tunnel);
         BtnCopy.Click += (_, __) => CopySelectedLine();
-        FilterText.TextChanged += (_, __) => RebuildVisibleLogs();
+        FilterText.TextChanged += (_, __) =>
+        {
+            BtnClearSearch.IsVisible = !string.IsNullOrEmpty(FilterText.Text);
+            RebuildVisibleLogs();
+        };
+        BtnClearSearch.Click += (_, __) =>
+        {
+            FilterText.Text = string.Empty;
+            FilterText.Focus();
+        };
+        ActualThemeVariantChanged += (_, __) => RebuildVisibleLogs();
         ChkInfo.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
         ChkWarn.IsCheckedChanged += (_, __) => RebuildVisibleLogs();
         ChkError.IsCheckedChanged += (_, __) => RebuildVisibleLogs();

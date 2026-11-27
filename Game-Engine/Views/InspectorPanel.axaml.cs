@@ -670,6 +670,61 @@ public partial class InspectorPanel : UserControl
     }
 
     // ----------------- UI build -----------------
+    void SetSelectionSummary(string text)
+    {
+        if (this.FindControl<TextBlock>("SelectionSummaryText") is { } summary)
+            summary.Text = string.IsNullOrWhiteSpace(text) ? "No selection" : text;
+    }
+
+    static Control BuildEmptyState()
+    {
+        var icon = new Avalonia.Controls.Shapes.Path
+        {
+            Data = Geometry.Parse("M3,5 H21 M3,12 H21 M3,19 H21 M8,3 V7 M16,10 V14 M11,17 V21"),
+            Stroke = Brushes.Gray,
+            StrokeThickness = 1.6,
+            StrokeLineCap = PenLineCap.Round,
+            Width = 28,
+            Height = 28,
+            Stretch = Stretch.Uniform,
+            Opacity = 0.45,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+
+        var heading = new TextBlock
+        {
+            Text = "No selection",
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            Opacity = 0.78,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+
+        var hint = new TextBlock
+        {
+            Text = "Select an object in Hierarchy or an asset in Project to inspect it.",
+            FontSize = 11.5,
+            Opacity = 0.52,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            MaxWidth = 220,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+
+        var stack = new StackPanel
+        {
+            Spacing = 4,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 36, 12, 24)
+        };
+        stack.Children.Add(icon);
+        stack.Children.Add(heading);
+        stack.Children.Add(hint);
+        return stack;
+    }
+
     void BuildUI(GameObject? go)
     {
         Host.Children.Clear();
@@ -677,9 +732,12 @@ public partial class InspectorPanel : UserControl
 
         if (go is null)
         {
-            Host.Children.Add(new TextBlock { Text = "No selection", Opacity = 0.6, Margin = new Thickness(6) });
+            SetSelectionSummary("No selection");
+            Host.Children.Add(BuildEmptyState());
             return;
         }
+
+        SetSelectionSummary(string.IsNullOrWhiteSpace(go.Name) ? "GameObject" : go.Name);
 
         // ---- Name -----------------------------------------------------------
         Host.Children.Add(SectionHeader("Name"));
@@ -780,10 +838,14 @@ public partial class InspectorPanel : UserControl
             Margin = new Thickness(4, 2, 4, 0),
         };
 
+        pasteBtn.Classes.Add("insp-secondary-btn");
+        quickAddBtn.Classes.Add("insp-secondary-btn");
+        addBtn.Classes.Add("insp-primary-btn");
+
         addBtn.Click += (_, __) => addComponentMenu.Open(addBtn);
         quickAddBtn.Click += (_, __) => ShowQuickAddComponentPicker(go, categoryMap, scriptInfos);
 
-        var bar = new StackPanel { Spacing = 0 };
+        var bar = new StackPanel { Spacing = 4 };
         bar.Children.Add(pasteBtn);
         bar.Children.Add(quickAddBtn);
         bar.Children.Add(addBtn);
@@ -961,9 +1023,12 @@ public partial class InspectorPanel : UserControl
 
         if (objects.Count == 0)
         {
-            Host.Children.Add(new TextBlock { Text = "No selection", Opacity = 0.6, Margin = new Thickness(6) });
+            SetSelectionSummary("No selection");
+            Host.Children.Add(BuildEmptyState());
             return;
         }
+
+        SetSelectionSummary($"{objects.Count} objects selected");
 
         Host.Children.Add(new TextBlock
         {
@@ -1056,6 +1121,7 @@ public partial class InspectorPanel : UserControl
 
         _assetInspectorActive = true;
         RememberBuiltSelection();
+        SetSelectionSummary(Path.GetFileName(absPath));
 
         try
         {
@@ -1564,9 +1630,34 @@ public partial class InspectorPanel : UserControl
             return tb;
         }
 
-        row.Children.Add(Make(nameof(CoreVector3.X)));
-        row.Children.Add(Make(nameof(CoreVector3.Y)));
-        row.Children.Add(Make(nameof(CoreVector3.Z)));
+        static Control AxisField(string label, string hexColor, TextBox tb)
+        {
+            var badge = new Border
+            {
+                Width = 18,
+                Height = 22,
+                CornerRadius = new CornerRadius(3),
+                Background = new SolidColorBrush(Color.Parse(hexColor)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = label,
+                    Foreground = Brushes.White,
+                    FontSize = 11,
+                    FontWeight = FontWeight.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            var group = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+            group.Children.Add(badge);
+            group.Children.Add(tb);
+            return group;
+        }
+
+        row.Children.Add(AxisField("X", "#D94A4A", Make(nameof(CoreVector3.X))));
+        row.Children.Add(AxisField("Y", "#3DA35D", Make(nameof(CoreVector3.Y))));
+        row.Children.Add(AxisField("Z", "#3B82F6", Make(nameof(CoreVector3.Z))));
         return row;
     }
 
@@ -1712,11 +1803,13 @@ public partial class InspectorPanel : UserControl
         enabled.IsCheckedChanged += (_, __) => { SceneService.NotifyChanged(); CommitPropertyEdit(b, pEnabled); };
 
         var title = new TextBlock { Text = b.GetType().Name, VerticalAlignment = VerticalAlignment.Center };
+        title.Classes.Add("insp-card-title");
 
         Button? copy = null;
         if (b is not CoreTransform)
         {
             copy = new Button { Content = "Copy", Padding = new Thickness(8, 2), Margin = new Thickness(4, 0, 0, 0) };
+            copy.Classes.Add("insp-header-btn");
             copy.Click += (_, __) =>
             {
                 try
@@ -1729,6 +1822,8 @@ public partial class InspectorPanel : UserControl
         }
 
         var remove = new Button { Content = "Remove", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(8, 2) };
+        remove.Classes.Add("insp-header-btn");
+        remove.Classes.Add("insp-remove-btn");
         remove.Click += (_, __) =>
         {
             owner.RemoveBehavior(b);
@@ -1779,13 +1874,15 @@ public partial class InspectorPanel : UserControl
         chevron.Cursor = new Cursor(StandardCursorType.Hand);
         ApplyFold(foldedOpen);
 
-        return new Border
+        var card = new Border
         {
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(8),
             Child = outer
         };
+        card.Classes.Add("insp-card");
+        return card;
     }
 
 

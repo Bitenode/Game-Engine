@@ -112,26 +112,23 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     private Light? _cachedLight;
     private bool _sceneQueryDirty = true;
 
-    // FPS tracking
-    private readonly Stopwatch _fpsWatch = new Stopwatch();
     private readonly Stopwatch _frameTimer = new Stopwatch();
-    private int _fpsFrameCount;
     private double _lastFrameMs;
-    private string _fpsText = "0 FPS";
+    private string _statsText = "";
     private string _lastSectionTimes = "";
     private double _lastCompositMs;  // Avalonia compositing time (base.Render minus OnOpenGlRender)
     private double _lastOverlayMs;   // 2D overlay time (colliders, gizmos, wireframes)
 
-    public static readonly DirectProperty<SceneView, string> FpsTextProperty =
-        AvaloniaProperty.RegisterDirect<SceneView, string>(nameof(FpsText), o => o.FpsText);
+    public static readonly DirectProperty<SceneView, string> StatsTextProperty =
+        AvaloniaProperty.RegisterDirect<SceneView, string>(nameof(StatsText), o => o.StatsText);
 
-    public string FpsText
+    public string StatsText
     {
-        get => _fpsText;
-        private set => SetAndRaise(FpsTextProperty, ref _fpsText, value);
+        get => _statsText;
+        private set => SetAndRaise(StatsTextProperty, ref _statsText, value);
     }
 
-    private DispatcherTimer? _fpsTimer;
+    private DispatcherTimer? _statsTimer;
     private readonly DispatcherTimer _playModePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private long _lastPlayPreviewTicks;
     private volatile bool _renderInFlight;
@@ -1524,25 +1521,21 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _flyTimer.Tick += (_, __) => StepFly();
         _frameLerpTimer.Tick += (_, __) => StepFrameLerp();
 
-        // FPS display timer - updates text outside of render cycle to avoid layout cascades
-        _fpsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _fpsTimer.Tick += (_, __) =>
+        // Stats display timer - updates text outside of render cycle to avoid layout cascades
+        _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _statsTimer.Tick += (_, __) =>
         {
-            if (!_fpsWatch.IsRunning || _fpsWatch.ElapsedMilliseconds < 400) return;
-            double fps = _fpsFrameCount / _fpsWatch.Elapsed.TotalSeconds;
-            _fpsFrameCount = 0;
-            _fpsWatch.Restart();
             if (!ShowStatsOverlay)
             {
-                FpsText = "";
+                StatsText = "";
                 return;
             }
 
             var objectCount = CountSceneObjects();
             var selectedCount = _multiSelected.Count > 0 ? _multiSelected.Count : (_selected != null ? 1 : 0);
-            FpsText = $"{fps:F0} FPS  Obj:{objectCount} Sel:{selectedCount} GL:{_lastFrameMs:F0}ms C:{_lastCompositMs:F0}ms O:{_lastOverlayMs:F0}ms [{_lastSectionTimes}]";
+            StatsText = $"Obj:{objectCount} Sel:{selectedCount} GL:{_lastFrameMs:F0}ms C:{_lastCompositMs:F0}ms O:{_lastOverlayMs:F0}ms [{_lastSectionTimes}]";
         };
-        _fpsTimer.Start();
+        _statsTimer.Start();
 
         _playModePreviewTimer.Tick += (_, __) =>
         {
@@ -1726,10 +1719,6 @@ public class SceneView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
         _frameTimer.Restart();
         double _tSetup = 0, _tShadow = 0, _tScene = 0, _tGizmo = 0;
         var _sec = Stopwatch.StartNew();
-
-        // FPS frame count (display update happens via _fpsTimer)
-        if (!_fpsWatch.IsRunning) _fpsWatch.Start();
-        _fpsFrameCount++;
 
         // Wind update
         var now = _windWatch.Elapsed.TotalSeconds;
