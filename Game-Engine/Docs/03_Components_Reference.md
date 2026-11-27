@@ -762,8 +762,9 @@ The Water shader computes wave normals per-vertex and passes them to the fragmen
 Billboard particle system with emission shapes, sub-emitters, and preset configurations.
 
 **Key features:**
-- **Billboard particles** — always face the camera
-- **Instanced rendering** — efficient GPU drawing via uniform arrays
+- **Billboard particles** — always face the camera with per-particle rotation
+- **GPU-instanced rendering** — dynamic per-GL-context instance VBO (`GPUParticleBatcher` owned by `ResourceCache`) using `glVertexAttribDivisor` + `glDrawArraysInstanced`, uploading an interleaved 48-byte/instance buffer (`aInstPosSize`, `aInstColor`, `aInstParams`) from a pooled CPU staging array with zero per-frame allocations and a single draw call per emitter (no 128-particle uniform batch cap)
+- **Optional sprite-sheet flipbook animation** — `FlipbookColumns` and `FlipbookRows` (default `1, 1`) animate UV frames over particle lifetime when an albedo texture is assigned on the emitter's `MeshRenderer` material
 - **Emission shapes** — `Sphere`, `Cone`, `Box` with configurable dimensions. **Cone** emissions align to `EmissionDirection` (not fixed world +Y)
 - **Particle look** — `Look` enum: `Billboard` (soft circle), `Streak` (rain/snow), `Flame` (teardrop rising from the particle base). Fire preset uses `Flame`
 - **Sub-emitters** — spawn additional particles on collision, death, or other events

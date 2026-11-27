@@ -13,11 +13,19 @@ internal static class Program
     {
         // Locate build.json: either passed as arg or next to the executable in Data/
         string? buildJson = null;
-        if (args.Length > 0 && File.Exists(args[0]))
+        bool showFps = false;
+        foreach (var arg in args)
         {
-            buildJson = Path.GetFullPath(args[0]);
+            if (string.Equals(arg, "--fps", StringComparison.OrdinalIgnoreCase))
+            {
+                showFps = true;
+            }
+            else if (buildJson == null && File.Exists(arg))
+            {
+                buildJson = Path.GetFullPath(arg);
+            }
         }
-        else
+        if (buildJson == null)
         {
             var exeDir = AppContext.BaseDirectory;
             var candidate = Path.Combine(exeDir, "Data", "build.json");
@@ -33,6 +41,7 @@ internal static class Program
         }
 
         App.BuildJsonPath = buildJson;
+        App.ShowFpsHud = showFps;
 
         if (string.IsNullOrEmpty(ShaderProgram.BinaryCacheDirectory))
         {

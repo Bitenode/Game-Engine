@@ -602,32 +602,60 @@ The engine supports a fast iteration workflow:
 
 ## SceneManager — Runtime Scene Loading
 
-The `SceneManager` static API allows scripts to load scenes at runtime (e.g., transitioning from a main menu to gameplay). Loads are **deferred to the start of the next frame** so the scene tree is never mutated during iteration.
+The `SceneManager` static API allows scripts to load scenes at runtime (e.g., transitioning from a main menu to gameplay) or stream additive sub-scenes asynchronously. Scene activations and unloads are **deferred to the start of the next frame** so the scene tree is never mutated during iteration.
 
 ```csharp
-// Load a scene by name (looks in the project's Scenes/ folder)
+// Load a scene by name (Single mode — replaces current scene)
 SceneManager.LoadScene("Main Menu");
 
 // Load a scene by file path
 SceneManager.LoadSceneByPath("Levels/Level_01.scene");
 
-// Check current scene
+// Load a scene additively (keeps existing scene objects intact)
+SceneManager.LoadScene("HUD_Overlay", SceneLoadMode.Additive);
+
+// Unload a previously loaded additive scene (destroys only its root objects)
+SceneManager.UnloadScene("HUD_Overlay");
+
+// Asynchronous scene loading (file I/O + JSON parsing on a background thread)
+AsyncSceneLoadOperation op = SceneManager.LoadSceneAsync("Level_02", SceneLoadMode.Single);
+op.AllowSceneActivation = false; // Hold activation at 0.9 progress until ready
+op.Completed += (doneOp) =>
+{
+    if (doneOp.IsFaulted) LogError(doneOp.Error!);
+    else LogInfo($"Activated {doneOp.SceneName}");
+};
+// Later (e.g. after fade-out):
+op.AllowSceneActivation = true;
+// Or await directly / via op.Task:
+await SceneManager.LoadSceneAsync("Biome_Cave", SceneLoadMode.Additive);
+await SceneManager.UnloadSceneAsync("Biome_Cave");
+
+// Query loaded scenes
 string? name = SceneManager.CurrentSceneName;
+IReadOnlyList<string> additive = SceneManager.LoadedAdditiveScenes;
+bool loaded = SceneManager.IsSceneLoaded("Biome_Cave");
 bool pending = SceneManager.HasPendingLoad;
 
-// Listen for scene load completion
-SceneManager.SceneLoaded += (sceneName) =>
-{
-    LogInfo($"Scene loaded: {sceneName}");
-};
+// Listen for scene load / unload events
+SceneManager.SceneLoaded += (sceneName) => LogInfo($"Scene loaded: {sceneName}");
+SceneManager.SceneUnloaded += (sceneName) => LogInfo($"Scene unloaded: {sceneName}");
 ```
 
-**Load sequence:**
-1. Current scene is torn down (`OnDestroy` called on all behaviors)
+**`AsyncSceneLoadOperation` progress stages:** `0.0` (started) → `0.5` (file read on background thread) → `0.9` (JSON parsed, waiting for `AllowSceneActivation`) → `1.0` (activated on main thread).
+
+**Load sequence (`SceneLoadMode.Single`):**
+1. Current scene is torn down (`OnDestroy` called on all behaviors) and additive scene tracking is cleared
 2. Registries (audio, physics, UI) are cleared
-3. New `.scene` file is deserialized via `SceneService.LoadFromFile()`
+3. New `.scene` file is instantiated on the main thread
 4. Caches are rebuilt and `Awake()`/`Start()` are called on new behaviors
 5. `SceneManager.SceneLoaded` event fires
+
+**Additive load sequence (`SceneLoadMode.Additive`):**
+1. New `.scene` root objects are appended to `SceneService.Root` and tracked under the scene's name
+2. Caches are rebuilt and `Awake()`/`Start()` are called on the newly added behaviors
+3. `SceneManager.SceneLoaded` event fires
+4. Calling `UnloadScene(name)` / `UnloadSceneAsync(name)` destroys only that additive scene's root objects and fires `SceneManager.SceneUnloaded`
 
 ---
 

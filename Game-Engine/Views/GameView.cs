@@ -1526,6 +1526,45 @@ namespace Game_Engine.Views
             Input.EndFrame();
         }
 
+        /// <summary>Advances a single fixed + update frame while paused and triggers a viewport redraw.</summary>
+        public void StepOneFrame()
+        {
+            if (State != GamePanel.GameState.Paused) return;
+            if (_needsWarm) { WarmAllColliders(); _needsWarm = false; }
+
+            Profiler.Begin("Physics");
+            Core.Time.BeginFixedUpdate(FIXED_DT);
+            Core.Physics.PhysicsCache.Tick();
+            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.FixedUpdate);
+            Profiler.End();
+
+            Profiler.BeginFrame();
+            Core.Time.BeginUpdate(FIXED_DT);
+            Input.NewFrame((float)FIXED_DT);
+
+            float uiScale = PlayUiScale();
+            float uiW = Math.Max(1f, (float)Bounds.Width * uiScale);
+            float uiH = Math.Max(1f, (float)Bounds.Height * uiScale);
+            Input.FeedViewportSize(uiW, uiH);
+            Core.Rendering.UI.UIEventSystem.ProcessEvents(uiW, uiH);
+
+            if (NetworkManager.IsActive)
+                NetworkManager.Update();
+
+            Profiler.Begin("Scripts");
+            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.Update);
+            SceneService.TickActiveBehaviors(Profiler.ScriptPhase.LateUpdate);
+            Profiler.PublishScriptCosts();
+            Profiler.End();
+
+            Profiler.Begin("Audio");
+            AudioManager.UpdateListenerTransform();
+            Profiler.End();
+
+            Input.EndFrame();
+            RequestNextFrameRendering();
+        }
+
         void TickFixedUpdate()
         {
             if (State != GamePanel.GameState.Playing) return;

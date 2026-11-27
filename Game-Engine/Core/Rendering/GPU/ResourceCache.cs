@@ -210,6 +210,9 @@ public sealed class ResourceCache : IDisposable
         _flatNormalTex?.Dispose();
         _flatNormalTex = null;
 
+        _particleBatcher?.Dispose();
+        _particleBatcher = null;
+
         _globalVersion++;
         FlushRequested = false;
         _skipBcnCompress.Clear();
@@ -506,6 +509,13 @@ public sealed class ResourceCache : IDisposable
         return _blackCubemap;
     }
     private GPUTexture? _blackCubemap;
+
+    /// <summary>
+    /// Get or create the per-GL-context <see cref="GPUParticleBatcher"/> for GPU-instanced particle rendering.
+    /// </summary>
+    public GPUParticleBatcher GetParticleBatcher()
+        => _particleBatcher ??= new GPUParticleBatcher(_gl);
+    private GPUParticleBatcher? _particleBatcher;
 
     /// <summary>
     /// Get or create splatmap GPU textures for a Terrain. Per-context, so
@@ -838,6 +848,8 @@ public sealed class ResourceCache : IDisposable
         _flatNormalTex = null;
         _blackCubemap?.Dispose();
         _blackCubemap = null;
+        _particleBatcher?.Dispose();
+        _particleBatcher = null;
         _skipBcnCompress.Clear();
     }
 }

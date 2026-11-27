@@ -220,11 +220,19 @@ namespace Game_Engine.Core
         /// <summary>Load a JSON scene file and replace the current root.</summary>
         public static void LoadFromFile(string path)
         {
+            var json = SceneSerialization.ReadSceneJson(path);
+            var dto = SceneSerialization.ParseSceneJson(json);
+            LoadFromParsedDto(dto, path);
+        }
+
+        /// <summary>Instantiate a pre-parsed scene DTO and replace the current root (main thread).</summary>
+        internal static void LoadFromParsedDto(SceneDTO dto, string path)
+        {
             _suppressDirtyTracking = true;
             DeferPlanetVegetationImport = true;
             try
             {
-                var loaded = SceneSerialization.LoadScene(path);
+                var loaded = SceneSerialization.InstantiateScene(dto);
                 SceneService.ReplaceAll(loaded);
                 MaterialRebind.RepairScene();
                 RebuildVegetation();
@@ -240,12 +248,47 @@ namespace Game_Engine.Core
             Changed?.Invoke();
         }
 
+        /// <summary>Load a JSON scene file additively, appending its root objects to the current scene.</summary>
+        public static List<GameObject> LoadAdditiveFromFile(string path)
+        {
+            var json = SceneSerialization.ReadSceneJson(path);
+            var dto = SceneSerialization.ParseSceneJson(json);
+            return LoadAdditiveFromParsedDto(dto);
+        }
+
+        /// <summary>Instantiate a pre-parsed scene DTO and append its root objects to the current scene (main thread).</summary>
+        internal static List<GameObject> LoadAdditiveFromParsedDto(SceneDTO dto)
+        {
+            _suppressDirtyTracking = true;
+            DeferPlanetVegetationImport = true;
+            List<GameObject> loaded;
+            try
+            {
+                loaded = SceneSerialization.InstantiateScene(dto);
+                _root.CollectionChanged -= OnRootChanged;
+                foreach (var go in loaded)
+                    _root.Add(go);
+                _root.CollectionChanged += OnRootChanged;
+
+                MaterialRebind.RepairScene();
+                RebuildVegetation(loaded);
+                PlanetVegetationSceneLoader.ScheduleHydrateAfterSceneReplace();
+            }
+            finally
+            {
+                DeferPlanetVegetationImport = false;
+                _suppressDirtyTracking = false;
+            }
+            RaiseChanged(markDirty: false);
+            return loaded;
+        }
+
         /// <summary>Rebuild grass for any VegetationPainter with GrassBuilt=true (grass is not serialized).</summary>
-        private static void RebuildVegetation()
+        private static void RebuildVegetation(IEnumerable<GameObject>? roots = null)
         {
             try
             {
-                foreach (var root in Root)
+                foreach (var root in roots ?? Root)
                     RebuildVegetationRecursive(root);
             }
             catch { }

@@ -56,6 +56,12 @@ namespace Game_Engine.Core.Component
         /// <summary>Billboard is a soft circle. Streak is rain. Flame is a teardrop rising from the particle.</summary>
         [Persist] public ParticleLook Look { get; set; } = ParticleLook.Billboard;
 
+        // ── Optional texture-sheet flipbook (1x1 = single image / procedural) ──
+        /// <summary>Number of horizontal frames in an optional particle sprite-sheet texture (default 1).</summary>
+        [Persist] public int FlipbookColumns { get; set; } = 1;
+        /// <summary>Number of vertical frames in an optional particle sprite-sheet texture (default 1).</summary>
+        [Persist] public int FlipbookRows { get; set; } = 1;
+
         // ── Color (start → end gradient) ──
         [Persist] public SN.Vector4 StartColor { get; set; } = new SN.Vector4(1f, 0.8f, 0.2f, 1f);
         [Persist] public SN.Vector4 EndColor { get; set; } = new SN.Vector4(0.3f, 0.1f, 0.0f, 0f);
@@ -672,6 +678,51 @@ namespace Game_Engine.Core.Component
                 count++;
             }
             return count;
+        }
+
+        /// <summary>
+        /// Pack all active particles into an interleaved GPU instance float buffer (12 floats / 48 bytes per particle):
+        ///   [pos.x, pos.y, pos.z, size, col.r, col.g, col.b, col.a, rotationRad, normalizedAge, flipbookCols, flipbookRows]
+        /// </summary>
+        internal int FillInstancedData(float[] dst, int maxInstances)
+        {
+            int n = Math.Min(AliveCount, Particles.Length);
+            if (n <= 0 || maxInstances <= 0) return 0;
+
+            int limit = Math.Min(n, maxInstances);
+            int maxByBuf = dst.Length / 12;
+            if (limit > maxByBuf) limit = maxByBuf;
+
+            float cols = Math.Max(1, FlipbookColumns);
+            float rows = Math.Max(1, FlipbookRows);
+            float sizeDelta = EndSize - StartSize;
+            var startCol = StartColor;
+            var endCol = EndColor;
+
+            for (int i = 0; i < limit; i++)
+            {
+                ref var p = ref Particles[i];
+                float t = p.MaxLife > 1e-6f ? Math.Clamp(1f - (p.Life / p.MaxLife), 0f, 1f) : 1f;
+                float size = StartSize + sizeDelta * t;
+                var color = SN.Vector4.Lerp(startCol, endCol, t);
+
+                int o = i * 12;
+                dst[o + 0] = p.Position.X;
+                dst[o + 1] = p.Position.Y;
+                dst[o + 2] = p.Position.Z;
+                dst[o + 3] = size;
+
+                dst[o + 4] = color.X;
+                dst[o + 5] = color.Y;
+                dst[o + 6] = color.Z;
+                dst[o + 7] = color.W;
+
+                dst[o + 8] = p.Rotation;
+                dst[o + 9] = t;
+                dst[o + 10] = cols;
+                dst[o + 11] = rows;
+            }
+            return limit;
         }
     }
 }

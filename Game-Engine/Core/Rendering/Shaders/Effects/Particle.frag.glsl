@@ -2,7 +2,11 @@
 
 in vec4 vColor;
 in vec2 vUV;
+in vec2 vQuadUV;
 flat in int vInstanceID;
+
+uniform sampler2D uParticleTex;
+uniform int uHasTexture;
 uniform int uAlignVelocity;
 uniform int uParticleLook;
 
@@ -10,10 +14,19 @@ out vec4 FragColor;
 
 void main()
 {
+    if (uHasTexture != 0)
+    {
+        vec4 tex = texture(uParticleTex, vUV);
+        vec4 col = tex * vColor;
+        if (col.a < 0.01) discard;
+        FragColor = col;
+        return;
+    }
+
     if (uParticleLook == 2)
     {
-        float x = abs(vUV.x - 0.5) * 2.0;
-        float y = vUV.y;
+        float x = abs(vQuadUV.x - 0.5) * 2.0;
+        float y = vQuadUV.y;
         float wobble = 0.84 + 0.16 * fract(sin(float(vInstanceID) * 12.9898 + y * 47.0) * 43758.5453);
         float halfW = mix(0.96, 0.16, y) * wobble;
         float radial = x / max(halfW, 0.05);
@@ -34,13 +47,13 @@ void main()
     float alpha;
     if (uAlignVelocity != 0)
     {
-        float ax = abs(vUV.x - 0.5) * 2.0;
-        float ay = abs(vUV.y - 0.5) * 2.0;
+        float ax = abs(vQuadUV.x - 0.5) * 2.0;
+        float ay = abs(vQuadUV.y - 0.5) * 2.0;
         alpha = (1.0 - smoothstep(0.25, 1.0, ax)) * (1.0 - smoothstep(0.82, 1.0, ay));
     }
     else
     {
-        float dist = length(vUV - vec2(0.5));
+        float dist = length(vQuadUV - vec2(0.5));
         alpha = 1.0 - smoothstep(0.3, 0.5, dist);
     }
 

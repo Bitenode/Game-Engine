@@ -1,9 +1,12 @@
 using System;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
+using Avalonia.Layout;
 using Game_Engine.Core;
+using Game_Engine.Core.Audio;
 using Game_Engine.Core.Extensibility;
 using Game_Engine;
 
@@ -13,6 +16,19 @@ public partial class GamePanel : UserControl
 {
     public enum GameState { Stopped, Playing, Paused }
 
+    private sealed record AspectPreset(string Label, double? Ratio)
+    {
+        public override string ToString() => Label;
+    }
+
+    private static readonly AspectPreset[] s_aspectPresets =
+    {
+        new("Free", null),
+        new("16:9", 16.0 / 9.0),
+        new("16:10", 16.0 / 10.0),
+        new("4:3", 4.0 / 3.0),
+    };
+
     public static readonly StyledProperty<GameState> StateProperty =
         AvaloniaProperty.Register<GamePanel, GameState>(nameof(State), GameState.Stopped);
 
@@ -21,9 +37,12 @@ public partial class GamePanel : UserControl
         base.OnLoaded(e);
         _game ??= this.FindControl<GameView>("Game");
         ForwardState();
+        if (MuteBtn != null)
+            MuteBtn.IsChecked = AudioMixer.Master.Muted;
+        ApplyAspectRatio();
     }
 
-    private GameView _game;
+    private GameView? _game;
 
     public GameState State
     {
@@ -44,6 +63,17 @@ public partial class GamePanel : UserControl
     public GamePanel()
     {
         InitializeComponent();
+
+        if (AspectCombo != null)
+        {
+            AspectCombo.ItemsSource = s_aspectPresets;
+            AspectCombo.SelectedIndex = 0;
+            AspectCombo.SelectionChanged += (_, _) => ApplyAspectRatio();
+        }
+
+        if (ViewportHost != null)
+            ViewportHost.SizeChanged += (_, _) => ApplyAspectRatio();
+
         UpdateButtons();
     }
 
@@ -54,9 +84,48 @@ public partial class GamePanel : UserControl
 
     private void UpdateButtons()
     {
-        // Pause only while Playing. Stop only when not Stopped.
+        // Pause only while Playing. Stop and Step when Playing or Paused.
         if (PauseBtn != null) PauseBtn.IsEnabled = State == GameState.Playing;
         if (StopBtn != null) StopBtn.IsEnabled = State != GameState.Stopped;
+        if (StepBtn != null) StepBtn.IsEnabled = State != GameState.Stopped;
+    }
+
+    private void ApplyAspectRatio()
+    {
+        var game = _game ?? this.FindControl<GameView>("Game");
+        if (game == null || ViewportHost == null) return;
+
+        var preset = AspectCombo?.SelectedItem as AspectPreset;
+        if (preset?.Ratio is not double targetRatio)
+        {
+            game.HorizontalAlignment = HorizontalAlignment.Stretch;
+            game.VerticalAlignment = VerticalAlignment.Stretch;
+            game.Width = double.NaN;
+            game.Height = double.NaN;
+            return;
+        }
+
+        double hostW = ViewportHost.Bounds.Width;
+        double hostH = ViewportHost.Bounds.Height;
+        if (hostW <= 1 || hostH <= 1) return;
+
+        double hostRatio = hostW / hostH;
+        double w, h;
+        if (hostRatio > targetRatio)
+        {
+            h = hostH;
+            w = Math.Floor(h * targetRatio);
+        }
+        else
+        {
+            w = hostW;
+            h = Math.Floor(w / targetRatio);
+        }
+
+        game.HorizontalAlignment = HorizontalAlignment.Center;
+        game.VerticalAlignment = VerticalAlignment.Center;
+        game.Width = Math.Max(1, w);
+        game.Height = Math.Max(1, h);
     }
 
     private void LogState(GameState state)
@@ -130,6 +199,19 @@ public partial class GamePanel : UserControl
     private void OnStopClicked(object? s, RoutedEventArgs e)
     {
         if (State != GameState.Stopped)
-            State = GameState.Stopped; // this �unpauses� by leaving Paused state
+            State = GameState.Stopped; // this "unpauses" by leaving Paused state
+    }
+
+    private void OnStepClicked(object? s, RoutedEventArgs e)
+    {
+        if (State == GameState.Stopped) return;
+        if (State == GameState.Playing)
+            State = GameState.Paused;
+        (_game ?? this.FindControl<GameView>("Game"))?.StepOneFrame();
+    }
+
+    private void OnMuteClicked(object? s, RoutedEventArgs e)
+    {
+        AudioMixer.Master.Muted = MuteBtn?.IsChecked == true;
     }
 }

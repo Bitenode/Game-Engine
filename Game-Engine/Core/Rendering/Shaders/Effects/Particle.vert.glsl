@@ -1,30 +1,49 @@
 #version 330 core
 
-layout(location = 0) in vec2 aPosition;    // billboard quad corner (-0.5..0.5)
+layout(location = 0) in vec2 aPosition;     // billboard quad corner (-0.5..0.5)
+layout(location = 1) in vec4 aInstPosSize;  // xyz = world position, w = size / streak width
+layout(location = 2) in vec4 aInstColor;    // rgba color
+layout(location = 3) in vec4 aInstParams;   // x = rotation (rad), y = normalized age (0..1), z = flipbook cols, w = flipbook rows
 
 #include "Common/FrameGlobals.glsl"
 
-// Per-instance data (passed as uniforms per batch)
-uniform vec4 uParticlePos[128];   // xyz = world position, w = size / streak width
-uniform vec4 uParticleCol[128];   // rgba color
-uniform int  uAlignVelocity;
-uniform int  uParticleLook;       // 0 soft circle, 1 rain streak, 2 flame
+uniform int   uAlignVelocity;
+uniform int   uParticleLook;       // 0 soft circle / textured billboard, 1 rain streak, 2 flame
 uniform float uStretchLength;
-uniform vec3 uFallDir;
+uniform vec3  uFallDir;
 
 out vec4 vColor;
 out vec2 vUV;
+out vec2 vQuadUV;
 flat out int vInstanceID;
 
 void main()
 {
-    int id = gl_InstanceID;
-    vInstanceID = id;
+    vInstanceID = gl_InstanceID;
 
-    vec3 worldPos = uParticlePos[id].xyz;
-    float size = uParticlePos[id].w;
-    vColor = uParticleCol[id];
-    vUV = aPosition + 0.5;
+    vec3 worldPos = aInstPosSize.xyz;
+    float size    = aInstPosSize.w;
+    vColor        = aInstColor;
+
+    vec2 baseUV = aPosition + 0.5;
+    vQuadUV = baseUV;
+
+    // Optional sprite-sheet flipbook UV remapping (cols x rows)
+    float cols = max(1.0, aInstParams.z);
+    float rows = max(1.0, aInstParams.w);
+    float totalFrames = cols * rows;
+    if (totalFrames > 1.5)
+    {
+        float age01 = clamp(aInstParams.y, 0.0, 0.9999);
+        float frameIdx = floor(age01 * totalFrames);
+        float col = mod(frameIdx, cols);
+        float row = floor(frameIdx / cols);
+        vUV = vec2((col + baseUV.x) / cols, (row + baseUV.y) / rows);
+    }
+    else
+    {
+        vUV = baseUV;
+    }
 
     vec3 camRight = vec3(uView[0][0], uView[1][0], uView[2][0]);
     vec3 camUp    = vec3(uView[0][1], uView[1][1], uView[2][1]);
@@ -67,7 +86,13 @@ void main()
     }
     else
     {
-        corner = worldPos + (aPosition.x * camRight + aPosition.y * camUp) * size;
+        float rot = aInstParams.x;
+        float c = cos(rot);
+        float s = sin(rot);
+        vec2 localPos = vec2(
+            aPosition.x * c - aPosition.y * s,
+            aPosition.x * s + aPosition.y * c);
+        corner = worldPos + (localPos.x * camRight + localPos.y * camUp) * size;
     }
     gl_Position = uProj * uView * vec4(corner, 1.0);
 }

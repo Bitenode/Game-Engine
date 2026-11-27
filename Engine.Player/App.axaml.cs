@@ -9,6 +9,9 @@ public partial class App : Avalonia.Application
     /// <summary>Path to build.json, set by Program.Main before the app starts.</summary>
     public static string? BuildJsonPath { get; set; }
 
+    /// <summary>Whether the FPS/frame-time HUD is shown on startup (enabled via --fps).</summary>
+    public static bool ShowFpsHud { get; set; }
+
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
     public override void OnFrameworkInitializationCompleted()

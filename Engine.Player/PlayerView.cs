@@ -79,6 +79,9 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 
     private volatile bool _renderInFlight;
 
+    /// <summary>When true, draws the FPS / GL frame-time overlay. Defaults to false (enable via --fps or toggle with F3).</summary>
+    public bool ShowFpsHud { get; set; } = App.ShowFpsHud;
+
     public PlayerView()
     {
         ClipToBounds = true;
@@ -196,7 +199,8 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
             Dispatcher.UIThread.Post(RequestNextFrameRendering, DispatcherPriority.Render);
 
         base.Render(ctx);
-        DrawFpsHud(ctx);
+        if (ShowFpsHud)
+            DrawFpsHud(ctx);
     }
 
     void DrawFpsHud(DrawingContext ctx)
@@ -239,12 +243,24 @@ public class PlayerView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
     #region Input
     void OnKeyDown(object? s, KeyEventArgs e)
     {
+        if (e.Key == Key.F3)
+        {
+            ShowFpsHud = !ShowFpsHud;
+            e.Handled = true;
+            InvalidateVisual();
+            return;
+        }
         if (!_playing) return;
         Input.FeedKeyDown(KeyMap.FromAvalonia(e.Key));
     }
 
     void OnKeyUp(object? s, KeyEventArgs e)
     {
+        if (e.Key == Key.F3)
+        {
+            e.Handled = true;
+            return;
+        }
         if (!_playing) return;
         Input.FeedKeyUp(KeyMap.FromAvalonia(e.Key));
     }

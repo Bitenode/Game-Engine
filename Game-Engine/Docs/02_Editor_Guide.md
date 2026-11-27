@@ -89,17 +89,18 @@ The Scene View is the primary 3D editing viewport. It renders the scene using th
 - Saved bookmark data includes target, orbit yaw/pitch, and camera distance.
 
 ### Toolbar
+The theme-aware toolbar strip provides segmented icon+label tool pills and viewport controls:
+
 | Button     | Function                                         |
 |------------|--------------------------------------------------|
 | **Hand**   | Navigate only — no object manipulation            |
 | **Move**   | Translate selected object along axes              |
 | **Rotate** | Rotate selected object around axes                |
 | **Scale**  | Scale selected object along axes                  |
-| **AA**     | Anti-aliasing toggle (FXAA post-processing)       |
-| **Debug View** | `ComboBox` between **AA** and **View ▾** — live `RenderDebugMode` (`Lit`, `Wireframe`, `Albedo`, `Normals`, `Roughness`, `Metallic`, `Depth`, `SSAO`, `CsmCascades`, `ToneMapCompare`) |
-| **View**   | View options menu (grid, wireframe, etc.)         |
-| **Gizmo**  | Toggle collider gizmo wireframe visibility        |
-| **FPS**    | Frames-per-second display                         |
+| **AA ×2**  | Supersample render at 2× and downsample           |
+| **Debug View** | `ComboBox` between **AA ×2** and **View ▾** — live `RenderDebugMode` (`Lit`, `Wireframe`, `Albedo`, `Normals`, `Roughness`, `Metallic`, `Depth`, `SSAO`, `CsmCascades`, `ToneMapCompare`) |
+| **View ▾** | View options menu (Grid, Wire, Gizmos, Light, Shadows, Selection Outline, Stats Overlay, 2D) |
+| **Stats**  | Live stats text readout                           |
 
 **Debug View** sets `SceneRenderer.DebugViewMode` for Scene View and Game View. Modes map to `uDebugViewMode` in lit passes and `uToneMapCompare` in post. **ToneMap Compare** forces the post stack and shows three horizontal bands in one frame (left = no tone map, middle = Reinhard, right = ACES) with thin vertical dividers. See [04 — Rendering Pipeline](04_Rendering_Pipeline.md#rendering-debug-views-renderdebugmode).
 
@@ -166,11 +167,17 @@ During Play mode, Scene View remains live and renders the same runtime world fro
 While Game View is playing, Scene View also skips the heaviest planet-only passes (shadow map, atmosphere shell, cloud shell, planet leaf shadows) so dual-view editing stays responsive. Game View keeps the full pipeline.
 
 ### Play Controls
-| Button    | Function                                           |
-|-----------|----------------------------------------------------|
-| **Play**  | Start the game (runs Awake → Start → Update loop)  |
-| **Pause** | Pause the game loop (freezes Update/FixedUpdate)   |
-| **Stop**  | Stop and restore the scene to its pre-play state   |
+The theme-aware Game View toolbar provides transport, viewport aspect, audio, and shadow controls:
+
+| Control      | Function                                                                 |
+|--------------|--------------------------------------------------------------------------|
+| **Play**     | Start or resume the game (runs Awake → Start → Update loop)              |
+| **Pause**    | Pause the game loop (freezes Update/FixedUpdate)                         |
+| **Stop**     | Stop and restore the scene to its pre-play state                         |
+| **Step**     | Advance a single fixed + update frame (pauses first if currently playing)|
+| **Aspect**   | Viewport aspect ratio preset (`Free`, `16:9`, `16:10`, `4:3`) with centered letterboxing |
+| **Mute**     | Toggle master game audio mute (`AudioMixer.Master.Muted`)                |
+| **Shadows**  | Toggle shadow rendering in Game View                                     |
 
 ### Play Mode Lifecycle
 

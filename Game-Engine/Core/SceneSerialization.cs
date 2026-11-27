@@ -170,13 +170,26 @@ namespace Game_Engine.Core
 
         public static List<GameObject> LoadScene(string path)
         {
-            var json = AtomicFile.ReadAllTextWithBackupFallback(path);
+            var json = ReadSceneJson(path);
+            var dto = ParseSceneJson(json);
+            return InstantiateScene(dto);
+        }
+
+        /// <summary>Read raw scene JSON text from disk (safe to call on a background thread).</summary>
+        internal static string ReadSceneJson(string path)
+            => AtomicFile.ReadAllTextWithBackupFallback(path);
+
+        /// <summary>Parse raw scene JSON into a <see cref="SceneDTO"/> (safe to call on a background thread).</summary>
+        internal static SceneDTO ParseSceneJson(string json)
+        {
             var dto = JsonSerializer.Deserialize<SceneDTO>(json, _json);
             if (dto == null) throw new InvalidDataException("Scene file is empty or invalid.");
-
-            return dto.Root.Select(FromDTO).ToList();
-
+            return dto;
         }
+
+        /// <summary>Instantiate <see cref="GameObject"/> hierarchies from a parsed <see cref="SceneDTO"/> (main thread).</summary>
+        internal static List<GameObject> InstantiateScene(SceneDTO dto)
+            => dto.Root.Select(FromDTO).ToList();
 
         // ---------------- GameObject/Behavior mapping ----------------
         /// <summary>Children to skip during serialization (generated at runtime, e.g. grass chunks).</summary>

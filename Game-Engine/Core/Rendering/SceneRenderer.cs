@@ -665,12 +665,9 @@ namespace Game_Engine.Core
         }
 
         // ---------- Particle rendering ----------
-        // Reusable buffers for particle instance data
-        [ThreadStatic] private static SN.Vector4[]? s_particlePositions;
-        [ThreadStatic] private static SN.Vector4[]? s_particleColors;
 
         /// <summary>
-        /// Render all active particle emitters as billboard quads.
+        /// Render all active particle emitters as GPU-instanced billboard quads.
         /// Call after main scene rendering, before post-processing.
         /// </summary>
         public static void RenderParticles(
@@ -690,8 +687,7 @@ namespace Game_Engine.Core
                 gl.Disable(EnableCap.DepthTest);
             gl.Disable(EnableCap.CullFace);
 
-            var positions = s_particlePositions ??= new SN.Vector4[128];
-            var colors = s_particleColors ??= new SN.Vector4[128];
+            var batcher = cache.GetParticleBatcher();
 
             var globals = GlobalUniforms.ForContext(gl);
             var camPos = SN.Matrix4x4.Invert(view, out var invV) ? invV.Translation : SN.Vector3.Zero;
@@ -699,17 +695,48 @@ namespace Game_Engine.Core
 
             // Find all particle emitters
             foreach (var root in SceneService.Root)
-                RenderParticlesRecursive(gl, particleShader, cache, root, view, proj, positions, colors, overlayPass);
+                RenderParticlesRecursive(gl, particleShader, cache, batcher, root, overlayPass);
 
             if (overlayPass)
                 gl.Enable(EnableCap.DepthTest);
             gl.Enable(EnableCap.CullFace);
         }
 
+        private static bool TryBindParticleTexture(GameObject go, ResourceCache cache)
+        {
+            for (int bi = 0; bi < go.Behaviors.Count; bi++)
+            {
+                if (go.Behaviors[bi] is MeshRenderer mr && mr.Material?.Textures != null)
+                {
+                    var textures = mr.Material.Textures;
+                    for (int i = 0; i < textures.Count; i++)
+                    {
+                        var slot = textures[i];
+                        if (slot is RuntimeTexSlot rts && rts.Texture != null)
+                        {
+                            var usage = rts.Usage?.ToLowerInvariant() ?? "";
+                            if (usage.Contains("albedo") || usage == "" || usage.Contains("base") || usage.Contains("diff"))
+                            {
+                                cache.GetTexture(rts.Texture).Bind(TextureUnit.Texture0);
+                                return true;
+                            }
+                        }
+                        else if (slot is MaterialTexture mtex && mtex.Texture != null && mtex.Usage == MaterialTexture.TexUsage.Albedo)
+                        {
+                            cache.GetTexture(mtex.Texture, mtex).Bind(TextureUnit.Texture0);
+                            return true;
+                        }
+                    }
+                    break;
+                }
+            }
+            cache.GetWhiteTexture().Bind(TextureUnit.Texture0);
+            return false;
+        }
+
         private static void RenderParticlesRecursive(
-            GL gl, ShaderProgram shader, ResourceCache cache,
-            GameObject go, in SN.Matrix4x4 view, in SN.Matrix4x4 proj,
-            SN.Vector4[] positions, SN.Vector4[] colors, bool overlayPass)
+            GL gl, ShaderProgram shader, ResourceCache cache, GPUParticleBatcher batcher,
+            GameObject go, bool overlayPass)
         {
             if (!go.Enabled) return;
 
@@ -720,6 +747,11 @@ namespace Game_Engine.Core
             {
                 if (b is ParticleEmitter pe && pe.IsActiveAndEnabled && pe.ActiveParticleCount > 0)
                 {
+                    int activeCount = pe.ActiveParticleCount;
+                    float[] staging = batcher.EnsureStagingCapacity(activeCount);
+                    int count = pe.FillInstancedData(staging, activeCount);
+                    if (count <= 0) continue;
+
                     shader.Use();
                     int particleLook = pe.Look == ParticleLook.Flame ? 2
                         : pe.Look == ParticleLook.Streak || pe.StretchAlongVelocity ? 1
@@ -732,6 +764,10 @@ namespace Game_Engine.Core
                         : pe.GetRenderFallDirection();
                     shader.SetVector3("uFallDir", fall);
 
+                    bool hasTex = TryBindParticleTexture(go, cache);
+                    shader.SetTexture("uParticleTex", 0);
+                    shader.SetInt("uHasTexture", hasTex ? 1 : 0);
+
                     gl.Enable(EnableCap.Blend);
                     gl.BlendFunc(
                         BlendingFactor.SrcAlpha,
@@ -741,22 +777,7 @@ namespace Game_Engine.Core
                     if (weatherPrecip || overlayPass)
                         gl.Disable(EnableCap.DepthTest);
 
-                    int skip = 0;
-                    while (true)
-                    {
-                        int count = pe.FillRenderData(positions, colors, 128, skip);
-                        if (count <= 0) break;
-
-                        for (int i = 0; i < count; i++)
-                        {
-                            shader.SetVector4($"uParticlePos[{i}]", positions[i].X, positions[i].Y, positions[i].Z, positions[i].W);
-                            shader.SetVector4($"uParticleCol[{i}]", colors[i].X, colors[i].Y, colors[i].Z, colors[i].W);
-                        }
-
-                        DrawBillboardQuads(gl, count);
-                        skip += count;
-                        if (count < 128 || skip >= 4096) break;
-                    }
+                    batcher.UploadAndDraw(count);
 
                     if (weatherPrecip || overlayPass)
                         gl.Enable(EnableCap.DepthTest);
@@ -766,7 +787,7 @@ namespace Game_Engine.Core
             }
 
             foreach (var c in go.Children)
-                RenderParticlesRecursive(gl, shader, cache, c, view, proj, positions, colors, overlayPass);
+                RenderParticlesRecursive(gl, shader, cache, batcher, c, overlayPass);
         }
 
         static bool IsPlanetVegetationDrawName(string? name)
@@ -782,57 +803,11 @@ namespace Game_Engine.Core
                 || name == PlanetVegetationSystem.RuntimeRootName;
         }
 
-        // Billboard quad VAO (lazy init)
-        [ThreadStatic] private static uint s_billboardVAO;
-        [ThreadStatic] private static uint s_billboardVBO;
-        [ThreadStatic] private static bool s_billboardInit;
-
         /// <summary>Release thread-local renderer objects before a GL context is destroyed.</summary>
         public static void DisposeStaticGlResources(GL gl)
         {
-            if (!s_billboardInit)
-                return;
-            if (s_billboardVBO != 0)
-                gl.DeleteBuffer(s_billboardVBO);
-            if (s_billboardVAO != 0)
-                gl.DeleteVertexArray(s_billboardVAO);
-            s_billboardVBO = 0;
-            s_billboardVAO = 0;
-            s_billboardInit = false;
-        }
-
-        private static unsafe void DrawBillboardQuads(GL gl, int instanceCount)
-        {
-            if (!s_billboardInit)
-            {
-                float[] quadVerts = {
-                    -0.5f, -0.5f,
-                     0.5f, -0.5f,
-                    -0.5f,  0.5f,
-                     0.5f, -0.5f,
-                     0.5f,  0.5f,
-                    -0.5f,  0.5f
-                };
-
-                s_billboardVAO = gl.GenVertexArray();
-                s_billboardVBO = gl.GenBuffer();
-
-                gl.BindVertexArray(s_billboardVAO);
-                gl.BindBuffer(BufferTargetARB.ArrayBuffer, s_billboardVBO);
-
-                fixed (float* ptr = quadVerts)
-                    gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(quadVerts.Length * sizeof(float)), ptr, BufferUsageARB.StaticDraw);
-
-                gl.EnableVertexAttribArray(0);
-                gl.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, 2 * sizeof(float), null);
-
-                gl.BindVertexArray(0);
-                s_billboardInit = true;
-            }
-
-            gl.BindVertexArray(s_billboardVAO);
-            gl.DrawArraysInstanced(PrimitiveType.Triangles, 0, 6, (uint)instanceCount);
-            gl.BindVertexArray(0);
+            // Particle billboard VAO/VBOs are now owned per-context by ResourceCache (GPUParticleBatcher)
+            // and disposed via ResourceCache.Dispose() / ResourceCache.FlushAll().
         }
 
         // ---------- Water rendering ----------

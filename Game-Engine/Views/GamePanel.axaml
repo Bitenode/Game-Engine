@@ -5,97 +5,220 @@
     xmlns:views="clr-namespace:Game_Engine.Views"
     x:Name="Root">
 
-	<!-- Styles go here -->
 	<UserControl.Styles>
-
-		<!-- Base tool button look -->
+		<!-- Transport toggle buttons (Play / Pause / Stop) -->
 		<Style Selector="ToggleButton.tool">
-			<Setter Property="MinWidth"        Value="36"/>
-			<Setter Property="MinHeight"       Value="28"/>
-			<Setter Property="Padding"         Value="8,4"/>
-			<Setter Property="CornerRadius"    Value="6"/>
-			<Setter Property="FontSize"        Value="14"/>
+			<Setter Property="MinWidth"        Value="32"/>
+			<Setter Property="Height"          Value="26"/>
+			<Setter Property="Padding"         Value="8,0"/>
+			<Setter Property="CornerRadius"    Value="4"/>
+			<Setter Property="FontSize"        Value="12"/>
 			<Setter Property="Focusable"       Value="False"/>
-			<Setter Property="Background"      Value="#2B2F33"/>
-			<Setter Property="BorderBrush"     Value="#2B2F33"/>
+			<Setter Property="Background"      Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush"     Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
 			<Setter Property="BorderThickness" Value="1"/>
-			<Setter Property="Foreground"      Value="#E6EAF0"/>
+			<Setter Property="Foreground"      Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+			<Setter Property="HorizontalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="ToggleButton.tool:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.tool:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.tool:disabled">
+			<Setter Property="Opacity" Value="0.4"/>
 		</Style>
 
-		<!-- Always-visible icon colors -->
+		<!-- Distinct high-contrast icon tints for transport controls -->
 		<Style Selector="ToggleButton#PlayBtn">
-			<Setter Property="Foreground" Value="#33C759"/>
+			<Setter Property="Foreground" Value="#2EB85C"/>
 		</Style>
 		<Style Selector="ToggleButton#PauseBtn">
 			<Setter Property="Foreground" Value="#3BA3F2"/>
 		</Style>
 		<Style Selector="ToggleButton#StopBtn">
-			<Setter Property="Foreground" Value="#FF5A5F"/>
+			<Setter Property="Foreground" Value="#E55353"/>
 		</Style>
 
-		<!-- Colored outline only when selected -->
+		<!-- Accent fill when active (high contrast in both Light and Dark themes) -->
+		<Style Selector="ToggleButton#PlayBtn:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#2EB85C"/>
+			<Setter Property="BorderBrush" Value="#2EB85C"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
 		<Style Selector="ToggleButton#PlayBtn:checked">
-			<Setter Property="BorderBrush"     Value="#33C759"/>
-			<Setter Property="BorderThickness" Value="2"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+
+		<Style Selector="ToggleButton#PauseBtn:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#3BA3F2"/>
+			<Setter Property="BorderBrush" Value="#3BA3F2"/>
+			<Setter Property="Foreground" Value="White"/>
 		</Style>
 		<Style Selector="ToggleButton#PauseBtn:checked">
-			<Setter Property="BorderBrush"     Value="#3BA3F2"/>
-			<Setter Property="BorderThickness" Value="2"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+
+		<Style Selector="ToggleButton#StopBtn:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#E55353"/>
+			<Setter Property="BorderBrush" Value="#E55353"/>
+			<Setter Property="Foreground" Value="White"/>
 		</Style>
 		<Style Selector="ToggleButton#StopBtn:checked">
-			<Setter Property="BorderBrush"     Value="#FF5A5F"/>
-			<Setter Property="BorderThickness" Value="2"/>
+			<Setter Property="Foreground" Value="White"/>
 		</Style>
 
-		<!-- Hover/press/disabled -->
-		<Style Selector="ToggleButton.tool:pointerover">
-			<Setter Property="Background" Value="#33383D"/>
+		<!-- Compact toolbar button (Step Frame) -->
+		<Style Selector="Button.game-tool-btn">
+			<Setter Property="MinWidth" Value="30"/>
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="7,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Focusable" Value="False"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+			<Setter Property="HorizontalContentAlignment" Value="Center"/>
 		</Style>
-		<Style Selector="ToggleButton.tool:pressed">
-			<Setter Property="Background" Value="#3B4147"/>
+		<Style Selector="Button.game-tool-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
 		</Style>
-		<Style Selector="ToggleButton.tool:disabled">
-			<Setter Property="Opacity" Value="0.45"/>
+		<Style Selector="Button.game-tool-btn:pressed /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListMediumBrush}"/>
+		</Style>
+		<Style Selector="Button.game-tool-btn:disabled">
+			<Setter Property="Opacity" Value="0.4"/>
 		</Style>
 
+		<!-- Mute audio toggle -->
+		<Style Selector="ToggleButton.game-tool-toggle">
+			<Setter Property="Height" Value="26"/>
+			<Setter Property="Padding" Value="8,0"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="FontSize" Value="11"/>
+			<Setter Property="Focusable" Value="False"/>
+			<Setter Property="Background" Value="{DynamicResource SystemControlBackgroundBaseLowBrush}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+			<Setter Property="VerticalContentAlignment" Value="Center"/>
+		</Style>
+		<Style Selector="ToggleButton.game-tool-toggle:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+		</Style>
+		<Style Selector="ToggleButton.game-tool-toggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="#D9534F"/>
+			<Setter Property="BorderBrush" Value="#D9534F"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+		<Style Selector="ToggleButton.game-tool-toggle:checked">
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
 	</UserControl.Styles>
 
-	<!-- Single content element -->
 	<DockPanel>
-		<!-- Toolbar -->
-		<Border DockPanel.Dock="Top" Margin="8" Padding="8" CornerRadius="6" Background="#26282B">
-			<StackPanel Orientation="Horizontal" Spacing="8">
-				<!-- Bind one-way to State; code-behind sets State on click -->
-				<ToggleButton x:Name="PlayBtn"  Classes="tool" ToolTip.Tip="Play"
-							  IsChecked="{Binding ElementName=Root, Path=State,
-                                          Converter={StaticResource EnumEq},
-                                          ConverterParameter=Playing}"
-							  Click="OnPlayClicked">▶</ToggleButton>
+		<!-- Theme-aware toolbar strip -->
+		<Border DockPanel.Dock="Top"
+				Padding="8,5"
+				Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+				BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+				BorderThickness="0,0,0,1">
+			<WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+				<!-- Transport controls -->
+				<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,1,8,1" VerticalAlignment="Center">
+					<ToggleButton x:Name="PlayBtn" Classes="tool" ToolTip.Tip="Play (F5)"
+								  IsChecked="{Binding ElementName=Root, Path=State,
+                                              Converter={StaticResource EnumEq},
+                                              ConverterParameter=Playing}"
+								  Click="OnPlayClicked">
+						<Path Width="10" Height="11" Stretch="Uniform"
+							  Fill="{Binding $parent[ToggleButton].Foreground}"
+							  Data="M1,0.5 L10,5.5 L1,10.5 Z"/>
+					</ToggleButton>
 
-				<ToggleButton x:Name="PauseBtn" Classes="tool" ToolTip.Tip="Pause"
-							  IsChecked="{Binding ElementName=Root, Path=State,
-                                          Converter={StaticResource EnumEq},
-                                          ConverterParameter=Paused}"
-							  Click="OnPauseClicked">⏸</ToggleButton>
+					<ToggleButton x:Name="PauseBtn" Classes="tool" ToolTip.Tip="Pause"
+								  IsChecked="{Binding ElementName=Root, Path=State,
+                                              Converter={StaticResource EnumEq},
+                                              ConverterParameter=Paused}"
+								  Click="OnPauseClicked">
+						<Path Width="10" Height="11" Stretch="Uniform"
+							  Fill="{Binding $parent[ToggleButton].Foreground}"
+							  Data="M1,0.5 H4 V10.5 H1 Z M6,0.5 H9 V10.5 H6 Z"/>
+					</ToggleButton>
 
-			<ToggleButton x:Name="StopBtn"  Classes="tool" ToolTip.Tip="Stop"
-						  IsChecked="{Binding ElementName=Root, Path=State,
-                                          Converter={StaticResource EnumEq},
-                                          ConverterParameter=Stopped}"
-						  Click="OnStopClicked">■</ToggleButton>
+					<ToggleButton x:Name="StopBtn" Classes="tool" ToolTip.Tip="Stop (F5)"
+								  IsChecked="{Binding ElementName=Root, Path=State,
+                                              Converter={StaticResource EnumEq},
+                                              ConverterParameter=Stopped}"
+								  Click="OnStopClicked">
+						<Path Width="10" Height="10" Stretch="Uniform"
+							  Fill="{Binding $parent[ToggleButton].Foreground}"
+							  Data="M1,1 H9 V9 H1 Z"/>
+					</ToggleButton>
 
-				<Separator Margin="5,0"/>
-				<CheckBox Content="Shadows" Foreground="#8899AA" FontSize="11"
+					<Button x:Name="StepBtn" Classes="game-tool-btn"
+							ToolTip.Tip="Step one frame (pauses if playing)"
+							Click="OnStepClicked">
+						<Path Width="11" Height="11" Stretch="Uniform"
+							  Fill="{Binding $parent[Button].Foreground}"
+							  Data="M1,0.5 L7.5,5.5 L1,10.5 Z M8.5,0.5 H10.5 V10.5 H8.5 Z"/>
+					</Button>
+				</StackPanel>
+
+				<!-- Aspect ratio preset -->
+				<ComboBox x:Name="AspectCombo"
+						  Width="84"
+						  Height="26"
+						  MinHeight="26"
+						  Padding="8,2"
+						  Margin="0,1,8,1"
+						  FontSize="11"
+						  CornerRadius="4"
 						  VerticalAlignment="Center"
+						  ToolTip.Tip="Game viewport aspect ratio"
+						  SelectedIndex="0"/>
+
+				<!-- Mute Audio toggle -->
+				<ToggleButton x:Name="MuteBtn" Classes="game-tool-toggle"
+							  Margin="0,1,10,1"
+							  VerticalAlignment="Center"
+							  ToolTip.Tip="Mute master game audio"
+							  Click="OnMuteClicked">
+					<StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+						<Path Width="12" Height="12" Stretch="Uniform"
+							  Fill="{Binding $parent[ToggleButton].Foreground}"
+							  Data="M1,4.5 H3.8 L7,1.5 V10.5 L3.8,7.5 H1 Z M8.8,3.6 L11.5,6.3 M11.5,3.6 L8.8,6.3"/>
+						<TextBlock Text="Mute" VerticalAlignment="Center"/>
+					</StackPanel>
+				</ToggleButton>
+
+				<!-- Shadows toggle -->
+				<CheckBox Content="Shadows"
+						  FontSize="11"
+						  Margin="0,1,0,1"
+						  VerticalAlignment="Center"
+						  Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
 						  IsChecked="{Binding ElementName=Game, Path=ShowShadows, Mode=TwoWay}" />
-		</StackPanel>
+			</WrapPanel>
 		</Border>
 
-		<!-- Viewport -->
-		<Border Margin="8" BorderThickness="1" CornerRadius="6" BorderBrush="#3A3D41" ClipToBounds="True">
+		<!-- Viewport with optional aspect-ratio letterboxing -->
+		<Border x:Name="ViewportHost"
+				Background="#121417"
+				ClipToBounds="True">
 			<views:GameView x:Name="Game"
-                        Grid.Row="1"
-                        State="{Binding State, RelativeSource={RelativeSource AncestorType=views:GamePanel}}"/>
+							HorizontalAlignment="Stretch"
+							VerticalAlignment="Stretch"
+							State="{Binding State, RelativeSource={RelativeSource AncestorType=views:GamePanel}}"/>
 		</Border>
 	</DockPanel>
 </UserControl>
